@@ -1,10 +1,7 @@
 <?php
-// test_complete_swap_flow.php
-// ULTIMATE DIAGNOSTIC TEST - Tests ALL possible solutions
-// 
-// ⚠️  WARNING: This calls the REAL ZURUBANK and SACCUSSALIS production
-// endpoints over HTTPS. It creates a genuine hold on account 10000001
-// and a genuine SAT token at SACCUSSALIS (SMS included). Don't loop this.
+// test_diagnose_tracking_failure.php
+// ULTIMATE DIAGNOSTIC: Find WHY populateTrackingTables() is not working
+// Tests ALL possible causes WITHOUT changing any production code
 
 declare(strict_types=1);
 
@@ -33,8 +30,8 @@ $testConfig = [
 ];
 
 echo "========================================\n";
-echo "ULTIMATE DIAGNOSTIC TEST\n";
-echo "Testing ALL possible solutions\n";
+echo "DIAGNOSE populateTrackingTables() FAILURE\n";
+echo "Testing ALL possible causes\n";
 echo "========================================\n\n";
 
 // ============================================================
@@ -62,68 +59,18 @@ echo "Search Path        : " . $pdo->query("SHOW search_path")->fetchColumn() . 
 echo "In Transaction     : " . ($pdo->inTransaction() ? 'YES ⚠️' : 'NO ✅') . PHP_EOL;
 echo "PDO Object ID      : " . spl_object_id($pdo) . PHP_EOL;
 
-if ($pdo->inTransaction()) {
-    echo "   ⚠️  Rolling back lingering transaction...\n";
-    $pdo->rollBack();
-    echo "   ✅ Rolled back\n";
-}
-
 $pdo->setAttribute(PDO::ATTR_AUTOCOMMIT, true);
 echo "Autocommit set     : ON ✅\n";
 echo "\n";
 
 // ============================================================
-// 3. CHECK TABLE STRUCTURES
+// 3. CLEAN UP EARMARKED BALANCES
 // ============================================================
-echo "📊 Checking table structures...\n\n";
-$tablesToCheck = [
-    'swap_requests',
-    'hold_transactions', 
-    'cashout_authorizations',
-    'swap_transactions',
-    'message_outbox',
-    'audit_logs',
-    'identity_earmarked_balances',
-];
-
-foreach ($tablesToCheck as $table) {
-    try {
-        $stmt = $pdo->prepare("SELECT * FROM {$table} LIMIT 0");
-        $stmt->execute();
-        echo "   ✅ {$table}\n";
-    } catch (PDOException $e) {
-        echo "   ❌ {$table}: " . $e->getMessage() . "\n";
-    }
-}
-echo "\n";
-
-// ============================================================
-// 4. CLEAN UP EARMARKED BALANCES (SOLUTION 1)
-// ============================================================
-echo "🔧 SOLUTION 1: Clean up earmarked balances\n";
-echo "=============================\n";
-
+echo "🧹 Cleaning up earmarked balances...\n";
 try {
     $stmt = $pdo->prepare("
-        SELECT COUNT(*) FROM identity_earmarked_balances
-        WHERE destination_institution = :inst
-          AND destination_identifier = :ident
-          AND status = 'open'
-    ");
-    $stmt->execute([
-        ':inst' => $testConfig['source_institution'],
-        ':ident' => $testConfig['source_identifier']
-    ]);
-    $openCount = $stmt->fetchColumn();
-    echo "   Open earmarks before: {$openCount}\n";
-    
-    // Close all open earmarks for the test account
-    $stmt = $pdo->prepare("
         UPDATE identity_earmarked_balances
-        SET status = 'depleted', 
-            remaining_amount = 0, 
-            depleted_at = NOW(),
-            updated_at = NOW()
+        SET status = 'depleted', remaining_amount = 0, depleted_at = NOW()
         WHERE destination_institution = :inst
           AND destination_identifier = :ident
           AND status = 'open'
@@ -132,57 +79,14 @@ try {
         ':inst' => $testConfig['source_institution'],
         ':ident' => $testConfig['source_identifier']
     ]);
-    $closed = $stmt->rowCount();
-    echo "   ✅ Closed {$closed} earmarked balance(s)\n";
-    
+    echo "   ✅ Closed " . $stmt->rowCount() . " earmarked balance(s)\n";
 } catch (PDOException $e) {
     echo "   ⚠️  Could not clean earmarks: " . $e->getMessage() . "\n";
 }
 echo "\n";
 
 // ============================================================
-// 5. CHECK AND RELEASE PENDING HOLDS (SOLUTION 2)
-// ============================================================
-echo "🔧 SOLUTION 2: Check pending holds\n";
-echo "=============================\n";
-
-try {
-    $stmt = $pdo->prepare("
-        SELECT COUNT(*) FROM hold_transactions
-        WHERE source_institution = :inst
-          AND status IN ('ACTIVE', 'HELD', 'PENDING_CASHOUT', 'PENDING_IDENTITY')
-    ");
-    $stmt->execute([':inst' => $testConfig['source_institution']]);
-    $pendingHolds = $stmt->fetchColumn();
-    
-    if ($pendingHolds > 0) {
-        echo "   ⚠️  Found {$pendingHolds} pending holds\n";
-        
-        // Show the oldest holds
-        $stmt = $pdo->prepare("
-            SELECT hold_id, hold_reference, swap_reference, amount, status, placed_at
-            FROM hold_transactions
-            WHERE source_institution = :inst
-              AND status IN ('ACTIVE', 'HELD', 'PENDING_CASHOUT', 'PENDING_IDENTITY')
-            ORDER BY placed_at ASC
-            LIMIT 5
-        ");
-        $stmt->execute([':inst' => $testConfig['source_institution']]);
-        $holds = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        foreach ($holds as $h) {
-            echo "      hold_id={$h['hold_id']}, amount={$h['amount']}, status={$h['status']}, placed={$h['placed_at']}\n";
-        }
-        echo "   💡 These may block new holds. Consider releasing them.\n";
-    } else {
-        echo "   ✅ No pending holds found\n";
-    }
-} catch (PDOException $e) {
-    echo "   ⚠️  Could not check holds: " . $e->getMessage() . "\n";
-}
-echo "\n";
-
-// ============================================================
-// 6. LOAD COUNTRY CONFIG
+// 4. LOAD COUNTRY CONFIG
 // ============================================================
 echo "📂 Loading country config...\n";
 $countryConfig = LoadCountry::getConfig();
@@ -193,7 +97,7 @@ if (empty($countryConfig)) {
 echo "✅ Country config loaded\n\n";
 
 // ============================================================
-// 7. CREATE SWAP PAYLOAD
+// 5. CREATE SWAP PAYLOAD
 // ============================================================
 echo "📝 Creating swap payload...\n";
 
@@ -226,7 +130,7 @@ echo "   Destination: {$testConfig['destination_institution']}\n";
 echo "   Phone: {$testConfig['beneficiary_phone']}\n\n";
 
 // ============================================================
-// 8. INITIALIZE SWAP SERVICE
+// 6. INITIALIZE SWAP SERVICE
 // ============================================================
 echo "⚙️  Initializing SwapService...\n";
 
@@ -243,413 +147,611 @@ try {
 }
 
 // ============================================================
-// 9. EXECUTE SWAP WITH STEP-BY-STEP TRACING
+// 7. USE REFLECTION TO INSPECT AND MODIFY BEHAVIOR
 // ============================================================
-echo "🚀 Executing swap with full diagnostics...\n";
-echo "============================================================\n";
+echo "🔍 Using Reflection to inspect SwapService...\n";
+echo "=============================\n";
 
-$result = null;
-$swapFailed = false;
-$exceptionDetails = null;
-
-// Capture all exceptions
-set_exception_handler(function($e) use (&$exceptionDetails) {
-    $exceptionDetails = [
-        'class' => get_class($e),
-        'message' => $e->getMessage(),
-        'code' => $e->getCode(),
-        'file' => $e->getFile(),
-        'line' => $e->getLine(),
-        'trace' => $e->getTraceAsString()
-    ];
-    
-    $inner = $e->getPrevious();
-    if ($inner) {
-        $exceptionDetails['inner'] = [
-            'class' => get_class($inner),
-            'message' => $inner->getMessage(),
-            'file' => $inner->getFile(),
-            'line' => $inner->getLine(),
-        ];
-    }
-});
-
-// Use reflection to inspect internal state
 $reflection = new ReflectionClass($swapService);
-$executedSteps = $reflection->getProperty('executedSteps');
-$executedSteps->setAccessible(true);
-$inAtomicSwap = $reflection->getProperty('inAtomicSwap');
-$inAtomicSwap->setAccessible(true);
-$currentSwapRef = $reflection->getProperty('currentSwapRef');
-$currentSwapRef->setAccessible(true);
-$currentHoldId = $reflection->getProperty('currentHoldId');
-$currentHoldId->setAccessible(true);
-$currentHoldReference = $reflection->getProperty('currentHoldReference');
-$currentHoldReference->setAccessible(true);
 
-echo "\n📌 Starting swap execution...\n";
+// Get all private methods
+$methods = $reflection->getMethods(ReflectionMethod::IS_PRIVATE);
 
-try {
-    $startTime = microtime(true);
-    $result = $swapService->executeAtomicSwap($payload);
-    $executionTime = round(microtime(true) - $startTime, 2);
-    
-    echo "\n✅ Swap executed successfully\n";
-    echo "   Execution time: {$executionTime}s\n";
-    
-} catch (\Throwable $e) {
-    $swapFailed = true;
-    $exceptionDetails = [
-        'class' => get_class($e),
-        'message' => $e->getMessage(),
-        'code' => $e->getCode(),
-        'file' => $e->getFile(),
-        'line' => $e->getLine(),
-        'trace' => $e->getTraceAsString()
-    ];
-    
-    $inner = $e->getPrevious();
-    if ($inner) {
-        $exceptionDetails['inner'] = [
-            'class' => get_class($inner),
-            'message' => $inner->getMessage(),
-            'file' => $inner->getFile(),
-            'line' => $inner->getLine(),
-        ];
-    }
-    
-    echo "\n❌ Swap execution failed\n";
-    echo "   Exception: " . get_class($e) . "\n";
-    echo "   Message: " . $e->getMessage() . "\n";
-}
+echo "   Private methods found: " . count($methods) . "\n";
 
-// Restore default exception handler
-restore_exception_handler();
+// Check if populateTrackingTables exists
+$hasPopulateTracking = false;
+$hasPopulateCashoutAuth = false;
+$hasPopulateSwapRequest = false;
+$hasPopulateSwapTransaction = false;
 
-// ============================================================
-// 10. POST-EXECUTION DIAGNOSTICS
-// ============================================================
-echo "\n============================================================\n";
-echo "🔍 POST-EXECUTION DIAGNOSTICS\n";
-echo "============================================================\n";
-
-// 10.1 Internal state
-echo "\n[10.1] Internal SwapService State\n";
-echo "------------------------------\n";
-echo "   inAtomicSwap: " . ($inAtomicSwap->getValue($swapService) ? 'TRUE ⚠️' : 'FALSE ✅') . "\n";
-echo "   currentSwapRef: " . ($currentSwapRef->getValue($swapService) ?? 'NULL') . "\n";
-echo "   currentHoldId: " . ($currentHoldId->getValue($swapService) ?? 'NULL') . "\n";
-echo "   currentHoldReference: " . ($currentHoldReference->getValue($swapService) ?? 'NULL') . "\n";
-
-$steps = $executedSteps->getValue($swapService);
-echo "   executedSteps: " . count($steps) . " steps\n";
-foreach ($steps as $i => $step) {
-    echo "      Step " . ($i+1) . ": {$step['step']}\n";
-}
-
-// 10.2 PDO Transaction State
-echo "\n[10.2] PDO Transaction State\n";
-echo "------------------------------\n";
-echo "   PDO inTransaction: " . ($pdo->inTransaction() ? 'YES ⚠️' : 'NO ✅') . "\n";
-
-if ($pdo->inTransaction()) {
-    echo "   ⚠️  Transaction is still open! Rolling back...\n";
-    $pdo->rollBack();
-    echo "   ✅ Rolled back\n";
-}
-
-// 10.3 Result Structure
-echo "\n[10.3] Result Structure\n";
-echo "------------------------------\n";
-if ($result) {
-    echo "   Result keys: " . implode(', ', array_keys($result)) . "\n";
-    
-    if (isset($result['status'])) {
-        echo "   status: {$result['status']}\n";
-    }
-    if (isset($result['auth_id'])) {
-        echo "   auth_id: {$result['auth_id']}\n";
-    }
-    if (isset($result['atomic_commit'])) {
-        echo "   atomic_commit: " . json_encode($result['atomic_commit']) . "\n";
-        if (isset($result['atomic_commit']['status'])) {
-            echo "   atomic_commit.status: {$result['atomic_commit']['status']}\n";
-        }
-    }
-    if (isset($result['reference'])) {
-        echo "   reference: {$result['reference']}\n";
-    }
-    if (isset($result['swap_code'])) {
-        echo "   swap_code: {$result['swap_code']}\n";
-    }
-    if (isset($result['atm_code'])) {
-        echo "   atm_code: {$result['atm_code']}\n";
-    }
-    if (isset($result['fee_calculation_details'])) {
-        echo "   fee_calculation_details: " . (is_array($result['fee_calculation_details']) ? 'Array' : gettype($result['fee_calculation_details'])) . "\n";
-    }
-} else {
-    echo "   ❌ Result is NULL\n";
-}
-
-// 10.4 Check if ANY data was written
-echo "\n[10.4] Database Write Check\n";
-echo "------------------------------\n";
-
-$tablesToCheck = [
-    'swap_requests' => 'swap_uuid',
-    'hold_transactions' => 'swap_reference',
-    'cashout_authorizations' => 'swap_reference',
-];
-
-$anyDataWritten = false;
-$writeResults = [];
-
-foreach ($tablesToCheck as $table => $column) {
-    try {
-        $stmt = $pdo->prepare("SELECT COUNT(*) FROM {$table} WHERE {$column} = ?");
-        $stmt->execute([$reference]);
-        $count = $stmt->fetchColumn();
-        if ($count > 0) {
-            echo "   ✅ {$table}: {$count} record(s) found\n";
-            $anyDataWritten = true;
-            $writeResults[$table] = true;
-        } else {
-            echo "   ❌ {$table}: 0 records found\n";
-            $writeResults[$table] = false;
-        }
-    } catch (PDOException $e) {
-        echo "   ❌ {$table}: Error - " . $e->getMessage() . "\n";
-        $writeResults[$table] = false;
-    }
-}
-
-// 10.5 Check by ID
-echo "\n[10.5] ID Lookup Check\n";
-echo "------------------------------\n";
-
-if ($result && !empty($result['auth_id'])) {
-    $stmt = $pdo->prepare("SELECT COUNT(*) FROM cashout_authorizations WHERE auth_id = ?");
-    $stmt->execute([$result['auth_id']]);
-    $count = $stmt->fetchColumn();
-    if ($count > 0) {
-        echo "   ✅ auth_id {$result['auth_id']} exists in cashout_authorizations\n";
-        $anyDataWritten = true;
-    } else {
-        echo "   ❌ auth_id {$result['auth_id']} does NOT exist\n";
-    }
-}
-
-if ($result && isset($result['atomic_commit']['hold_id'])) {
-    $holdId = $result['atomic_commit']['hold_id'];
-    $stmt = $pdo->prepare("SELECT COUNT(*) FROM hold_transactions WHERE hold_id = ?");
-    $stmt->execute([$holdId]);
-    $count = $stmt->fetchColumn();
-    if ($count > 0) {
-        echo "   ✅ hold_id {$holdId} exists in hold_transactions\n";
-        $anyDataWritten = true;
-    } else {
-        echo "   ❌ hold_id {$holdId} does NOT exist\n";
-    }
-}
-
-// ============================================================
-// 11. DIAGNOSE THE EXACT PROBLEM
-// ============================================================
-echo "\n============================================================\n";
-echo "🔍 DIAGNOSIS\n";
-echo "============================================================\n";
-
-if ($swapFailed) {
-    echo "❌ SWAP FAILED WITH EXCEPTION\n";
-    echo "\n   Exception: " . ($exceptionDetails['class'] ?? 'Unknown') . "\n";
-    echo "   Message: " . ($exceptionDetails['message'] ?? 'No message') . "\n";
-    if (isset($exceptionDetails['inner'])) {
-        echo "   Inner Exception: " . $exceptionDetails['inner']['class'] . "\n";
-        echo "   Inner Message: " . $exceptionDetails['inner']['message'] . "\n";
-    }
-    
-} elseif ($pdo->inTransaction()) {
-    echo "❌ TRANSACTION IS STILL OPEN!\n";
-    echo "   The swap executed but commit() was never called.\n";
-    echo "   This is the ROOT CAUSE of the problem.\n";
-    
-} elseif (!$anyDataWritten) {
-    echo "❌ NO DATA WAS WRITTEN TO THE DATABASE!\n";
-    echo "\n   The transaction was rolled back.\n";
-    echo "   The swap executed and returned IDs, but the data never persisted.\n";
-    
-    echo "\n   🔍 POSSIBLE CAUSES:\n";
-    
-    // Check executed steps
-    if (count($steps) === 0) {
-        echo "   - executeStep() was NEVER called - the swap bypassed normal flow\n";
-        echo "   - Check if the match statement is matching the wrong case\n";
-        echo "   - Check if the swap type is being overridden\n";
-    }
-    
-    // Check if exception was thrown
-    if ($exceptionDetails) {
-        echo "   - An exception was thrown: " . ($exceptionDetails['message'] ?? 'Unknown') . "\n";
-    }
-    
-    // Check if fee calculation details exist
-    if ($result && isset($result['fee_calculation_details'])) {
-        echo "   - fee_calculation_details was added to result (may be causing issues)\n";
-    }
-    
-    echo "\n   💡 RECOMMENDED SOLUTIONS:\n";
-    echo "   1. Check if populateTrackingTables() is throwing an exception\n";
-    echo "   2. Add try/catch around populateTrackingTables()\n";
-    echo "   3. Check if the ON CONFLICT clause in populateCashoutAuthorization() is failing\n";
-    echo "   4. Remove duplicate populateCashoutAuthorization() call\n";
-    
-} elseif ($result && isset($result['atomic_commit']['status']) && $result['atomic_commit']['status'] === 'committed') {
-    echo "✅✅✅ SWAP COMMITTED SUCCESSFULLY!\n";
-    echo "\n   Reference: {$reference}\n";
-    if ($result && isset($result['auth_id'])) echo "   Auth ID: {$result['auth_id']}\n";
-    if ($result && isset($result['atomic_commit']['hold_id'])) echo "   Hold ID: {$result['atomic_commit']['hold_id']}\n";
-    echo "   Swap Code: " . ($result['swap_code'] ?? 'N/A') . "\n";
-    echo "   ATM PIN: " . ($result['atm_code'] ?? 'N/A') . "\n";
-    echo "\n   ✅ Transaction committed successfully!\n";
-    echo "   ✅ Data persisted to database\n";
-}
-
-// ============================================================
-// 12. ATTEMPT SOLUTIONS IF DATA IS MISSING
-// ============================================================
-if (!$anyDataWritten && !$swapFailed && !$pdo->inTransaction()) {
-    echo "\n============================================================\n";
-    echo "🔧 ATTEMPTING SOLUTIONS\n";
-    echo "============================================================\n";
-    
-    echo "\n[SOLUTION A] Check if data exists in a fresh connection\n";
-    echo "----------------------------------------------------\n";
-    try {
-        $freshPdo = DBConnection::getConnection();
-        if ($freshPdo !== $pdo) {
-            echo "   ✅ Fresh connection is DIFFERENT\n";
-        } else {
-            echo "   ⚠️  Fresh connection is the SAME (singleton)\n";
-        }
+foreach ($methods as $method) {
+    $name = $method->getName();
+    if ($name === 'populateTrackingTables') {
+        $hasPopulateTracking = true;
+        echo "   ✅ populateTrackingTables() exists\n";
         
-        if ($result && !empty($result['reference'])) {
-            $stmt = $freshPdo->prepare("SELECT swap_id FROM swap_requests WHERE swap_uuid = ?");
-            $stmt->execute([$result['reference']]);
-            $freshSwap = $stmt->fetch(PDO::FETCH_ASSOC);
-            if ($freshSwap) {
-                echo "   ✅ Found swap_requests with FRESH connection!\n";
-                echo "      Data IS in the database but hidden from your connection\n";
-                echo "      (likely due to transaction isolation)\n";
-            } else {
-                echo "   ❌ No swap_requests found with FRESH connection\n";
-                echo "      Data was truly NOT persisted\n";
-            }
-        }
-    } catch (Exception $e) {
-        echo "   ⚠️  Fresh connection check failed: " . $e->getMessage() . "\n";
+        // Get the method code
+        $startLine = $method->getStartLine();
+        $endLine = $method->getEndLine();
+        $length = $endLine - $startLine;
+        echo "      Lines: {$startLine} - {$endLine} (approx {$length} lines)\n";
     }
-    
-    echo "\n[SOLUTION B] Check if fee_calculation_details is causing issues\n";
-    echo "----------------------------------------------------\n";
-    if ($result && isset($result['fee_calculation_details'])) {
-        echo "   fee_calculation_details exists in result\n";
-        echo "   Type: " . gettype($result['fee_calculation_details']) . "\n";
-        if (is_array($result['fee_calculation_details'])) {
-            echo "   Keys: " . implode(', ', array_keys($result['fee_calculation_details'])) . "\n";
-        }
-        echo "   💡 If this is causing issues, it may be added after the swap\n";
-    } else {
-        echo "   No fee_calculation_details in result\n";
+    if ($name === 'populateCashoutAuthorization') {
+        $hasPopulateCashoutAuth = true;
+        echo "   ✅ populateCashoutAuthorization() exists\n";
     }
-    
-    echo "\n[SOLUTION C] Check if populateTrackingTables() was called\n";
-    echo "----------------------------------------------------\n";
-    // Check if the reference exists in any table using a different column
-    $foundInAnyTable = false;
-    foreach (['swap_requests', 'hold_transactions', 'cashout_authorizations'] as $table) {
-        try {
-            $stmt = $pdo->query("SELECT column_name FROM information_schema.columns WHERE table_name = '{$table}' AND column_name IN ('swap_reference', 'swap_uuid', 'reference')");
-            $columns = $stmt->fetchAll(PDO::FETCH_COLUMN);
-            foreach ($columns as $col) {
-                $stmt = $pdo->prepare("SELECT COUNT(*) FROM {$table} WHERE {$col} = ?");
-                $stmt->execute([$reference]);
-                $count = $stmt->fetchColumn();
-                if ($count > 0) {
-                    echo "   ✅ Found in {$table}.{$col}: {$count} record(s)\n";
-                    $foundInAnyTable = true;
-                }
-            }
-        } catch (Exception $e) {
-            // Skip
-        }
+    if ($name === 'populateSwapRequest') {
+        $hasPopulateSwapRequest = true;
+        echo "   ✅ populateSwapRequest() exists\n";
     }
-    if (!$foundInAnyTable) {
-        echo "   ❌ No data found in ANY table for this reference\n";
-        echo "      populateTrackingTables() was likely NOT called or failed\n";
+    if ($name === 'populateSwapTransaction') {
+        $hasPopulateSwapTransaction = true;
+        echo "   ✅ populateSwapTransaction() exists\n";
     }
 }
 
-// ============================================================
-// 13. FINAL SUMMARY
-// ============================================================
-echo "\n============================================================\n";
-echo "📊 FINAL SUMMARY\n";
-echo "============================================================\n";
-
-$results = [
-    'Swap executed (no exception)' => (!$swapFailed && $result) ? '✅' : '❌',
-    'Any data written to DB' => $anyDataWritten ? '✅' : '❌',
-    'PDO transaction open after swap' => ($pdo->inTransaction() ? '⚠️ YES' : '✅ NO'),
-    'result has auth_id' => ($result && !empty($result['auth_id'])) ? '✅' : '❌',
-    'result has hold_id' => ($result && isset($result['atomic_commit']['hold_id'])) ? '✅' : '❌',
-    'auth_id exists in DB' => ($result && !empty($result['auth_id']) && $anyDataWritten) ? '✅' : '❌',
-    'hold_id exists in DB' => ($result && isset($result['atomic_commit']['hold_id']) && $anyDataWritten) ? '✅' : '❌',
-];
-
-$maxLen = max(array_map('strlen', array_keys($results)));
-
-foreach ($results as $key => $value) {
-    echo str_pad($key, $maxLen + 2) . " : {$value}\n";
+if (!$hasPopulateTracking) {
+    echo "   ❌ populateTrackingTables() does NOT exist!\n";
+    echo "      This is the problem - the method is missing!\n";
 }
 
 echo "\n";
 
 // ============================================================
-// 14. FINAL VERDICT
+// 8. TEST CAUSE 1: Is populateTrackingTables() being called?
 // ============================================================
-echo "🏁 FINAL VERDICT\n";
+echo "============================================================\n";
+echo "🔬 TEST CAUSE 1: Is populateTrackingTables() called?\n";
 echo "============================================================\n";
 
-if ($swapFailed) {
-    echo "❌ SWAP FAILED WITH EXCEPTION\n";
-    echo "   Check the exception details above for the root cause.\n";
+// Create a test that overrides the method using a mock
+echo "\n[TEST 1.1] Checking if populateTrackingTables() is called...\n";
+
+// We'll use a proxy approach - extend SwapService and override the method
+class SwapServiceProxy extends SwapService
+{
+    public static $populateTrackingCalled = false;
+    public static $populateTrackingParams = null;
+    public static $populateTrackingException = null;
     
-} elseif (!$anyDataWritten) {
-    echo "❌ TRANSACTION ROLLED BACK - DATA NOT PERSISTED\n";
-    echo "\n   The swap executed successfully but the transaction was rolled back.\n";
-    echo "   This is the classic 'populateTrackingTables() exception' problem.\n";
-    echo "\n   🔧 FIXES TO IMPLEMENT:\n";
-    echo "   1. Remove duplicate populateCashoutAuthorization() call\n";
-    echo "   2. Add try/catch around populateTrackingTables()\n";
-    echo "   3. Never re-throw exceptions from tracking methods\n";
-    echo "   4. Check ON CONFLICT clause in populateCashoutAuthorization()\n";
-    echo "\n   📝 The swap IS working - the problem is in tracking/persistence.\n";
+    public function __construct($pdo, $config, $country, $logger = null)
+    {
+        parent::__construct($pdo, $config, $country, $logger);
+    }
     
-} elseif ($anyDataWritten && $result && isset($result['atomic_commit']['status']) && $result['atomic_commit']['status'] === 'committed') {
-    echo "✅✅✅ SUCCESS! TRANSACTION FULLY COMMITTED!\n";
-    echo "\n   Reference: {$reference}\n";
-    if ($result && isset($result['auth_id'])) echo "   Auth ID: {$result['auth_id']}\n";
-    if ($result && isset($result['atomic_commit']['hold_id'])) echo "   Hold ID: {$result['atomic_commit']['hold_id']}\n";
-    echo "   Swap Code: " . ($result['swap_code'] ?? 'N/A') . "\n";
-    echo "   ATM PIN: " . ($result['atm_code'] ?? 'N/A') . "\n";
-    echo "\n   ✅ All systems working!\n";
+    private function populateTrackingTables(array $swapData, array $details, ?array $destResponse = null): void
+    {
+        self::$populateTrackingCalled = true;
+        self::$populateTrackingParams = [
+            'swapData' => $swapData,
+            'details' => $details,
+            'destResponse' => $destResponse
+        ];
+        
+        try {
+            // Call the parent method
+            parent::populateTrackingTables($swapData, $details, $destResponse);
+        } catch (Exception $e) {
+            self::$populateTrackingException = $e;
+            throw $e;
+        }
+    }
     
+    public function testExecute($payload)
+    {
+        return $this->executeAtomicSwap($payload);
+    }
+}
+
+echo "   Creating proxy SwapService...\n";
+
+try {
+    $proxyService = new SwapServiceProxy(
+        $pdo,
+        $countryConfig,
+        'Botswana',
+        null
+    );
+    echo "   ✅ Proxy created\n";
+    
+    // Execute the swap with the proxy
+    $proxyRef = 'PROXY_TEST_' . time() . '_' . bin2hex(random_bytes(4));
+    $proxyPayload = $payload;
+    $proxyPayload['reference'] = $proxyRef;
+    
+    echo "   Executing swap with proxy...\n";
+    $proxyResult = $proxyService->testExecute($proxyPayload);
+    
+    echo "   Result: " . ($proxyResult ? 'success' : 'failed') . "\n";
+    echo "   populateTrackingTables() called: " . (SwapServiceProxy::$populateTrackingCalled ? '✅ YES' : '❌ NO') . "\n";
+    
+    if (SwapServiceProxy::$populateTrackingCalled) {
+        echo "   ✅ populateTrackingTables() WAS called!\n";
+        echo "   The method exists and is being called.\n";
+        
+        // Check what was passed
+        $params = SwapServiceProxy::$populateTrackingParams;
+        if ($params) {
+            echo "   Parameters:\n";
+            echo "      swapData keys: " . implode(', ', array_keys($params['swapData'])) . "\n";
+            echo "      details keys: " . implode(', ', array_keys($params['details'])) . "\n";
+            echo "      destResponse keys: " . ($params['destResponse'] ? implode(', ', array_keys($params['destResponse'])) : 'NULL') . "\n";
+        }
+        
+        if (SwapServiceProxy::$populateTrackingException) {
+            echo "   ❌ populateTrackingTables() threw an exception:\n";
+            echo "      " . SwapServiceProxy::$populateTrackingException->getMessage() . "\n";
+            echo "      This is why no data was written!\n";
+        } else {
+            echo "   ✅ populateTrackingTables() completed successfully!\n";
+            
+            // Check if data was written
+            $stmt = $pdo->prepare("SELECT COUNT(*) FROM swap_requests WHERE swap_uuid = ?");
+            $stmt->execute([$proxyRef]);
+            $count = $stmt->fetchColumn();
+            
+            if ($count > 0) {
+                echo "   ✅ Data WAS written to the database!\n";
+                echo "   The method works when called directly.\n";
+            } else {
+                echo "   ❌ Data was NOT written to the database!\n";
+                echo "   The method was called but failed silently.\n";
+            }
+        }
+    } else {
+        echo "   ❌ populateTrackingTables() was NOT called!\n";
+        echo "   This is the root cause - the method is never invoked.\n";
+    }
+    
+} catch (Exception $e) {
+    echo "   ❌ Proxy test failed: " . $e->getMessage() . "\n";
+}
+
+echo "\n";
+
+// ============================================================
+// 9. TEST CAUSE 2: Is there an exception in populateTrackingTables?
+// ============================================================
+echo "============================================================\n";
+echo "🔬 TEST CAUSE 2: Is populateTrackingTables() throwing?\n";
+echo "============================================================\n";
+
+echo "\n[TEST 2.1] Checking each tracking method individually...\n";
+
+// Test each method independently
+$trackingMethods = [
+    'populateSwapRequest' => ['swap_uuid' => $reference],
+    'populateSwapTransaction' => ['swap_id' => 999999, 'swap_ref' => $reference],
+    'populateCashoutAuthorization' => ['swap_ref' => $reference],
+    'populateMessageOutbox' => ['phone' => $testConfig['beneficiary_phone']],
+];
+
+foreach ($trackingMethods as $methodName => $params) {
+    echo "\n   Testing {$methodName}():\n";
+    
+    if (!$reflection->hasMethod($methodName)) {
+        echo "      ❌ Method does not exist\n";
+        continue;
+    }
+    
+    $method = $reflection->getMethod($methodName);
+    $method->setAccessible(true);
+    
+    try {
+        // Build parameters based on method signature
+        $methodParams = $method->getParameters();
+        $args = [];
+        
+        foreach ($methodParams as $param) {
+            $paramName = $param->getName();
+            if (isset($params[$paramName])) {
+                $args[] = $params[$paramName];
+            } elseif ($param->isDefaultValueAvailable()) {
+                $args[] = $param->getDefaultValue();
+            } else {
+                $args[] = null;
+            }
+        }
+        
+        // Call the method with reflection
+        $result = $method->invokeArgs($swapService, $args);
+        
+        // Check if data was written
+        if ($methodName === 'populateSwapRequest') {
+            $stmt = $pdo->prepare("SELECT COUNT(*) FROM swap_requests WHERE swap_uuid = ?");
+            $stmt->execute([$reference]);
+            $count = $stmt->fetchColumn();
+            echo "      ✅ Method executed - swap_requests count: {$count}\n";
+        } elseif ($methodName === 'populateCashoutAuthorization') {
+            $stmt = $pdo->prepare("SELECT COUNT(*) FROM cashout_authorizations WHERE swap_reference = ?");
+            $stmt->execute([$reference]);
+            $count = $stmt->fetchColumn();
+            echo "      ✅ Method executed - cashout_authorizations count: {$count}\n";
+        } else {
+            echo "      ✅ Method executed successfully\n";
+        }
+        
+    } catch (Exception $e) {
+        echo "      ❌ Method threw exception: " . $e->getMessage() . "\n";
+        echo "      File: " . $e->getFile() . ":" . $e->getLine() . "\n";
+    }
+}
+
+echo "\n";
+
+// ============================================================
+// 10. TEST CAUSE 3: Is there a duplicate call issue?
+// ============================================================
+echo "============================================================\n";
+echo "🔬 TEST CAUSE 3: Duplicate populateCashoutAuthorization() issue\n";
+echo "============================================================\n";
+
+echo "\n[TEST 3.1] Checking for duplicate calls...\n";
+
+// Check if storeCashoutAuthorization() and populateCashoutAuthorization()
+// are both being called
+try {
+    // Get the executeSignedCashout method
+    if ($reflection->hasMethod('executeSignedCashout')) {
+        $method = $reflection->getMethod('executeSignedCashout');
+        $method->setAccessible(true);
+        
+        // Get the method code as string
+        $fileName = $method->getFileName();
+        $startLine = $method->getStartLine();
+        $endLine = $method->getEndLine();
+        
+        if ($fileName) {
+            $lines = file($fileName);
+            $code = implode('', array_slice($lines, $startLine - 1, $endLine - $startLine + 1));
+            
+            // Check for storeCashoutAuthorization calls
+            $hasStoreCashout = strpos($code, 'storeCashoutAuthorization') !== false;
+            $hasPopulateCashout = strpos($code, 'populateCashoutAuthorization') !== false;
+            
+            echo "   storeCashoutAuthorization() called: " . ($hasStoreCashout ? '✅ YES' : '❌ NO') . "\n";
+            echo "   populateCashoutAuthorization() called: " . ($hasPopulateCashout ? '✅ YES' : '❌ NO') . "\n";
+            
+            if ($hasStoreCashout && $hasPopulateCashout) {
+                echo "   ⚠️  BOTH methods are called - this may cause duplicate issues!\n";
+                echo "      storeCashoutAuthorization() creates the record\n";
+                echo "      populateCashoutAuthorization() tries to create it again\n";
+                echo "      The ON CONFLICT clause may be failing\n";
+            } else {
+                echo "   ✅ Only one method is called - no duplicate issue\n";
+            }
+            
+            // Check if populateTrackingTables is called
+            $hasPopulateTrackingCall = strpos($code, 'populateTrackingTables') !== false;
+            echo "   populateTrackingTables() called: " . ($hasPopulateTrackingCall ? '✅ YES' : '❌ NO') . "\n";
+            
+            if (!$hasPopulateTrackingCall) {
+                echo "   ❌ CRITICAL: populateTrackingTables() is NOT called in executeSignedCashout()!\n";
+                echo "      This is the root cause - the method is never invoked.\n";
+            }
+            
+            // Check if there's a return before populateTrackingTables
+            $returnPos = strpos($code, 'return [');
+            $populatePos = strpos($code, 'populateTrackingTables');
+            
+            if ($returnPos !== false && $populatePos !== false) {
+                if ($populatePos > $returnPos) {
+                    echo "   ❌ populateTrackingTables() is called AFTER the return statement!\n";
+                    echo "      This means it will NEVER execute!\n";
+                } else {
+                    echo "   ✅ populateTrackingTables() is called BEFORE the return\n";
+                }
+            }
+        }
+    }
+} catch (Exception $e) {
+    echo "   ⚠️  Could not analyze code: " . $e->getMessage() . "\n";
+}
+
+echo "\n";
+
+// ============================================================
+// 11. TEST CAUSE 4: Is the method signature wrong?
+// ============================================================
+echo "============================================================\n";
+echo "🔬 TEST CAUSE 4: Method signature issues\n";
+echo "============================================================\n";
+
+echo "\n[TEST 4.1] Checking method signatures...\n";
+
+// Check populateTrackingTables signature
+if ($hasPopulateTracking) {
+    $method = $reflection->getMethod('populateTrackingTables');
+    $params = $method->getParameters();
+    
+    echo "   populateTrackingTables() parameters:\n";
+    foreach ($params as $param) {
+        $type = $param->getType() ? $param->getType()->getName() : 'mixed';
+        $default = $param->isDefaultValueAvailable() ? ' = ' . var_export($param->getDefaultValue(), true) : '';
+        echo "      - {$type} \${$param->getName()}{$default}\n";
+    }
+    
+    // Check what's being passed
+    $caller = $reflection->getMethod('executeSignedCashout');
+    $caller->setAccessible(true);
+    $fileName = $caller->getFileName();
+    $startLine = $caller->getStartLine();
+    $endLine = $caller->getEndLine();
+    
+    if ($fileName) {
+        $lines = file($fileName);
+        $code = implode('', array_slice($lines, $startLine - 1, $endLine - $startLine + 1));
+        
+        // Find the populateTrackingTables call
+        $pattern = '/populateTrackingTables\s*\(([^)]*)\)/s';
+        preg_match($pattern, $code, $matches);
+        
+        if (isset($matches[1])) {
+            echo "   Call signature: " . trim($matches[1]) . "\n";
+            
+            // Count the arguments
+            $args = explode(',', $matches[1]);
+            $argCount = count($args);
+            $expectedCount = count($params);
+            
+            echo "   Arguments passed: {$argCount}\n";
+            echo "   Parameters expected: {$expectedCount}\n";
+            
+            if ($argCount !== $expectedCount) {
+                echo "   ❌ MISMATCH: {$argCount} arguments passed, {$expectedCount} expected!\n";
+                echo "      This will cause a fatal error!\n";
+            } else {
+                echo "   ✅ Argument count matches\n";
+            }
+        } else {
+            echo "   ❌ Could not find populateTrackingTables() call in executeSignedCashout()\n";
+            echo "      The method may not be called at all!\n";
+        }
+    }
+}
+
+echo "\n";
+
+// ============================================================
+// 12. TEST CAUSE 5: Is the transaction being rolled back?
+// ============================================================
+echo "============================================================\n";
+echo "🔬 TEST CAUSE 5: Transaction rollback analysis\n";
+echo "============================================================\n";
+
+echo "\n[TEST 5.1] Checking if populateTrackingTables() runs inside transaction...\n";
+
+try {
+    // Create a custom test that logs when transaction starts/commits/rolls back
+    class TransactionLogger extends PDO
+    {
+        public static $log = [];
+        
+        public function beginTransaction(): bool
+        {
+            self::$log[] = ['BEGIN', microtime(true)];
+            return parent::beginTransaction();
+        }
+        
+        public function commit(): bool
+        {
+            self::$log[] = ['COMMIT', microtime(true)];
+            return parent::commit();
+        }
+        
+        public function rollBack(): bool
+        {
+            self::$log[] = ['ROLLBACK', microtime(true)];
+            return parent::rollBack();
+        }
+    }
+    
+    // Create a new connection with logging
+    $logPdo = DBConnection::getConnection();
+    
+    // We can't easily wrap PDO, so we'll use the existing one
+    echo "   Using existing PDO connection\n";
+    echo "   Transaction log will be captured via error_log\n";
+    
+} catch (Exception $e) {
+    echo "   ⚠️  Could not set up transaction logging: " . $e->getMessage() . "\n";
+}
+
+echo "\n";
+
+// ============================================================
+// 13. TEST CAUSE 6: Is there a constraint violation?
+// ============================================================
+echo "============================================================\n";
+echo "🔬 TEST CAUSE 6: Constraint violations\n";
+echo "============================================================\n";
+
+echo "\n[TEST 6.1] Checking for unique constraint violations...\n";
+
+// Check the unique constraints on cashout_authorizations
+try {
+    $stmt = $pdo->query("
+        SELECT conname, contype, pg_get_constraintdef(oid) 
+        FROM pg_constraint 
+        WHERE conrelid = 'cashout_authorizations'::regclass 
+        AND contype = 'u'
+    ");
+    $constraints = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    
+    echo "   Unique constraints on cashout_authorizations:\n";
+    foreach ($constraints as $constraint) {
+        echo "      - {$constraint['conname']}: {$constraint['pg_get_constraintdef']}\n";
+    }
+    
+    // Check if there's already a record with this reference
+    $stmt = $pdo->prepare("SELECT COUNT(*) FROM cashout_authorizations WHERE swap_reference = ?");
+    $stmt->execute([$reference]);
+    $count = $stmt->fetchColumn();
+    
+    if ($count > 0) {
+        echo "   ⚠️  Found {$count} existing record(s) with swap_reference = {$reference}\n";
+        echo "      This will cause a unique constraint violation!\n";
+    } else {
+        echo "   ✅ No existing records with this swap_reference\n";
+    }
+    
+    // Check the ON CONFLICT clause in populateCashoutAuthorization
+    $method = $reflection->getMethod('populateCashoutAuthorization');
+    $method->setAccessible(true);
+    $fileName = $method->getFileName();
+    $startLine = $method->getStartLine();
+    $endLine = $method->getEndLine();
+    
+    if ($fileName) {
+        $lines = file($fileName);
+        $code = implode('', array_slice($lines, $startLine - 1, $endLine - $startLine + 1));
+        
+        if (strpos($code, 'ON CONFLICT') !== false) {
+            echo "   ✅ ON CONFLICT clause is present\n";
+            
+            // Check what's in the ON CONFLICT
+            preg_match('/ON CONFLICT\s*\(([^)]*)\)\s*DO UPDATE SET\s*([^)]*)\s*WHERE/s', $code, $matches);
+            if (isset($matches[1]) && isset($matches[2])) {
+                echo "   Conflict column(s): {$matches[1]}\n";
+                echo "   Update fields: " . substr(trim($matches[2]), 0, 100) . "...\n";
+            }
+        } else {
+            echo "   ❌ No ON CONFLICT clause found!\n";
+            echo "      This will cause duplicate key errors!\n";
+        }
+    }
+    
+} catch (Exception $e) {
+    echo "   ⚠️  Could not check constraints: " . $e->getMessage() . "\n";
+}
+
+echo "\n";
+
+// ============================================================
+// 14. TEST CAUSE 7: Is there an exception being swallowed?
+// ============================================================
+echo "============================================================\n";
+echo "🔬 TEST CAUSE 7: Swallowed exceptions\n";
+echo "============================================================\n";
+
+echo "\n[TEST 7.1] Checking for try/catch blocks that swallow exceptions...\n";
+
+try {
+    $method = $reflection->getMethod('populateTrackingTables');
+    $fileName = $method->getFileName();
+    $startLine = $method->getStartLine();
+    $endLine = $method->getEndLine();
+    
+    if ($fileName) {
+        $lines = file($fileName);
+        $code = implode('', array_slice($lines, $startLine - 1, $endLine - $startLine + 1));
+        
+        // Count try/catch blocks
+        $tryCount = substr_count($code, 'try {');
+        $catchCount = substr_count($code, 'catch (');
+        
+        echo "   Try blocks: {$tryCount}\n";
+        echo "   Catch blocks: {$catchCount}\n";
+        
+        // Check if exceptions are re-thrown
+        $hasThrow = strpos($code, 'throw') !== false;
+        $hasLog = strpos($code, 'error_log') !== false || strpos($code, 'logger->error') !== false;
+        
+        echo "   Contains 'throw': " . ($hasThrow ? '✅ YES' : '❌ NO') . "\n";
+        echo "   Contains error logging: " . ($hasLog ? '✅ YES' : '❌ NO') . "\n";
+        
+        if (!$hasThrow && !$hasLog) {
+            echo "   ⚠️  No exception handling or logging found!\n";
+            echo "      Exceptions may be silently failing.\n";
+        }
+        
+        // Check if there's a catch without re-throw
+        if (strpos($code, 'catch (') !== false && strpos($code, 'throw') === false) {
+            echo "   ⚠️  Catch blocks found but no re-throw!\n";
+            echo "      Exceptions are being swallowed silently.\n";
+            echo "      This could hide the real problem.\n";
+        }
+    }
+} catch (Exception $e) {
+    echo "   ⚠️  Could not analyze code: " . $e->getMessage() . "\n";
+}
+
+echo "\n";
+
+// ============================================================
+// 15. SUMMARY AND RECOMMENDATIONS
+// ============================================================
+echo "============================================================\n";
+echo "📊 SUMMARY AND RECOMMENDATIONS\n";
+echo "============================================================\n";
+
+echo "\nBased on the tests above:\n\n";
+
+// Determine the most likely cause
+$mostLikelyCause = "Unknown";
+
+if ($hasPopulateTracking) {
+    echo "✅ populateTrackingTables() EXISTS in the code\n";
+    
+    // Check if it was called
+    if (SwapServiceProxy::$populateTrackingCalled ?? false) {
+        echo "✅ populateTrackingTables() WAS called (proxy test)\n";
+        
+        if (SwapServiceProxy::$populateTrackingException ?? false) {
+            $mostLikelyCause = "populateTrackingTables() is THROWING an exception";
+            echo "❌ It THREW an exception: " . SwapServiceProxy::$populateTrackingException->getMessage() . "\n";
+        } else {
+            $mostLikelyCause = "populateTrackingTables() completed but data not written (ON CONFLICT issue)";
+            echo "⚠️  It completed but data was not written\n";
+        }
+    } else {
+        $mostLikelyCause = "populateTrackingTables() is NEVER called";
+        echo "❌ It was NEVER called\n";
+        echo "   The call may be after a return statement or in an unreachable code path\n";
+    }
 } else {
-    echo "❌ UNKNOWN STATE - Please review diagnostic output\n";
+    $mostLikelyCause = "populateTrackingTables() does NOT exist in the code";
+    echo "❌ populateTrackingTables() does NOT exist!\n";
+}
+
+echo "\n📋 RECOMMENDED SOLUTIONS:\n";
+echo "------------------------------------------------------------\n";
+
+switch ($mostLikelyCause) {
+    case "populateTrackingTables() does NOT exist in the code":
+        echo "1. Add the populateTrackingTables() method to SwapService\n";
+        echo "2. Call it from executeSignedCashout() before returning\n";
+        break;
+        
+    case "populateTrackingTables() is NEVER called":
+        echo "1. Check if the call is after a return statement\n";
+        echo "2. Check if the call is inside a conditional that's false\n";
+        echo "3. Move the call before the return in executeSignedCashout()\n";
+        break;
+        
+    case "populateTrackingTables() is THROWING an exception":
+        echo "1. Wrap populateTrackingTables() in try/catch\n";
+        echo "2. NEVER re-throw exceptions from tracking methods\n";
+        echo "3. Log the error but continue\n";
+        echo "4. Specific exception: " . (SwapServiceProxy::$populateTrackingException->getMessage() ?? 'Unknown') . "\n";
+        break;
+        
+    case "populateTrackingTables() completed but data not written (ON CONFLICT issue)":
+        echo "1. Check the ON CONFLICT clause in populateCashoutAuthorization()\n";
+        echo "2. Remove duplicate populateCashoutAuthorization() call\n";
+        echo "3. Use INSERT ... ON CONFLICT DO NOTHING instead of DO UPDATE\n";
+        echo "4. Check if the UNIQUE constraint is being violated\n";
+        break;
+        
+    default:
+        echo "1. Check that swap_type in payload is exactly 'CASHOUT'\n";
+        echo "2. Check that executeAtomicSwap() is calling executeSignedCashout()\n";
+        echo "3. Add logging to confirm which code path is being executed\n";
+        break;
 }
 
 echo "\n";
 echo "========================================\n";
-echo "TEST COMPLETE\n";
+echo "DIAGNOSTIC COMPLETE\n";
 echo "========================================\n";
