@@ -1421,38 +1421,38 @@ private function populateTrackingTables(array $swapData, array $details, ?array 
     }
 }
 
-/**
- * Populate audit_logs for the swap
- * Always safe - never throws exceptions that would roll back the transaction
- */
+
 private function populateAuditLog(string $swapRef, string $swapType, array $swapData, array $details, ?int $userId = null): void
 {
-    // Check if audit_logs table has the expected structure
     try {
         $stmt = $this->swapDB->query("SELECT 1 FROM audit_logs LIMIT 0");
-        $stmt->execute();
         $cols = [];
         for ($i = 0; $i < $stmt->columnCount(); $i++) {
             $col = $stmt->getColumnMeta($i);
             $cols[] = $col['name'];
         }
-    } catch (Exception $e) {
-        // Table doesn't exist or can't be queried - skip silently
+    } catch (\Throwable $e) {
+        $this->writeAuditFallback($swapRef, $swapType, 'audit_logs table unreadable: ' . $e->getMessage(), $userId);
         return;
     }
-    
-    // Determine which columns exist
-    $hasAuditId = in_array('audit_id', $cols) || in_array('audit_log_id', $cols);
+ 
     $hasEntityId = in_array('entity_id', $cols);
     $hasPerformedBy = in_array('performed_by', $cols) || in_array('performed_by_type', $cols);
     $hasMetadata = in_array('metadata', $cols);
-    
+ 
     if (!$hasEntityId) {
-        // Can't insert without entity_id
-        return;
+        // FIX: this used to be a silent `return`. Now it's a recorded
+        // failure - the caller (populateTrackingTables) will see this
+        // reflected honestly instead of being told "audit_logs" succeeded.
+        $this->writeAuditFallback(
+            $swapRef,
+            $swapType,
+            "audit_logs missing required 'entity_id' column - actual columns: " . implode(', ', $cols),
+            $userId
+        );
+        throw new RuntimeException("audit_logs table is missing required 'entity_id' column");
     }
-    
-    // Build INSERT based on available columns
+ 
     $insertFields = ['entity_type', 'entity_id', 'action', 'category', 'performed_at'];
     $placeholders = [':entity_type', ':entity_id', ':action', ':category', ':performed_at'];
     $params = [
@@ -1462,19 +1462,19 @@ private function populateAuditLog(string $swapRef, string $swapType, array $swap
         ':category' => 'financial',
         ':performed_at' => date('Y-m-d H:i:s')
     ];
-    
+ 
     if (in_array('severity', $cols)) {
         $insertFields[] = 'severity';
         $placeholders[] = ':severity';
         $params[':severity'] = 'info';
     }
-    
+ 
     if (in_array('user_id', $cols) && $userId) {
         $insertFields[] = 'user_id';
         $placeholders[] = ':user_id';
         $params[':user_id'] = $userId;
     }
-    
+ 
     if ($hasPerformedBy && $userId) {
         if (in_array('performed_by_type', $cols)) {
             $insertFields[] = 'performed_by_type';
@@ -1492,7 +1492,7 @@ private function populateAuditLog(string $swapRef, string $swapType, array $swap
             $params[':performed_by'] = $userId;
         }
     }
-    
+ 
     if ($hasMetadata) {
         $insertFields[] = 'metadata';
         $placeholders[] = ':metadata::jsonb';
@@ -1508,18 +1508,16 @@ private function populateAuditLog(string $swapRef, string $swapType, array $swap
             'user_id' => $userId
         ]);
     }
-    
+ 
     $sql = "INSERT INTO audit_logs (" . implode(', ', $insertFields) . ") 
             VALUES (" . implode(', ', $placeholders) . ")";
-    
-    try {
-        $stmt = $this->swapDB->prepare($sql);
-        $stmt->execute($params);
-    } catch (Exception $e) {
-        // Silently fail - audit logs are nice-to-have
-        $this->logger->debug("Audit log insert failed", ['error' => $e->getMessage()]);
-    }
+ 
+    // FIX: rethrow instead of swallow. runInSavepoint() at the call site
+    // is the single place that decides how to react.
+    $stmt = $this->swapDB->prepare($sql);
+    $stmt->execute($params);
 }
+
     /**
      * Get numeric swap_request_id from swap_uuid
      */
