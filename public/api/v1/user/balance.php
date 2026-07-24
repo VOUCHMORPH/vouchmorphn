@@ -8,6 +8,53 @@ require_once __DIR__ . '/../../../../src/Application/Utils/SessionManager.php';
 use Core\Database\DBConnection;
 use Application\Utils\SessionManager;
 
+// Add this function to both balance.php and all_balances.php
+// Place it right after the authentication section
+
+/**
+ * Get environment variable with multiple fallback methods
+ * Railway environment variables should be available in $_ENV, getenv(), and putenv()
+ */
+function getEnvVar($name, $default = null) {
+    // Try 1: getenv() - works in most PHP environments
+    $value = getenv($name);
+    if ($value !== false) {
+        return $value;
+    }
+    
+    // Try 2: $_ENV superglobal
+    if (isset($_ENV[$name])) {
+        return $_ENV[$name];
+    }
+    
+    // Try 3: $_SERVER superglobal
+    if (isset($_SERVER[$name])) {
+        return $_SERVER[$name];
+    }
+    
+    // Try 4: apache_getenv() if available
+    if (function_exists('apache_getenv')) {
+        $value = apache_getenv($name);
+        if ($value !== false) {
+            return $value;
+        }
+    }
+    
+    // Try 5: Check if it's in the $_ENV with a different case
+    $upperName = strtoupper($name);
+    if (isset($_ENV[$upperName])) {
+        return $_ENV[$upperName];
+    }
+    
+    // Try 6: Check if it's in getenv() with a different case
+    $value = getenv($upperName);
+    if ($value !== false) {
+        return $value;
+    }
+    
+    return $default;
+}
+
 // ============================================================
 // 1. AUTHENTICATION
 // ============================================================
