@@ -8457,45 +8457,58 @@ private function beginAtomicSwap(string $reference): void
         }
     }
 
-    private function updateHoldStatus(?int $holdId, string $status): void
-    {
-        if ($holdId === null) return;
-        
-        $validStatuses = ['ACTIVE', 'HELD', 'PENDING_CASHOUT', 'DEBITED', 'RELEASED', 'PARTIALLY_RELEASED', 'CANCELLED', 'FAILED', 'PENDING_IDENTITY'];
-        if (!in_array($status, $validStatuses)) return;
-        
-        $sql = "
-            UPDATE hold_transactions 
-            SET status = :status::text,
-                debited_at = CASE WHEN :status::text = 'DEBITED' THEN NOW() ELSE debited_at END,
-                released_at = CASE WHEN :status::text = 'RELEASED' THEN NOW() ELSE released_at END,
-                updated_at = NOW()
-            WHERE hold_id = :hold_id
-        ";
-        
-        try {
+    
+// ----------------------------------------------------------------------
+// 1. updateHoldStatus() — called from nearly every swap flow
+// ----------------------------------------------------------------------
+private function updateHoldStatus(?int $holdId, string $status): void
+{
+    if ($holdId === null) return;
+ 
+    $validStatuses = ['ACTIVE', 'HELD', 'PENDING_CASHOUT', 'DEBITED', 'RELEASED', 'PARTIALLY_RELEASED', 'CANCELLED', 'FAILED', 'PENDING_IDENTITY'];
+    if (!in_array($status, $validStatuses)) return;
+ 
+    $sql = "
+        UPDATE hold_transactions 
+        SET status = :status::text,
+            debited_at = CASE WHEN :status::text = 'DEBITED' THEN NOW() ELSE debited_at END,
+            released_at = CASE WHEN :status::text = 'RELEASED' THEN NOW() ELSE released_at END,
+            updated_at = NOW()
+        WHERE hold_id = :hold_id
+    ";
+ 
+    try {
+        $this->runInSavepoint('update_hold_status_' . $holdId, function () use ($sql, $status, $holdId) {
             $stmt = $this->swapDB->prepare($sql);
             $stmt->execute([':status' => $status, ':hold_id' => $holdId]);
-            error_log("[SwapService] Hold status updated to: {$status} for hold_id: {$holdId}");
-        } catch (PDOException $e) {
-            error_log("[SwapService] Failed to update hold status: " . $e->getMessage());
-        }
+        });
+        error_log("[SwapService] Hold status updated to: {$status} for hold_id: {$holdId}");
+    } catch (\Throwable $e) {
+        error_log("[SwapService] Failed to update hold status: " . $e->getMessage());
     }
-
+}
+ 
+// ----------------------------------------------------------------------
+// 2. updateHoldExpiry() — called from executeSignedCashout
+// ----------------------------------------------------------------------
 private function updateHoldExpiry(?int $holdId, string $expiresAt): void
 {
     if ($holdId === null) return;
+ 
     try {
-        $stmt = $this->swapDB->prepare("
-            UPDATE hold_transactions SET expires_at = :expires_at, updated_at = NOW()
-            WHERE hold_id = :id
-        ");
-        $stmt->execute([':expires_at' => $expiresAt, ':id' => $holdId]);
+        $this->runInSavepoint('update_hold_expiry_' . $holdId, function () use ($holdId, $expiresAt) {
+            $stmt = $this->swapDB->prepare("
+                UPDATE hold_transactions SET expires_at = :expires_at, updated_at = NOW()
+                WHERE hold_id = :id
+            ");
+            $stmt->execute([':expires_at' => $expiresAt, ':id' => $holdId]);
+        });
         error_log("[SwapService] Hold {$holdId} expiry set to {$expiresAt}");
-    } catch (PDOException $e) {
+    } catch (\Throwable $e) {
         error_log("[SwapService] Failed to update hold expiry: " . $e->getMessage());
     }
 }
+
 
     
     private function generateReference(): string
