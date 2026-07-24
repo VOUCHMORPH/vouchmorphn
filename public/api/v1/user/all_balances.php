@@ -1,14 +1,12 @@
 <?php
 // public/api/v1/user/all_balances.php
 // Get balances for all user sources - AGGREGATED
-// Handles SACCUSSALIS (type parameter) and ZURUBANK (source_identifier)
+// Loads endpoints from /src/Core/Config/Countries/Botswana/endpoints.yaml
 
 require_once __DIR__ . '/../../../../src/Core/Database/DBConnection.php';
-require_once __DIR__ . '/../../../../src/Core/Config/LoadCountry.php';
 require_once __DIR__ . '/../../../../src/Application/Utils/SessionManager.php';
 
 use Core\Database\DBConnection;
-use Core\Config\LoadCountry;
 use Application\Utils\SessionManager;
 
 // ============================================================
@@ -57,14 +55,9 @@ $stmt = $pdo->prepare("
         currency,
         is_hooked,
         source_reference,
-        access_token,
-        refresh_token,
-        token_expires_at,
         status,
-        last_used_at,
-        proposed_at,
         confirmed_at,
-        updated_at
+        proposed_at
     FROM user_source_accounts
     WHERE user_id = :user_id 
     AND status = 'active' 
@@ -75,16 +68,129 @@ $stmt->execute([':user_id' => $userId]);
 $sources = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 // ============================================================
-// 4. LOAD COUNTRY CONFIG (NO HARDCODING)
+// 4. LOAD ENDPOINTS CONFIG FROM endpoints.yaml
 // ============================================================
-$countryConfig = LoadCountry::getConfig();
-if (empty($countryConfig)) {
-    http_response_code(500);
-    echo json_encode(['success' => false, 'error' => 'Country configuration not loaded']);
-    exit();
+if (!function_exists('dashboard_yaml_parse_file')) {
+    function dashboard_yaml_castScalar(string $v) {
+        $v = trim($v);
+        if ($v === '') return null;
+        if ($v[0] === '"' || $v[0] === "'") {
+            $quote = $v[0];
+            $len = strlen($v);
+            for ($i = 1; $i < $len; $i++) {
+                if ($v[$i] === '\\' && $i + 1 < $len) { $i++; continue; }
+                if ($v[$i] === $quote) return substr($v, 1, $i - 1);
+            }
+            return $v;
+        }
+        $hashPos = strpos($v, ' #');
+        if ($hashPos !== false) $v = trim(substr($v, 0, $hashPos));
+        $lower = strtolower($v);
+        if ($lower === 'true' || $lower === 'yes') return true;
+        if ($lower === 'false' || $lower === 'no') return false;
+        if ($lower === 'null' || $v === '~') return null;
+        if (is_numeric($v)) return $v + 0;
+        if ($v[0] === '[' && str_ends_with($v, ']')) {
+            $inner = trim(substr($v, 1, -1));
+            if ($inner === '') return [];
+            return array_map(fn($x) => dashboard_yaml_castScalar(trim($x)), explode(',', $inner));
+        }
+        return $v;
+    }
+
+    function dashboard_yaml_tokenize(string $content): array {
+        $raw = explode("\n", str_replace("\r\n", "\n", $content));
+        $lines = [];
+        foreach ($raw as $line) {
+            $trimmedRight = rtrim($line);
+            if ($trimmedRight === '') continue;
+            $stripped = ltrim($trimmedRight);
+            if ($stripped === '' || $stripped[0] === '#') continue;
+            if (preg_match('/^---\s*$/', $stripped) || preg_match('/^\.\.\.\s*$/', $stripped)) continue;
+            $indent = strlen($trimmedRight) - strlen($stripped);
+            $lines[] = [$indent, $stripped];
+        }
+        return array_values($lines);
+    }
+
+    function dashboard_yaml_parseBlock(array &$lines, int &$idx, int $blockIndent): array {
+        $result = [];
+        while ($idx < count($lines)) {
+            [$indent, $content] = $lines[$idx];
+            if ($blockIndent === -1) $blockIndent = $indent;
+            if ($indent < $blockIndent) break;
+            if ($indent > $blockIndent) { $idx++; continue; }
+
+            if (str_starts_with($content, '- ')) {
+                $itemContent = trim(substr($content, 2));
+                if ($itemContent !== '' && preg_match('/^([A-Za-z0-9_\.\-]+):\s*(.*)$/', $itemContent, $m)) {
+                    $lines[$idx] = [$indent + 2, $itemContent];
+                    $item = dashboard_yaml_parseBlock($lines, $idx, $indent + 2);
+                } elseif ($itemContent === '') {
+                    $idx++;
+                    $item = dashboard_yaml_parseBlock($lines, $idx, -1);
+                } else {
+                    $item = dashboard_yaml_castScalar($itemContent);
+                    $idx++;
+                }
+                $result[] = $item;
+                continue;
+            }
+
+            if (preg_match('/^([^:]+):\s*(.*)$/', $content, $m)) {
+                $key = trim($m[1]);
+                $value = $m[2];
+                $idx++;
+                if ($value === '') {
+                    if ($idx < count($lines) && $lines[$idx][0] > $indent) {
+                        $result[$key] = dashboard_yaml_parseBlock($lines, $idx, -1);
+                    } else {
+                        $result[$key] = null;
+                    }
+                } else {
+                    $result[$key] = dashboard_yaml_castScalar($value);
+                }
+                continue;
+            }
+            $idx++;
+        }
+        return $result;
+    }
+
+    function dashboard_yaml_parse_file(string $path): array {
+        if (!file_exists($path)) return [];
+        $content = file_get_contents($path);
+        if ($content === false) return [];
+        try {
+            $lines = dashboard_yaml_tokenize($content);
+            $idx = 0;
+            return dashboard_yaml_parseBlock($lines, $idx, -1);
+        } catch (\Throwable $e) {
+            error_log("[dashboard_yaml_parse_file] Failed: " . $e->getMessage());
+            return [];
+        }
+    }
 }
 
-$participants = $countryConfig['participants'] ?? [];
+// Load endpoints from endpoints.yaml
+$endpointsConfig = [];
+$endpointsPath = __DIR__ . '/../../../../src/Core/Config/Countries/' . $userCountry . '/endpoints.yaml';
+if (file_exists($endpointsPath)) {
+    $parsed = dashboard_yaml_parse_file($endpointsPath);
+    $endpointsConfig = $parsed ?? [];
+    error_log("[Balance] Loaded endpoints from: {$endpointsPath}");
+    error_log("[Balance] Endpoints keys: " . json_encode(array_keys($endpointsConfig)));
+} else {
+    error_log("[Balance] endpoints.yaml NOT found at: {$endpointsPath}");
+}
+
+// Also load participants for base_url and auth config
+$participants = [];
+$participantsPath = __DIR__ . '/../../../../src/Core/Config/Countries/' . $userCountry . '/participants.yaml';
+if (file_exists($participantsPath)) {
+    $parsed = dashboard_yaml_parse_file($participantsPath);
+    $participants = $parsed['participants'] ?? $parsed ?? [];
+}
 
 // ============================================================
 // 5. FETCH BALANCE FOR EACH SOURCE
@@ -98,14 +204,15 @@ foreach ($sources as $source) {
     $institution = $source['institution'];
     $identifier = $source['identifier'];
     $identifierType = $source['identifier_type'] ?? 'auto';
+    $assetType = strtoupper($source['asset_type'] ?? 'ACCOUNT');
     
-    // Skip if institution not configured
-    if (!isset($participants[$institution])) {
+    // Skip if institution not configured in endpoints
+    if (!isset($endpointsConfig[$institution])) {
         $results[] = [
             'source' => $source,
             'balance' => [
                 'success' => false,
-                'error' => "Institution '{$institution}' not configured",
+                'error' => "Institution '{$institution}' not configured in endpoints.yaml",
                 'institution' => $institution
             ]
         ];
@@ -114,7 +221,7 @@ foreach ($sources as $source) {
     }
     
     // Get balance for this source
-    $balanceResult = getSourceBalance($source, $participants);
+    $balanceResult = getSourceBalance($source, $endpointsConfig, $participants);
     
     if ($balanceResult['success']) {
         $successCount++;
@@ -154,37 +261,46 @@ exit;
 // ============================================================
 // 7. HELPER FUNCTION: Get balance for a single source
 // ============================================================
-function getSourceBalance($source, $participants) {
+function getSourceBalance($source, $endpointsConfig, $participants) {
     $institution = $source['institution'];
     $identifier = $source['identifier'];
     $identifierType = $source['identifier_type'] ?? 'auto';
     $assetType = strtoupper($source['asset_type'] ?? 'ACCOUNT');
     
-    // Get participant config
-    $participantConfig = $participants[$institution] ?? null;
-    if (!$participantConfig) {
-        return ['success' => false, 'error' => "Institution '{$institution}' not found in config"];
+    // Get endpoint config for this institution
+    $endpointConfig = $endpointsConfig[$institution] ?? null;
+    if (!$endpointConfig) {
+        return ['success' => false, 'error' => "Institution '{$institution}' not found in endpoints config"];
     }
     
     // Get balance endpoint
-    $endpoints = $participantConfig['endpoints'] ?? [];
+    $endpoints = $endpointConfig['endpoints'] ?? [];
     $sourceEndpoints = $endpoints['source'] ?? [];
     $balanceEndpoint = $sourceEndpoints['get_balance'] ?? $sourceEndpoints['balance'] ?? null;
     
+    error_log("[Balance] {$institution} - balance endpoint: " . ($balanceEndpoint ?? 'NOT FOUND'));
+    error_log("[Balance] {$institution} - source endpoints: " . json_encode(array_keys($sourceEndpoints)));
+    
     if (!$balanceEndpoint) {
-        return ['success' => false, 'error' => "No balance endpoint configured for '{$institution}'"];
+        return ['success' => false, 'error' => "No balance endpoint configured for '{$institution}' in endpoints.yaml"];
     }
     
-    // Build URL
-    $baseUrl = rtrim($participantConfig['base_url'] ?? '', '/');
+    // Build URL - use base_url from endpoints.yaml
+    $baseUrl = rtrim($endpointConfig['base_url'] ?? '', '/');
+    if (empty($baseUrl)) {
+        // Fallback to participants config
+        $participantConfig = $participants[$institution] ?? [];
+        $baseUrl = rtrim($participantConfig['base_url'] ?? '', '/');
+    }
+    
     if (empty($baseUrl)) {
         return ['success' => false, 'error' => "No base_url configured for '{$institution}'"];
     }
     
     $fullUrl = $baseUrl . '/' . ltrim($balanceEndpoint, '/');
     
-    // Get authentication
-    $authConfig = $participantConfig['auth'] ?? [];
+    // Get authentication from endpoints.yaml
+    $authConfig = $endpointConfig['auth'] ?? [];
     $headerName = $authConfig['header_name'] ?? 'X-API-KEY';
     $secretSource = $authConfig['secret_source'] ?? [];
     $apiKeyEnv = $secretSource['name'] ?? strtoupper($institution) . '_API_KEY';
@@ -194,14 +310,11 @@ function getSourceBalance($source, $participants) {
         return ['success' => false, 'error' => "No API key for '{$institution}' (env: {$apiKeyEnv})"];
     }
     
-    // ============================================================
-    // BUILD PARAMETERS - INSTITUTION SPECIFIC
-    // ============================================================
+    // Build parameters based on institution
     $params = [];
     
     // SACCUSSALIS: expects 'type' and 'identifier'
     if ($institution === 'SACCUSSALIS') {
-        // Determine if wallet or account
         if ($assetType === 'WALLET' || $assetType === 'MNO-WALLET' || $assetType === 'BANK-WALLET') {
             $params['type'] = 'wallet';
         } else {
@@ -213,69 +326,34 @@ function getSourceBalance($source, $participants) {
     elseif ($institution === 'ZURUBANK') {
         $params['source_identifier'] = $identifier;
     } 
-    // Generic fallback using param mapping from config
+    // Generic fallback
     else {
-        $paramMapping = $sourceEndpoints['param_mapping'] ?? [];
-        $identifierTypeLower = strtolower($identifierType);
-        
-        $defaultParamMap = [
-            'phone' => ['phone', 'wallet_phone', 'beneficiary_phone', 'client_phone', 'msisdn'],
-            'account' => ['account_number', 'account_id', 'source_identifier', 'identifier'],
-            'card' => ['card_number', 'card_id', 'card_no'],
-            'email' => ['email', 'email_address'],
-            'national_id' => ['national_id', 'id_number', 'identity_value'],
-            'auto' => ['source_identifier', 'identifier', 'account_number', 'phone', 'wallet_phone']
-        ];
-        
-        $paramMap = !empty($paramMapping) ? $paramMapping : ($defaultParamMap[$identifierTypeLower] ?? $defaultParamMap['auto']);
-        
-        foreach ($paramMap as $paramName) {
-            $params[$paramName] = $identifier;
-        }
+        $params['identifier'] = $identifier;
     }
     
-    // Add additional parameters if needed
+    // Add asset_type if needed
     if ($sourceEndpoints['requires_asset_type'] ?? false) {
         $params['asset_type'] = $assetType;
     }
     
-    if ($sourceEndpoints['requires_identifier_type'] ?? false) {
-        $params['identifier_type'] = $identifierType;
-    }
-    
-    if ($sourceEndpoints['requires_currency'] ?? false) {
-        $params['currency'] = $source['currency'] ?? 'BWP';
-    }
-    
-    // Add static parameters
-    $staticParams = $sourceEndpoints['static_params'] ?? [];
-    foreach ($staticParams as $key => $value) {
-        $params[$key] = $value;
-    }
-    
-    // Build query string
     $queryString = http_build_query($params);
     $requestUrl = $fullUrl . (strpos($fullUrl, '?') === false ? '?' : '&') . $queryString;
+    
+    error_log("[Balance] Request URL: {$requestUrl}");
     
     // Build headers
     $headers = [
         $headerName . ': ' . $apiKey,
         'Content-Type: application/json',
-        'Accept: application/json',
-        'User-Agent: VouchMorph/1.0'
+        'Accept: application/json'
     ];
-    
-    // Add correlation ID
-    $correlationId = uniqid('bal_', true);
-    $headers[] = 'X-Correlation-ID: ' . $correlationId;
     
     // Make request
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, $requestUrl);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_TIMEOUT, $participantConfig['timeout_ms'] ?? 5000);
+    curl_setopt($ch, CURLOPT_TIMEOUT, $endpointConfig['timeout_ms'] ?? 5000);
     curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
     curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
     
     $response = curl_exec($ch);
@@ -292,44 +370,27 @@ function getSourceBalance($source, $participants) {
         return ['success' => false, 'error' => "Invalid JSON response from {$institution}"];
     }
     
-    // ============================================================
-    // EXTRACT BALANCE - HANDLE DIFFERENT RESPONSE FORMATS
-    // ============================================================
+    // Extract balance - handle different response formats
     $balance = null;
     $currency = 'BWP';
-    $account = $identifier;
     
     // SACCUSSALIS format: { status: 'success', data: { balance: 1000 } }
     if (isset($data['data']['balance'])) {
         $balance = $data['data']['balance'];
         $currency = $data['data']['currency'] ?? 'BWP';
-        $account = $data['data']['account_number'] ?? $data['data']['account_id'] ?? $identifier;
     } 
     // ZURUBANK format: { balance: 1000 }
     elseif (isset($data['balance'])) {
         $balance = $data['balance'];
         $currency = $data['currency'] ?? 'BWP';
-        $account = $data['account_number'] ?? $identifier;
     }
-    // { data: { balance: 1000 } } - generic
-    elseif (isset($data['data']['available_balance'])) {
-        $balance = $data['data']['available_balance'];
-        $currency = $data['data']['currency'] ?? 'BWP';
-    }
-    // { available_balance: 1000 }
+    // Fallback
     elseif (isset($data['available_balance'])) {
         $balance = $data['available_balance'];
         $currency = $data['currency'] ?? 'BWP';
     }
-    // { status: 'success', balance: 1000 }
-    elseif (isset($data['balance']) && isset($data['status']) && $data['status'] === 'success') {
-        $balance = $data['balance'];
-        $currency = $data['currency'] ?? 'BWP';
-    }
     
     if ($balance === null) {
-        // Log the response for debugging
-        error_log("[Balance] No balance found in response from {$institution}: " . json_encode($data));
         return ['success' => false, 'error' => "No balance found in response from {$institution}"];
     }
     
@@ -337,9 +398,7 @@ function getSourceBalance($source, $participants) {
         'success' => true,
         'balance' => (float)$balance,
         'currency' => strtoupper($currency),
-        'account' => $account,
-        'institution' => $institution,
-        'identifier' => $identifier,
-        'identifier_type' => $identifierType
+        'account' => $identifier,
+        'institution' => $institution
     ];
 }
