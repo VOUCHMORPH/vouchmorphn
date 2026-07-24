@@ -21,6 +21,8 @@ require_once PROJECT_ROOT . '/vendor/autoload.php';
 use Core\Database\DBConnection;
 use Application\Utils\SessionManager;
 use Application\Admin\Auth\AdminAuth;
+use Dompdf\Dompdf;
+use Dompdf\Options;
 
 if (!SessionManager::isAdminLoggedIn()) {
     header('Location: admin_login.php');
@@ -67,6 +69,106 @@ function csvEscape($value) {
         $value = '"' . str_replace('"', '""', $value) . '"';
     }
     return $value;
+}
+
+// ============================================================
+// PDF GENERATION HELPERS
+// ============================================================
+// Reports are built as an array of "sections" - each is either a
+// key/value metrics block or a table - then rendered into a single
+// branded HTML document and converted with Dompdf. This is separate
+// from the on-screen HTML (which is richer/interactive); PDFs stay
+// deliberately simple since they're the artifact someone downloads,
+// archives, or emails to a regulator - it needs to render identically
+// every time, which "print to PDF" in a browser cannot guarantee.
+
+function pdf_metrics_section(string $title, array $pairs): string {
+    $html = '<div class="pdf-section-title">' . safeHtml($title) . '</div><table class="pdf-metrics"><tr>';
+    $i = 0;
+    foreach ($pairs as $label => $value) {
+        if ($i > 0 && $i % 4 === 0) { $html .= '</tr><tr>'; }
+        $html .= '<td class="pdf-metric-cell"><div class="pdf-metric-label">' . safeHtml($label) . '</div><div class="pdf-metric-value">' . safeHtml($value) . '</div></td>';
+        $i++;
+    }
+    while ($i % 4 !== 0) { $html .= '<td class="pdf-metric-cell"></td>'; $i++; }
+    $html .= '</tr></table>';
+    return $html;
+}
+
+function pdf_table_section(string $title, array $headers, array $rows, ?string $note = null): string {
+    $html = '<div class="pdf-section-title">' . safeHtml($title) . '</div>';
+    if (empty($rows)) {
+        $html .= '<p class="pdf-empty">No records found.</p>';
+        return $html;
+    }
+    $html .= '<table class="pdf-data"><thead><tr>';
+    foreach ($headers as $h) { $html .= '<th>' . safeHtml($h) . '</th>'; }
+    $html .= '</tr></thead><tbody>';
+    foreach ($rows as $row) {
+        $html .= '<tr>';
+        foreach ($row as $cell) {
+            $cellStr = is_array($cell) ? json_encode($cell) : (string)$cell;
+            $html .= '<td>' . safeHtml(strlen($cellStr) > 60 ? substr($cellStr, 0, 60) . '…' : $cellStr) . '</td>';
+        }
+        $html .= '</tr>';
+    }
+    $html .= '</tbody></table>';
+    if ($note) { $html .= '<p class="pdf-note">' . safeHtml($note) . '</p>'; }
+    return $html;
+}
+
+function pdf_page_shell(string $title, string $subtitle, string $preparedBy, string $bodyHtml): string {
+    $generated = date('Y-m-d H:i:s');
+    return <<<HTML
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+    body { font-family: 'Helvetica', 'Arial', sans-serif; color: #0B1B2B; font-size: 11px; }
+    .pdf-header { border-bottom: 3px solid #C9A227; padding-bottom: 10px; margin-bottom: 18px; }
+    .pdf-header .brand { font-size: 18px; font-weight: bold; }
+    .pdf-header .brand span { color: #C9A227; font-weight: normal; }
+    .pdf-header .report-title { font-size: 15px; font-weight: bold; margin-top: 8px; }
+    .pdf-header .report-subtitle { font-size: 11px; color: #555; margin-top: 2px; }
+    .pdf-header .report-meta { font-size: 9px; color: #888; margin-top: 6px; }
+    .pdf-section-title { font-size: 11px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; color: #9A7B1E; margin: 16px 0 6px; border-bottom: 1px solid #D3DAD6; padding-bottom: 3px; }
+    table.pdf-metrics { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
+    table.pdf-metrics td.pdf-metric-cell { border: 1px solid #D3DAD6; padding: 8px; width: 25%; }
+    .pdf-metric-label { font-size: 8px; text-transform: uppercase; color: #8A96A3; }
+    .pdf-metric-value { font-size: 15px; font-weight: bold; margin-top: 3px; }
+    table.pdf-data { width: 100%; border-collapse: collapse; font-size: 9px; }
+    table.pdf-data th { background: #EEF1EF; text-align: left; padding: 5px 6px; border-bottom: 2px solid #0B1B2B; font-size: 8px; text-transform: uppercase; }
+    table.pdf-data td { padding: 5px 6px; border-bottom: 1px solid #D3DAD6; }
+    .pdf-empty { color: #8A96A3; font-style: italic; }
+    .pdf-note { font-size: 8px; color: #8A96A3; margin-top: 6px; }
+    .pdf-footer { position: fixed; bottom: -20px; left: 0; right: 0; font-size: 8px; color: #8A96A3; text-align: center; border-top: 1px solid #D3DAD6; padding-top: 4px; }
+</style>
+</head>
+<body>
+    <div class="pdf-header">
+        <div class="brand">VOUCHMORPH <span>Admin</span></div>
+        <div class="report-title">{$title}</div>
+        <div class="report-subtitle">{$subtitle}</div>
+        <div class="report-meta">Prepared by {$preparedBy} &middot; Generated {$generated}</div>
+    </div>
+    {$bodyHtml}
+    <div class="pdf-footer">VouchMorph &middot; Bank of Botswana Regulatory Sandbox Participant &middot; Generated {$generated}</div>
+</body>
+</html>
+HTML;
+}
+
+function pdf_stream(string $html, string $filename): void {
+    $options = new Options();
+    $options->set('isRemoteEnabled', false);
+    $options->set('defaultFont', 'Helvetica');
+    $dompdf = new Dompdf($options);
+    $dompdf->loadHtml($html);
+    $dompdf->setPaper('A4', 'portrait');
+    $dompdf->render();
+    $dompdf->stream($filename, ['Attachment' => true]);
+    exit;
 }
 
 try {
@@ -418,6 +520,7 @@ $agentApprovalCount = count($pendingAgents);
 // already fetched above) is scoped to when it's actually requested.
 // CSV export short-circuits before any HTML is emitted.
 // ============================================================
+
 $reportCatalog = [
     'transaction_certificate' => ['group' => 'Trust & Integrity', 'title' => 'Transaction Certificate',              'blurb' => 'The complete, signed timeline for one transaction — proof for the client, the bank, and the regulator.'],
     'double_spend_check'      => ['group' => 'Trust & Integrity', 'title' => 'Double-Spend & Duplicate-Debit Check',  'blurb' => 'Verifies every hold was debited at most once and every debit maps to exactly one hold.'],
@@ -427,6 +530,7 @@ $reportCatalog = [
     'net_settlement'      => ['group' => 'Regulatory', 'title' => 'Net Settlement Position',       'blurb' => 'Net obligations between institutions, for regulatory review.'],
     'fee_revenue'         => ['group' => 'Finance',    'title' => 'Fee Revenue Summary',           'blurb' => 'Fee income by institution, sourced from settlement invoicing.'],
     'audit_export'        => ['group' => 'Audit',      'title' => 'Audit Trail Export',            'blurb' => 'Full audit log, exportable to CSV for external review.'],
+    'suspicious_activity' => ['group' => 'Compliance', 'title' => 'Suspicious Activity (AML/KYC)', 'blurb' => 'Flagged transactions, high-risk users, and stale holds — restricted to compliance-facing roles.'],
     'daily_reconciliation'   => ['group' => 'Reconciliation', 'title' => 'Daily Reconciliation',   'blurb' => 'Transaction totals by day for the last 30 days — volume, fees, and outcome counts.'],
     'weekly_reconciliation'  => ['group' => 'Reconciliation', 'title' => 'Weekly Reconciliation',  'blurb' => 'Transaction totals by week for the last 12 weeks.'],
     'monthly_reconciliation' => ['group' => 'Reconciliation', 'title' => 'Monthly Reconciliation', 'blurb' => 'Transaction totals by month for the last 12 months.'],
@@ -689,6 +793,68 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
             exit;
         }
     }
+    // ============================================================
+    // SUSPICIOUS ACTIVITY (AML/KYC) — deliberately gated beyond the
+    // generic canView('reports') check used by every other report.
+    // A prior version of this report (deployed elsewhere in this
+    // codebase as a standalone page) only checked whether the user
+    // was logged in at all, exposing AML risk scores and KYC PII to
+    // every admin role including Customer Support. Here it requires
+    // audit or regulatory view rights — the roles already trusted
+    // with compliance-adjacent data — before any query even runs.
+    // ============================================================
+    $canViewSuspicious = canView('audit') || canView('regulatory');
+    $suspiciousData = [];
+    $suspiciousSummary = ['total' => 0, 'pending' => 0, 'failed' => 0, 'high_value' => 0, 'stale_holds' => 0];
+    if ($reportKey === 'suspicious_activity' && $canViewSuspicious) {
+        try {
+            $stmt = $db->prepare("
+                SELECT s.swap_id, s.user_id, s.amount, s.currency, s.status, s.created_at,
+                       s.source_institution, s.destination_institution, s.asset_type, s.swap_type
+                FROM swap_requests s
+                WHERE s.status IN ('pending', 'failed', 'cancelled')
+                   OR s.amount > :threshold
+                   OR s.currency != :baseCurrency
+                ORDER BY s.created_at DESC
+                LIMIT 200
+            ");
+            $stmt->execute([':threshold' => 100000, ':baseCurrency' => 'BWP']);
+            $suspiciousData = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Throwable $e) { $suspiciousData = []; }
+
+        try {
+            $stmt = $db->query("
+                SELECT hold_id, hold_reference, swap_reference, participant_name AS institution,
+                       amount, currency, status, placed_at
+                FROM hold_transactions
+                WHERE status IN ('ACTIVE','HELD','PENDING_CASHOUT')
+                  AND placed_at < NOW() - INTERVAL '1 hour'
+                ORDER BY placed_at ASC LIMIT 100
+            ");
+            $suspiciousStaleHolds = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Throwable $e) { $suspiciousStaleHolds = []; }
+
+        foreach ($suspiciousData as $s) {
+            $suspiciousSummary['total']++;
+            if (($s['status'] ?? '') === 'pending') $suspiciousSummary['pending']++;
+            if (($s['status'] ?? '') === 'failed') $suspiciousSummary['failed']++;
+            if ((float)($s['amount'] ?? 0) > 100000) $suspiciousSummary['high_value']++;
+        }
+        $suspiciousSummary['stale_holds'] = count($suspiciousStaleHolds ?? []);
+
+        if ($reportFormat === 'csv') {
+            header('Content-Type: text/csv; charset=utf-8');
+            header('Content-Disposition: attachment; filename="vouchmorph_suspicious_activity_' . date('Ymd_His') . '.csv"');
+            $out = fopen('php://output', 'w');
+            fputcsv($out, ['Swap ID', 'User ID', 'Amount', 'Currency', 'Status', 'Source', 'Destination', 'Type', 'Created At']);
+            foreach ($suspiciousData as $row) {
+                fputcsv($out, [$row['swap_id'], $row['user_id'], $row['amount'], $row['currency'], $row['status'], $row['source_institution'], $row['destination_institution'], $row['swap_type'], $row['created_at']]);
+            }
+            fclose($out);
+            exit;
+        }
+    }
+
     if ($reportKey === 'fee_revenue' && $reportFormat === 'csv') {
         header('Content-Type: text/csv; charset=utf-8');
         header('Content-Disposition: attachment; filename="vouchmorph_fee_revenue_' . date('Ymd_His') . '.csv"');
@@ -759,6 +925,156 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
             fclose($out);
             exit;
         }
+    }
+
+    // ============================================================
+    // PDF EXPORT — one dispatcher covering every report, so nothing
+    // in the catalog is CSV/print-only. Uses the same data already
+    // fetched above for the on-screen view and CSV export, just
+    // reshaped into pdf_metrics_section()/pdf_table_section() calls.
+    // ============================================================
+    if ($reportFormat === 'pdf') {
+        $preparedBy = safeHtml($adminFullName ?: $adminUsername);
+        $body = '';
+
+        if ($reportKey === 'transaction_certificate' && $certRef !== '' && (!empty($certData['swap_request']) || !empty($certData['holds']))) {
+            $sr = $certData['swap_request'];
+            $body .= pdf_metrics_section('Summary', [
+                'Amount' => number_format((float)($sr['amount'] ?? 0), 2) . ' ' . ($sr['from_currency'] ?? ''),
+                'Status' => strtoupper($sr['status'] ?? 'unknown'),
+                'Created' => $sr['created_at'] ?? 'N/A',
+            ]);
+            $body .= pdf_table_section('1 · Hold Placed', ['Hold ID', 'Hold Reference', 'Institution', 'Amount', 'Status', 'Placed At', 'Debited At'],
+                array_map(fn($h) => [$h['hold_id'], $h['hold_reference'], $h['source_institution'] ?? $h['participant_name'] ?? 'N/A', number_format((float)$h['amount'], 2), $h['status'], $h['placed_at'] ?? '', $h['debited_at'] ?? '—'], $certData['holds']));
+            if (!empty($certData['cashout'])) {
+                $co = $certData['cashout'];
+                $body .= pdf_table_section('2 · Destination Code Generated', ['Provider', 'Amount', 'Fee', 'Code Expiry', 'Status'],
+                    [[$co['cashout_provider'] ?? 'N/A', number_format((float)$co['amount'], 2), number_format((float)($co['fee_amount'] ?? 0), 2), $co['code_expiry'] ?? '', $co['status']]]);
+            }
+            $body .= pdf_table_section('3 · Ledger Entries', ['From', 'To', 'Amount', 'Status', 'Transaction Ref', 'Created'],
+                array_map(function ($t) {
+                    $from = json_decode($t['from_account_details'] ?? '{}', true) ?: [];
+                    $to = json_decode($t['to_account_details'] ?? '{}', true) ?: [];
+                    return [$from['institution'] ?? 'N/A', $to['institution'] ?? 'N/A', number_format((float)$t['amount'], 2), $t['status'], $t['transaction_id'] ?? '—', $t['created_at'] ?? ''];
+                }, $certData['swap_transactions']));
+            $body .= pdf_table_section('4 · Audit Trail', ['Action', 'Category', 'Performed By', 'At'],
+                array_map(fn($a) => [$a['action'] ?? '', $a['category'] ?? '', $a['performed_by'] ?? $a['performed_by_id'] ?? 'SYSTEM', $a['performed_at'] ?? ''], $certData['audit']),
+                'Cryptographic signatures for each step are recorded in application logs, not yet in a queryable table — see engineering note on the on-screen certificate.');
+            pdf_stream(pdf_page_shell('Transaction Certificate', 'Reference: ' . $certRef, $preparedBy, $body), 'vouchmorph_certificate_' . preg_replace('/[^A-Za-z0-9_\-]/', '', $certRef) . '.pdf');
+        }
+
+        if ($reportKey === 'double_spend_check') {
+            $body .= pdf_metrics_section('Result', ['Total Issues Found' => $integrityTotalIssues]);
+            $body .= pdf_table_section('Holds Debited More Than Once', ['Swap Reference', 'Debited Count', 'Hold IDs', 'Amounts'],
+                array_map(fn($r) => [$r['swap_reference'], $r['debited_hold_count'], trim($r['hold_ids'], '{}'), trim($r['amounts'], '{}')], $integrityIssues['duplicate_debited_holds'] ?? []));
+            $body .= pdf_table_section('Cashouts Completed More Than Once', ['Swap Reference', 'Completed Count'],
+                array_map(fn($r) => [$r['swap_reference'], $r['auth_count']], $integrityIssues['duplicate_completed_cashouts'] ?? []));
+            $body .= pdf_table_section('Idempotency Key Conflicts', ['Idempotency Key', 'Distinct References'],
+                array_map(fn($r) => [$r['key'], $r['distinct_refs']], $integrityIssues['idempotency_key_conflicts'] ?? []));
+            $body .= pdf_table_section('Debited Holds Missing Swap Record', ['Hold ID', 'Swap Reference', 'Amount', 'Institution', 'Placed At'],
+                array_map(fn($r) => [$r['hold_id'], $r['swap_reference'], number_format((float)$r['amount'], 2), $r['source_institution'], $r['placed_at']], $integrityIssues['debited_holds_missing_swap_request'] ?? []));
+            pdf_stream(pdf_page_shell('Double-Spend & Duplicate-Debit Check', 'Automated integrity scan across the full ledger', $preparedBy, $body), 'vouchmorph_integrity_check_' . date('Ymd_His') . '.pdf');
+        }
+
+        if ($reportKey === 'bank_statement' && $bankInstitution !== '' && !empty($bankStatement['transactions'])) {
+            $volumeSent = 0; $volumeReceived = 0;
+            foreach ($bankStatement['transactions'] as $t) {
+                if (($t['source_institution'] ?? '') === $bankInstitution) $volumeSent += (float)($t['amount'] ?? 0);
+                if (($t['destination_institution'] ?? '') === $bankInstitution) $volumeReceived += (float)($t['amount'] ?? 0);
+            }
+            $body .= pdf_metrics_section('Summary', [
+                'Total Transactions' => count($bankStatement['transactions']),
+                'Sent (as source)' => number_format($volumeSent, 2),
+                'Received (as destination)' => number_format($volumeReceived, 2),
+                'Fees Invoiced' => number_format((float)($bankStatement['fees_charged_to_them']['fees'] ?? 0), 2),
+            ]);
+            $body .= pdf_table_section('Transaction Detail', ['Reference', 'Type', 'Role', 'Counterparty', 'Amount', 'Fee', 'Status', 'Date'],
+                array_map(function ($t) use ($bankInstitution) {
+                    $role = ($t['source_institution'] ?? '') === $bankInstitution ? 'SOURCE' : 'DESTINATION';
+                    $counterparty = $role === 'SOURCE' ? ($t['destination_institution'] ?? 'N/A') : ($t['source_institution'] ?? 'N/A');
+                    return [$t['swap_reference'] ?? $t['reference'] ?? '', $t['swap_type'] ?? '', $role, $counterparty, number_format((float)($t['amount'] ?? 0), 2), number_format((float)($t['fee_amount'] ?? 0), 2), $t['status'] ?? '', $t['created_at'] ?? ''];
+                }, $bankStatement['transactions']));
+            pdf_stream(pdf_page_shell('Partner Bank Statement', 'Institution: ' . $bankInstitution, $preparedBy, $body), 'vouchmorph_statement_' . preg_replace('/[^A-Za-z0-9_\-]/', '', $bankInstitution) . '.pdf');
+        }
+
+        if ($reportKey === 'executive_summary') {
+            $body .= pdf_metrics_section('Network Volume', [
+                'Total Swaps' => number_format($metrics['total_swaps'] ?? 0),
+                'Total Users' => number_format($metrics['total_users'] ?? 0),
+                '24h Swaps' => number_format($metrics['recent_swaps_24h'] ?? 0),
+                'Fees Collected' => number_format($metrics['total_fees'] ?? 0, 2),
+                'Pending Settlements' => number_format($metrics['pending_settlements'] ?? 0),
+                'Multi-Dest Batches' => number_format($metrics['multi_destination_count'] ?? 0),
+            ]);
+            $body .= pdf_table_section('Institution Snapshot', ['Institution', 'Volume', 'Success Rate'],
+                array_map(fn($i) => [$i['institution'], number_format((float)$i['volume'], 2), $i['success_rate'] . '%'], array_slice($institutionHealth, 0, 10)));
+            $body .= '<div class="pdf-section-title">Open Items</div><p>' . $totalAlerts . ' alert(s) outstanding &middot; ' . $agentApprovalCount . ' agent application(s) awaiting approval.</p>';
+            pdf_stream(pdf_page_shell('Executive Summary', 'Bank of Botswana Regulatory Sandbox Participant', $preparedBy, $body), 'vouchmorph_executive_summary_' . date('Ymd_His') . '.pdf');
+        }
+
+        if ($reportKey === 'trust_scorecard') {
+            $ranked = $institutionHealth; usort($ranked, fn($a, $b) => $b['success_rate'] <=> $a['success_rate']);
+            $body .= pdf_table_section('Institutional Trust Scorecard', ['#', 'Institution', 'Total Txns', 'Success Rate', 'Volume', 'Tier'],
+                array_map(function ($i, $idx) {
+                    $rate = (float)$i['success_rate'];
+                    $tier = $rate >= 95 ? 'Gold' : ($rate >= 80 ? 'Silver' : 'Needs Review');
+                    return [$idx + 1, $i['institution'], number_format($i['total']), $rate . '%', number_format((float)$i['volume'], 2), $tier];
+                }, $ranked, array_keys($ranked)));
+            pdf_stream(pdf_page_shell('Institutional Trust Scorecard', 'Success rate ranking across the network', $preparedBy, $body), 'vouchmorph_trust_scorecard_' . date('Ymd_His') . '.pdf');
+        }
+
+        if ($reportKey === 'net_settlement') {
+            $rows = array_map(fn($r) => array_values(array_map(fn($v) => is_array($v) ? json_encode($v) : $v, $r)), $reportNetPositions);
+            $headers = !empty($reportNetPositions) ? array_keys($reportNetPositions[0]) : [];
+            $body .= pdf_table_section('Net Settlement Position', $headers, $rows);
+            pdf_stream(pdf_page_shell('Net Settlement Position', 'For regulatory review', $preparedBy, $body), 'vouchmorph_net_settlement_' . date('Ymd_His') . '.pdf');
+        }
+
+        if ($reportKey === 'fee_revenue') {
+            $grandTotal = array_sum(array_column($reportFeeRevenue, 'fees'));
+            $body .= pdf_metrics_section('Summary', ['Total Fee Revenue' => number_format($grandTotal, 2), 'Institution Pairs' => count($reportFeeRevenue)]);
+            $body .= pdf_table_section('By Institution Pair', ['Source', 'Destination', 'Fees Collected', 'Invoices'],
+                array_map(fn($r) => [$r['source_institution'] ?? 'N/A', $r['destination_institution'] ?? 'N/A', number_format((float)$r['fees'], 2), number_format($r['invoice_count'])], $reportFeeRevenue),
+                'Gross fee income only — a full P&L also needs operating costs and settlement charges.');
+            pdf_stream(pdf_page_shell('Fee Revenue Summary', 'By institution pair, sourced from settlement invoicing', $preparedBy, $body), 'vouchmorph_fee_revenue_' . date('Ymd_His') . '.pdf');
+        }
+
+        if ($reportKey === 'audit_export') {
+            $headers = !empty($reportAuditRows) ? array_keys($reportAuditRows[0]) : [];
+            $rows = array_map(fn($r) => array_values(array_map(fn($v) => is_array($v) ? json_encode($v) : $v, $r)), array_slice($reportAuditRows, 0, 500));
+            $body .= pdf_table_section('Audit Trail (first 500 of ' . count($reportAuditRows) . ')', $headers, $rows);
+            pdf_stream(pdf_page_shell('Audit Trail Export', 'Most recent entries', $preparedBy, $body), 'vouchmorph_audit_export_' . date('Ymd_His') . '.pdf');
+        }
+
+        if ($reportKey === 'suspicious_activity' && $canViewSuspicious) {
+            $body .= pdf_metrics_section('Summary', [
+                'Flagged Total' => $suspiciousSummary['total'],
+                'Pending' => $suspiciousSummary['pending'],
+                'Failed' => $suspiciousSummary['failed'],
+                'High Value (>100k)' => $suspiciousSummary['high_value'],
+                'Stale Holds (>1h)' => $suspiciousSummary['stale_holds'],
+            ]);
+            $body .= pdf_table_section('Flagged Transactions', ['Swap ID', 'User', 'Amount', 'Currency', 'Status', 'Source', 'Destination', 'Created'],
+                array_map(fn($s) => [$s['swap_id'] ?? '', $s['user_id'] ?? '', number_format((float)($s['amount'] ?? 0), 2), $s['currency'] ?? 'BWP', strtoupper($s['status'] ?? ''), $s['source_institution'] ?? 'N/A', $s['destination_institution'] ?? 'N/A', $s['created_at'] ?? ''], $suspiciousData),
+                'Status/amount-based flags only — does not yet include AML risk scoring or KYC status.');
+            pdf_stream(pdf_page_shell('Suspicious Activity (AML/KYC)', 'Flagged transactions and stale holds requiring review', $preparedBy, $body), 'vouchmorph_suspicious_activity_' . date('Ymd_His') . '.pdf');
+        }
+
+        if (isset($reconciliationConfig[$reportKey])) {
+            $cfg = $reconciliationConfig[$reportKey];
+            $totalTxn = array_sum(array_column($reportReconciliation, 'txn_count'));
+            $totalVol = array_sum(array_column($reportReconciliation, 'volume'));
+            $totalFees = array_sum(array_column($reportReconciliation, 'fees'));
+            $body .= pdf_metrics_section('Summary', ['Total Transactions' => number_format($totalTxn), 'Total Volume' => number_format($totalVol, 2), 'Total Fees' => number_format($totalFees, 2)]);
+            $body .= pdf_table_section('Breakdown by ' . $cfg['label'], [$cfg['label'], 'Transactions', 'Volume', 'Fees', 'Completed', 'Pending', 'Failed'],
+                array_map(fn($r) => [date($cfg['unit'] === 'month' ? 'Y-m' : 'Y-m-d', strtotime($r['period'])), number_format($r['txn_count']), number_format($r['volume'], 2), number_format($r['fees'], 2), number_format($r['completed']), number_format($r['pending']), number_format($r['failed'])], $reportReconciliation),
+                'Reconciles internal ledger totals only (what VouchMorph recorded) — not yet cross-checked against bank/settlement statements.');
+            pdf_stream(pdf_page_shell($reportCatalog[$reportKey]['title'], 'Grouped by ' . $cfg['label'] . ', last ' . $cfg['window'], $preparedBy, $body), 'vouchmorph_' . $reportKey . '_' . date('Ymd_His') . '.pdf');
+        }
+
+        // If we reach here, the requested report/format combination had
+        // nothing to render (e.g. no ref/institution supplied yet) -
+        // fall through to the normal HTML page rather than a blank PDF.
     }
 }
 
@@ -1821,8 +2137,10 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <a href="?view=dashboard" class="back-link">← Back</a>
                 </div>
                 <?php
-                $groupsOrder = ['Trust & Integrity', 'Executive', 'Regulatory', 'Finance', 'Audit', 'Reconciliation'];
+                $groupsOrder = ['Trust & Integrity', 'Executive', 'Regulatory', 'Compliance', 'Finance', 'Audit', 'Reconciliation'];
+                $canViewCompliance = canView('audit') || canView('regulatory');
                 foreach ($groupsOrder as $grp):
+                    if ($grp === 'Compliance' && !$canViewCompliance) continue;
                     $tiles = array_filter($reportCatalog, fn($r) => $r['group'] === $grp);
                     if (empty($tiles)) continue;
                 ?>
@@ -1930,8 +2248,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <?php endif; ?>
                 </div>
                 <div style="text-align:center; margin-top:var(--sp-4); display:flex; justify-content:center; gap:var(--sp-3);">
-                    <button onclick="window.print()" class="btn btn-primary">Print / Save as PDF</button>
-                    <?php if ($certRef !== ''): ?><a href="?view=reports&report=transaction_certificate&ref=<?php echo urlencode($certRef); ?>&format=csv" class="btn">Download CSV</a><?php endif; ?>
+                    <?php if ($certRef !== ''): ?><a href="?view=reports&report=transaction_certificate&ref=<?php echo urlencode($certRef); ?>&format=pdf" class="btn btn-primary">Download PDF</a><a href="?view=reports&report=transaction_certificate&ref=<?php echo urlencode($certRef); ?>&format=csv" class="btn">Download CSV</a><?php endif; ?>
                 </div>
                 <?php endif; ?>
 
@@ -1993,7 +2310,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <?php endif; ?>
                 </div>
                 <div style="text-align:center; margin-top:var(--sp-4); display:flex; justify-content:center; gap:var(--sp-3);">
-                    <button onclick="window.print()" class="btn btn-primary">Print / Save as PDF</button>
+                    <a href="?view=reports&report=double_spend_check&format=pdf" class="btn btn-primary">Download PDF</a>
                     <a href="?view=reports&report=double_spend_check&format=csv" class="btn">Download CSV</a>
                 </div>
                 <?php endif; ?>
@@ -2057,8 +2374,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <?php endif; ?>
                 </div>
                 <div style="text-align:center; margin-top:var(--sp-4); display:flex; justify-content:center; gap:var(--sp-3);">
-                    <button onclick="window.print()" class="btn btn-primary">Print / Save as PDF</button>
-                    <?php if ($bankInstitution !== ''): ?><a href="?view=reports&report=bank_statement&institution=<?php echo urlencode($bankInstitution); ?>&format=csv" class="btn">Download CSV</a><?php endif; ?>
+                    <?php if ($bankInstitution !== ''): ?><a href="?view=reports&report=bank_statement&institution=<?php echo urlencode($bankInstitution); ?>&format=pdf" class="btn btn-primary">Download PDF</a><a href="?view=reports&report=bank_statement&institution=<?php echo urlencode($bankInstitution); ?>&format=csv" class="btn">Download CSV</a><?php endif; ?>
                 </div>
                 <?php endif; ?>
 
@@ -2093,7 +2409,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <div class="report-section-title">Open Items</div>
                     <p style="font-size:14px;"><?php echo $totalAlerts; ?> alert<?php echo $totalAlerts === 1 ? '' : 's'; ?> outstanding · <?php echo $agentApprovalCount; ?> agent application<?php echo $agentApprovalCount === 1 ? '' : 's'; ?> awaiting approval.</p>
                 </div>
-                <div style="text-align:center; margin-top:var(--sp-4);"><button onclick="window.print()" class="btn btn-primary">Print / Save as PDF</button></div>
+                <div style="text-align:center; margin-top:var(--sp-4);"><a href="?view=reports&report=executive_summary&format=pdf" class="btn btn-primary">Download PDF</a></div>
                 <?php endif; ?>
 
                 <?php if ($reportKey === 'trust_scorecard'): ?>
@@ -2119,7 +2435,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     </tbody></table></div>
                     <?php endif; ?>
                 </div>
-                <div style="text-align:center; margin-top:var(--sp-4);"><button onclick="window.print()" class="btn btn-primary">Print / Save as PDF</button></div>
+                <div style="text-align:center; margin-top:var(--sp-4);"><a href="?view=reports&report=trust_scorecard&format=pdf" class="btn btn-primary">Download PDF</a></div>
                 <?php endif; ?>
 
                 <?php if ($reportKey === 'net_settlement'): ?>
@@ -2139,7 +2455,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <?php endif; ?>
                 </div>
                 <div style="text-align:center; margin-top:var(--sp-4); display:flex; justify-content:center; gap:var(--sp-3);">
-                    <button onclick="window.print()" class="btn btn-primary">Print / Save as PDF</button>
+                    <a href="?view=reports&report=net_settlement&format=pdf" class="btn btn-primary">Download PDF</a>
                     <a href="?view=reports&report=net_settlement&format=csv" class="btn">Download CSV</a>
                 </div>
                 <?php endif; ?>
@@ -2166,7 +2482,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <?php endif; ?>
                 </div>
                 <div style="text-align:center; margin-top:var(--sp-4); display:flex; justify-content:center; gap:var(--sp-3);">
-                    <button onclick="window.print()" class="btn btn-primary">Print / Save as PDF</button>
+                    <a href="?view=reports&report=fee_revenue&format=pdf" class="btn btn-primary">Download PDF</a>
                     <a href="?view=reports&report=fee_revenue&format=csv" class="btn">Download CSV</a>
                 </div>
                 <?php endif; ?>
@@ -2189,7 +2505,62 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <?php endif; ?>
                 </div>
                 <div style="text-align:center; margin-top:var(--sp-4);">
-                    <a href="?view=reports&report=audit_export&format=csv" class="btn btn-primary">Download Full CSV</a>
+                    <a href="?view=reports&report=audit_export&format=pdf" class="btn btn-primary">Download PDF (first 500)</a>
+                    <a href="?view=reports&report=audit_export&format=csv" class="btn">Download Full CSV</a>
+                </div>
+                <?php endif; ?>
+
+                <?php if ($reportKey === 'suspicious_activity'): ?>
+                <div class="report-page">
+                    <?php if (!$canViewSuspicious): ?>
+                    <div class="report-page-header">
+                        <div><div class="report-title">Suspicious Activity (AML/KYC)</div></div>
+                        <div class="report-meta"><?php echo date('Y-m-d H:i:s'); ?></div>
+                    </div>
+                    <div class="empty-state"><span class="icon">🚫</span><p>Your role does not have access to compliance-restricted data. This report is limited to audit and regulatory roles.</p></div>
+                    <?php else: ?>
+                    <div class="report-page-header">
+                        <div><div class="report-title">Suspicious Activity (AML/KYC)</div><div style="color:var(--ink-500); font-size:13px;">Flagged transactions and stale holds requiring review</div></div>
+                        <div class="report-meta">Prepared by <?php echo safeHtml($adminFullName ?: $adminUsername); ?><br><?php echo date('Y-m-d H:i:s'); ?></div>
+                    </div>
+                    <div class="metrics-grid" style="grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));">
+                        <div class="metric-card"><span class="metric-label">Flagged Total</span><span class="metric-value"><?php echo number_format($suspiciousSummary['total']); ?></span></div>
+                        <div class="metric-card"><span class="metric-label">Pending</span><span class="metric-value"><?php echo number_format($suspiciousSummary['pending']); ?></span></div>
+                        <div class="metric-card"><span class="metric-label">Failed</span><span class="metric-value"><?php echo number_format($suspiciousSummary['failed']); ?></span></div>
+                        <div class="metric-card"><span class="metric-label">High Value (&gt;100k)</span><span class="metric-value"><?php echo number_format($suspiciousSummary['high_value']); ?></span></div>
+                        <div class="metric-card"><span class="metric-label">Stale Holds (&gt;1h)</span><span class="metric-value"><?php echo number_format($suspiciousSummary['stale_holds']); ?></span></div>
+                    </div>
+
+                    <div class="report-section-title">Flagged Transactions</div>
+                    <?php if (empty($suspiciousData)): ?>
+                    <div class="empty-state"><span class="icon">✅</span><p>No suspicious activity detected in the current window.</p></div>
+                    <?php else: ?>
+                    <div class="table-responsive"><table><thead><tr><th>Swap ID</th><th>User</th><th>Amount</th><th>Currency</th><th>Status</th><th>Source</th><th>Destination</th><th>Created</th></tr></thead><tbody>
+                    <?php foreach ($suspiciousData as $s): ?>
+                    <tr>
+                        <td><?php echo safeHtml($s['swap_id'] ?? 'N/A'); ?></td>
+                        <td><?php echo safeHtml($s['user_id'] ?? 'N/A'); ?></td>
+                        <td><strong><?php echo number_format((float)($s['amount'] ?? 0), 2); ?></strong></td>
+                        <td><?php echo safeHtml($s['currency'] ?? 'BWP'); ?></td>
+                        <td><span class="status status-<?php echo ($s['status'] ?? '') === 'failed' ? 'failed' : 'pending'; ?>"><?php echo safeHtml(strtoupper($s['status'] ?? '')); ?></span></td>
+                        <td><?php echo safeHtml($s['source_institution'] ?? 'N/A'); ?></td>
+                        <td><?php echo safeHtml($s['destination_institution'] ?? 'N/A'); ?></td>
+                        <td><?php echo safeHtml(date('Y-m-d H:i', strtotime($s['created_at'] ?? 'now'))); ?></td>
+                    </tr>
+                    <?php endforeach; ?>
+                    </tbody></table></div>
+                    <?php endif; ?>
+
+                    <p style="font-size:12px; color:var(--ink-300); margin-top:var(--sp-5); border-top:1px solid var(--line); padding-top:var(--sp-3);">
+                        This surfaces status- and amount-based flags only (pending/failed/cancelled, amounts over 100,000, non-BWP currency).
+                        It does not yet join AML risk scores or KYC document status — that requires confirming <code>aml_checks</code> and
+                        <code>kyc_documents</code> tables exist with the expected schema before wiring them in, to avoid the silent-empty-section
+                        problem seen elsewhere with unverified tables.
+                    </p>
+                    <?php endif; ?>
+                </div>
+                <div style="text-align:center; margin-top:var(--sp-4); display:flex; justify-content:center; gap:var(--sp-3);">
+                    <?php if ($canViewSuspicious): ?><a href="?view=reports&report=suspicious_activity&format=pdf" class="btn btn-primary">Download PDF</a><a href="?view=reports&report=suspicious_activity&format=csv" class="btn">Download CSV</a><?php endif; ?>
                 </div>
                 <?php endif; ?>
 
@@ -2227,7 +2598,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <?php endif; ?>
                 </div>
                 <div style="text-align:center; margin-top:var(--sp-4); display:flex; justify-content:center; gap:var(--sp-3);">
-                    <button onclick="window.print()" class="btn btn-primary">Print / Save as PDF</button>
+                    <a href="?view=reports&report=<?php echo urlencode($reportKey); ?>&format=pdf" class="btn btn-primary">Download PDF</a>
                     <a href="?view=reports&report=<?php echo urlencode($reportKey); ?>&format=csv" class="btn">Download CSV</a>
                 </div>
                 <?php endif; ?>
