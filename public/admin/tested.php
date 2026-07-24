@@ -2,6 +2,17 @@ echo "\n=============================\n";
 echo "DATABASE DIAGNOSTICS\n";
 echo "=============================\n";
 
+// ============================================================
+// 0. CONNECTION VERIFICATION (NEW)
+// ============================================================
+echo "PostgreSQL Version : "
+    . $pdo->query("SELECT version()")->fetchColumn()
+    . PHP_EOL;
+
+echo "Current User : "
+    . $pdo->query("SELECT current_user")->fetchColumn()
+    . PHP_EOL;
+
 echo "Current DB : "
     . $pdo->query("SELECT current_database()")->fetchColumn()
     . PHP_EOL;
@@ -99,19 +110,19 @@ if ($cashoutAuth) {
 }
 
 // -----------------------------------------------------------------
-// 4. Latest swap_transactions
+// 4. Latest swap_transactions (FIXED: use swap_transaction_id)
 // -----------------------------------------------------------------
 echo "\n📋 Latest swap_transactions\n";
 
 $stmt = $pdo->query("
-    SELECT transaction_id,
+    SELECT swap_transaction_id,
            swap_id,
            amount,
            status,
            user_id,
            created_at
     FROM swap_transactions
-    ORDER BY transaction_id DESC
+    ORDER BY swap_transaction_id DESC
     LIMIT 5
 ");
 
@@ -119,21 +130,21 @@ $swapTx = $stmt->fetchAll(PDO::FETCH_ASSOC);
 if ($swapTx) {
     echo "   ✅ FOUND " . count($swapTx) . " record(s)\n";
     foreach ($swapTx as $row) {
-        echo "      transaction_id: {$row['transaction_id']}, swap_id: {$row['swap_id']}, amount: {$row['amount']}, status: {$row['status']}\n";
+        echo "      swap_transaction_id: {$row['swap_transaction_id']}, swap_id: {$row['swap_id']}, amount: {$row['amount']}, status: {$row['status']}\n";
     }
 } else {
     echo "   ❌ No records found\n";
 }
 
 // -----------------------------------------------------------------
-// 5. Latest message_outbox
+// 5. Latest message_outbox (FIXED: removed subject column)
 // -----------------------------------------------------------------
 echo "\n📋 Latest message_outbox\n";
 
 $stmt = $pdo->query("
     SELECT message_id,
+           channel,
            destination,
-           subject,
            status,
            created_at
     FROM message_outbox
@@ -145,7 +156,7 @@ $messages = $stmt->fetchAll(PDO::FETCH_ASSOC);
 if ($messages) {
     echo "   ✅ FOUND " . count($messages) . " record(s)\n";
     foreach ($messages as $row) {
-        echo "      message_id: {$row['message_id']}, destination: {$row['destination']}, status: {$row['status']}\n";
+        echo "      message_id: {$row['message_id']}, channel: {$row['channel']}, destination: {$row['destination']}, status: {$row['status']}\n";
     }
 } else {
     echo "   ⚠️  No messages found\n";
