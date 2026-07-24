@@ -1,11 +1,11 @@
 <?php
-// src/API/User/AllBalances.php
+// public/api/v1/user/all_balances.php
 // Get balances for all user sources - AGGREGATED
 // Pulls configuration from country config files - NO HARDCODING
 
-require_once __DIR__ . '/../../../../src/Core/Database/DBConnection.php';
-require_once __DIR__ . '/../../../../src/Core/Config/LoadCountry.php';
-require_once __DIR__ . '/../../../../src/Application/Utils/SessionManager.php';
+require_once __DIR__ . '/../../../src/Core/Database/DBConnection.php';
+require_once __DIR__ . '/../../../src/Core/Config/LoadCountry.php';
+require_once __DIR__ . '/../../../src/Application/Utils/SessionManager.php';
 
 use Core\Database\DBConnection;
 use Core\Config\LoadCountry;
@@ -45,27 +45,32 @@ if (!$pdo) {
 // ============================================================
 // 3. GET ALL ACTIVE SOURCES FOR THE USER
 // ============================================================
+// Using ONLY columns that exist in the table
 $stmt = $pdo->prepare("
     SELECT 
         id, 
+        user_id,
         institution, 
         asset_type, 
         identifier, 
         identifier_type,
         account_name,
         currency,
-        status,
         is_hooked,
         source_reference,
         access_token,
+        refresh_token,
         token_expires_at,
+        status,
+        last_used_at,
+        proposed_at,
         confirmed_at,
-        created_at
+        updated_at
     FROM user_source_accounts
     WHERE user_id = :user_id 
     AND status = 'active' 
     AND deleted_at IS NULL
-    ORDER BY institution, created_at DESC
+    ORDER BY institution, proposed_at DESC
 ");
 $stmt->execute([':user_id' => $userId]);
 $sources = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -110,7 +115,7 @@ foreach ($sources as $source) {
     }
     
     // Get balance for this source
-    $balanceResult = getSourceBalance($pdo, $source, $participants);
+    $balanceResult = getSourceBalance($source, $participants);
     
     if ($balanceResult['success']) {
         $successCount++;
@@ -145,10 +150,12 @@ echo json_encode([
     ]
 ]);
 
+exit;
+
 // ============================================================
 // 7. HELPER FUNCTION: Get balance for a single source
 // ============================================================
-function getSourceBalance($pdo, $source, $participants) {
+function getSourceBalance($source, $participants) {
     $institution = $source['institution'];
     $identifier = $source['identifier'];
     $identifierType = $source['identifier_type'] ?? 'auto';
@@ -322,8 +329,7 @@ function getSourceBalance($pdo, $source, $participants) {
         'institution' => $institution,
         'identifier' => $identifier,
         'identifier_type' => $identifierType,
-        'status' => $status,
-        'raw' => $data // Optional - remove in production
+        'status' => $status
     ];
 }
 
