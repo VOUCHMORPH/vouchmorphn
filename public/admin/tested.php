@@ -1,6 +1,6 @@
 <?php
-// check_swap_tables_direct.php
-// Direct check of all tables for the swap
+// check_latest_swap_data.php
+// Check the most recent records in each table
 
 declare(strict_types=1);
 
@@ -15,110 +15,152 @@ if (!$pdo) {
     die("❌ Failed to connect to database\n");
 }
 
-// Get the latest swap reference from the test output
-$swapRef = $argv[1] ?? 'SWAP_TEST_1784868028_e47749cb';
-
 echo "========================================\n";
-echo "DIRECT TABLE CHECK\n";
+echo "LATEST SWAP DATA CHECK\n";
 echo "========================================\n\n";
 
-echo "Checking for swap reference: {$swapRef}\n\n";
-
-// Check all tables
-$tables = [
-    'swap_requests' => 'swap_uuid',
-    'hold_transactions' => 'swap_reference',
-    'cashout_authorizations' => 'swap_reference',
-    'swap_transactions' => 'swap_id (needs join)',
-    'message_outbox' => 'payload',
-];
-
-foreach ($tables as $table => $column) {
-    echo "📋 {$table}:\n";
-    try {
-        if ($table === 'swap_transactions') {
-            // Need to get swap_id first
-            $stmt = $pdo->prepare("SELECT swap_id FROM swap_requests WHERE swap_uuid = :ref");
-            $stmt->execute([':ref' => $swapRef]);
-            $row = $stmt->fetch(PDO::FETCH_ASSOC);
-            if ($row) {
-                $stmt = $pdo->prepare("SELECT * FROM swap_transactions WHERE swap_id = :swap_id");
-                $stmt->execute([':swap_id' => $row['swap_id']]);
-                $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
-                if ($results) {
-                    echo "   ✅ FOUND " . count($results) . " record(s)\n";
-                    foreach ($results as $r) {
-                        echo "      transaction_id: {$r['transaction_id']}\n";
-                        echo "      amount: {$r['amount']}\n";
-                        echo "      status: {$r['status']}\n";
-                    }
-                } else {
-                    echo "   ❌ NOT FOUND\n";
-                }
-            } else {
-                echo "   ⏭️  SKIPPED (no swap_id)\n";
-            }
-        } elseif ($table === 'message_outbox') {
-            $stmt = $pdo->prepare("SELECT * FROM message_outbox WHERE payload LIKE :pattern ORDER BY created_at DESC LIMIT 10");
-            $stmt->execute([':pattern' => '%' . $swapRef . '%']);
-            $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            if ($results) {
-                echo "   ✅ FOUND " . count($results) . " record(s)\n";
-                foreach ($results as $r) {
-                    echo "      message_id: {$r['message_id']}\n";
-                    echo "      destination: {$r['destination']}\n";
-                    echo "      status: {$r['status']}\n";
-                }
-            } else {
-                echo "   ❌ NOT FOUND\n";
-            }
-        } else {
-            $stmt = $pdo->prepare("SELECT * FROM {$table} WHERE {$column} = :ref");
-            $stmt->execute([':ref' => $swapRef]);
-            $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            if ($results) {
-                echo "   ✅ FOUND " . count($results) . " record(s)\n";
-                foreach ($results as $r) {
-                    echo "      " . json_encode($r) . "\n";
-                }
-            } else {
-                echo "   ❌ NOT FOUND\n";
-            }
-        }
-    } catch (PDOException $e) {
-        echo "   ❌ ERROR: " . $e->getMessage() . "\n";
-    }
-    echo "\n";
+// 1. Latest swap_requests
+echo "📋 1. Latest swap_requests (last 5):\n";
+$stmt = $pdo->prepare("
+    SELECT swap_id, swap_uuid, amount, status, user_id, created_at 
+    FROM swap_requests 
+    ORDER BY created_at DESC 
+    LIMIT 5
+");
+$stmt->execute();
+$results = $stmt->fetchAll(PDO::FETCH_ASSOC);
+foreach ($results as $r) {
+    echo "   {$r['swap_uuid']} | amount: {$r['amount']} | status: {$r['status']} | user_id: {$r['user_id']} | created: {$r['created_at']}\n";
 }
-
-// Also check if there's any data at all in these tables
-echo "📊 Checking if tables have ANY data:\n\n";
-
-$tablesWithData = [];
-foreach (['swap_requests', 'hold_transactions', 'cashout_authorizations'] as $table) {
-    try {
-        $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM {$table}");
-        $stmt->execute();
-        $count = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
-        echo "   {$table}: {$count} record(s)\n";
-        if ($count > 0) {
-            $tablesWithData[] = $table;
-        }
-    } catch (PDOException $e) {
-        echo "   {$table}: ERROR - " . $e->getMessage() . "\n";
-    }
-}
-
 echo "\n";
 
-if (empty($tablesWithData)) {
-    echo "❌ All tables are EMPTY! The transaction is being rolled back.\n";
-    echo "   Check if the atomic transaction is being committed properly.\n";
-} else {
-    echo "✅ Tables have data, but the specific swap wasn't found.\n";
-    echo "   Check if populateTrackingTables() is being called with the correct reference.\n";
+// 2. Latest hold_transactions
+echo "📋 2. Latest hold_transactions (last 5):\n";
+$stmt = $pdo->prepare("
+    SELECT hold_id, hold_reference, swap_reference, amount, status, placed_at 
+    FROM hold_transactions 
+    ORDER BY placed_at DESC 
+    LIMIT 5
+");
+$stmt->execute();
+$results = $stmt->fetchAll(PDO::FETCH_ASSOC);
+foreach ($results as $r) {
+    echo "   hold_id: {$r['hold_id']} | ref: {$r['hold_reference']} | swap: {$r['swap_reference']} | amount: {$r['amount']} | status: {$r['status']} | placed: {$r['placed_at']}\n";
 }
+echo "\n";
 
-echo "\n========================================\n";
+// 3. Latest cashout_authorizations
+echo "📋 3. Latest cashout_authorizations (last 5):\n";
+$stmt = $pdo->prepare("
+    SELECT auth_id, swap_reference, client_phone, amount, swap_code, pin_code, status, created_at 
+    FROM cashout_authorizations 
+    ORDER BY created_at DESC 
+    LIMIT 5
+");
+$stmt->execute();
+$results = $stmt->fetchAll(PDO::FETCH_ASSOC);
+foreach ($results as $r) {
+    echo "   auth_id: {$r['auth_id']} | swap: {$r['swap_reference']} | phone: {$r['client_phone']} | amount: {$r['amount']} | code: {$r['swap_code']} | pin: {$r['pin_code']} | status: {$r['status']} | created: {$r['created_at']}\n";
+}
+echo "\n";
+
+// 4. Search for the test phone number
+echo "📋 4. Cashout authorizations for phone +26770000000:\n";
+$stmt = $pdo->prepare("
+    SELECT auth_id, swap_reference, amount, swap_code, pin_code, status, created_at 
+    FROM cashout_authorizations 
+    WHERE client_phone = :phone
+    ORDER BY created_at DESC
+");
+$stmt->execute([':phone' => '+26770000000']);
+$results = $stmt->fetchAll(PDO::FETCH_ASSOC);
+if ($results) {
+    foreach ($results as $r) {
+        echo "   auth_id: {$r['auth_id']} | swap: {$r['swap_reference']} | amount: {$r['amount']} | code: {$r['swap_code']} | status: {$r['status']} | created: {$r['created_at']}\n";
+    }
+} else {
+    echo "   ❌ No records found for phone +26770000000\n";
+}
+echo "\n";
+
+// 5. Search for the test user_id
+echo "📋 5. Swap requests for user_id 12:\n";
+$stmt = $pdo->prepare("
+    SELECT swap_id, swap_uuid, amount, status, created_at 
+    FROM swap_requests 
+    WHERE user_id = :user_id
+    ORDER BY created_at DESC
+    LIMIT 10
+");
+$stmt->execute([':user_id' => 12]);
+$results = $stmt->fetchAll(PDO::FETCH_ASSOC);
+if ($results) {
+    foreach ($results as $r) {
+        echo "   {$r['swap_uuid']} | amount: {$r['amount']} | status: {$r['status']} | created: {$r['created_at']}\n";
+    }
+} else {
+    echo "   ❌ No records found for user_id 12\n";
+}
+echo "\n";
+
+// 6. Check if the test reference exists anywhere (partial match)
+echo "📋 6. Search for partial match of 'SWAP_TEST' in all tables:\n";
+$tables = ['swap_requests' => 'swap_uuid', 'hold_transactions' => 'swap_reference', 'cashout_authorizations' => 'swap_reference'];
+foreach ($tables as $table => $column) {
+    try {
+        $stmt = $pdo->prepare("SELECT {$column} FROM {$table} WHERE {$column} LIKE :pattern ORDER BY created_at DESC LIMIT 5");
+        $stmt->execute([':pattern' => 'SWAP_TEST%']);
+        $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        if ($results) {
+            echo "   ✅ {$table}: " . implode(', ', array_column($results, $column)) . "\n";
+        } else {
+            echo "   ❌ {$table}: No 'SWAP_TEST%' records found\n";
+        }
+    } catch (PDOException $e) {
+        echo "   ❌ {$table}: ERROR - " . $e->getMessage() . "\n";
+    }
+}
+echo "\n";
+
+// 7. Check the auth_id from the test output (154)
+echo "📋 7. Check auth_id 154 (from test output):\n";
+$stmt = $pdo->prepare("
+    SELECT * FROM cashout_authorizations WHERE auth_id = :auth_id
+");
+$stmt->execute([':auth_id' => 154]);
+$result = $stmt->fetch(PDO::FETCH_ASSOC);
+if ($result) {
+    echo "   ✅ FOUND:\n";
+    echo "      swap_reference: {$result['swap_reference']}\n";
+    echo "      amount: {$result['amount']}\n";
+    echo "      swap_code: {$result['swap_code']}\n";
+    echo "      pin_code: {$result['pin_code']}\n";
+    echo "      status: {$result['status']}\n";
+    echo "      created_at: {$result['created_at']}\n";
+} else {
+    echo "   ❌ auth_id 154 NOT FOUND\n";
+}
+echo "\n";
+
+// 8. Check hold_id 542 (from test output)
+echo "📋 8. Check hold_id 542 (from test output):\n";
+$stmt = $pdo->prepare("
+    SELECT * FROM hold_transactions WHERE hold_id = :hold_id
+");
+$stmt->execute([':hold_id' => 542]);
+$result = $stmt->fetch(PDO::FETCH_ASSOC);
+if ($result) {
+    echo "   ✅ FOUND:\n";
+    echo "      hold_reference: {$result['hold_reference']}\n";
+    echo "      swap_reference: {$result['swap_reference']}\n";
+    echo "      amount: {$result['amount']}\n";
+    echo "      status: {$result['status']}\n";
+    echo "      placed_at: {$result['placed_at']}\n";
+} else {
+    echo "   ❌ hold_id 542 NOT FOUND\n";
+}
+echo "\n";
+
+echo "========================================\n";
 echo "CHECK COMPLETE\n";
 echo "========================================\n";
