@@ -1518,6 +1518,74 @@ private function populateAuditLog(string $swapRef, string $swapType, array $swap
     $stmt->execute($params);
 }
 
+ 
+/**
+ * Dead-simple, fixed-schema fallback for when the real audit_logs write
+ * can't happen. Deliberately has NO dynamic column introspection and NO
+ * ON CONFLICT clause, so it can't fail the same way the main path can.
+ * Ops/compliance should monitor this table directly - any row in it
+ * means "money moved (or a swap was attempted) without a normal audit
+ * trail entry" and needs a human to look at it.
+ *
+ * Migration (run once):
+ *   CREATE TABLE IF NOT EXISTS audit_log_failures (
+ *       id BIGSERIAL PRIMARY KEY,
+ *       swap_reference VARCHAR(255) NOT NULL,
+ *       swap_type VARCHAR(50),
+ *       user_id INTEGER,
+ *       reason TEXT NOT NULL,
+ *       created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+ *       resolved_at TIMESTAMP,
+ *       resolved_by VARCHAR(100)
+ *   );
+ *   CREATE INDEX IF NOT EXISTS idx_audit_log_failures_unresolved
+ *       ON audit_log_failures (created_at) WHERE resolved_at IS NULL;
+ */
+private function writeAuditFallback(string $swapRef, string $swapType, string $reason, ?int $userId): void
+{
+    try {
+        $this->swapDB->exec("
+            CREATE TABLE IF NOT EXISTS audit_log_failures (
+                id BIGSERIAL PRIMARY KEY,
+                swap_reference VARCHAR(255) NOT NULL,
+                swap_type VARCHAR(50),
+                user_id INTEGER,
+                reason TEXT NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                resolved_at TIMESTAMP,
+                resolved_by VARCHAR(100)
+            )
+        ");
+        $stmt = $this->swapDB->prepare("
+            INSERT INTO audit_log_failures (swap_reference, swap_type, user_id, reason)
+            VALUES (:ref, :type, :user_id, :reason)
+        ");
+        $stmt->execute([
+            ':ref' => $swapRef,
+            ':type' => $swapType,
+            ':user_id' => $userId,
+            ':reason' => $reason
+        ]);
+        $this->logger->critical("Audit log write failed - recorded to audit_log_failures", [
+            'swap_reference' => $swapRef,
+            'reason' => $reason
+        ]);
+    } catch (\Throwable $e) {
+        // If even THIS fails, there's nothing left to do but scream into
+        // the log as loudly as possible - this should never happen given
+        // the table's trivial schema, but don't let it throw further and
+        // risk taking down the money-movement path over an audit issue.
+        $this->logger->emergency("audit_log_failures fallback ITSELF failed - manual DB investigation required", [
+            'swap_reference' => $swapRef,
+            'original_reason' => $reason,
+            'fallback_error' => $e->getMessage()
+        ]);
+    }
+}
+ 
+
+
+    
     /**
      * Get numeric swap_request_id from swap_uuid
      */
