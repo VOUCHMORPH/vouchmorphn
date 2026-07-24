@@ -7889,18 +7889,35 @@ private function beginAtomicSwap(string $reference): void
 }
 
 
-    private function commitAtomicSwap(): array
-    {
-        $this->swapDB->commit();
-        error_log("[DIAG] PDO errorInfo after commit: " . json_encode($this->swapDB->errorInfo()));
-        $check = $this->swapDB->query("SELECT hold_id FROM hold_transactions WHERE hold_id = {$this->currentHoldId}")->fetchColumn();
-   error_log("[DIAG] Immediate post-commit re-read of hold_id: " . var_export($check, true));
-        $result = [
-            'status' => 'committed',
-            'reference' => $this->currentSwapRef,
-            'hold_id' => $this->currentHoldId,
-            'steps_completed' => count($this->executedSteps)
-        ];
+  private function commitAtomicSwap(): array
+{
+    // --- DIAGNOSTIC: check for a silently-aborted transaction before commit ---
+    error_log("[DIAG] Pre-commit errorInfo: " . json_encode($this->swapDB->errorInfo()));
+    error_log("[DIAG] Pre-commit inTransaction: " . ($this->swapDB->inTransaction() ? 'YES' : 'NO'));
+
+    $this->swapDB->commit();
+
+    // --- DIAGNOSTIC: check errorInfo immediately after commit, and re-read the
+    // just-written hold on the SAME connection, in the SAME process ---
+    error_log("[DIAG] Post-commit errorInfo: " . json_encode($this->swapDB->errorInfo()));
+    if ($this->currentHoldId) {
+        try {
+            $check = $this->swapDB->query(
+                "SELECT hold_id FROM hold_transactions WHERE hold_id = " . (int)$this->currentHoldId
+            )->fetchColumn();
+            error_log("[DIAG] Immediate post-commit re-read of hold_id {$this->currentHoldId}: " . var_export($check, true));
+        } catch (\Throwable $e) {
+            error_log("[DIAG] Post-commit re-read THREW: " . $e->getMessage());
+        }
+    }
+    // --- END DIAGNOSTIC ---
+
+    $result = [
+        'status' => 'committed',
+        'reference' => $this->currentSwapRef,
+        'hold_id' => $this->currentHoldId,
+        'steps_completed' => count($this->executedSteps)
+    ];
         
         $this->logger->info("Atomic swap committed", $result);
         $this->resetAtomicState();
