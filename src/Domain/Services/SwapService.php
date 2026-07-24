@@ -1937,83 +1937,100 @@ private function populateAuditLog(string $swapRef, string $swapType, array $swap
 }
 
     /**
-     * Populate message_outbox table
-     */
-    private function populateMessageOutbox(string $swapRef, array $swapData, array $details, ?array $destResponse, ?int $userId = null): void
-    {
-        if (!$destResponse || empty($destResponse['cashout_code'])) {
-            return;
-        }
-        
-        $phone = $details['beneficiary_phone'] ?? $details['client_phone'] ?? null;
-        if (!$phone) {
-            return;
-        }
-        
-        $code = $destResponse['cashout_code'] ?? $destResponse['swap_code'] ?? null;
-        $pin = $destResponse['pin_code'] ?? null;
-        $amount = $swapData['amount'] ?? $details['amount'] ?? 0;
-        $currency = $swapData['currency'] ?? $details['currency'] ?? 'BWP';
-        $expiry = $destResponse['expiry'] ?? null;
-        
-        $message = "Your VouchMorph cashout code: {$code}";
-        if ($pin) {
-            $message .= " PIN: {$pin}";
-        }
-        $message .= " Amount: {$amount} {$currency}";
-        if ($expiry) {
-            $message .= " Expires: {$expiry}";
-        }
-        
-        $sql = "
-            INSERT INTO message_outbox (
-                channel,
-                destination,
-                payload,
-                status,
-                created_at,
-                sent_at,
-                user_id
-            ) VALUES (
-                'SMS',
-                :destination,
-                :payload::jsonb,
-                'queued',
-                :created_at,
-                NULL,
-                :user_id
-            ) ON CONFLICT (destination, created_at) DO NOTHING
-        ";
-        
-        try {
-            $stmt = $this->swapDB->prepare($sql);
-            $stmt->execute([
-                ':destination' => $phone,
-                ':payload' => json_encode([
-                    'phone' => $phone,
-                    'message' => $message,
-                    'swap_reference' => $swapRef,
-                    'code' => $code,
-                    'pin' => $pin,
-                    'amount' => $amount,
-                    'currency' => $currency,
-                    'expiry' => $expiry,
-                    'user_id' => $userId,
-                    'api_response' => [
-                        'success' => true,
-                        'message' => 'SMS queued from swap_service'
-                    ]
-                ]),
-                ':created_at' => date('Y-m-d H:i:s'),
-                ':user_id' => $userId
-            ]);
-            
-            $this->logger->debug("message_outbox populated", ['destination' => $phone, 'swap_ref' => $swapRef, 'user_id' => $userId]);
-            
-        } catch (PDOException $e) {
-            $this->logger->error("Failed to populate message_outbox", ['error' => $e->getMessage(), 'swap_ref' => $swapRef]);
-        }
+ * ============================================================================
+ * FIX 1: populateMessageOutbox() — the ON CONFLICT clause targets a
+ * constraint that does not exist on message_outbox, so this fails on
+ * EVERY cashout. Two changes:
+ *   1. Drop the bogus ON CONFLICT (destination, created_at) — there is no
+ *      unique index backing it. If you actually want de-duplication,
+ *      create the index first (see the migration below) and keep it.
+ *   2. RETHROW instead of swallowing, so runInSavepoint() (the call site
+ *      in populateTrackingTables()) is the single source of truth for
+ *      success/failure — no more double-error-message artifact from the
+ *      inner catch silently succeeding while the transaction is already
+ *      poisoned underneath it.
+ * ============================================================================
+ */
+private function populateMessageOutbox(string $swapRef, array $swapData, array $details, ?array $destResponse, ?int $userId = null): void
+{
+    if (!$destResponse || empty($destResponse['cashout_code'])) {
+        return;
     }
+ 
+    $phone = $details['beneficiary_phone'] ?? $details['client_phone'] ?? null;
+    if (!$phone) {
+        return;
+    }
+ 
+    $code = $destResponse['cashout_code'] ?? $destResponse['swap_code'] ?? null;
+    $pin = $destResponse['pin_code'] ?? null;
+    $amount = $swapData['amount'] ?? $details['amount'] ?? 0;
+    $currency = $swapData['currency'] ?? $details['currency'] ?? 'BWP';
+    $expiry = $destResponse['expiry'] ?? null;
+ 
+    $message = "Your VouchMorph cashout code: {$code}";
+    if ($pin) {
+        $message .= " PIN: {$pin}";
+    }
+    $message .= " Amount: {$amount} {$currency}";
+    if ($expiry) {
+        $message .= " Expires: {$expiry}";
+    }
+ 
+    // FIX: removed "ON CONFLICT (destination, created_at) DO NOTHING" -
+    // no unique/exclusion constraint backs that column pair, so Postgres
+    // rejects the statement outright (42P10) every single time this runs.
+    // If de-duplication is genuinely needed, run the migration below FIRST,
+    // then restore an ON CONFLICT clause that matches the real constraint.
+    $sql = "
+        INSERT INTO message_outbox (
+            channel,
+            destination,
+            payload,
+            status,
+            created_at,
+            sent_at,
+            user_id
+        ) VALUES (
+            'SMS',
+            :destination,
+            :payload::jsonb,
+            'queued',
+            :created_at,
+            NULL,
+            :user_id
+        )
+    ";
+ 
+    // FIX: no inner try/catch here anymore. Let the exception propagate
+    // to runInSavepoint() at the call site in populateTrackingTables() -
+    // that's the ONE place that should decide "log and continue" vs
+    // "this needs to roll back its own savepoint."
+    $stmt = $this->swapDB->prepare($sql);
+    $stmt->execute([
+        ':destination' => $phone,
+        ':payload' => json_encode([
+            'phone' => $phone,
+            'message' => $message,
+            'swap_reference' => $swapRef,
+            'code' => $code,
+            'pin' => $pin,
+            'amount' => $amount,
+            'currency' => $currency,
+            'expiry' => $expiry,
+            'user_id' => $userId,
+            'api_response' => [
+                'success' => true,
+                'message' => 'SMS queued from swap_service'
+            ]
+        ]),
+        ':created_at' => date('Y-m-d H:i:s'),
+        ':user_id' => $userId
+    ]);
+ 
+    $this->logger->debug("message_outbox populated", ['destination' => $phone, 'swap_ref' => $swapRef, 'user_id' => $userId]);
+}
+
 
     public function executeAtomicSwap(array $payload): array
     {
