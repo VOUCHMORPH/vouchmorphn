@@ -1217,7 +1217,6 @@ private function getDecryptedRefreshToken(array $source): ?string
             
             // 3. Populate type-specific tables
             if ($swapType === 'CASHOUT') {
-                $this->populateCashoutAuthorization($swapRef, $swapData, $details, $destResponse, $userId);
                 $this->populateMessageOutbox($swapRef, $swapData, $details, $destResponse, $userId);
             } elseif ($swapType === 'DEPOSIT') {
                 $this->populateDepositTransaction($swapRef, $swapData, $details, $userId);
