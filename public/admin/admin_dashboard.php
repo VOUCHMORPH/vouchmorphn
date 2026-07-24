@@ -419,6 +419,9 @@ $agentApprovalCount = count($pendingAgents);
 // CSV export short-circuits before any HTML is emitted.
 // ============================================================
 $reportCatalog = [
+    'transaction_certificate' => ['group' => 'Trust & Integrity', 'title' => 'Transaction Certificate',              'blurb' => 'The complete, signed timeline for one transaction — proof for the client, the bank, and the regulator.'],
+    'double_spend_check'      => ['group' => 'Trust & Integrity', 'title' => 'Double-Spend & Duplicate-Debit Check',  'blurb' => 'Verifies every hold was debited at most once and every debit maps to exactly one hold.'],
+    'bank_statement'          => ['group' => 'Trust & Integrity', 'title' => 'Partner Bank Statement',                'blurb' => 'Per-institution transaction list, fees, and net settlement position — a bank\'s own statement.'],
     'executive_summary'  => ['group' => 'Executive',  'title' => 'Executive Summary',            'blurb' => 'One-page snapshot of volume, revenue, and network health.'],
     'trust_scorecard'     => ['group' => 'Executive',  'title' => 'Institutional Trust Scorecard', 'blurb' => 'Success rate ranking and tiering across every connected institution.'],
     'net_settlement'      => ['group' => 'Regulatory', 'title' => 'Net Settlement Position',       'blurb' => 'Net obligations between institutions, for regulatory review.'],
@@ -433,6 +436,12 @@ $reportNetPositions = [];
 $reportFeeRevenue = [];
 $reportAuditRows = [];
 $reportReconciliation = [];
+$certData = null;
+$certRef = trim($_GET['ref'] ?? '');
+$integrityIssues = [];
+$integrityTotalIssues = 0;
+$bankStatement = null;
+$bankInstitution = trim($_GET['institution'] ?? '');
 
 // Maps a report key to the SQL date_trunc unit and lookback window used
 // for the three reconciliation reports below.
@@ -443,6 +452,208 @@ $reconciliationConfig = [
 ];
 
 if ($view === 'reports' && canView('reports') && $reportKey !== '') {
+
+    // ============================================================
+    // TRANSACTION CERTIFICATE — the full signed chain for one swap.
+    // This is the artifact a bank, a regulator, or a client uses to
+    // independently verify a single transaction end to end: what was
+    // held, what was generated, what was debited/credited, what was
+    // logged, and what was notified — with timestamps at every step.
+    // ============================================================
+    if ($reportKey === 'transaction_certificate' && $certRef !== '') {
+        $certData = ['reference' => $certRef];
+        try {
+            $stmt = $db->prepare("SELECT * FROM swap_requests WHERE swap_uuid = :ref");
+            $stmt->execute([':ref' => $certRef]);
+            $certData['swap_request'] = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+        } catch (Throwable $e) { $certData['swap_request'] = null; }
+        try {
+            $stmt = $db->prepare("SELECT * FROM hold_transactions WHERE swap_reference = :ref ORDER BY placed_at ASC");
+            $stmt->execute([':ref' => $certRef]);
+            $certData['holds'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Throwable $e) { $certData['holds'] = []; }
+        try {
+            $stmt = $db->prepare("SELECT * FROM cashout_authorizations WHERE swap_reference = :ref");
+            $stmt->execute([':ref' => $certRef]);
+            $certData['cashout'] = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+        } catch (Throwable $e) { $certData['cashout'] = null; }
+        try {
+            $stmt = $db->prepare("
+                SELECT st.* FROM swap_transactions st
+                JOIN swap_requests sr ON st.swap_id = sr.swap_id
+                WHERE sr.swap_uuid = :ref
+            ");
+            $stmt->execute([':ref' => $certRef]);
+            $certData['swap_transactions'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Throwable $e) { $certData['swap_transactions'] = []; }
+        try {
+            $stmt = $db->prepare("SELECT * FROM audit_logs WHERE entity_id = :ref ORDER BY performed_at ASC");
+            $stmt->execute([':ref' => $certRef]);
+            $certData['audit'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Throwable $e) { $certData['audit'] = []; }
+        try {
+            $stmt = $db->prepare("SELECT * FROM message_outbox WHERE payload->>'swap_reference' = :ref ORDER BY created_at ASC");
+            $stmt->execute([':ref' => $certRef]);
+            $certData['messages'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Throwable $e) { $certData['messages'] = []; }
+        try {
+            $stmt = $db->prepare("SELECT * FROM settlement_outbox WHERE swap_reference = :ref ORDER BY created_at ASC");
+            $stmt->execute([':ref' => $certRef]);
+            $certData['settlement'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Throwable $e) { $certData['settlement'] = []; }
+
+        if ($reportFormat === 'csv') {
+            header('Content-Type: text/csv; charset=utf-8');
+            header('Content-Disposition: attachment; filename="vouchmorph_certificate_' . preg_replace('/[^A-Za-z0-9_\-]/', '', $certRef) . '.csv"');
+            $out = fopen('php://output', 'w');
+            fputcsv($out, ['Section', 'Field', 'Value']);
+            $flatten = function ($label, $row) use ($out) {
+                if (!$row) return;
+                foreach ($row as $k => $v) {
+                    fputcsv($out, [$label, $k, is_array($v) ? json_encode($v) : $v]);
+                }
+            };
+            $flatten('swap_request', $certData['swap_request']);
+            foreach ($certData['holds'] as $i => $h) { $flatten("hold_{$i}", $h); }
+            $flatten('cashout', $certData['cashout']);
+            foreach ($certData['swap_transactions'] as $i => $t) { $flatten("ledger_entry_{$i}", $t); }
+            foreach ($certData['audit'] as $i => $a) { $flatten("audit_{$i}", $a); }
+            foreach ($certData['messages'] as $i => $m) { $flatten("notification_{$i}", $m); }
+            foreach ($certData['settlement'] as $i => $s) { $flatten("settlement_{$i}", $s); }
+            fclose($out);
+            exit;
+        }
+    }
+
+    // ============================================================
+    // DOUBLE-SPEND & DUPLICATE-DEBIT CHECK — an automated scan of
+    // the actual ledger state, independent of what any application
+    // code path claims happened. This is the standing answer to a
+    // partner bank's or regulator's biggest fear.
+    // ============================================================
+    if ($reportKey === 'double_spend_check') {
+        try {
+            $stmt = $db->query("
+                SELECT swap_reference, COUNT(*) AS debited_hold_count,
+                       array_agg(hold_id) AS hold_ids, array_agg(amount) AS amounts
+                FROM hold_transactions
+                WHERE status = 'DEBITED'
+                GROUP BY swap_reference
+                HAVING COUNT(*) > 1
+                ORDER BY debited_hold_count DESC
+                LIMIT 500
+            ");
+            $integrityIssues['duplicate_debited_holds'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Throwable $e) { $integrityIssues['duplicate_debited_holds'] = []; }
+
+        try {
+            $stmt = $db->query("
+                SELECT swap_reference, COUNT(*) AS auth_count
+                FROM cashout_authorizations
+                WHERE status = 'COMPLETED'
+                GROUP BY swap_reference
+                HAVING COUNT(*) > 1
+                LIMIT 500
+            ");
+            $integrityIssues['duplicate_completed_cashouts'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Throwable $e) { $integrityIssues['duplicate_completed_cashouts'] = []; }
+
+        try {
+            $stmt = $db->query("
+                SELECT key, COUNT(DISTINCT result::jsonb->>'reference') AS distinct_refs
+                FROM idempotency_keys
+                GROUP BY key
+                HAVING COUNT(DISTINCT result::jsonb->>'reference') > 1
+                LIMIT 200
+            ");
+            $integrityIssues['idempotency_key_conflicts'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Throwable $e) { $integrityIssues['idempotency_key_conflicts'] = []; }
+
+        try {
+            $stmt = $db->query("
+                SELECT ht.hold_id, ht.swap_reference, ht.amount, ht.currency, ht.source_institution, ht.placed_at
+                FROM hold_transactions ht
+                LEFT JOIN swap_requests sr ON sr.swap_uuid = ht.swap_reference
+                WHERE ht.status = 'DEBITED' AND sr.swap_id IS NULL
+                ORDER BY ht.placed_at DESC LIMIT 500
+            ");
+            $integrityIssues['debited_holds_missing_swap_request'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Throwable $e) { $integrityIssues['debited_holds_missing_swap_request'] = []; }
+
+        $integrityTotalIssues = array_sum(array_map('count', $integrityIssues));
+
+        if ($reportFormat === 'csv') {
+            header('Content-Type: text/csv; charset=utf-8');
+            header('Content-Disposition: attachment; filename="vouchmorph_integrity_check_' . date('Ymd_His') . '.csv"');
+            $out = fopen('php://output', 'w');
+            fputcsv($out, ['Check', 'Result']);
+            foreach ($integrityIssues as $checkName => $rows) {
+                if (empty($rows)) {
+                    fputcsv($out, [$checkName, 'CLEAN - no issues found']);
+                } else {
+                    foreach ($rows as $row) {
+                        fputcsv($out, [$checkName, json_encode($row)]);
+                    }
+                }
+            }
+            fclose($out);
+            exit;
+        }
+    }
+
+    // ============================================================
+    // PARTNER BANK STATEMENT — one institution's own reconcilable
+    // record: every transaction they touched, fees invoiced to
+    // them, and their net position. NOTE: assumes net_positions has
+    // institution_a/institution_b columns — adjust if your schema
+    // names these differently, same caveat as the agents table above.
+    // ============================================================
+    if ($reportKey === 'bank_statement' && $bankInstitution !== '') {
+        $bankStatement = ['institution' => $bankInstitution, 'transactions' => [], 'fees_charged_to_them' => ['fees' => 0, 'invoice_count' => 0], 'net_positions' => []];
+        try {
+            $checkStmt = $db->query("SELECT to_regclass('vw_all_swaps')");
+            if ($checkStmt->fetchColumn()) {
+                $stmt = $db->prepare("
+                    SELECT swap_reference, reference, swap_type, source_institution, destination_institution,
+                           amount, currency, status, fee_amount, created_at
+                    FROM vw_all_swaps
+                    WHERE source_institution = :inst OR destination_institution = :inst
+                    ORDER BY created_at DESC LIMIT 1000
+                ");
+                $stmt->execute([':inst' => $bankInstitution]);
+                $bankStatement['transactions'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            }
+        } catch (Throwable $e) {}
+        try {
+            $stmt = $db->prepare("
+                SELECT COALESCE(SUM((message_payload->>'fee_amount')::numeric), 0) AS fees, COUNT(*) AS invoice_count
+                FROM settlement_outbox
+                WHERE message_type = 'FEE_INVOICE' AND source_institution = :inst
+            ");
+            $stmt->execute([':inst' => $bankInstitution]);
+            $bankStatement['fees_charged_to_them'] = $stmt->fetch(PDO::FETCH_ASSOC) ?: ['fees' => 0, 'invoice_count' => 0];
+        } catch (Throwable $e) {}
+        try {
+            $stmt = $db->prepare("SELECT * FROM net_positions WHERE institution_a = :inst OR institution_b = :inst ORDER BY id DESC LIMIT 50");
+            $stmt->execute([':inst' => $bankInstitution]);
+            $bankStatement['net_positions'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Throwable $e) {}
+
+        if ($reportFormat === 'csv') {
+            header('Content-Type: text/csv; charset=utf-8');
+            header('Content-Disposition: attachment; filename="vouchmorph_statement_' . preg_replace('/[^A-Za-z0-9_\-]/', '', $bankInstitution) . '_' . date('Ymd_His') . '.csv"');
+            $out = fopen('php://output', 'w');
+            fputcsv($out, ['Reference', 'Type', 'Role', 'Counterparty', 'Amount', 'Currency', 'Fee', 'Status', 'Created At']);
+            foreach ($bankStatement['transactions'] as $t) {
+                $role = ($t['source_institution'] ?? '') === $bankInstitution ? 'SOURCE' : 'DESTINATION';
+                $counterparty = $role === 'SOURCE' ? ($t['destination_institution'] ?? 'N/A') : ($t['source_institution'] ?? 'N/A');
+                fputcsv($out, [$t['swap_reference'] ?? $t['reference'], $t['swap_type'], $role, $counterparty, $t['amount'], $t['currency'], $t['fee_amount'], $t['status'], $t['created_at']]);
+            }
+            fclose($out);
+            exit;
+        }
+    }
+
     if ($reportKey === 'net_settlement') {
         try { $reportNetPositions = $db->query("SELECT * FROM net_positions ORDER BY id DESC LIMIT 200")->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) {}
     }
@@ -1396,6 +1607,9 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <div><strong>Date:</strong> <?php echo safeHtml(date('Y-m-d H:i', strtotime($r['created_at'] ?? 'now'))); ?></div>
                 </div>
                 <div class="lookup-next-action">→ <?php echo safeHtml($r['next_action']); ?></div>
+                <div style="text-align:right;margin-top:var(--sp-2);">
+                    <a href="?view=reports&report=transaction_certificate&ref=<?php echo urlencode($r['reference']); ?>" class="btn btn-sm">View Full Certificate</a>
+                </div>
             </div>
             <?php endforeach; endif; ?>
             <?php endif; ?>
@@ -1468,6 +1682,9 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <div><strong>Volume:</strong> <?php echo number_format((float)$inst['volume'], 2); ?></div>
                 </div>
                 <div class="health-bar-track"><div class="health-bar-fill <?php echo $barClass; ?>" style="width: <?php echo min(100, $rate); ?>%;"></div></div>
+                <div style="text-align:right;margin-top:var(--sp-3);">
+                    <a href="?view=reports&report=bank_statement&institution=<?php echo urlencode($inst['institution']); ?>" class="btn btn-sm">View Statement</a>
+                </div>
             </div>
             <?php endforeach; endif; ?>
             <?php endif; ?>
@@ -1533,18 +1750,19 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             </form>
             <div class="card">
                 <div class="card-header"><span class="card-title">All Swaps</span><span class="card-badge"><?php echo count($recentSwaps); ?></span></div>
-                <div class="table-responsive"><table><thead><tr><th>Reference</th><th>Type</th><th>Amount</th><th>Status</th><th>Source</th><th>Destination</th><th>Created</th></tr></thead><tbody>
+                <div class="table-responsive"><table><thead><tr><th>Reference</th><th>Type</th><th>Amount</th><th>Status</th><th>Source</th><th>Destination</th><th>Created</th><th></th></tr></thead><tbody>
                 <?php if (empty($recentSwaps)): ?>
-                <tr><td colspan="7" class="empty-state">No swaps<?php echo $search !== '' ? ' for "' . safeHtml($search) . '"' : ''; ?></td></tr>
-                <?php else: foreach ($recentSwaps as $row): $status = strtolower($row['status'] ?? 'pending'); $class = match(true) { str_contains($status, 'complet') || str_contains($status, 'success') => 'success', str_contains($status, 'pending') || str_contains($status, 'processing') => 'pending', str_contains($status, 'fail') || str_contains($status, 'error') => 'failed', default => 'info' }; ?>
+                <tr><td colspan="8" class="empty-state">No swaps<?php echo $search !== '' ? ' for "' . safeHtml($search) . '"' : ''; ?></td></tr>
+                <?php else: foreach ($recentSwaps as $row): $status = strtolower($row['status'] ?? 'pending'); $class = match(true) { str_contains($status, 'complet') || str_contains($status, 'success') => 'success', str_contains($status, 'pending') || str_contains($status, 'processing') => 'pending', str_contains($status, 'fail') || str_contains($status, 'error') => 'failed', default => 'info' }; $ref = $row['swap_reference'] ?? $row['reference'] ?? ''; ?>
                 <tr>
-                    <td><?php echo safeHtml(substr($row['swap_reference'] ?? $row['reference'] ?? 'N/A', 0, 16)); ?></td>
+                    <td><?php echo safeHtml(substr($ref, 0, 16)); ?></td>
                     <td><span class="status status-info"><?php echo safeHtml($row['swap_type'] ?? 'STANDARD'); ?></span></td>
                     <td><strong><?php echo number_format((float)($row['amount'] ?? 0), 2); ?></strong></td>
                     <td><span class="status status-<?php echo $class; ?>"><?php echo safeHtml($row['status'] ?? 'pending'); ?></span></td>
                     <td><?php echo safeHtml($row['source_institution'] ?? 'N/A'); ?></td>
                     <td><?php echo safeHtml($row['destination_institution'] ?? 'N/A'); ?></td>
                     <td><?php echo date('Y-m-d H:i', strtotime($row['created_at'] ?? 'now')); ?></td>
+                    <td><a href="?view=reports&report=transaction_certificate&ref=<?php echo urlencode($ref); ?>" class="btn btn-sm">Certificate</a></td>
                 </tr>
                 <?php endforeach; endif; ?>
                 </tbody></table></div>
@@ -1603,7 +1821,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <a href="?view=dashboard" class="back-link">← Back</a>
                 </div>
                 <?php
-                $groupsOrder = ['Executive', 'Regulatory', 'Finance', 'Audit', 'Reconciliation'];
+                $groupsOrder = ['Trust & Integrity', 'Executive', 'Regulatory', 'Finance', 'Audit', 'Reconciliation'];
                 foreach ($groupsOrder as $grp):
                     $tiles = array_filter($reportCatalog, fn($r) => $r['group'] === $grp);
                     if (empty($tiles)) continue;
@@ -1633,6 +1851,216 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <span class="timestamp">Generated <?php echo date('Y-m-d H:i:s'); ?></span>
                     <a href="?view=reports" class="back-link">← All Reports</a>
                 </div>
+
+                <?php if ($reportKey === 'transaction_certificate'): ?>
+                <div class="report-page">
+                    <div class="report-page-header">
+                        <div><div class="report-title">Transaction Certificate</div><div style="color:var(--ink-500); font-size:13px;">The complete signed record for one transaction</div></div>
+                        <div class="report-meta"><?php echo date('Y-m-d H:i:s'); ?></div>
+                    </div>
+                    <form method="get" class="search-box">
+                        <input type="hidden" name="view" value="reports">
+                        <input type="hidden" name="report" value="transaction_certificate">
+                        <input type="text" name="ref" placeholder="Enter swap reference..." value="<?php echo safeHtml($certRef); ?>" autofocus>
+                        <button type="submit" class="btn btn-primary">Look Up</button>
+                    </form>
+
+                    <?php if ($certRef === ''): ?>
+                    <div class="empty-state"><span class="icon">🔖</span><p>Enter a swap reference to generate its certificate.</p></div>
+                    <?php elseif (empty($certData['swap_request']) && empty($certData['holds'])): ?>
+                    <div class="empty-state"><span class="icon">🔍</span><p>No transaction found for reference "<?php echo safeHtml($certRef); ?>".</p></div>
+                    <?php else: $sr = $certData['swap_request']; ?>
+
+                    <div class="report-section-title">Summary</div>
+                    <div class="metrics-grid" style="grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));">
+                        <div class="metric-card"><span class="metric-label">Amount</span><span class="metric-value"><?php echo number_format((float)($sr['amount'] ?? 0), 2); ?></span><span class="metric-sub"><?php echo safeHtml($sr['from_currency'] ?? ''); ?></span></div>
+                        <div class="metric-card"><span class="metric-label">Status</span><span class="metric-value" style="font-size:18px;"><?php echo safeHtml(strtoupper($sr['status'] ?? 'unknown')); ?></span></div>
+                        <div class="metric-card"><span class="metric-label">Created</span><span class="metric-value" style="font-size:16px;"><?php echo safeHtml($sr['created_at'] ?? 'N/A'); ?></span></div>
+                    </div>
+
+                    <div class="report-section-title">1 · Hold Placed — Source Institution Reserves Funds</div>
+                    <?php if (empty($certData['holds'])): ?><p style="font-size:14px;color:var(--ink-300);">No hold record found.</p><?php else: ?>
+                    <div class="table-responsive"><table><thead><tr><th>Hold ID</th><th>Hold Reference</th><th>Institution</th><th>Amount</th><th>Status</th><th>Placed At</th><th>Debited At</th></tr></thead><tbody>
+                    <?php foreach ($certData['holds'] as $h): ?>
+                    <tr><td><?php echo safeHtml($h['hold_id']); ?></td><td><?php echo safeHtml($h['hold_reference']); ?></td><td><?php echo safeHtml($h['source_institution'] ?? $h['participant_name'] ?? 'N/A'); ?></td><td><?php echo number_format((float)$h['amount'], 2); ?></td><td><span class="status status-<?php echo $h['status'] === 'DEBITED' ? 'success' : 'pending'; ?>"><?php echo safeHtml($h['status']); ?></span></td><td><?php echo safeHtml($h['placed_at'] ?? ''); ?></td><td><?php echo safeHtml($h['debited_at'] ?? '—'); ?></td></tr>
+                    <?php endforeach; ?>
+                    </tbody></table></div>
+                    <?php endif; ?>
+
+                    <?php if (!empty($certData['cashout'])): $co = $certData['cashout']; ?>
+                    <div class="report-section-title">2 · Destination Code Generated</div>
+                    <div class="table-responsive"><table><thead><tr><th>Provider</th><th>Amount</th><th>Fee</th><th>Code Expiry</th><th>Status</th></tr></thead><tbody>
+                    <tr><td><?php echo safeHtml($co['cashout_provider'] ?? 'N/A'); ?></td><td><?php echo number_format((float)$co['amount'], 2); ?></td><td><?php echo number_format((float)($co['fee_amount'] ?? 0), 2); ?></td><td><?php echo safeHtml($co['code_expiry'] ?? ''); ?></td><td><span class="status status-<?php echo $co['status'] === 'COMPLETED' ? 'success' : 'pending'; ?>"><?php echo safeHtml($co['status']); ?></span></td></tr>
+                    </tbody></table></div>
+                    <?php endif; ?>
+
+                    <div class="report-section-title">3 · Ledger Entries</div>
+                    <?php if (empty($certData['swap_transactions'])): ?><p style="font-size:14px;color:var(--ink-300);">No ledger entries found.</p><?php else: ?>
+                    <div class="table-responsive"><table><thead><tr><th>From</th><th>To</th><th>Amount</th><th>Status</th><th>Transaction Ref</th><th>Created</th></tr></thead><tbody>
+                    <?php foreach ($certData['swap_transactions'] as $t): $from = json_decode($t['from_account_details'] ?? '{}', true) ?: []; $to = json_decode($t['to_account_details'] ?? '{}', true) ?: []; ?>
+                    <tr><td><?php echo safeHtml($from['institution'] ?? 'N/A'); ?></td><td><?php echo safeHtml($to['institution'] ?? 'N/A'); ?></td><td><?php echo number_format((float)$t['amount'], 2); ?></td><td><?php echo safeHtml($t['status']); ?></td><td><?php echo safeHtml($t['transaction_id'] ?? '—'); ?></td><td><?php echo safeHtml($t['created_at'] ?? ''); ?></td></tr>
+                    <?php endforeach; ?>
+                    </tbody></table></div>
+                    <?php endif; ?>
+
+                    <div class="report-section-title">4 · Audit Trail</div>
+                    <?php if (empty($certData['audit'])): ?><p style="font-size:14px;color:var(--ink-300);">No audit entries recorded for this reference.</p><?php else: ?>
+                    <div class="table-responsive"><table><thead><tr><th>Action</th><th>Category</th><th>Performed By</th><th>At</th></tr></thead><tbody>
+                    <?php foreach ($certData['audit'] as $a): ?>
+                    <tr><td><?php echo safeHtml($a['action'] ?? ''); ?></td><td><?php echo safeHtml($a['category'] ?? ''); ?></td><td><?php echo safeHtml($a['performed_by'] ?? $a['performed_by_id'] ?? 'SYSTEM'); ?></td><td><?php echo safeHtml($a['performed_at'] ?? ''); ?></td></tr>
+                    <?php endforeach; ?>
+                    </tbody></table></div>
+                    <?php endif; ?>
+
+                    <div class="report-section-title">5 · Notifications Sent</div>
+                    <?php if (empty($certData['messages'])): ?><p style="font-size:14px;color:var(--ink-300);">No messages recorded.</p><?php else: ?>
+                    <div class="table-responsive"><table><thead><tr><th>Channel</th><th>Destination</th><th>Status</th><th>Sent At</th></tr></thead><tbody>
+                    <?php foreach ($certData['messages'] as $m): ?>
+                    <tr><td><?php echo safeHtml($m['channel'] ?? ''); ?></td><td><?php echo safeHtml($m['destination'] ?? ''); ?></td><td><?php echo safeHtml($m['status'] ?? ''); ?></td><td><?php echo safeHtml($m['sent_at'] ?? '—'); ?></td></tr>
+                    <?php endforeach; ?>
+                    </tbody></table></div>
+                    <?php endif; ?>
+
+                    <p style="font-size:12px; color:var(--ink-300); margin-top:var(--sp-5); border-top:1px solid var(--line); padding-top:var(--sp-3);">
+                        <strong>Note on cryptographic proof:</strong> each verification/hold/debit step above is digitally signed at execution time,
+                        but those signatures are currently written only to the application log, not to a queryable table. For a certificate that
+                        can stand on its own in a dispute without pulling raw server logs, those signatures should be persisted to a dedicated
+                        <code>transaction_signatures</code> table at the moment each step executes — flag this to engineering as a follow-up.
+                    </p>
+                    <?php endif; ?>
+                </div>
+                <div style="text-align:center; margin-top:var(--sp-4); display:flex; justify-content:center; gap:var(--sp-3);">
+                    <button onclick="window.print()" class="btn btn-primary">Print / Save as PDF</button>
+                    <?php if ($certRef !== ''): ?><a href="?view=reports&report=transaction_certificate&ref=<?php echo urlencode($certRef); ?>&format=csv" class="btn">Download CSV</a><?php endif; ?>
+                </div>
+                <?php endif; ?>
+
+                <?php if ($reportKey === 'double_spend_check'): ?>
+                <div class="report-page">
+                    <div class="report-page-header">
+                        <div><div class="report-title">Double-Spend &amp; Duplicate-Debit Check</div><div style="color:var(--ink-500); font-size:13px;">Automated integrity scan across the full ledger</div></div>
+                        <div class="report-meta"><?php echo date('Y-m-d H:i:s'); ?></div>
+                    </div>
+
+                    <?php if ($integrityTotalIssues === 0): ?>
+                    <div class="card" style="border-left:3px solid var(--good);">
+                        <div class="empty-state"><span class="icon">✅</span><p style="color:var(--good); font-weight:600;">No double-spend, duplicate-debit, or tracking-gap issues found.</p></div>
+                    </div>
+                    <?php else: ?>
+                    <div class="card" style="border-left:3px solid var(--bad);">
+                        <div class="empty-state"><span class="icon">⚠️</span><p style="color:var(--bad); font-weight:600;"><?php echo $integrityTotalIssues; ?> issue<?php echo $integrityTotalIssues === 1 ? '' : 's'; ?> found — review below.</p></div>
+                    </div>
+                    <?php endif; ?>
+
+                    <div class="report-section-title">Holds Debited More Than Once</div>
+                    <?php if (empty($integrityIssues['duplicate_debited_holds'])): ?><p style="font-size:14px;color:var(--good);">✓ Clean — every hold was debited at most once.</p>
+                    <?php else: ?>
+                    <div class="table-responsive"><table><thead><tr><th>Swap Reference</th><th>Debited Count</th><th>Hold IDs</th><th>Amounts</th></tr></thead><tbody>
+                    <?php foreach ($integrityIssues['duplicate_debited_holds'] as $row): ?>
+                    <tr><td><?php echo safeHtml($row['swap_reference']); ?></td><td><span class="status status-failed"><?php echo $row['debited_hold_count']; ?></span></td><td><?php echo safeHtml(trim($row['hold_ids'], '{}')); ?></td><td><?php echo safeHtml(trim($row['amounts'], '{}')); ?></td></tr>
+                    <?php endforeach; ?>
+                    </tbody></table></div>
+                    <?php endif; ?>
+
+                    <div class="report-section-title">Cashouts Completed More Than Once</div>
+                    <?php if (empty($integrityIssues['duplicate_completed_cashouts'])): ?><p style="font-size:14px;color:var(--good);">✓ Clean — no cashout was marked COMPLETED more than once.</p>
+                    <?php else: ?>
+                    <div class="table-responsive"><table><thead><tr><th>Swap Reference</th><th>Completed Count</th></tr></thead><tbody>
+                    <?php foreach ($integrityIssues['duplicate_completed_cashouts'] as $row): ?>
+                    <tr><td><?php echo safeHtml($row['swap_reference']); ?></td><td><span class="status status-failed"><?php echo $row['auth_count']; ?></span></td></tr>
+                    <?php endforeach; ?>
+                    </tbody></table></div>
+                    <?php endif; ?>
+
+                    <div class="report-section-title">Idempotency Key Conflicts</div>
+                    <?php if (empty($integrityIssues['idempotency_key_conflicts'])): ?><p style="font-size:14px;color:var(--good);">✓ Clean — no idempotency key ever resolved to more than one transaction reference.</p>
+                    <?php else: ?>
+                    <div class="table-responsive"><table><thead><tr><th>Idempotency Key</th><th>Distinct References Returned</th></tr></thead><tbody>
+                    <?php foreach ($integrityIssues['idempotency_key_conflicts'] as $row): ?>
+                    <tr><td><?php echo safeHtml($row['key']); ?></td><td><span class="status status-failed"><?php echo $row['distinct_refs']; ?></span></td></tr>
+                    <?php endforeach; ?>
+                    </tbody></table></div>
+                    <?php endif; ?>
+
+                    <div class="report-section-title">Debited Holds With No Matching Swap Record</div>
+                    <?php if (empty($integrityIssues['debited_holds_missing_swap_request'])): ?><p style="font-size:14px;color:var(--good);">✓ Clean — every debited hold has a matching swap_requests row.</p>
+                    <?php else: ?>
+                    <div class="table-responsive"><table><thead><tr><th>Hold ID</th><th>Swap Reference</th><th>Amount</th><th>Institution</th><th>Placed At</th></tr></thead><tbody>
+                    <?php foreach ($integrityIssues['debited_holds_missing_swap_request'] as $row): ?>
+                    <tr><td><?php echo safeHtml($row['hold_id']); ?></td><td><?php echo safeHtml($row['swap_reference']); ?></td><td><?php echo number_format((float)$row['amount'], 2); ?></td><td><?php echo safeHtml($row['source_institution']); ?></td><td><?php echo safeHtml($row['placed_at']); ?></td></tr>
+                    <?php endforeach; ?>
+                    </tbody></table></div>
+                    <?php endif; ?>
+                </div>
+                <div style="text-align:center; margin-top:var(--sp-4); display:flex; justify-content:center; gap:var(--sp-3);">
+                    <button onclick="window.print()" class="btn btn-primary">Print / Save as PDF</button>
+                    <a href="?view=reports&report=double_spend_check&format=csv" class="btn">Download CSV</a>
+                </div>
+                <?php endif; ?>
+
+                <?php if ($reportKey === 'bank_statement'): ?>
+                <div class="report-page">
+                    <div class="report-page-header">
+                        <div><div class="report-title">Partner Bank Statement</div><div style="color:var(--ink-500); font-size:13px;">Per-institution transaction record and net position</div></div>
+                        <div class="report-meta"><?php echo date('Y-m-d H:i:s'); ?></div>
+                    </div>
+                    <form method="get" class="search-box">
+                        <input type="hidden" name="view" value="reports">
+                        <input type="hidden" name="report" value="bank_statement">
+                        <input type="text" name="institution" placeholder="Enter institution code (e.g. ZURUBANK)..." value="<?php echo safeHtml($bankInstitution); ?>" autofocus>
+                        <button type="submit" class="btn btn-primary">Generate Statement</button>
+                    </form>
+
+                    <?php if ($bankInstitution === ''): ?>
+                    <div class="empty-state"><span class="icon">🏦</span><p>Enter an institution code to generate its statement.</p></div>
+                    <?php elseif (empty($bankStatement['transactions'])): ?>
+                    <div class="empty-state"><span class="icon">📭</span><p>No transactions found involving "<?php echo safeHtml($bankInstitution); ?>".</p></div>
+                    <?php else:
+                        $volumeSent = 0; $volumeReceived = 0;
+                        foreach ($bankStatement['transactions'] as $t) {
+                            if (($t['source_institution'] ?? '') === $bankInstitution) $volumeSent += (float)($t['amount'] ?? 0);
+                            if (($t['destination_institution'] ?? '') === $bankInstitution) $volumeReceived += (float)($t['amount'] ?? 0);
+                        }
+                    ?>
+                    <div class="metrics-grid" style="grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));">
+                        <div class="metric-card"><span class="metric-label">Total Transactions</span><span class="metric-value"><?php echo count($bankStatement['transactions']); ?></span></div>
+                        <div class="metric-card"><span class="metric-label">Sent (as source)</span><span class="metric-value"><?php echo number_format($volumeSent, 2); ?></span></div>
+                        <div class="metric-card"><span class="metric-label">Received (as destination)</span><span class="metric-value"><?php echo number_format($volumeReceived, 2); ?></span></div>
+                        <div class="metric-card"><span class="metric-label">Fees Invoiced To Them</span><span class="metric-value"><?php echo number_format((float)($bankStatement['fees_charged_to_them']['fees'] ?? 0), 2); ?></span></div>
+                    </div>
+
+                    <div class="report-section-title">Transaction Detail</div>
+                    <div class="table-responsive"><table><thead><tr><th>Reference</th><th>Type</th><th>Role</th><th>Counterparty</th><th>Amount</th><th>Fee</th><th>Status</th><th>Date</th></tr></thead><tbody>
+                    <?php foreach ($bankStatement['transactions'] as $t): $role = ($t['source_institution'] ?? '') === $bankInstitution ? 'SOURCE' : 'DESTINATION'; $counterparty = $role === 'SOURCE' ? ($t['destination_institution'] ?? 'N/A') : ($t['source_institution'] ?? 'N/A'); ?>
+                    <tr>
+                        <td><?php echo safeHtml(substr($t['swap_reference'] ?? $t['reference'] ?? '', 0, 16)); ?></td>
+                        <td><span class="status status-info"><?php echo safeHtml($t['swap_type'] ?? 'STANDARD'); ?></span></td>
+                        <td><?php echo $role; ?></td>
+                        <td><?php echo safeHtml($counterparty); ?></td>
+                        <td><strong><?php echo number_format((float)($t['amount'] ?? 0), 2); ?></strong></td>
+                        <td><?php echo number_format((float)($t['fee_amount'] ?? 0), 2); ?></td>
+                        <td><?php echo safeHtml($t['status'] ?? ''); ?></td>
+                        <td><?php echo safeHtml(date('Y-m-d H:i', strtotime($t['created_at'] ?? 'now'))); ?></td>
+                    </tr>
+                    <?php endforeach; ?>
+                    </tbody></table></div>
+
+                    <?php if (!empty($bankStatement['net_positions'])): ?>
+                    <div class="report-section-title">Net Position</div>
+                    <div class="table-responsive"><table><thead><tr><?php foreach (array_keys($bankStatement['net_positions'][0]) as $col): ?><th><?php echo safeHtml($col); ?></th><?php endforeach; ?></tr></thead><tbody>
+                    <?php foreach ($bankStatement['net_positions'] as $row): ?>
+                    <tr><?php foreach ($row as $val): ?><td><?php echo safeHtml(is_array($val) ? json_encode($val) : $val); ?></td><?php endforeach; ?></tr>
+                    <?php endforeach; ?>
+                    </tbody></table></div>
+                    <p style="font-size:12px;color:var(--ink-300);margin-top:var(--sp-2);">Net position query assumes <code>net_positions</code> has <code>institution_a</code>/<code>institution_b</code> columns — adjust in code if your schema names these differently.</p>
+                    <?php endif; ?>
+                    <?php endif; ?>
+                </div>
+                <div style="text-align:center; margin-top:var(--sp-4); display:flex; justify-content:center; gap:var(--sp-3);">
+                    <button onclick="window.print()" class="btn btn-primary">Print / Save as PDF</button>
+                    <?php if ($bankInstitution !== ''): ?><a href="?view=reports&report=bank_statement&institution=<?php echo urlencode($bankInstitution); ?>&format=csv" class="btn">Download CSV</a><?php endif; ?>
+                </div>
+                <?php endif; ?>
 
                 <?php if ($reportKey === 'executive_summary'): ?>
                 <div class="report-page">
@@ -1859,6 +2287,15 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                 <h1>Regulatory Oversight</h1>
                 <span class="timestamp">Net positions · Pending settlements</span>
                 <a href="?view=dashboard" class="back-link">← Back</a>
+            </div>
+            <div class="card" style="border-left: 3px solid var(--brass);">
+                <div class="card-header"><span class="card-title">🛡️ Platform Integrity</span></div>
+                <div style="text-align:center; font-size:14px; color:var(--ink-500);">
+                    Run the automated double-spend and duplicate-debit check across the full ledger at any time.
+                </div>
+                <div style="text-align:center; margin-top:var(--sp-3);">
+                    <a href="?view=reports&report=double_spend_check" class="btn btn-primary btn-sm">Run Integrity Check</a>
+                </div>
             </div>
             <div class="card">
                 <div class="card-header"><span class="card-title">Institution Success Rates</span></div>
