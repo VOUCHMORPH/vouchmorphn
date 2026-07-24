@@ -1425,7 +1425,9 @@ private function populateTrackingTables(array $swapData, array $details, ?array 
 private function populateAuditLog(string $swapRef, string $swapType, array $swapData, array $details, ?int $userId = null): void
 {
     try {
-        $stmt = $this->swapDB->query("SELECT 1 FROM audit_logs LIMIT 0");
+        // FIX: was "SELECT 1 FROM audit_logs LIMIT 0" - that only ever
+        // reports one fake column named "?column?", never the real schema.
+        $stmt = $this->swapDB->query("SELECT * FROM audit_logs LIMIT 0");
         $cols = [];
         for ($i = 0; $i < $stmt->columnCount(); $i++) {
             $col = $stmt->getColumnMeta($i);
@@ -1441,16 +1443,13 @@ private function populateAuditLog(string $swapRef, string $swapType, array $swap
     $hasMetadata = in_array('metadata', $cols);
  
     if (!$hasEntityId) {
-        // FIX: this used to be a silent `return`. Now it's a recorded
-        // failure - the caller (populateTrackingTables) will see this
-        // reflected honestly instead of being told "audit_logs" succeeded.
         $this->writeAuditFallback(
             $swapRef,
             $swapType,
             "audit_logs missing required 'entity_id' column - actual columns: " . implode(', ', $cols),
             $userId
         );
-        throw new RuntimeException("audit_logs table is missing required 'entity_id' column");
+        throw new RuntimeException("audit_logs table is missing required 'entity_id' column - actual columns: " . implode(', ', $cols));
     }
  
     $insertFields = ['entity_type', 'entity_id', 'action', 'category', 'performed_at'];
@@ -1512,11 +1511,11 @@ private function populateAuditLog(string $swapRef, string $swapType, array $swap
     $sql = "INSERT INTO audit_logs (" . implode(', ', $insertFields) . ") 
             VALUES (" . implode(', ', $placeholders) . ")";
  
-    // FIX: rethrow instead of swallow. runInSavepoint() at the call site
-    // is the single place that decides how to react.
     $stmt = $this->swapDB->prepare($sql);
     $stmt->execute($params);
 }
+ 
+
 
  
 /**
@@ -2017,6 +2016,13 @@ private function writeAuditFallback(string $swapRef, string $swapType, string $r
  *      poisoned underneath it.
  * ============================================================================
  */
+/**
+ * ============================================================================
+ * FIX A: populateMessageOutbox() was missing message_id, which the table
+ * requires NOT NULL. Generate one the same way trackIdentityOtpSmsAttempt()
+ * already does elsewhere in this class, for consistency.
+ * ============================================================================
+ */
 private function populateMessageOutbox(string $swapRef, array $swapData, array $details, ?array $destResponse, ?int $userId = null): void
 {
     if (!$destResponse || empty($destResponse['cashout_code'])) {
@@ -2043,13 +2049,12 @@ private function populateMessageOutbox(string $swapRef, array $swapData, array $
         $message .= " Expires: {$expiry}";
     }
  
-    // FIX: removed "ON CONFLICT (destination, created_at) DO NOTHING" -
-    // no unique/exclusion constraint backs that column pair, so Postgres
-    // rejects the statement outright (42P10) every single time this runs.
-    // If de-duplication is genuinely needed, run the migration below FIRST,
-    // then restore an ON CONFLICT clause that matches the real constraint.
+    // FIX: message_id is NOT NULL on this table - generate one.
+    $messageId = 'SMS_' . uniqid() . '_' . substr($swapRef, 0, 10);
+ 
     $sql = "
         INSERT INTO message_outbox (
+            message_id,
             channel,
             destination,
             payload,
@@ -2058,6 +2063,7 @@ private function populateMessageOutbox(string $swapRef, array $swapData, array $
             sent_at,
             user_id
         ) VALUES (
+            :message_id,
             'SMS',
             :destination,
             :payload::jsonb,
@@ -2068,12 +2074,9 @@ private function populateMessageOutbox(string $swapRef, array $swapData, array $
         )
     ";
  
-    // FIX: no inner try/catch here anymore. Let the exception propagate
-    // to runInSavepoint() at the call site in populateTrackingTables() -
-    // that's the ONE place that should decide "log and continue" vs
-    // "this needs to roll back its own savepoint."
     $stmt = $this->swapDB->prepare($sql);
     $stmt->execute([
+        ':message_id' => $messageId,
         ':destination' => $phone,
         ':payload' => json_encode([
             'phone' => $phone,
@@ -2094,8 +2097,10 @@ private function populateMessageOutbox(string $swapRef, array $swapData, array $
         ':user_id' => $userId
     ]);
  
-    $this->logger->debug("message_outbox populated", ['destination' => $phone, 'swap_ref' => $swapRef, 'user_id' => $userId]);
+    $this->logger->debug("message_outbox populated", ['message_id' => $messageId, 'destination' => $phone, 'swap_ref' => $swapRef, 'user_id' => $userId]);
 }
+ 
+ 
 
 
     public function executeAtomicSwap(array $payload): array
