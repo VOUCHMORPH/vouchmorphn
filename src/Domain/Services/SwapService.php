@@ -2693,53 +2693,54 @@ private function populateAuditLog(string $swapRef, string $swapType, array $swap
         ];
     }
 
-    // ============================================================================
-    // MULTI-DESTINATION HELPER METHODS
-    // ============================================================================
-
-    private function storeMultiDestinationRecord(
-        string $reference,
-        string $sourceInstitution,
-        array $destinations,
-        array $results,
-        float $totalFees,
-        float $totalDelivered,
-        int $successCount,
-        int $failedCount
-    ): int {
-        $sql = "
-            INSERT INTO multi_destination_swaps (
-                reference,
-                source_institution,
-                total_destinations,
-                successful_count,
-                failed_count,
-                total_amount,
-                total_fees,
-                total_delivered,
-                status,
-                destinations_payload,
-                results_payload,
-                created_at,
-                updated_at
-            ) VALUES (
-                :reference,
-                :source_institution,
-                :total_destinations,
-                :successful_count,
-                :failed_count,
-                :total_amount,
-                :total_fees,
-                :total_delivered,
-                :status,
-                :destinations_payload::jsonb,
-                :results_payload::jsonb,
-                NOW(),
-                NOW()
-            ) RETURNING id
-        ";
-        
-        try {
+    // ----------------------------------------------------------------------
+// 3. storeMultiDestinationRecord() — runs after real debits at multiple
+//    institutions have already succeeded
+// ----------------------------------------------------------------------
+private function storeMultiDestinationRecord(
+    string $reference,
+    string $sourceInstitution,
+    array $destinations,
+    array $results,
+    float $totalFees,
+    float $totalDelivered,
+    int $successCount,
+    int $failedCount
+): int {
+    $sql = "
+        INSERT INTO multi_destination_swaps (
+            reference,
+            source_institution,
+            total_destinations,
+            successful_count,
+            failed_count,
+            total_amount,
+            total_fees,
+            total_delivered,
+            status,
+            destinations_payload,
+            results_payload,
+            created_at,
+            updated_at
+        ) VALUES (
+            :reference,
+            :source_institution,
+            :total_destinations,
+            :successful_count,
+            :failed_count,
+            :total_amount,
+            :total_fees,
+            :total_delivered,
+            :status,
+            :destinations_payload::jsonb,
+            :results_payload::jsonb,
+            NOW(),
+            NOW()
+        ) RETURNING id
+    ";
+ 
+    try {
+        return $this->runInSavepoint('multi_dest_record_' . $reference, function () use ($sql, $reference, $sourceInstitution, $destinations, $results, $totalFees, $totalDelivered, $successCount, $failedCount) {
             $stmt = $this->swapDB->prepare($sql);
             $stmt->execute([
                 ':reference' => $reference,
@@ -2754,15 +2755,16 @@ private function populateAuditLog(string $swapRef, string $swapType, array $swap
                 ':destinations_payload' => json_encode($destinations),
                 ':results_payload' => json_encode($results)
             ]);
-            
+ 
             $row = $stmt->fetch(PDO::FETCH_ASSOC);
             return $row ? (int)$row['id'] : 0;
-            
-        } catch (PDOException $e) {
-            error_log("[SwapService] Failed to store multi-destination record: " . $e->getMessage());
-            return 0;
-        }
+        });
+    } catch (\Throwable $e) {
+        error_log("[SwapService] Failed to store multi-destination record: " . $e->getMessage());
+        return 0;
     }
+}
+
 
     private function processMultiDestinationCashout(
         array $basePayload,
