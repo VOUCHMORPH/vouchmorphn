@@ -8104,30 +8104,36 @@ private function storeCashoutAuthorization(
             return null;
         }
     }
-
-    private function updateCashoutAuthorizationStatus(int $authId, string $status, ?string $cashoutPoint = null): void
-    {
-        $sql = "
-    UPDATE cashout_authorizations 
-    SET status = :status::text,
-        updated_at = NOW(),
-        completed_at = CASE WHEN :status::text = 'COMPLETED' THEN NOW() ELSE completed_at END,
-        cashout_point = COALESCE(:cashout_point, cashout_point)
-    WHERE auth_id = :auth_id
-";
-        
-        try {
+ 
+// ----------------------------------------------------------------------
+// 5. updateCashoutAuthorizationStatus() — marks PENDING -> COMPLETED etc.
+// ----------------------------------------------------------------------
+private function updateCashoutAuthorizationStatus(int $authId, string $status, ?string $cashoutPoint = null): void
+{
+    $sql = "
+        UPDATE cashout_authorizations 
+        SET status = :status::text,
+            updated_at = NOW(),
+            completed_at = CASE WHEN :status::text = 'COMPLETED' THEN NOW() ELSE completed_at END,
+            cashout_point = COALESCE(:cashout_point, cashout_point)
+        WHERE auth_id = :auth_id
+    ";
+ 
+    try {
+        $this->runInSavepoint('update_cashout_auth_' . $authId, function () use ($sql, $status, $authId, $cashoutPoint) {
             $stmt = $this->swapDB->prepare($sql);
             $stmt->execute([
                 ':status' => $status,
                 ':auth_id' => $authId,
                 ':cashout_point' => $cashoutPoint
             ]);
-            error_log("[SwapService] Cashout authorization {$authId} status updated to: {$status}");
-        } catch (PDOException $e) {
-            error_log("[SwapService] Failed to update cashout authorization: " . $e->getMessage());
-        }
+        });
+        error_log("[SwapService] Cashout authorization {$authId} status updated to: {$status}");
+    } catch (\Throwable $e) {
+        error_log("[SwapService] Failed to update cashout authorization: " . $e->getMessage());
     }
+}
+
 
     // ============================================================================
     // SUPPORTING METHODS FOR CONFIRM CASHOUT
