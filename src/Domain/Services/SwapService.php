@@ -6302,62 +6302,80 @@ public function isApprovedAgent(int $userId): bool
     // EXECUTE SIGNED STANDARD SWAP
     // ============================================================================
 
-    private function executeSignedStandardSwap(array $payload): array
-    {
-        $amount = (float)($payload['amount'] ?? 0);
-        $sourceInstitution = $this->extractSourceInstitution($payload);
-        $destInstitution = $this->extractDestinationInstitution($payload);
-        
-        $verificationResult = $this->verifyAssetSigned($payload, $sourceInstitution);
-        if (!($verificationResult['verified'] ?? false)) {
-            throw new RuntimeException("Asset verification failed");
-        }
-        
-        $holdResult = $this->placeHoldSigned($payload, $sourceInstitution, $verificationResult);
-        if (!($holdResult['hold_placed'] ?? false)) {
-            throw new RuntimeException("Hold failed");
-        }
-        
-        $isHooked = isset($payload['_is_hooked']) && $payload['_is_hooked'] === true;
-        $this->assertStepIntegrity(
-            $holdResult,
-            'hold_placed',
-            $isHooked ? ['hold_reference'] : ['hold_reference', 'signature'],
-            'PLACE_HOLD_SIGNED'
-        );
-        
-        $this->currentHoldReference = $holdResult['hold_reference'] ?? null;
-        
-        $feeBreakdown = $this->calculateFeesWithDetails('SWAP', $amount, $payload);
-        $netAmount = $feeBreakdown['net_amount'] ?? $amount;
-        
-        $destinationResult = $this->processDestinationWithProof($payload, $destInstitution, $netAmount);
-        if (!($destinationResult['credited'] ?? false)) {
-            throw new RuntimeException("Destination processing failed");
-        }
-        
-        $this->assertStepIntegrity(
-            $destinationResult,
-            'credited',
-            ['transaction_reference'],
-            'PROCESS_DESTINATION_WITH_PROOF'
-        );
-        
-        $debitResult = $this->debitSource($payload, $sourceInstitution);
-        if (!($debitResult['debited'] ?? false)) {
-            throw new RuntimeException("Debit failed");
-        }
-        
-        return [
-            'status' => 'success',
-            'reference' => $this->currentSwapRef,
-            'amount' => $netAmount,
-            'fee' => $feeBreakdown['total_fee'] ?? 0,
-            'source_institution' => $sourceInstitution,
-            'destination_institution' => $destInstitution
-        ];
+  private function executeSignedStandardSwap(array $payload): array
+{
+    $amount = (float)($payload['amount'] ?? 0);
+    $sourceInstitution = $this->extractSourceInstitution($payload);
+    $destInstitution = $this->extractDestinationInstitution($payload);
+    
+    $verificationResult = $this->verifyAssetSigned($payload, $sourceInstitution);
+    if (!($verificationResult['verified'] ?? false)) {
+        throw new RuntimeException("Asset verification failed");
+    }
+    
+    $holdResult = $this->placeHoldSigned($payload, $sourceInstitution, $verificationResult);
+    if (!($holdResult['hold_placed'] ?? false)) {
+        throw new RuntimeException("Hold failed");
+    }
+    
+    $isHooked = isset($payload['_is_hooked']) && $payload['_is_hooked'] === true;
+    $this->assertStepIntegrity(
+        $holdResult,
+        'hold_placed',
+        $isHooked ? ['hold_reference'] : ['hold_reference', 'signature'],
+        'PLACE_HOLD_SIGNED'
+    );
+    
+    $this->currentHoldReference = $holdResult['hold_reference'] ?? null;
+    
+    $feeBreakdown = $this->calculateFeesWithDetails('SWAP', $amount, $payload);
+    $netAmount = $feeBreakdown['net_amount'] ?? $amount;
+    
+    $destinationResult = $this->processDestinationWithProof($payload, $destInstitution, $netAmount);
+    if (!($destinationResult['credited'] ?? false)) {
+        throw new RuntimeException("Destination processing failed");
+    }
+    
+    $this->assertStepIntegrity(
+        $destinationResult,
+        'credited',
+        ['transaction_reference'],
+        'PROCESS_DESTINATION_WITH_PROOF'
+    );
+    
+    $debitResult = $this->debitSource($payload, $sourceInstitution);
+    if (!($debitResult['debited'] ?? false)) {
+        throw new RuntimeException("Debit failed");
     }
 
+    // FIX: mark the hold DEBITED, same as CASHOUT/DEPOSIT do
+    $this->updateHoldStatus($this->currentHoldId, 'DEBITED');
+
+    // FIX: this flow was silently skipping tracking entirely
+    $this->populateTrackingTables(
+        [
+            'swap_type' => 'STANDARD',
+            'reference' => $this->currentSwapRef,
+            'amount' => $netAmount,
+            'currency' => $payload['currency'] ?? 'BWP',
+            'status' => 'completed',
+            'from_institution' => $sourceInstitution,
+            'to_institution' => $destInstitution,
+            'user_id' => $payload['user_id'] ?? null
+        ],
+        $payload,
+        $destinationResult
+    );
+    
+    return [
+        'status' => 'success',
+        'reference' => $this->currentSwapRef,
+        'amount' => $netAmount,
+        'fee' => $feeBreakdown['total_fee'] ?? 0,
+        'source_institution' => $sourceInstitution,
+        'destination_institution' => $destInstitution
+    ];
+}
     // ============================================================================
     // PRIVATE HELPER METHODS
     // ============================================================================
