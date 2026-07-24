@@ -1195,43 +1195,247 @@ private function getDecryptedRefreshToken(array $source): ?string
     // ============================================================================
 
     /**
-     * Populate all tracking tables from swap data
-     * Called after successful swap completion
-     */
-    private function populateTrackingTables(array $swapData, array $details, ?array $destResponse = null): void
-    {
-        $swapType = $swapData['swap_type'] ?? 'STANDARD';
-        $swapRef = $swapData['reference'] ?? $this->currentSwapRef;
-        $userId = $details['user_id'] ?? $swapData['user_id'] ?? null;
-        
+ * Populate all tracking tables from swap data
+ * Called after successful swap completion
+ * 
+ * CRITICAL FIXES:
+ * 1. NEVER re-throw exceptions - tracking failures should NOT roll back the transaction
+ * 2. cashout_authorizations is ALREADY populated by storeCashoutAuthorization()
+ *    earlier in executeSignedCashout(). DO NOT populate it again here!
+ * 3. All operations are wrapped in individual try/catch blocks
+ * 4. Each table population is independent - one failure doesn't affect others
+ * 5. Detailed logging of what was populated and what failed
+ */
+private function populateTrackingTables(array $swapData, array $details, ?array $destResponse = null): void
+{
+    $swapType = $swapData['swap_type'] ?? 'STANDARD';
+    $swapRef = $swapData['reference'] ?? $this->currentSwapRef;
+    $userId = $details['user_id'] ?? $swapData['user_id'] ?? null;
+    
+    $populated = [];
+    $errors = [];
+    
+    // ============================================================
+    // 1. Populate swap_requests - master record
+    // ============================================================
+    try {
+        $swapId = $this->populateSwapRequest($swapRef, $swapData, $details, $userId);
+        if ($swapId) {
+            $populated[] = 'swap_requests (id: ' . $swapId . ')';
+        } else {
+            $errors[] = 'swap_requests returned no swap_id';
+        }
+    } catch (Exception $e) {
+        $errors[] = 'swap_requests: ' . $e->getMessage();
+        $this->logger->error("Failed to populate swap_requests", [
+            'reference' => $swapRef,
+            'error' => $e->getMessage()
+        ]);
+        // Continue - don't let this failure stop other tables
+    }
+    
+    // ============================================================
+    // 2. Populate swap_transactions - links to swap_id
+    // ============================================================
+    if (isset($swapId) && $swapId) {
         try {
-            // 1. Always populate swap_requests - capture the ID
-            $swapId = $this->populateSwapRequest($swapRef, $swapData, $details, $userId);
-            
-            // 2. Always populate swap_transactions - pass the ID AND swapRef
-            if ($swapId) {
-                $this->populateSwapTransaction($swapId, $swapRef, $swapData, $details, $userId);
-            } else {
-                $this->logger->warning("No swap_id available, skipping swap_transactions", ['swap_ref' => $swapRef]);
-            }
-            
-            // 3. Populate type-specific tables
-            if ($swapType === 'CASHOUT') {
-                $this->populateMessageOutbox($swapRef, $swapData, $details, $destResponse, $userId);
-            } elseif ($swapType === 'DEPOSIT') {
-                $this->populateDepositTransaction($swapRef, $swapData, $details, $userId);
-            }
-            
-            $this->logger->info("Tracking tables populated", ['reference' => $swapRef, 'type' => $swapType]);
-            
+            $this->populateSwapTransaction($swapId, $swapRef, $swapData, $details, $userId);
+            $populated[] = 'swap_transactions';
         } catch (Exception $e) {
-            $this->logger->error("Failed to populate tracking tables", [
+            $errors[] = 'swap_transactions: ' . $e->getMessage();
+            $this->logger->error("Failed to populate swap_transactions", [
+                'reference' => $swapRef,
+                'swap_id' => $swapId,
+                'error' => $e->getMessage()
+            ]);
+            // Continue - don't let this failure stop other tables
+        }
+    } else {
+        $this->logger->warning("No swap_id available, skipping swap_transactions", ['swap_ref' => $swapRef]);
+        $errors[] = 'swap_transactions skipped (no swap_id)';
+    }
+    
+    // ============================================================
+    // 3. Populate type-specific tables
+    // ============================================================
+    if ($swapType === 'CASHOUT') {
+        // ⚠️ CRITICAL: cashout_authorizations is ALREADY populated by
+        // storeCashoutAuthorization() earlier in executeSignedCashout().
+        // DO NOT populate it again here - that would cause:
+        //   1. Duplicate work
+        //   2. Potential SQL errors with ON CONFLICT
+        //   3. Risk of throwing exceptions that roll back the transaction
+        //
+        // We ONLY populate message_outbox here (SMS notifications)
+        try {
+            $this->populateMessageOutbox($swapRef, $swapData, $details, $destResponse, $userId);
+            $populated[] = 'message_outbox';
+        } catch (Exception $e) {
+            $errors[] = 'message_outbox: ' . $e->getMessage();
+            $this->logger->error("Failed to populate message_outbox", [
                 'reference' => $swapRef,
                 'error' => $e->getMessage()
             ]);
+            // Continue - SMS is nice-to-have, not critical
+        }
+        
+    } elseif ($swapType === 'DEPOSIT') {
+        try {
+            $this->populateDepositTransaction($swapRef, $swapData, $details, $userId);
+            $populated[] = 'deposit_transactions';
+        } catch (Exception $e) {
+            $errors[] = 'deposit_transactions: ' . $e->getMessage();
+            $this->logger->error("Failed to populate deposit_transactions", [
+                'reference' => $swapRef,
+                'error' => $e->getMessage()
+            ]);
+            // Continue - don't let this failure stop other tables
+        }
+        
+    } elseif ($swapType === 'IDENTITY' || $swapType === 'CONFIRM_IDENTITY') {
+        // Identity swaps are tracked in identity_swap_holds table
+        // No additional tracking needed here
+        $populated[] = 'identity_swap_holds (already populated)';
+        
+    } elseif ($swapType === 'MULTI_SOURCE' || $swapType === 'MULTI_DESTINATION') {
+        // Multi-source/destination swaps have their own tracking
+        // No additional tracking needed here
+        $populated[] = 'multi_destination_swaps (already populated)';
+    }
+    
+    // ============================================================
+    // 4. Populate audit_logs (optional but recommended)
+    // ============================================================
+    try {
+        $this->populateAuditLog($swapRef, $swapType, $swapData, $details, $userId);
+        $populated[] = 'audit_logs';
+    } catch (Exception $e) {
+        $errors[] = 'audit_logs: ' . $e->getMessage();
+        $this->logger->warning("Failed to populate audit_logs", [
+            'reference' => $swapRef,
+            'error' => $e->getMessage()
+        ]);
+        // Continue - audit logs are nice-to-have, not critical
+    }
+    
+    // ============================================================
+    // 5. Log summary
+    // ============================================================
+    if (empty($errors)) {
+        $this->logger->info("All tracking tables populated successfully", [
+            'reference' => $swapRef,
+            'type' => $swapType,
+            'tables' => $populated
+        ]);
+    } else {
+        $this->logger->warning("Tracking tables populated with errors", [
+            'reference' => $swapRef,
+            'type' => $swapType,
+            'populated' => $populated,
+            'errors' => $errors
+        ]);
+    }
+}
+
+/**
+ * Populate audit_logs for the swap
+ * Always safe - never throws exceptions that would roll back the transaction
+ */
+private function populateAuditLog(string $swapRef, string $swapType, array $swapData, array $details, ?int $userId = null): void
+{
+    // Check if audit_logs table has the expected structure
+    try {
+        $stmt = $this->swapDB->query("SELECT 1 FROM audit_logs LIMIT 0");
+        $stmt->execute();
+        $cols = [];
+        for ($i = 0; $i < $stmt->columnCount(); $i++) {
+            $col = $stmt->getColumnMeta($i);
+            $cols[] = $col['name'];
+        }
+    } catch (Exception $e) {
+        // Table doesn't exist or can't be queried - skip silently
+        return;
+    }
+    
+    // Determine which columns exist
+    $hasAuditId = in_array('audit_id', $cols) || in_array('audit_log_id', $cols);
+    $hasEntityId = in_array('entity_id', $cols);
+    $hasPerformedBy = in_array('performed_by', $cols) || in_array('performed_by_type', $cols);
+    $hasMetadata = in_array('metadata', $cols);
+    
+    if (!$hasEntityId) {
+        // Can't insert without entity_id
+        return;
+    }
+    
+    // Build INSERT based on available columns
+    $insertFields = ['entity_type', 'entity_id', 'action', 'category', 'performed_at'];
+    $placeholders = [':entity_type', ':entity_id', ':action', ':category', ':performed_at'];
+    $params = [
+        ':entity_type' => 'swap_requests',
+        ':entity_id' => $swapRef,
+        ':action' => 'SWAP_' . strtoupper($swapType) . '_CREATED',
+        ':category' => 'financial',
+        ':performed_at' => date('Y-m-d H:i:s')
+    ];
+    
+    if (in_array('severity', $cols)) {
+        $insertFields[] = 'severity';
+        $placeholders[] = ':severity';
+        $params[':severity'] = 'info';
+    }
+    
+    if (in_array('user_id', $cols) && $userId) {
+        $insertFields[] = 'user_id';
+        $placeholders[] = ':user_id';
+        $params[':user_id'] = $userId;
+    }
+    
+    if ($hasPerformedBy && $userId) {
+        if (in_array('performed_by_type', $cols)) {
+            $insertFields[] = 'performed_by_type';
+            $placeholders[] = ':performed_by_type';
+            $params[':performed_by_type'] = 'user';
+        }
+        if (in_array('performed_by_id', $cols)) {
+            $insertFields[] = 'performed_by_id';
+            $placeholders[] = ':performed_by_id';
+            $params[':performed_by_id'] = $userId;
+        }
+        if (in_array('performed_by', $cols)) {
+            $insertFields[] = 'performed_by';
+            $placeholders[] = ':performed_by';
+            $params[':performed_by'] = $userId;
         }
     }
-
+    
+    if ($hasMetadata) {
+        $insertFields[] = 'metadata';
+        $placeholders[] = ':metadata::jsonb';
+        $params[':metadata'] = json_encode([
+            'swap_type' => $swapType,
+            'amount' => $swapData['amount'] ?? 0,
+            'currency' => $swapData['currency'] ?? 'BWP',
+            'source_institution' => $details['source_institution'] ?? $swapData['from_institution'] ?? null,
+            'destination_institution' => $details['destination_institution'] ?? $swapData['to_institution'] ?? null,
+            'hold_id' => $this->currentHoldId,
+            'hold_reference' => $this->currentHoldReference,
+            'status' => $swapData['status'] ?? 'pending',
+            'user_id' => $userId
+        ]);
+    }
+    
+    $sql = "INSERT INTO audit_logs (" . implode(', ', $insertFields) . ") 
+            VALUES (" . implode(', ', $placeholders) . ")";
+    
+    try {
+        $stmt = $this->swapDB->prepare($sql);
+        $stmt->execute($params);
+    } catch (Exception $e) {
+        // Silently fail - audit logs are nice-to-have
+        $this->logger->debug("Audit log insert failed", ['error' => $e->getMessage()]);
+    }
+}
     /**
      * Get numeric swap_request_id from swap_uuid
      */
