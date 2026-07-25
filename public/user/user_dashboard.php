@@ -1,6 +1,3 @@
-Here's the updated `user_dashboard.php` with the clean separation between "Finalize identity swap" and "Register identity":
-
-```php
 <?php
 // ============================================================ 
 // SessionManager-based auth
