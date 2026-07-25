@@ -354,46 +354,62 @@ if (!empty($commConfig)) {
         ];
     }
 
-    public function extractDestinationIdentifier(array $payload): array
-    {
-        $destinationIdentifier = null;
-        $destinationIdentifierType = null;
-        
-        $destinationIdentifier = $payload['destination_identifier'] ?? 
-                                 $payload['destination_account'] ?? 
-                                 $payload['destination_phone'] ?? 
-                                 $payload['destination_national_id'] ?? 
-                                 $payload['destination_email'] ?? 
-                                 $payload['beneficiary_account'] ?? 
-                                 $payload['beneficiary_phone'] ?? 
-                                 $payload['beneficiary_identifier'] ?? 
-                                 $payload['client_phone'] ?? 
-                                 $payload['account_number'] ?? 
-                                 $payload['phone'] ?? 
-                                 $payload['email'] ?? 
-                                 $payload['national_id'] ?? 
-                                 $payload['destination']['identifier'] ?? 
-                                 null;
-        
+   public function extractDestinationIdentifier(array $payload): array
+{
+    $destinationIdentifier = null;
+    $destinationIdentifierType = null;
+    
+    // First, determine the asset type
+    $assetType = $this->extractDestinationAssetType($payload);
+    
+    // Set the appropriate identifier type based on asset type
+    if ($assetType === 'WALLET') {
+        // For wallets, the identifier is always a phone number
         $destinationIdentifierType = $payload['destination_identifier_type'] ?? 
                                      $payload['identifier_type'] ?? 
-                                     'account';
-        
-        if (!empty($destinationIdentifier)) {
-            return [
-                'identifier' => $destinationIdentifier,
-                'type' => $destinationIdentifierType,
-                'has_value' => true
-            ];
-        }
-        
+                                     'phone';  // ← Default to 'phone' for wallets
+    } elseif ($assetType === 'ACCOUNT') {
+        // For accounts, the identifier is an account number
+        $destinationIdentifierType = $payload['destination_identifier_type'] ?? 
+                                     $payload['identifier_type'] ?? 
+                                     'account_number';  // ← Default to 'account_number' for accounts
+    } else {
+        // For other asset types (CARD, VOUCHER, etc.)
+        $destinationIdentifierType = $payload['destination_identifier_type'] ?? 
+                                     $payload['identifier_type'] ?? 
+                                     'account';  // ← Fallback default
+    }
+    
+    $destinationIdentifier = $payload['destination_identifier'] ?? 
+                             $payload['destination_account'] ?? 
+                             $payload['destination_phone'] ?? 
+                             $payload['destination_national_id'] ?? 
+                             $payload['destination_email'] ?? 
+                             $payload['beneficiary_account'] ?? 
+                             $payload['beneficiary_phone'] ?? 
+                             $payload['beneficiary_identifier'] ?? 
+                             $payload['client_phone'] ?? 
+                             $payload['account_number'] ?? 
+                             $payload['phone'] ?? 
+                             $payload['email'] ?? 
+                             $payload['national_id'] ?? 
+                             $payload['destination']['identifier'] ?? 
+                             null;
+    
+    if (!empty($destinationIdentifier)) {
         return [
-            'identifier' => null,
-            'type' => null,
-            'has_value' => false
+            'identifier' => $destinationIdentifier,
+            'type' => $destinationIdentifierType,
+            'has_value' => true
         ];
     }
-
+    
+    return [
+        'identifier' => null,
+        'type' => null,
+        'has_value' => false
+    ];
+}
     private function extractBeneficiaryPhone(array $payload): ?string
     {
         return $payload['beneficiary_phone'] ?? 
