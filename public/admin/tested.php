@@ -2,11 +2,11 @@
 // test_vouchmorph_certificate.php
 // Run on VouchMorph server
 
-require_once __DIR__ . '/src/Infrastructure/Crypto/CertificateManager.php';
+require_once __DIR__ . '/../../src/Infrastructure/Crypto/CertificateManager.php';
 
 use Infrastructure\Crypto\CertificateManager;
 
-echo "=== VOUCHMORPH CERTIFICATE MANAGER TEST ===\n\n";
+echo "=== VOUCHMORPH CERTIFICATE MANAGER TEST ===\n\n";https://github.com/VOUCHMORPH/vouchmorphn/edit/main/public/admin/tested.php
 
 $cm = new CertificateManager('VOUCHMORPH');
 
