@@ -582,6 +582,11 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
             $certData['cashout'] = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
         } catch (Throwable $e) { $certData['cashout'] = null; }
         try {
+            $stmt = $db->prepare("SELECT * FROM identity_swap_holds WHERE swap_reference = :ref");
+            $stmt->execute([':ref' => $certRef]);
+            $certData['identity'] = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+        } catch (Throwable $e) { $certData['identity'] = null; }
+        try {
             $stmt = $db->prepare("
                 SELECT st.* FROM swap_transactions st
                 JOIN swap_requests sr ON st.swap_id = sr.swap_id
@@ -606,6 +611,68 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
             $certData['settlement'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
         } catch (Throwable $e) { $certData['settlement'] = []; }
 
+        // ============================================================
+        // FEE & BALANCE BREAKDOWN — every fee charged across the life of
+        // this transaction (hold, cashout, settlement invoice), plus
+        // opening/closing balance if the ledger tracks it. Balance
+        // columns (balance_before/balance_after) are not guaranteed to
+        // exist on hold_transactions in every deployment, so this
+        // degrades gracefully to "Not tracked" rather than guessing.
+        // ============================================================
+        $certData['fee_breakdown'] = [];
+        $certData['total_fees'] = 0.0;
+        foreach ($certData['holds'] as $h) {
+            if (isset($h['fee_amount']) && (float)$h['fee_amount'] > 0) {
+                $certData['fee_breakdown'][] = [
+                    'stage' => 'Hold — ' . ($h['source_institution'] ?? $h['participant_name'] ?? 'N/A'),
+                    'reference' => $h['hold_reference'] ?? $h['hold_id'] ?? '',
+                    'fee' => (float)$h['fee_amount'],
+                ];
+                $certData['total_fees'] += (float)$h['fee_amount'];
+            }
+        }
+        if (!empty($certData['cashout']) && (float)($certData['cashout']['fee_amount'] ?? 0) > 0) {
+            $certData['fee_breakdown'][] = [
+                'stage' => 'Cashout — ' . ($certData['cashout']['cashout_provider'] ?? 'N/A'),
+                'reference' => $certData['cashout']['swap_reference'] ?? '',
+                'fee' => (float)$certData['cashout']['fee_amount'],
+            ];
+            $certData['total_fees'] += (float)$certData['cashout']['fee_amount'];
+        }
+        foreach ($certData['settlement'] as $s) {
+            $payload = json_decode($s['message_payload'] ?? '{}', true) ?: [];
+            if (!empty($payload['fee_amount'])) {
+                $certData['fee_breakdown'][] = [
+                    'stage' => 'Settlement Invoice — ' . ($s['message_type'] ?? 'N/A'),
+                    'reference' => $s['message_id'] ?? '',
+                    'fee' => (float)$payload['fee_amount'],
+                ];
+                $certData['total_fees'] += (float)$payload['fee_amount'];
+            }
+        }
+
+        $certData['balance_tracked'] = false;
+        $certData['balance_before'] = null;
+        $certData['balance_after'] = null;
+        try {
+            $balStmt = $db->prepare("
+                SELECT balance_before, balance_after
+                FROM hold_transactions
+                WHERE swap_reference = :ref
+                ORDER BY placed_at ASC LIMIT 1
+            ");
+            $balStmt->execute([':ref' => $certRef]);
+            $balRow = $balStmt->fetch(PDO::FETCH_ASSOC);
+            if ($balRow && ($balRow['balance_before'] !== null || $balRow['balance_after'] !== null)) {
+                $certData['balance_tracked'] = true;
+                $certData['balance_before'] = $balRow['balance_before'];
+                $certData['balance_after'] = $balRow['balance_after'];
+            }
+        } catch (Throwable $e) {
+            // balance_before / balance_after columns don't exist on hold_transactions in
+            // this deployment yet — opening/closing balance isn't tracked in the schema.
+        }
+
         if ($reportFormat === 'csv') {
             header('Content-Type: text/csv; charset=utf-8');
             header('Content-Disposition: attachment; filename="vouchmorph_certificate_' . preg_replace('/[^A-Za-z0-9_\-]/', '', $certRef) . '.csv"');
@@ -620,10 +687,17 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
             $flatten('swap_request', $certData['swap_request']);
             foreach ($certData['holds'] as $i => $h) { $flatten("hold_{$i}", $h); }
             $flatten('cashout', $certData['cashout']);
+            $flatten('identity_verification', $certData['identity']);
             foreach ($certData['swap_transactions'] as $i => $t) { $flatten("ledger_entry_{$i}", $t); }
             foreach ($certData['audit'] as $i => $a) { $flatten("audit_{$i}", $a); }
             foreach ($certData['messages'] as $i => $m) { $flatten("notification_{$i}", $m); }
             foreach ($certData['settlement'] as $i => $s) { $flatten("settlement_{$i}", $s); }
+            fputcsv($out, ['fee_breakdown', 'total_fees', $certData['total_fees']]);
+            foreach ($certData['fee_breakdown'] as $i => $fb) {
+                fputcsv($out, ["fee_breakdown_{$i}", $fb['stage'] . ' (' . $fb['reference'] . ')', $fb['fee']]);
+            }
+            fputcsv($out, ['balance', 'opening_balance', $certData['balance_tracked'] ? $certData['balance_before'] : 'NOT TRACKED IN SCHEMA']);
+            fputcsv($out, ['balance', 'closing_balance', $certData['balance_tracked'] ? $certData['balance_after'] : 'NOT TRACKED IN SCHEMA']);
             fclose($out);
             exit;
         }
@@ -946,10 +1020,15 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
             ]);
             $body .= pdf_table_section('1 · Hold Placed', ['Hold ID', 'Hold Reference', 'Institution', 'Amount', 'Status', 'Placed At', 'Debited At'],
                 array_map(fn($h) => [$h['hold_id'], $h['hold_reference'], $h['source_institution'] ?? $h['participant_name'] ?? 'N/A', number_format((float)$h['amount'], 2), $h['status'], $h['placed_at'] ?? '', $h['debited_at'] ?? '—'], $certData['holds']));
+            if (!empty($certData['identity'])) {
+                $id = $certData['identity'];
+                $body .= pdf_table_section('1b · Identity Verification', ['Identity Type', 'Identity Value', 'Institution', 'Amount', 'Hold Expires', 'Status'],
+                    [[$id['identity_type'] ?? 'N/A', $id['identity_value'] ?? 'N/A', $id['source_institution'] ?? 'N/A', number_format((float)($id['amount'] ?? 0), 2), $id['hold_expires_at'] ?? '', $id['status'] ?? '']]);
+            }
             if (!empty($certData['cashout'])) {
                 $co = $certData['cashout'];
-                $body .= pdf_table_section('2 · Destination Code Generated', ['Provider', 'Amount', 'Fee', 'Code Expiry', 'Status'],
-                    [[$co['cashout_provider'] ?? 'N/A', number_format((float)$co['amount'], 2), number_format((float)($co['fee_amount'] ?? 0), 2), $co['code_expiry'] ?? '', $co['status']]]);
+                $body .= pdf_table_section('2 · Destination Code Generated', ['Provider', 'Client Phone', 'Amount', 'Fee', 'Code Expiry', 'Status'],
+                    [[$co['cashout_provider'] ?? 'N/A', $co['client_phone'] ?? 'N/A', number_format((float)$co['amount'], 2), number_format((float)($co['fee_amount'] ?? 0), 2), $co['code_expiry'] ?? '', $co['status']]]);
             }
             $body .= pdf_table_section('3 · Ledger Entries', ['From', 'To', 'Amount', 'Status', 'Transaction Ref', 'Created'],
                 array_map(function ($t) {
@@ -957,6 +1036,16 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
                     $to = json_decode($t['to_account_details'] ?? '{}', true) ?: [];
                     return [$from['institution'] ?? 'N/A', $to['institution'] ?? 'N/A', number_format((float)$t['amount'], 2), $t['status'], $t['transaction_id'] ?? '—', $t['created_at'] ?? ''];
                 }, $certData['swap_transactions']));
+            $body .= pdf_metrics_section('Fee & Balance Breakdown', [
+                'Total Fees Charged' => number_format($certData['total_fees'], 2),
+                'Opening Balance' => $certData['balance_tracked'] ? number_format((float)$certData['balance_before'], 2) : 'Not tracked',
+                'Closing Balance' => $certData['balance_tracked'] ? number_format((float)$certData['balance_after'], 2) : 'Not tracked',
+            ]);
+            if (!empty($certData['fee_breakdown'])) {
+                $body .= pdf_table_section('Fee Detail', ['Stage', 'Reference', 'Fee Amount'],
+                    array_map(fn($fb) => [$fb['stage'], $fb['reference'], number_format($fb['fee'], 2)], $certData['fee_breakdown']),
+                    !$certData['balance_tracked'] ? 'Opening/closing balance not tracked in current schema — add balance_before/balance_after to hold_transactions.' : null);
+            }
             $body .= pdf_table_section('4 · Audit Trail', ['Action', 'Category', 'Performed By', 'At'],
                 array_map(fn($a) => [$a['action'] ?? '', $a['category'] ?? '', $a['performed_by'] ?? $a['performed_by_id'] ?? 'SYSTEM', $a['performed_at'] ?? ''], $certData['audit']),
                 'Cryptographic signatures for each step are recorded in application logs, not yet in a queryable table — see engineering note on the on-screen certificate.');
@@ -2189,6 +2278,20 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <div class="empty-state"><span class="icon">🔍</span><p>No transaction found for reference "<?php echo safeHtml($certRef); ?>".</p></div>
                     <?php else: $sr = $certData['swap_request']; ?>
 
+                    <!-- Prominent download bar at the TOP of the certificate — this is the
+                         artifact meant to leave the building (central bank, software vendor,
+                         auditor), so the export options shouldn't require scrolling to find. -->
+                    <div class="card" style="border-left:3px solid var(--brass); background:var(--brass-tint);">
+                        <div style="display:flex; justify-content:center; align-items:center; gap:var(--sp-4); flex-wrap:wrap;">
+                            <span style="font-family:var(--f-cond); font-size:13px; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:var(--brass-deep);">📄 Full Transaction Log</span>
+                            <a href="?view=reports&report=transaction_certificate&ref=<?php echo urlencode($certRef); ?>&format=csv" class="btn btn-primary btn-sm">⬇ Download CSV (every field)</a>
+                            <a href="?view=reports&report=transaction_certificate&ref=<?php echo urlencode($certRef); ?>&format=pdf" class="btn btn-sm">⬇ Download PDF Certificate</a>
+                        </div>
+                        <div style="text-align:center; font-size:12.5px; color:var(--ink-500); margin-top:var(--sp-2);">
+                            The CSV includes every stored field for this reference — hold, identity, cashout, ledger, audit, notification, settlement, fee, and balance rows — suitable for handing to a regulator or a software vendor for reconciliation.
+                        </div>
+                    </div>
+
                     <div class="report-section-title">Summary</div>
                     <div class="metrics-grid" style="grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));">
                         <div class="metric-card"><span class="metric-label">Amount</span><span class="metric-value"><?php echo number_format((float)($sr['amount'] ?? 0), 2); ?></span><span class="metric-sub"><?php echo safeHtml($sr['from_currency'] ?? ''); ?></span></div>
@@ -2205,10 +2308,40 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     </tbody></table></div>
                     <?php endif; ?>
 
+                    <?php if (!empty($certData['identity'])): $id = $certData['identity']; ?>
+                    <div class="report-section-title">1b · Identity Verification</div>
+                    <div class="table-responsive"><table><thead><tr><th>Identity Type</th><th>Identity Value</th><th>Institution</th><th>Amount</th><th>Hold Expires</th><th>Status</th></tr></thead><tbody>
+                    <tr>
+                        <td><?php echo safeHtml($id['identity_type'] ?? 'N/A'); ?></td>
+                        <td><?php echo safeHtml($id['identity_value'] ?? 'N/A'); ?></td>
+                        <td><?php echo safeHtml($id['source_institution'] ?? 'N/A'); ?></td>
+                        <td><?php echo number_format((float)($id['amount'] ?? 0), 2); ?></td>
+                        <td><?php echo safeHtml($id['hold_expires_at'] ?? ''); ?></td>
+                        <td><span class="status status-identity"><?php echo safeHtml($id['status'] ?? ''); ?></span></td>
+                    </tr>
+                    </tbody></table></div>
+                    <?php elseif (!empty($sr['identity_type']) || !empty($sr['identity_value'])): ?>
+                    <div class="report-section-title">1b · Identity Verification</div>
+                    <div class="table-responsive"><table><thead><tr><th>Identity Type</th><th>Identity Value</th></tr></thead><tbody>
+                    <tr><td><?php echo safeHtml($sr['identity_type'] ?? 'N/A'); ?></td><td><?php echo safeHtml($sr['identity_value'] ?? 'N/A'); ?></td></tr>
+                    </tbody></table></div>
+                    <?php else: ?>
+                    <div class="report-section-title">1b · Identity Verification</div>
+                    <p style="font-size:14px;color:var(--ink-300);">No identity-linked hold for this transaction — this was a direct bank/wallet transfer, not an identity swap.</p>
+                    <?php endif; ?>
+
                     <?php if (!empty($certData['cashout'])): $co = $certData['cashout']; ?>
                     <div class="report-section-title">2 · Destination Code Generated</div>
-                    <div class="table-responsive"><table><thead><tr><th>Provider</th><th>Amount</th><th>Fee</th><th>Code Expiry</th><th>Status</th></tr></thead><tbody>
-                    <tr><td><?php echo safeHtml($co['cashout_provider'] ?? 'N/A'); ?></td><td><?php echo number_format((float)$co['amount'], 2); ?></td><td><?php echo number_format((float)($co['fee_amount'] ?? 0), 2); ?></td><td><?php echo safeHtml($co['code_expiry'] ?? ''); ?></td><td><span class="status status-<?php echo $co['status'] === 'COMPLETED' ? 'success' : 'pending'; ?>"><?php echo safeHtml($co['status']); ?></span></td></tr>
+                    <div class="table-responsive"><table><thead><tr><th>Provider</th><th>Client Phone</th><th>Wallet / Destination Ref</th><th>Amount</th><th>Fee</th><th>Code Expiry</th><th>Status</th></tr></thead><tbody>
+                    <tr>
+                        <td><?php echo safeHtml($co['cashout_provider'] ?? 'N/A'); ?></td>
+                        <td><?php echo safeHtml($co['client_phone'] ?? 'N/A'); ?></td>
+                        <td><?php echo safeHtml($co['wallet_number'] ?? $co['destination_identifier'] ?? $co['account_number'] ?? 'N/A'); ?></td>
+                        <td><?php echo number_format((float)$co['amount'], 2); ?></td>
+                        <td><?php echo number_format((float)($co['fee_amount'] ?? 0), 2); ?></td>
+                        <td><?php echo safeHtml($co['code_expiry'] ?? ''); ?></td>
+                        <td><span class="status status-<?php echo $co['status'] === 'COMPLETED' ? 'success' : 'pending'; ?>"><?php echo safeHtml($co['status']); ?></span></td>
+                    </tr>
                     </tbody></table></div>
                     <?php endif; ?>
 
@@ -2219,6 +2352,25 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <tr><td><?php echo safeHtml($from['institution'] ?? 'N/A'); ?></td><td><?php echo safeHtml($to['institution'] ?? 'N/A'); ?></td><td><?php echo number_format((float)$t['amount'], 2); ?></td><td><?php echo safeHtml($t['status']); ?></td><td><?php echo safeHtml($t['transaction_id'] ?? '—'); ?></td><td><?php echo safeHtml($t['created_at'] ?? ''); ?></td></tr>
                     <?php endforeach; ?>
                     </tbody></table></div>
+                    <?php endif; ?>
+
+                    <div class="report-section-title">3b · Fee &amp; Balance Breakdown</div>
+                    <div class="metrics-grid" style="grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));">
+                        <div class="metric-card"><span class="metric-label">Total Fees Charged</span><span class="metric-value"><?php echo number_format($certData['total_fees'], 2); ?></span></div>
+                        <div class="metric-card"><span class="metric-label">Opening Balance</span><span class="metric-value" style="font-size:16px;"><?php echo $certData['balance_tracked'] ? number_format((float)$certData['balance_before'], 2) : 'Not tracked'; ?></span></div>
+                        <div class="metric-card"><span class="metric-label">Closing Balance</span><span class="metric-value" style="font-size:16px;"><?php echo $certData['balance_tracked'] ? number_format((float)$certData['balance_after'], 2) : 'Not tracked'; ?></span></div>
+                    </div>
+                    <?php if (!empty($certData['fee_breakdown'])): ?>
+                    <div class="table-responsive"><table><thead><tr><th>Stage</th><th>Reference</th><th>Fee Amount</th></tr></thead><tbody>
+                    <?php foreach ($certData['fee_breakdown'] as $fb): ?>
+                    <tr><td><?php echo safeHtml($fb['stage']); ?></td><td><?php echo safeHtml($fb['reference']); ?></td><td><?php echo number_format($fb['fee'], 2); ?></td></tr>
+                    <?php endforeach; ?>
+                    </tbody></table></div>
+                    <?php else: ?>
+                    <p style="font-size:14px;color:var(--ink-300);">No fees recorded at any stage of this transaction.</p>
+                    <?php endif; ?>
+                    <?php if (!$certData['balance_tracked']): ?>
+                    <p style="font-size:12px; color:var(--ink-300); margin-top:var(--sp-2);"><strong>Note:</strong> opening/closing account balance isn't tracked in the current schema. Add <code>balance_before</code> / <code>balance_after</code> columns to <code>hold_transactions</code> (populated at hold-placement time) to enable this for future transactions — flag this to engineering alongside the signature-persistence note below.</p>
                     <?php endif; ?>
 
                     <div class="report-section-title">4 · Audit Trail</div>
