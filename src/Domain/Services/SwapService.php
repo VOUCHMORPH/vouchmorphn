@@ -3562,6 +3562,7 @@ return [
     'release_result' => $releaseResult,
     'hold_reference_used' => $holdReferenceForRelease,
 ];
+}
 /**
  * Get the real hold reference for a swap.
  * 
@@ -5200,6 +5201,7 @@ return $response;
     }
     error_log("[SwapService] confirmCashout FAILED: " . $e->getMessage());
     throw $e;
+}
 }
  /**
  * Single-identity aggregate: what an agent sees after searching one
@@ -9490,6 +9492,7 @@ return [
     'target_user_id' => $targetUserId,
     'message' => "Identity verified and added to the account. It can now be used to receive identity swaps finalized with the account's transaction PIN.",
 ];
+}
   // Completes phone-based identity registration.
     
    public function verifyUserIdentityOtp(int $userId, int $attemptId, string $otp): array
