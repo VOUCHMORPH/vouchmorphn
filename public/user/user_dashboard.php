@@ -442,12 +442,13 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
                 <select id="deliveryMethodSelect" onchange="setDeliveryMethod(this.value)">
                     <option value="ATM">ATM</option>
                     <option value="AGENT">Agent</option>
+                    <option value="VOUCHER">Voucher</option>
                 </select>
             </div>
             <div class="field-group">
-                <label>Beneficiary Phone (optional)</label>
+                <label>Beneficiary Phone <span style="color:var(--danger);">*</span></label>
                 <input id="beneficiaryPhone" placeholder="+267XXXXXXXX" oninput="state.beneficiaryPhone=this.value; refreshUI();">
-                <div class="help">Cashout code will be sent by SMS if provided</div>
+                <div class="help">Required for cashout code delivery via SMS</div>
             </div>
         </div>
         <div class="identity-field" id="identityFields" style="display:none;">
@@ -611,6 +612,163 @@ async function refreshSourceCount() {
     return sources;
 }
 document.addEventListener('DOMContentLoaded', refreshSourceCount);
+
+// ============================================================
+// MAIN buildPayload() - UPDATED with proper fields
+// ============================================================
+function buildPayload() {
+    const reference = 'SWAP_' + Date.now();
+    const idempotencyKey = 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    
+    if (state.swapType === 'MULTI_SOURCE') {
+        const sources = state.multiSources.map(s => {
+            const pin = extractPinFromFields(s.assetType, s.fields);
+            const identifierField = (ASSETS[s.assetType]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+            const assetFields = { ...s.fields };
+            if (assetHasAmountField(s.assetType)) assetFields.amount = s.amount;
+            return { 
+                institution: s.institution, 
+                asset_type: s.assetType, 
+                identifier: identifierField ? s.fields[identifierField.name] : null, 
+                amount: s.amount, 
+                wallet_pin: pin || undefined, 
+                pin: pin || undefined, 
+                asset_fields: assetFields 
+            };
+        });
+        const totalAmount = sources.reduce((sum, s) => sum + s.amount, 0);
+        const destFields = { ...state.toFields };
+        if (assetHasAmountField(state.toAsset)) destFields.amount = totalAmount;
+        const destIdField = (ASSETS[state.toAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+        const destCurrency = PARTICIPANTS[state.toInst]?.limits?.currency;
+        const payload = { 
+            swap_type: 'MULTI_SOURCE', 
+            reference, 
+            idempotency_key: idempotencyKey, 
+            user_id: CONFIG.USER_ID, 
+            amount: totalAmount, 
+            currency: destCurrency, 
+            destination_currency: destCurrency, 
+            contribution_strategy: 'USER_SPECIFIED', 
+            sources, 
+            to_institution: state.toInst, 
+            destination_institution: state.toInst, 
+            destination_asset_type: state.toAsset, 
+            asset_type: state.toAsset, 
+            destination_asset_fields: destFields 
+        };
+        for (const [key, value] of Object.entries(destFields)) payload[`destination_${key}`] = value;
+        if (destIdField) payload.destination_identifier = state.toFields[destIdField.name];
+        return payload;
+    }
+    
+    const pin = extractPinFromFields(state.fromAsset, state.fromFields);
+    const sourceAssetFields = { ...state.fromFields };
+    if (assetHasAmountField(state.fromAsset)) sourceAssetFields.amount = state.fromAmount;
+    const sourceCurrency = PARTICIPANTS[state.fromInst]?.limits?.currency;
+    
+    // Build proper source identifier and type
+    const sourceIdField = (ASSETS[state.fromAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+    const sourceIdentifier = sourceIdField ? state.fromFields[sourceIdField.name] : null;
+    const sourceIdentifierType = sourceIdField ? (sourceIdField.name === 'phone' || sourceIdField.name === 'phone_number' ? 'phone' : 'account_number') : 'auto';
+    
+    const payload = { 
+        swap_type: state.swapType, 
+        reference, 
+        idempotency_key: idempotencyKey, 
+        user_id: CONFIG.USER_ID, 
+        from_institution: state.fromInst, 
+        source_institution: state.fromInst, 
+        asset_type: state.fromAsset, 
+        amount: state.fromAmount, 
+        currency: sourceCurrency, 
+        wallet_pin: pin || undefined, 
+        pin: pin || undefined, 
+        asset_fields: sourceAssetFields, 
+        ...sourceAssetFields,
+        source_identifier: sourceIdentifier,
+        source_identifier_type: sourceIdentifierType
+    };
+    
+    // IDENTITY SWAP
+    if (state.swapType === 'IDENTITY') {
+        payload.identity_type = state.toIdentityType;
+        payload.identity_value = state.toIdentityValue;
+        if (state.toIdentitySms) payload.notification_phone = state.toIdentitySms;
+        payload.destination_currency = sourceCurrency;
+        return payload;
+    }
+    
+    // CASHOUT - Fix: Add beneficiary_phone and client_phone
+    if (state.swapType === 'CASHOUT') {
+        payload.to_institution = state.toInst;
+        payload.destination_institution = state.toInst;
+        payload.delivery_method = state.deliveryMethod || 'ATM';
+        payload.destination_currency = PARTICIPANTS[state.toInst]?.limits?.currency || sourceCurrency;
+        
+        // beneficiary_phone and client_phone are REQUIRED by ZuruBank
+        const beneficiaryPhone = state.beneficiaryPhone || state.toFields?.phone || state.toFields?.recipient_phone || null;
+        if (beneficiaryPhone) {
+            payload.beneficiary_phone = beneficiaryPhone;
+            payload.client_phone = beneficiaryPhone;
+        }
+        
+        // Destination asset fields based on destination_asset_type
+        const destIdField = (ASSETS[state.toAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+        
+        if (state.toAsset === 'VOUCHER') {
+            payload.destination_asset_type = 'VOUCHER';
+            payload.destination_asset_fields = {
+                voucher_type: 'CASHOUT',
+                recipient_phone: beneficiaryPhone || state.toFields?.recipient_phone || null,
+                voucher_number: state.toFields?.voucher_number || ''
+            };
+            payload.destination_identifier = beneficiaryPhone || state.toFields?.recipient_phone || state.toFields?.phone || null;
+            payload.destination_identifier_type = 'phone';
+        } else {
+            // WALLET (ATM/Agent cashout)
+            payload.destination_asset_type = 'WALLET';
+            const phone = state.toFields?.phone || state.toFields?.recipient_phone || beneficiaryPhone || null;
+            payload.destination_asset_fields = { phone: phone };
+            payload.destination_phone = phone;
+            payload.destination_identifier = phone;
+            payload.destination_identifier_type = 'phone';
+        }
+        
+        if (destIdField) {
+            payload.destination_identifier = state.toFields[destIdField.name] || payload.destination_identifier;
+        }
+        
+        return payload;
+    }
+    
+    // DEPOSIT - Fix destination_identifier_type
+    payload.to_institution = state.toInst;
+    payload.destination_institution = state.toInst;
+    payload.destination_asset_type = state.toAsset;
+    payload.destination_currency = PARTICIPANTS[state.toInst]?.limits?.currency || sourceCurrency;
+    
+    const destFields = { ...state.toFields };
+    if (assetHasAmountField(state.toAsset)) destFields.amount = state.fromAmount;
+    payload.destination_asset_fields = destFields;
+    for (const [key, value] of Object.entries(destFields)) payload[`destination_${key}`] = value;
+    payload.amount = state.fromAmount;
+    
+    // Set proper destination identifier type based on asset type
+    const destIdField = (ASSETS[state.toAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+    if (destIdField) {
+        payload.destination_identifier = state.toFields[destIdField.name];
+        if (state.toAsset === 'WALLET' || destIdField.name === 'phone' || destIdField.name === 'phone_number') {
+            payload.destination_identifier_type = 'phone';
+        } else if (state.toAsset === 'ACCOUNT' || destIdField.name === 'account_number' || destIdField.name === 'account') {
+            payload.destination_identifier_type = 'account_number';
+        } else {
+            payload.destination_identifier_type = destIdField.name || 'account';
+        }
+    }
+    
+    return payload;
+}
 
 async function viewWalletBalance() {
     openModal('💰 Balances', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading balances...</div>');
@@ -1225,61 +1383,9 @@ function refreshUI() {
     updateToolboxBadge();
 }
 
-function buildPayload() {
-    const reference = 'SWAP_' + Date.now();
-    const idempotencyKey = 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-    if (state.swapType === 'MULTI_SOURCE') {
-        const sources = state.multiSources.map(s => {
-            const pin = extractPinFromFields(s.assetType, s.fields);
-            const identifierField = (ASSETS[s.assetType]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
-            const assetFields = { ...s.fields };
-            if (assetHasAmountField(s.assetType)) assetFields.amount = s.amount;
-            return { institution: s.institution, asset_type: s.assetType, identifier: identifierField ? s.fields[identifierField.name] : null, amount: s.amount, wallet_pin: pin || undefined, pin: pin || undefined, asset_fields: assetFields };
-        });
-        const totalAmount = sources.reduce((sum, s) => sum + s.amount, 0);
-        const destFields = { ...state.toFields };
-        if (assetHasAmountField(state.toAsset)) destFields.amount = totalAmount;
-        const destIdField = (ASSETS[state.toAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
-        const destCurrency = PARTICIPANTS[state.toInst]?.limits?.currency;
-        const payload = { swap_type: 'MULTI_SOURCE', reference, idempotency_key: idempotencyKey, user_id: CONFIG.USER_ID, amount: totalAmount, currency: destCurrency, destination_currency: destCurrency, contribution_strategy: 'USER_SPECIFIED', sources, to_institution: state.toInst, destination_institution: state.toInst, destination_asset_type: state.toAsset, asset_type: state.toAsset, destination_asset_fields: destFields };
-        for (const [key, value] of Object.entries(destFields)) payload[`destination_${key}`] = value;
-        if (destIdField) payload.destination_identifier = state.toFields[destIdField.name];
-        return payload;
-    }
-    const pin = extractPinFromFields(state.fromAsset, state.fromFields);
-    const sourceAssetFields = { ...state.fromFields };
-    if (assetHasAmountField(state.fromAsset)) sourceAssetFields.amount = state.fromAmount;
-    const sourceCurrency = PARTICIPANTS[state.fromInst]?.limits?.currency;
-    const payload = { swap_type: state.swapType, reference, idempotency_key: idempotencyKey, user_id: CONFIG.USER_ID, from_institution: state.fromInst, source_institution: state.fromInst, asset_type: state.fromAsset, amount: state.fromAmount, currency: sourceCurrency, wallet_pin: pin || undefined, pin: pin || undefined, asset_fields: sourceAssetFields, ...sourceAssetFields };
-    payload.amount = state.fromAmount;
-    const idField = (ASSETS[state.fromAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
-    if (idField) payload.source_identifier = state.fromFields[idField.name];
-    if (state.swapType === 'IDENTITY') {
-        payload.identity_type = state.toIdentityType;
-        payload.identity_value = state.toIdentityValue;
-        if (state.toIdentitySms) payload.notification_phone = state.toIdentitySms;
-        payload.destination_currency = sourceCurrency;
-    } else if (state.swapType === 'CASHOUT') {
-        payload.to_institution = state.toInst;
-        payload.destination_institution = state.toInst;
-        payload.delivery_method = state.deliveryMethod;
-        if (state.beneficiaryPhone) { payload.beneficiary_phone = state.beneficiaryPhone; payload.client_phone = state.beneficiaryPhone; }
-        payload.destination_currency = PARTICIPANTS[state.toInst]?.limits?.currency;
-    } else {
-        payload.to_institution = state.toInst;
-        payload.destination_institution = state.toInst;
-        payload.destination_asset_type = state.toAsset;
-        payload.destination_currency = PARTICIPANTS[state.toInst]?.limits?.currency || sourceCurrency;
-        const destFields = { ...state.toFields };
-        if (assetHasAmountField(state.toAsset)) destFields.amount = state.fromAmount;
-        payload.destination_asset_fields = destFields;
-        for (const [key, value] of Object.entries(destFields)) payload[`destination_${key}`] = value;
-        payload.amount = state.fromAmount;
-        const destIdField = (ASSETS[state.toAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
-        if (destIdField) payload.destination_identifier = state.toFields[destIdField.name];
-    }
-    return payload;
-}
+// ============================================================
+// REST OF JAVASCRIPT - All other functions remain the same
+// ============================================================
 
 async function previewSwap() {
     const readiness = getSwapReadiness();
@@ -1898,12 +2004,10 @@ function renderToolbox() {
         { label: 'View balance', icon: '💰', action: 'viewWalletBalance()' },
         { label: 'Select a saved source', icon: '🔗', action: 'openMySourcesFromHeader()' },
         { label: 'Add source', icon: '➕', action: 'openAddSource()' },
-        // FINALIZE IDENTITY SWAP - For claiming money sent to your identity
         { label: 'Finalize identity swap', icon: '📩', badge: claimCount > 0 ? claimCount : null, action: 'openFinalizeIdentityModal()' },
         { label: 'Pending sources', icon: '⏳', badge: pendingCount > 0 ? pendingCount : null, action: 'openPendingSources()' },
         { label: 'My sources', icon: '📋', action: 'openMySourcesLegacy()' },
         { label: 'Swap history', icon: '🕘', action: 'openSwapHistory()' },
-        // REGISTER IDENTITY - For adding a new identity to your account
         { label: 'Register identity', icon: '🪪', action: 'openAddIdentityModal()' },
     ];
     if (isAgent) {
@@ -2678,4 +2782,3 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal()
 </script>
 </body>
 </html>
-```
