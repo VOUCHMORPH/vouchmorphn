@@ -1571,13 +1571,6 @@ class GenericBankClient implements BankAPIInterface
     return $this->placeHold($signedPayload);
 }
 
-public function verifyAssetSigned(array $payload): array
-{
-    error_log("=== GENERIC BANK CLIENT: verifyAssetSigned ===");
-    $payload = $this->addSourceIdentifier($payload);        // ← moved here, before signing
-    $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
-    return $this->verifyAsset($signedPayload);
-}
     public function processDepositWithProof(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: processDepositWithProof ===");
