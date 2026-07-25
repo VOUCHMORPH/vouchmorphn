@@ -99,56 +99,62 @@ class CertificateManager
     /**
      * Create a signed request with certificate
      * 
-     * FIX: Include 'requester' in the signed payload BEFORE signing
-     * This ensures compatibility with ZuruBank and other partners
-     * who expect 'requester' to be part of the signed data.
+     * CRITICAL: DO NOT include 'requester' in the signed payload.
+     * Saccussalis and ZuruBank remove 'requester' before verification,
+     * so it must NOT be part of the signed data.
      */
-  public function createSignedRequest(array $payload, string $requester): array
-{
-    if (!$this->myPrivateKey || !$this->myCertificate) {
-        error_log("CertificateManager: Cannot sign request - missing private key or certificate");
-        return $payload;
-    }
-    
-    $timestamp = time();
-    
-    // DO NOT include requester in the signed payload
-    // Saccussalis and ZuruBank remove requester before verification
-    $payloadWithTimestamp = array_merge($payload, ['timestamp' => $timestamp]);
-    ksort($payloadWithTimestamp);
-    
-    $jsonToSign = json_encode($payloadWithTimestamp, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    public function createSignedRequest(array $payload, string $requester): array
+    {
+        if (!$this->myPrivateKey || !$this->myCertificate) {
+            error_log("CertificateManager: Cannot sign request - missing private key or certificate");
+            return $payload;
+        }
+        
+        $timestamp = time();
+        
+        // CRITICAL: DO NOT include requester in the signed payload
+        // Saccussalis and ZuruBank remove requester before verification
+        $payloadWithTimestamp = array_merge($payload, ['timestamp' => $timestamp]);
+        ksort($payloadWithTimestamp);
+        
+        $jsonToSign = json_encode($payloadWithTimestamp, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
-    error_log("CertificateManager: SIGNING JSON: " . $jsonToSign);
+        // DEBUG: Log exactly what bytes are being signed
+        error_log("CertificateManager: SIGNING JSON (WITHOUT requester): " . $jsonToSign);
 
-    $signature = '';
-    $keyResource = openssl_pkey_get_private($this->myPrivateKey);
-    
-    if (!$keyResource) {
-        error_log("CertificateManager: Failed to load private key for signing");
-        return $payload;
+        $signature = '';
+        $keyResource = openssl_pkey_get_private($this->myPrivateKey);
+        
+        if (!$keyResource) {
+            error_log("CertificateManager: Failed to load private key for signing");
+            return $payload;
+        }
+        
+        $signResult = openssl_sign($jsonToSign, $signature, $keyResource, OPENSSL_ALGO_SHA256);
+        openssl_free_key($keyResource);
+        
+        if (!$signResult) {
+            error_log("CertificateManager: Failed to create signature");
+            return $payload;
+        }
+        
+        error_log("CertificateManager: Created signed request for {$requester} with timestamp {$timestamp}");
+        error_log("CertificateManager: Signature length: " . strlen(base64_encode($signature)));
+        
+        // Return with requester added AFTER signing
+        // requester is NOT part of the signed payload
+        return array_merge($payloadWithTimestamp, [
+            'signature' => base64_encode($signature),
+            'requester' => $requester,  // ← Added AFTER signing
+            'certificate' => $this->myCertificate
+        ]);
     }
     
-    $signResult = openssl_sign($jsonToSign, $signature, $keyResource, OPENSSL_ALGO_SHA256);
-    openssl_free_key($keyResource);
-    
-    if (!$signResult) {
-        error_log("CertificateManager: Failed to create signature");
-        return $payload;
-    }
-    
-    // Return the signed payload with requester added AFTER signing
-    return array_merge($payloadWithTimestamp, [
-        'signature' => base64_encode($signature),
-        'requester' => $requester,  // ← Add requester AFTER signing
-        'certificate' => $this->myCertificate
-    ]);
-}
     /**
      * Verify a signed request
      * 
-     * FIX: Do NOT remove 'requester' from the payload before verification
-     * since it's now included in the signed payload.
+     * CRITICAL: Remove 'requester' from the payload before verification
+     * since it's NOT part of the signed payload (it was added AFTER signing).
      */
     public function verifySignedRequest(array $request): array
     {
@@ -173,18 +179,18 @@ class CertificateManager
         }
         
         // Prepare payload for verification
-        // Remove only signature and certificate (not requester)
+        // Remove signature, certificate, AND requester (requester was added AFTER signing)
         $payloadToVerify = $request;
         unset($payloadToVerify['signature']);
         unset($payloadToVerify['certificate']);
-        // DO NOT remove 'requester' - it's now part of the signed payload
+        unset($payloadToVerify['requester']);  // ← CRITICAL: Remove requester before verification
         ksort($payloadToVerify);
         
         $jsonToVerify = json_encode($payloadToVerify, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         $decodedSig = base64_decode($signature);
         
         // DEBUG: Log what's being verified
-        error_log("CertificateManager: VERIFYING JSON: " . $jsonToVerify);
+        error_log("CertificateManager: VERIFYING JSON (without requester): " . $jsonToVerify);
         
         $keyResource = openssl_pkey_get_public($publicKey);
         if (!$keyResource) {
@@ -212,7 +218,7 @@ class CertificateManager
     /**
      * Verify a signed response from a partner
      * 
-     * Partners may or may not include 'requester' in their signed payload.
+     * Partners may include 'requester' in their signed payload or not.
      * This method checks both possibilities.
      */
     public function verifySignedResponse(array $response): array
@@ -241,7 +247,6 @@ class CertificateManager
         $payloadToVerify = $response;
         unset($payloadToVerify['signature']);
         unset($payloadToVerify['certificate']);
-        // Keep requester if present - it may be part of the signed payload
         ksort($payloadToVerify);
         
         $jsonToVerify = json_encode($payloadToVerify, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
@@ -291,6 +296,11 @@ class CertificateManager
     public function getMyCertificate(): ?string
     {
         return $this->myCertificate;
+    }
+    
+    public function getMyPrivateKey(): ?string
+    {
+        return $this->myPrivateKey;
     }
     
     public function isConfigured(): bool
