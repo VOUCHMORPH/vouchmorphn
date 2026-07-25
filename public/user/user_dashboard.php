@@ -566,7 +566,6 @@ let state = {
 };
 let savedIdentities = [];
 let userSources = [];
-let agentSearchResult = null;
 let agentSearchData = null;
 let selectedSourceId = null;
 let pendingClaims = [];
@@ -2403,6 +2402,15 @@ async function searchAgentClaim() {
             </div>
         </div>`;
 }
+// ------------------------------------------------------------------
+// Agent claim finalization. This flow is intentionally independent
+// of identity registration (see submitAgentIdentity / add_verified_identity.php).
+// It only ever: searches a pending identity balance, verifies the
+// client's OTP PIN + physical document, then deposits straight into
+// the agent's own pre-approved destination account/wallet
+// (destination_account_id from agentStatus.approved_destinations).
+// No identity is created, registered, or modified as part of this.
+// ------------------------------------------------------------------
 function openAgentFinalizeFormAggregated(identityType, identityValue, currency, totalAmount, swapCount) {
     const data = agentSearchData;
     if (!data) { showMessage('Search data not found. Please search again.', 'error'); return; }
@@ -2468,48 +2476,7 @@ async function submitAgentFinalizeAggregated(identityType, identityValue, totalA
     else if (failedSwaps > 0) msg += `(${failedSwaps} source(s) failed)`;
     if (data.status === 'partial_success') msg += ' Partial success — some sources failed.';
     showMessage(msg, 'success');
-    agentSearchData = null; agentSearchResult = null;
-}
-function openAgentFinalizeForm(claim) {
-    if (claim && claim.total_amount !== undefined) { openAgentFinalizeFormAggregated(claim.identity_type, claim.identity_value, claim.currency, claim.total_amount, claim.swap_count); return; }
-    agentSearchResult = claim;
-    if (!agentStatus.approved_destinations || agentStatus.approved_destinations.length === 0) { openModal('Agent Tools', '<div style="color:var(--danger);">You have no approved agent destination account. Register one first.</div>'); return; }
-    const destOptions = agentStatus.approved_destinations.map(d => `<option value="${d.id}">${escapeHtml(PARTICIPANTS[d.institution]?.name || d.institution)} - ${escapeHtml(d.identifier)}</option>`).join('');
-    const searchTypeLabel = IDENTITY_TYPE_LABELS[document.getElementById('agentSearchType')?.value] || 'document';
-    const body = `
-        <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius);padding:14px;margin-bottom:14px;">
-            <div style="font-size:12px;color:var(--text-muted);">Client's balance</div>
-            <div style="font-size:24px;font-weight:700;color:var(--primary-dark);">${formatMoney(claim.amount, claim.currency)}</div>
-        </div>
-        <div class="field-group"><label>Deposit into</label><select id="agentDestSelect">${destOptions}</select></div>
-        <div class="field-group"><label>Cash to give the client now</label><input type="number" id="cashNowAmount" min="0" max="${claim.amount}" step="0.01" value="${claim.amount}"></div>
-        <div class="field-group"><label style="display:flex;align-items:center;gap:8px;text-transform:none;font-weight:400;"><input type="checkbox" id="agentDocVerified"> I have physically verified the client's ${searchTypeLabel}</label></div>
-        <div class="field-group"><label>Client's OTP PIN</label><input type="password" id="agentClaimPin" inputmode="numeric" maxlength="6" placeholder="Ask the client for the PIN texted to them"><div class="help">This is the OTP PIN sent by SMS — never a personal transaction PIN.</div></div>
-        <div class="cta-row"><button class="btn btn-secondary" onclick="openAgentToolsModal()">← Back</button><button class="btn btn-primary" onclick="submitAgentFinalize()">Process</button></div>`;
-    openModal('Confirm Deposit', body);
-}
-async function submitAgentFinalize() {
-    const destinationAccountId = document.getElementById('agentDestSelect').value;
-    const docVerified = document.getElementById('agentDocVerified').checked;
-    const pin = document.getElementById('agentClaimPin').value.trim();
-    const cashNowAmount = parseFloat(document.getElementById('cashNowAmount').value);
-    if (!docVerified) { showMessage('You must confirm you verified the client\'s physical document.', 'warning'); return; }
-    if (!pin) { showMessage('Enter the client\'s claim PIN.', 'warning'); return; }
-    if (isNaN(cashNowAmount) || cashNowAmount < 0 || cashNowAmount > agentSearchResult.amount) { showMessage(`Cash amount must be between 0 and ${agentSearchResult.amount}.`, 'warning'); return; }
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/finalize_claim.php', { swap_reference: agentSearchResult.swap_reference, pin, identity_document_verified: true, destination_account_id: parseInt(destinationAccountId, 10), cash_now_amount: cashNowAmount });
-    if (!result.ok) { showMessage('Failed: ' + result.error, 'error'); return; }
-    const data = result.body.data || {};
-    closeModal();
-    const netDeposited = data.actually_claimed_net || agentSearchResult.amount;
-    const remainder = data.remainder_reswap?.amount || 0;
-    const cashGiven = data.cash_now_amount || cashNowAmount;
-    const totalFees = data.total_fee || 0;
-    let msg = '';
-    if (netDeposited > 0) { msg += `Deposited ${formatMoney(netDeposited, agentSearchResult.currency)} into your account`; if (totalFees > 0) msg += ` (fee: ${formatMoney(totalFees, agentSearchResult.currency)})`; msg += '. '; }
-    if (cashGiven > 0) msg += `Gave client ${formatMoney(cashGiven, agentSearchResult.currency)} in cash. `; else msg += `No cash given now. `;
-    if (remainder > 0) msg += `The remaining ${formatMoney(remainder, agentSearchResult.currency)} was sent back to their identity — a new PIN was texted to them.`;
-    showMessage(msg, 'success');
-    agentSearchResult = null;
+    agentSearchData = null;
 }
 
 async function openSwapHistory() {
