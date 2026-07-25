@@ -103,54 +103,47 @@ class CertificateManager
      * This ensures compatibility with ZuruBank and other partners
      * who expect 'requester' to be part of the signed data.
      */
-    public function createSignedRequest(array $payload, string $requester): array
-    {
-        if (!$this->myPrivateKey || !$this->myCertificate) {
-            error_log("CertificateManager: Cannot sign request - missing private key or certificate");
-            return $payload;
-        }
-        
-        $timestamp = time();
-        
-        // FIX: Include requester in the payload BEFORE signing
-        $payloadWithTimestamp = array_merge($payload, [
-            'timestamp' => $timestamp,
-            'requester' => $requester  // ← REQUIRED: Include requester in signed payload
-        ]);
-        ksort($payloadWithTimestamp);
-        
-        $jsonToSign = json_encode($payloadWithTimestamp, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-
-        // DEBUG: Log exactly what bytes are being signed
-        error_log("CertificateManager: SIGNING JSON: " . $jsonToSign);
-
-        $signature = '';
-        $keyResource = openssl_pkey_get_private($this->myPrivateKey);
-        
-        if (!$keyResource) {
-            error_log("CertificateManager: Failed to load private key for signing");
-            return $payload;
-        }
-        
-        $signResult = openssl_sign($jsonToSign, $signature, $keyResource, OPENSSL_ALGO_SHA256);
-        openssl_free_key($keyResource);
-        
-        if (!$signResult) {
-            error_log("CertificateManager: Failed to create signature");
-            return $payload;
-        }
-        
-        error_log("CertificateManager: Created signed request for {$requester} with timestamp {$timestamp}");
-        error_log("CertificateManager: Signature length: " . strlen(base64_encode($signature)));
-        
-        // Return the signed payload with requester already included
-        // No need to add requester again since it's already in $payloadWithTimestamp
-        return array_merge($payloadWithTimestamp, [
-            'signature' => base64_encode($signature),
-            'certificate' => $this->myCertificate
-        ]);
+  public function createSignedRequest(array $payload, string $requester): array
+{
+    if (!$this->myPrivateKey || !$this->myCertificate) {
+        error_log("CertificateManager: Cannot sign request - missing private key or certificate");
+        return $payload;
     }
     
+    $timestamp = time();
+    
+    // DO NOT include requester in the signed payload
+    // Saccussalis and ZuruBank remove requester before verification
+    $payloadWithTimestamp = array_merge($payload, ['timestamp' => $timestamp]);
+    ksort($payloadWithTimestamp);
+    
+    $jsonToSign = json_encode($payloadWithTimestamp, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+    error_log("CertificateManager: SIGNING JSON: " . $jsonToSign);
+
+    $signature = '';
+    $keyResource = openssl_pkey_get_private($this->myPrivateKey);
+    
+    if (!$keyResource) {
+        error_log("CertificateManager: Failed to load private key for signing");
+        return $payload;
+    }
+    
+    $signResult = openssl_sign($jsonToSign, $signature, $keyResource, OPENSSL_ALGO_SHA256);
+    openssl_free_key($keyResource);
+    
+    if (!$signResult) {
+        error_log("CertificateManager: Failed to create signature");
+        return $payload;
+    }
+    
+    // Return the signed payload with requester added AFTER signing
+    return array_merge($payloadWithTimestamp, [
+        'signature' => base64_encode($signature),
+        'requester' => $requester,  // ← Add requester AFTER signing
+        'certificate' => $this->myCertificate
+    ]);
+}
     /**
      * Verify a signed request
      * 
