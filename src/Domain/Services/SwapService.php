@@ -1425,8 +1425,6 @@ private function populateTrackingTables(array $swapData, array $details, ?array 
 private function populateAuditLog(string $swapRef, string $swapType, array $swapData, array $details, ?int $userId = null): void
 {
     try {
-        // FIX: was "SELECT 1 FROM audit_logs LIMIT 0" - that only ever
-        // reports one fake column named "?column?", never the real schema.
         $stmt = $this->swapDB->query("SELECT * FROM audit_logs LIMIT 0");
         $cols = [];
         for ($i = 0; $i < $stmt->columnCount(); $i++) {
@@ -1437,11 +1435,15 @@ private function populateAuditLog(string $swapRef, string $swapType, array $swap
         $this->writeAuditFallback($swapRef, $swapType, 'audit_logs table unreadable: ' . $e->getMessage(), $userId);
         return;
     }
- 
+
     $hasEntityId = in_array('entity_id', $cols);
-    $hasPerformedBy = in_array('performed_by', $cols) || in_array('performed_by_type', $cols);
-    $hasMetadata = in_array('metadata', $cols);
- 
+    $hasPerformedByType = in_array('performed_by_type', $cols);
+    $hasPerformedById = in_array('performed_by_id', $cols);
+    $hasPerformedAt = in_array('performed_at', $cols);
+    $hasAuditUuid = in_array('audit_uuid', $cols);
+    $hasTimestamp = in_array('timestamp', $cols);
+    $hasUserId = in_array('user_id', $cols);
+
     if (!$hasEntityId) {
         $this->writeAuditFallback(
             $swapRef,
@@ -1449,73 +1451,83 @@ private function populateAuditLog(string $swapRef, string $swapType, array $swap
             "audit_logs missing required 'entity_id' column - actual columns: " . implode(', ', $cols),
             $userId
         );
-        throw new RuntimeException("audit_logs table is missing required 'entity_id' column - actual columns: " . implode(', ', $cols));
+        return;
     }
- 
-    $insertFields = ['entity_type', 'entity_id', 'action', 'category', 'performed_at'];
-    $placeholders = [':entity_type', ':entity_id', ':action', ':category', ':performed_at'];
+
+    $insertFields = ['entity_type', 'entity_id', 'action', 'category'];
+    $placeholders = [':entity_type', ':entity_id', ':action', ':category'];
     $params = [
         ':entity_type' => 'swap_requests',
         ':entity_id' => $swapRef,
         ':action' => 'SWAP_' . strtoupper($swapType) . '_CREATED',
-        ':category' => 'financial',
-        ':performed_at' => date('Y-m-d H:i:s')
+        ':category' => 'financial'
     ];
- 
+
     if (in_array('severity', $cols)) {
         $insertFields[] = 'severity';
         $placeholders[] = ':severity';
         $params[':severity'] = 'info';
     }
- 
-    if (in_array('user_id', $cols) && $userId) {
+
+    if ($hasPerformedAt) {
+        $insertFields[] = 'performed_at';
+        $placeholders[] = ':performed_at';
+        $params[':performed_at'] = date('Y-m-d H:i:s');
+    }
+
+    if ($hasUserId && $userId) {
         $insertFields[] = 'user_id';
         $placeholders[] = ':user_id';
         $params[':user_id'] = $userId;
     }
- 
-    if ($hasPerformedBy && $userId) {
-        if (in_array('performed_by_type', $cols)) {
-            $insertFields[] = 'performed_by_type';
-            $placeholders[] = ':performed_by_type';
-            $params[':performed_by_type'] = 'user';
-        }
-        if (in_array('performed_by_id', $cols)) {
-            $insertFields[] = 'performed_by_id';
-            $placeholders[] = ':performed_by_id';
-            $params[':performed_by_id'] = $userId;
-        }
-        if (in_array('performed_by', $cols)) {
-            $insertFields[] = 'performed_by';
-            $placeholders[] = ':performed_by';
-            $params[':performed_by'] = $userId;
-        }
+
+    // Use performed_by_type and performed_by_id (NOT performed_by)
+    if ($hasPerformedByType && $userId) {
+        $insertFields[] = 'performed_by_type';
+        $placeholders[] = ':performed_by_type';
+        $params[':performed_by_type'] = 'user';
     }
- 
-    if ($hasMetadata) {
-        $insertFields[] = 'metadata';
-        $placeholders[] = ':metadata::jsonb';
-        $params[':metadata'] = json_encode([
-            'swap_type' => $swapType,
-            'amount' => $swapData['amount'] ?? 0,
-            'currency' => $swapData['currency'] ?? 'BWP',
-            'source_institution' => $details['source_institution'] ?? $swapData['from_institution'] ?? null,
-            'destination_institution' => $details['destination_institution'] ?? $swapData['to_institution'] ?? null,
-            'hold_id' => $this->currentHoldId,
-            'hold_reference' => $this->currentHoldReference,
-            'status' => $swapData['status'] ?? 'pending',
-            'user_id' => $userId
-        ]);
+
+    if ($hasPerformedById && $userId) {
+        $insertFields[] = 'performed_by_id';
+        $placeholders[] = ':performed_by_id';
+        $params[':performed_by_id'] = $userId;
     }
- 
+
+    if ($hasAuditUuid) {
+        $insertFields[] = 'audit_uuid';
+        $placeholders[] = ':audit_uuid';
+        $params[':audit_uuid'] = uniqid('audit_', true);
+    }
+
+    if ($hasTimestamp) {
+        $insertFields[] = 'timestamp';
+        $placeholders[] = ':timestamp';
+        $params[':timestamp'] = date('Y-m-d H:i:s');
+    }
+
     $sql = "INSERT INTO audit_logs (" . implode(', ', $insertFields) . ") 
             VALUES (" . implode(', ', $placeholders) . ")";
- 
-    $stmt = $this->swapDB->prepare($sql);
-    $stmt->execute($params);
-}
- 
 
+    // ============================================================
+    // NEW: SAVEPOINT protection so audit failure doesn't kill transaction
+    // ============================================================
+    try {
+        $this->runInSavepoint('audit_log_' . $swapRef, function () use ($sql, $params) {
+            $stmt = $this->swapDB->prepare($sql);
+            $stmt->execute($params);
+        });
+        $this->logger->debug("Audit log populated", ['swap_ref' => $swapRef, 'user_id' => $userId]);
+    } catch (\Throwable $e) {
+        // Audit logging failed - log to fallback and continue
+        $this->writeAuditFallback($swapRef, $swapType, 'Audit log insert failed: ' . $e->getMessage(), $userId);
+        $this->logger->warning("Audit log insert failed, recorded to fallback", [
+            'swap_ref' => $swapRef,
+            'error' => $e->getMessage()
+        ]);
+        // Don't re-throw - audit logs are non-critical
+    }
+}
 
  
 /**
@@ -3423,40 +3435,133 @@ public function releaseCashoutHold(int $authId, string $reason): array
     $this->updateHoldForSwap($swapRef, 'PARTIALLY_RELEASED');
 
     // 7. Audit log
-    try {
-        $auditStmt = $this->swapDB->prepare("
-            INSERT INTO audit_logs
-            (entity_type, entity_id, action, category, severity, performed_by, metadata, performed_at)
-            VALUES
-            ('cashout_authorizations', :auth_id, 'CASHOUT_HOLD_RELEASED', 'financial', 'info', 'SYSTEM_CRON', :metadata, NOW())
-        ");
-        $auditStmt->execute([
-            ':auth_id' => $authId,
-            ':metadata' => json_encode([
-                'reason' => $reason,
-                'held_amount' => $heldAmount,
-                'generate_code_fee_withheld' => $generateCodeFee,
-                'levy_withheld' => $levy,
-                'released_amount' => $releaseAmount,
-                'swap_reference' => $swapRef,
-                'hold_reference_used' => $holdReferenceForRelease,
-            ])
-        ]);
-    } catch (Exception $e) {
-        error_log("[SwapService] Audit log warning on release: " . $e->getMessage());
+try {
+    // Get table columns first
+    $stmt = $this->swapDB->query("SELECT * FROM audit_logs LIMIT 0");
+    $cols = [];
+    for ($i = 0; $i < $stmt->columnCount(); $i++) {
+        $col = $stmt->getColumnMeta($i);
+        $cols[] = $col['name'];
     }
-
-    return [
-        'status' => 'released',
-        'auth_id' => $authId,
-        'held_amount' => $heldAmount,
-        'generate_code_fee_withheld' => $generateCodeFee,
-        'levy_withheld' => $levy,
-        'released_amount' => $releaseAmount,
-        'release_result' => $releaseResult,
-        'hold_reference_used' => $holdReferenceForRelease,
+    
+    $auditFields = ['entity_type', 'entity_id', 'action', 'category', 'severity'];
+    $auditPlaceholders = [':entity_type', ':entity_id', ':action', ':category', ':severity'];
+    $auditParams = [
+        ':entity_type' => 'cashout_authorizations',
+        ':entity_id' => $authId,
+        ':action' => 'CASHOUT_HOLD_RELEASED',
+        ':category' => 'financial',
+        ':severity' => 'info'
     ];
+    
+    // Add performed_at if column exists
+    if (in_array('performed_at', $cols)) {
+        $auditFields[] = 'performed_at';
+        $auditPlaceholders[] = ':performed_at';
+        $auditParams[':performed_at'] = date('Y-m-d H:i:s');
+    }
+    
+    // ============================================================
+    // FIX: Use performed_by_type and performed_by_id (NOT performed_by)
+    // ============================================================
+    if (in_array('performed_by_type', $cols)) {
+        $auditFields[] = 'performed_by_type';
+        $auditPlaceholders[] = ':performed_by_type';
+        $auditParams[':performed_by_type'] = 'system';
+    }
+    
+    if (in_array('performed_by_id', $cols)) {
+        $auditFields[] = 'performed_by_id';
+        $auditPlaceholders[] = ':performed_by_id';
+        $auditParams[':performed_by_id'] = 0;
+    }
+    
+    // Add audit_uuid if column exists
+    if (in_array('audit_uuid', $cols)) {
+        $auditFields[] = 'audit_uuid';
+        $auditPlaceholders[] = ':audit_uuid';
+        $auditParams[':audit_uuid'] = uniqid('audit_', true);
+    }
+    
+    // Add timestamp if column exists
+    if (in_array('timestamp', $cols)) {
+        $auditFields[] = 'timestamp';
+        $auditPlaceholders[] = ':timestamp';
+        $auditParams[':timestamp'] = date('Y-m-d H:i:s');
+    }
+    
+    // ============================================================
+    // NOTE: metadata column does NOT exist in your audit_logs table
+    // The metadata is stored in the reason field or separate columns
+    // ============================================================
+    // If you have a 'reason' column, add it:
+    if (in_array('reason', $cols)) {
+        $auditFields[] = 'reason';
+        $auditPlaceholders[] = ':reason';
+        $auditParams[':reason'] = $reason;
+    }
+    
+    // Or if you have a 'details' column:
+    if (in_array('details', $cols)) {
+        $auditFields[] = 'details';
+        $auditPlaceholders[] = ':details';
+        $auditParams[':details'] = json_encode([
+            'held_amount' => $heldAmount,
+            'generate_code_fee_withheld' => $generateCodeFee,
+            'levy_withheld' => $levy,
+            'released_amount' => $releaseAmount,
+            'swap_reference' => $swapRef,
+            'hold_reference_used' => $holdReferenceForRelease,
+        ]);
+    }
+    
+    // If you have a 'metadata' column (you don't, but keeping for completeness)
+    if (in_array('metadata', $cols)) {
+        $auditFields[] = 'metadata';
+        $auditPlaceholders[] = ':metadata::jsonb';
+        $auditParams[':metadata'] = json_encode([
+            'reason' => $reason,
+            'held_amount' => $heldAmount,
+            'generate_code_fee_withheld' => $generateCodeFee,
+            'levy_withheld' => $levy,
+            'released_amount' => $releaseAmount,
+            'swap_reference' => $swapRef,
+            'hold_reference_used' => $holdReferenceForRelease,
+        ]);
+    }
+    
+    $auditSql = "INSERT INTO audit_logs (" . implode(', ', $auditFields) . ") 
+                 VALUES (" . implode(', ', $auditPlaceholders) . ")";
+    
+    // Use SAVEPOINT protection
+    $this->runInSavepoint('audit_release_' . $authId, function () use ($auditSql, $auditParams) {
+        $auditStmt = $this->swapDB->prepare($auditSql);
+        $auditStmt->execute($auditParams);
+    });
+    
+    error_log("[SwapService] Audit log recorded for cashout hold release auth_id={$authId}");
+    
+} catch (Exception $e) {
+    // Audit logging failed - log to fallback and continue
+    $this->writeAuditFallback(
+        $swapRef,
+        'CASHOUT_HOLD_RELEASED',
+        'Cashout hold release audit failed: ' . $e->getMessage(),
+        null
+    );
+    error_log("[SwapService] Audit log warning on release: " . $e->getMessage());
 }
+
+return [
+    'status' => 'released',
+    'auth_id' => $authId,
+    'held_amount' => $heldAmount,
+    'generate_code_fee_withheld' => $generateCodeFee,
+    'levy_withheld' => $levy,
+    'released_amount' => $releaseAmount,
+    'release_result' => $releaseResult,
+    'hold_reference_used' => $holdReferenceForRelease,
+];
 /**
  * Get the real hold reference for a swap.
  * 
@@ -4928,72 +5033,173 @@ public function confirmCashout(array $payload): array
             error_log("[SwapService] Settlement warning: " . $e->getMessage());
         }
 
-        try {
-            $auditStmt = $this->swapDB->prepare("
-                INSERT INTO audit_logs
-                (entity_type, entity_id, action, category, severity, performed_by, metadata, performed_at)
-                VALUES
-                ('cashout_authorizations', :auth_id, 'CASHOUT_CONFIRMED', 'financial', 'info', :performed_by, :metadata, NOW())
-            ");
-            $auditStmt->execute([
-                ':auth_id' => $authId,
-                ':performed_by' => $isCallback ? $requester : ($payload['performed_by'] ?? 'SYSTEM'),
-                ':metadata' => json_encode([
-                    'mode' => $mode,
-                    'voucher_number' => $voucherNumber ?? $authorization['swap_code'],
-                    'amount' => $amountToSend,
-                    'atm_id' => $atmId,
-                    'cashout_reference' => $cashoutReference,
-                    'swap_reference' => $swapRef,
-                    'source_institution' => $sourceInstitution,
-                    'destination_institution' => $destinationInstitution,
-                    'user_id' => $userId
-                ])
-            ]);
-        } catch (Exception $e) {
-            // NOTE: this will currently still fail with the
-            // "performed_by column does not exist" error seen in prod
-            // logs - separate bug, see populateAuditLog()'s dynamic
-            // column introspection for the pattern to copy here.
-            error_log("[SwapService] Audit log warning: " . $e->getMessage());
-        }
-
-        $response = [
-            'status' => 'completed',
-            'swap_reference' => $swapRef,
-            'auth_id' => $authId,
-            'amount' => $amountToSend,
-            'fee' => $feeAmount,
-            'currency' => $currency,
-            'confirmed_by' => $mode,
-            'debit_result' => $debitResult,
-            'settlement' => $settlementResult,
-            'message' => 'Cashout completed successfully',
-            'timestamp' => date('Y-m-d H:i:s')
-        ];
-
-        if ($isCallback) {
-            $response['voucher_number'] = $voucherNumber;
-            $response['atm_id'] = $atmId;
-            $response['cashout_reference'] = $cashoutReference;
-            $response['requester'] = $requester;
-        }
-
-        error_log("[SwapService] Cashout completed - Swap: {$swapRef}, Mode: {$mode}");
-
-        if ($openedHere) {
-            $this->swapDB->commit();
-        }
-
-        return $response;
-
-    } catch (\Throwable $e) {
-        if ($openedHere && $this->swapDB->inTransaction()) {
-            $this->swapDB->rollBack();
-        }
-        error_log("[SwapService] confirmCashout FAILED: " . $e->getMessage());
-        throw $e;
+      try {
+    // Get table columns first
+    $stmt = $this->swapDB->query("SELECT * FROM audit_logs LIMIT 0");
+    $cols = [];
+    for ($i = 0; $i < $stmt->columnCount(); $i++) {
+        $col = $stmt->getColumnMeta($i);
+        $cols[] = $col['name'];
     }
+    
+    $auditFields = ['entity_type', 'entity_id', 'action', 'category', 'severity'];
+    $auditPlaceholders = [':entity_type', ':entity_id', ':action', ':category', ':severity'];
+    $auditParams = [
+        ':entity_type' => 'cashout_authorizations',
+        ':entity_id' => $authId,
+        ':action' => 'CASHOUT_CONFIRMED',
+        ':category' => 'financial',
+        ':severity' => 'info'
+    ];
+    
+    // Add performed_at if column exists
+    if (in_array('performed_at', $cols)) {
+        $auditFields[] = 'performed_at';
+        $auditPlaceholders[] = ':performed_at';
+        $auditParams[':performed_at'] = date('Y-m-d H:i:s');
+    }
+    
+    // ============================================================
+    // FIX: Use performed_by_type and performed_by_id (NOT performed_by)
+    // ============================================================    
+    if (in_array('performed_by_type', $cols)) {
+        $auditFields[] = 'performed_by_type';
+        $auditPlaceholders[] = ':performed_by_type';
+        $auditParams[':performed_by_type'] = $isCallback ? 'system' : 'user';
+    }
+    
+    if (in_array('performed_by_id', $cols)) {
+        $auditFields[] = 'performed_by_id';
+        $auditPlaceholders[] = ':performed_by_id';
+$auditParams[':performed_by_id'] = $isCallback ? 0 : ($userId ?? 0);
+    }
+    
+    // Add audit_uuid if column exists
+    if (in_array('audit_uuid', $cols)) {
+        $auditFields[] = 'audit_uuid';
+        $auditPlaceholders[] = ':audit_uuid';
+        $auditParams[':audit_uuid'] = uniqid('audit_', true);
+    }
+    
+    // Add timestamp if column exists
+    if (in_array('timestamp', $cols)) {
+        $auditFields[] = 'timestamp';
+        $auditPlaceholders[] = ':timestamp';
+        $auditParams[':timestamp'] = date('Y-m-d H:i:s');
+    }
+    
+    // ============================================================
+    // NOTE: metadata column does NOT exist in your audit_logs table
+    // Store the metadata in a 'details' or 'notes' column if available
+    // ============================================================
+    // If you have a 'details' column:
+    if (in_array('details', $cols)) {
+        $auditFields[] = 'details';
+        $auditPlaceholders[] = ':details';
+        $auditParams[':details'] = json_encode([
+            'mode' => $mode,
+            'voucher_number' => $voucherNumber ?? $authorization['swap_code'],
+            'amount' => $amountToSend,
+            'atm_id' => $atmId,
+            'cashout_reference' => $cashoutReference,
+            'swap_reference' => $swapRef,
+            'source_institution' => $sourceInstitution,
+            'destination_institution' => $destinationInstitution,
+            'user_id' => $userId
+        ]);
+    }
+    
+    // Or if you have a 'notes' column:
+    if (in_array('notes', $cols)) {
+        $auditFields[] = 'notes';
+        $auditPlaceholders[] = ':notes';
+        $auditParams[':notes'] = json_encode([
+            'mode' => $mode,
+            'voucher_number' => $voucherNumber ?? $authorization['swap_code'],
+            'amount' => $amountToSend,
+            'atm_id' => $atmId,
+            'cashout_reference' => $cashoutReference,
+            'swap_reference' => $swapRef,
+            'source_institution' => $sourceInstitution,
+            'destination_institution' => $destinationInstitution,
+            'user_id' => $userId
+        ]);
+    }
+    
+    // If you have a 'metadata' column (you don't, but keeping for completeness)
+    if (in_array('metadata', $cols)) {
+        $auditFields[] = 'metadata';
+        $auditPlaceholders[] = ':metadata::jsonb';
+        $auditParams[':metadata'] = json_encode([
+            'mode' => $mode,
+            'voucher_number' => $voucherNumber ?? $authorization['swap_code'],
+            'amount' => $amountToSend,
+            'atm_id' => $atmId,
+            'cashout_reference' => $cashoutReference,
+            'swap_reference' => $swapRef,
+            'source_institution' => $sourceInstitution,
+            'destination_institution' => $destinationInstitution,
+            'user_id' => $userId
+        ]);
+    }
+    
+    $auditSql = "INSERT INTO audit_logs (" . implode(', ', $auditFields) . ") 
+                 VALUES (" . implode(', ', $auditPlaceholders) . ")";
+    
+    // Use SAVEPOINT protection so audit failure doesn't kill the transaction
+    $this->runInSavepoint('audit_confirm_' . $authId, function () use ($auditSql, $auditParams) {
+        $auditStmt = $this->swapDB->prepare($auditSql);
+        $auditStmt->execute($auditParams);
+    });
+    
+    error_log("[SwapService] Audit log recorded for cashout auth_id={$authId}");
+    
+} catch (Exception $e) {
+    // Audit logging failed - log to fallback and continue (don't break the cashout)
+    $this->writeAuditFallback(
+        $swapRef,
+        'CASHOUT_CONFIRM',
+        'Cashout confirm audit failed: ' . $e->getMessage(),
+        $userId
+    );
+    error_log("[SwapService] Audit log warning: " . $e->getMessage());
+}
+
+$response = [
+    'status' => 'completed',
+    'swap_reference' => $swapRef,
+    'auth_id' => $authId,
+    'amount' => $amountToSend,
+    'fee' => $feeAmount,
+    'currency' => $currency,
+    'confirmed_by' => $mode,
+    'debit_result' => $debitResult,
+    'settlement' => $settlementResult,
+    'message' => 'Cashout completed successfully',
+    'timestamp' => date('Y-m-d H:i:s')
+];
+
+if ($isCallback) {
+    $response['voucher_number'] = $voucherNumber;
+    $response['atm_id'] = $atmId;
+    $response['cashout_reference'] = $cashoutReference;
+    $response['requester'] = $requester;
+}
+
+error_log("[SwapService] Cashout completed - Swap: {$swapRef}, Mode: {$mode}");
+
+if ($openedHere) {
+    $this->swapDB->commit();
+}
+
+return $response;
+
+} catch (\Throwable $e) {
+    if ($openedHere && $this->swapDB->inTransaction()) {
+        $this->swapDB->rollBack();
+    }
+    error_log("[SwapService] confirmCashout FAILED: " . $e->getMessage());
+    throw $e;
 }
  /**
  * Single-identity aggregate: what an agent sees after searching one
@@ -9150,40 +9356,140 @@ public function addVerifiedIdentityAsAgent(
         $identityId = $row ? (int)$row['id'] : 0;
     }
 
-    // Audit trail — who verified this, and for whom.
-    try {
-        $auditStmt = $this->swapDB->prepare("
-            INSERT INTO audit_logs
-            (entity_type, entity_id, action, category, severity, performed_by, metadata, performed_at)
-            VALUES
-            ('user_identities', :entity_id, 'IDENTITY_VERIFIED_BY_AGENT', 'identity', 'info', :performed_by, :metadata, NOW())
-        ");
-        $auditStmt->execute([
-            ':entity_id' => $identityId,
-            ':performed_by' => $agentUserId,
-            ':metadata' => json_encode([
-                'target_user_id' => $targetUserId,
-                'identity_type' => $identityType,
-                'identity_value' => $identityValue,
-            ]),
-        ]);
-    } catch (Exception $e) {
-        error_log("[SwapService] addVerifiedIdentityAsAgent: audit log warning: " . $e->getMessage());
+   // Audit trail — who verified this, and for whom.
+try {
+    // Get table columns first
+    $stmt = $this->swapDB->query("SELECT * FROM audit_logs LIMIT 0");
+    $cols = [];
+    for ($i = 0; $i < $stmt->columnCount(); $i++) {
+        $col = $stmt->getColumnMeta($i);
+        $cols[] = $col['name'];
     }
-
-    error_log("[SwapService] addVerifiedIdentityAsAgent: {$identityType}={$identityValue} verified for user_id={$targetUserId} by agent_user_id={$agentUserId}");
-
-    return [
-        'success' => true,
-        'status' => 'verified',
-        'verified' => true,
-        'identity_id' => $identityId,
-        'identity_type' => $identityType,
-        'identity_value' => $identityValue,
-        'target_user_id' => $targetUserId,
-        'message' => "Identity verified and added to the account. It can now be used to receive identity swaps finalized with the account's transaction PIN.",
+    
+    $auditFields = ['entity_type', 'entity_id', 'action', 'category', 'severity'];
+    $auditPlaceholders = [':entity_type', ':entity_id', ':action', ':category', ':severity'];
+    $auditParams = [
+        ':entity_type' => 'user_identities',
+        ':entity_id' => $identityId,
+        ':action' => 'IDENTITY_VERIFIED_BY_AGENT',
+        ':category' => 'identity',
+        ':severity' => 'info'
     ];
+    
+    // Add performed_at if column exists
+    if (in_array('performed_at', $cols)) {
+        $auditFields[] = 'performed_at';
+        $auditPlaceholders[] = ':performed_at';
+        $auditParams[':performed_at'] = date('Y-m-d H:i:s');
+    }
+    
+    // ============================================================
+    // FIX: Use performed_by_type and performed_by_id (NOT performed_by)
+    // ============================================================
+    if (in_array('performed_by_type', $cols)) {
+        $auditFields[] = 'performed_by_type';
+        $auditPlaceholders[] = ':performed_by_type';
+        $auditParams[':performed_by_type'] = 'agent';
+    }
+    
+    if (in_array('performed_by_id', $cols)) {
+        $auditFields[] = 'performed_by_id';
+        $auditPlaceholders[] = ':performed_by_id';
+        $auditParams[':performed_by_id'] = $agentUserId;
+    }
+    
+    // Add audit_uuid if column exists
+    if (in_array('audit_uuid', $cols)) {
+        $auditFields[] = 'audit_uuid';
+        $auditPlaceholders[] = ':audit_uuid';
+        $auditParams[':audit_uuid'] = uniqid('audit_', true);
+    }
+    
+    // Add timestamp if column exists
+    if (in_array('timestamp', $cols)) {
+        $auditFields[] = 'timestamp';
+        $auditPlaceholders[] = ':timestamp';
+        $auditParams[':timestamp'] = date('Y-m-d H:i:s');
+    }
+    
+    // Add user_id if column exists (the target user)
+    if (in_array('user_id', $cols) && $targetUserId) {
+        $auditFields[] = 'user_id';
+        $auditPlaceholders[] = ':user_id';
+        $auditParams[':user_id'] = $targetUserId;
+    }
+    
+    // ============================================================
+    // NOTE: metadata column does NOT exist in your audit_logs table
+    // Store the metadata in a 'details' or 'notes' column if available
+    // ============================================================
+    // If you have a 'details' column:
+    if (in_array('details', $cols)) {
+        $auditFields[] = 'details';
+        $auditPlaceholders[] = ':details';
+        $auditParams[':details'] = json_encode([
+            'target_user_id' => $targetUserId,
+            'identity_type' => $identityType,
+            'identity_value' => $identityValue,
+        ]);
+    }
+    
+    // If you have a 'notes' column:
+    if (in_array('notes', $cols)) {
+        $auditFields[] = 'notes';
+        $auditPlaceholders[] = ':notes';
+        $auditParams[':notes'] = json_encode([
+            'target_user_id' => $targetUserId,
+            'identity_type' => $identityType,
+            'identity_value' => $identityValue,
+        ]);
+    }
+    
+    // If you have a 'metadata' column (you don't, but keeping for completeness)
+    if (in_array('metadata', $cols)) {
+        $auditFields[] = 'metadata';
+        $auditPlaceholders[] = ':metadata::jsonb';
+        $auditParams[':metadata'] = json_encode([
+            'target_user_id' => $targetUserId,
+            'identity_type' => $identityType,
+            'identity_value' => $identityValue,
+        ]);
+    }
+    
+    $auditSql = "INSERT INTO audit_logs (" . implode(', ', $auditFields) . ") 
+                 VALUES (" . implode(', ', $auditPlaceholders) . ")";
+    
+    // Use SAVEPOINT protection so audit failure doesn't kill the transaction
+    $this->runInSavepoint('audit_identity_' . $identityId, function () use ($auditSql, $auditParams) {
+        $auditStmt = $this->swapDB->prepare($auditSql);
+        $auditStmt->execute($auditParams);
+    });
+    
+    error_log("[SwapService] Audit log recorded for identity verification: {$identityType}={$identityValue} by agent={$agentUserId}");
+    
+} catch (Exception $e) {
+    // Audit logging failed - log to fallback and continue
+    $this->writeAuditFallback(
+        $swapRef ?? 'identity_verification',
+        'IDENTITY_VERIFIED_BY_AGENT',
+        'Identity verification audit failed: ' . $e->getMessage(),
+        $targetUserId
+    );
+    error_log("[SwapService] addVerifiedIdentityAsAgent: audit log warning: " . $e->getMessage());
 }
+
+error_log("[SwapService] addVerifiedIdentityAsAgent: {$identityType}={$identityValue} verified for user_id={$targetUserId} by agent_user_id={$agentUserId}");
+
+return [
+    'success' => true,
+    'status' => 'verified',
+    'verified' => true,
+    'identity_id' => $identityId,
+    'identity_type' => $identityType,
+    'identity_value' => $identityValue,
+    'target_user_id' => $targetUserId,
+    'message' => "Identity verified and added to the account. It can now be used to receive identity swaps finalized with the account's transaction PIN.",
+];
   // Completes phone-based identity registration.
     
    public function verifyUserIdentityOtp(int $userId, int $attemptId, string $otp): array
