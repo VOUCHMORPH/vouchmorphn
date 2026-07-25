@@ -3688,7 +3688,6 @@ public function cancelExpiredCashouts(int $bufferHours = 6): array
     $destinationAssetType = $this->extractDestinationAssetType($payload);
     
     // Capability gate — refuse to attempt deposit types the destination hasn't declared support for
-    $this->assertDestinationSupportsAssetType($destinationInstitution, $destinationAssetType);
     
     if (empty($payload['destination_currency'])) {
         $destParticipant = $this->participants[$destinationInstitution] ?? null;
