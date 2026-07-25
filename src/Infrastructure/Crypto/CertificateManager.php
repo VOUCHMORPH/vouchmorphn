@@ -131,7 +131,10 @@ class CertificateManager
         }
         
         $signResult = openssl_sign($jsonToSign, $signature, $keyResource, OPENSSL_ALGO_SHA256);
-        openssl_free_key($keyResource);
+        
+        // FIX: Remove deprecated openssl_free_key() call - PHP 8.0+ handles this automatically
+        // The key resource is freed when it goes out of scope
+        // openssl_free_key($keyResource); // REMOVED - deprecated in PHP 8.0+
         
         if (!$signResult) {
             error_log("CertificateManager: Failed to create signature");
@@ -199,6 +202,11 @@ class CertificateManager
         }
         
         $result = openssl_verify($jsonToVerify, $decodedSig, $keyResource, OPENSSL_ALGO_SHA256);
+        
+        // FIX: Remove deprecated openssl_free_key() call - PHP 8.0+ handles this automatically
+        // The key resource is freed when it goes out of scope
+        // openssl_free_key($keyResource); // REMOVED - deprecated in PHP 8.0+
+        
         $isValid = ($result === 1);
         
         error_log("CertificateManager: openssl_verify result: " . $result . " (1=valid, 0=invalid, -1=error)");
@@ -261,6 +269,10 @@ class CertificateManager
         }
         
         $result = openssl_verify($jsonToVerify, $decodedSig, $keyResource, OPENSSL_ALGO_SHA256);
+        
+        // FIX: Remove deprecated openssl_free_key() call
+        // openssl_free_key($keyResource); // REMOVED - deprecated in PHP 8.0+
+        
         $isValid = ($result === 1);
         
         // If verification failed and requester was present, try without it
@@ -275,8 +287,12 @@ class CertificateManager
             
             $jsonToVerifyNoRequester = json_encode($payloadToVerifyNoRequester, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
             
-            $resultNoRequester = openssl_verify($jsonToVerifyNoRequester, $decodedSig, $keyResource, OPENSSL_ALGO_SHA256);
-            $isValid = ($resultNoRequester === 1);
+            $keyResource2 = openssl_pkey_get_public($publicKey);
+            if ($keyResource2) {
+                $resultNoRequester = openssl_verify($jsonToVerifyNoRequester, $decodedSig, $keyResource2, OPENSSL_ALGO_SHA256);
+                // openssl_free_key($keyResource2); // REMOVED - deprecated in PHP 8.0+
+                $isValid = ($resultNoRequester === 1);
+            }
             
             if ($isValid) {
                 error_log("CertificateManager: Response from {$responder} - SIGNATURE VALID (without requester)");
