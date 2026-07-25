@@ -1,3 +1,6 @@
+Here's the updated `user_dashboard.php` with the clean separation between "Finalize identity swap" and "Register identity":
+
+```php
 <?php
 // ============================================================ 
 // SessionManager-based auth
@@ -573,6 +576,7 @@ let pendingSources = [];
 let agentStatus = { is_agent: false, approved_destinations: [], all_destinations: [] };
 let sourcePanelOpenCat = null;
 let SessionUser = null;
+let regIdentityState = { attemptId: null, identityType: null, identityValue: null };
 
 function formatMoney(amount, currency) {
     const num = parseFloat(amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -611,14 +615,9 @@ async function refreshSourceCount() {
 }
 document.addEventListener('DOMContentLoaded', refreshSourceCount);
 
-/**
- * View wallet balances - Enhanced to use api/v1/user/balance.php
- * Shows real-time balances from all user sources
- */
 async function viewWalletBalance() {
     openModal('💰 Balances', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading balances...</div>');
     
-    // Use the new API endpoint
     const result = await fetchAllBalances();
     
     if (!result.success) {
@@ -651,12 +650,10 @@ async function viewWalletBalance() {
         return;
     }
     
-    // Build the balance display
     let html = `
         <div style="margin-bottom:16px;">
             <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">Your total balance across all linked sources</div>`;
     
-    // Show total balance by currency
     if (Object.keys(totals).length > 0) {
         html += `<div style="background:var(--text);color:#fff;padding:16px;border-radius:var(--radius);margin-bottom:12px;">`;
         Object.keys(totals).forEach(cur => {
@@ -669,7 +666,6 @@ async function viewWalletBalance() {
         html += `</div>`;
     }
     
-    // List individual sources
     html += `<div style="max-height:50vh;overflow-y:auto;">`;
     
     sources.forEach(item => {
@@ -718,7 +714,6 @@ async function viewWalletBalance() {
     
     html += `</div>`;
     
-    // Add action buttons
     html += `
         <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border);display:flex;gap:8px;flex-wrap:wrap;">
             <button class="btn btn-primary btn-sm" onclick="refreshAllBalances()">🔄 Refresh All</button>
@@ -729,9 +724,6 @@ async function viewWalletBalance() {
     document.getElementById('modalBody').innerHTML = html;
 }
 
-/**
- * Refresh balance for a single source
- */
 async function refreshSourceBalance(sourceId) {
     const source = userSources.find(s => s.id === sourceId);
     if (!source) {
@@ -746,26 +738,18 @@ async function refreshSourceBalance(sourceId) {
     if (result.success) {
         const data = result.data || {};
         showMessage(`Balance updated: ${formatMoney(data.balance, data.currency)}`, 'success');
-        // Refresh the view
         viewWalletBalance();
     } else {
         showMessage(`Failed to fetch balance: ${result.error}`, 'error');
-        // Still refresh the view to show error state
         viewWalletBalance();
     }
 }
 
-/**
- * Refresh all balances
- */
 async function refreshAllBalances() {
     showMessage('Refreshing all balances...', 'info');
     await viewWalletBalance();
 }
 
-/**
- * Fetch balance for a specific source using the API
- */
 async function fetchBalance(institution, identifier, identifierType = 'auto') {
     try {
         const response = await fetch(CONFIG.API_BASE + '/api/v1/user/balance.php', {
@@ -787,9 +771,6 @@ async function fetchBalance(institution, identifier, identifierType = 'auto') {
     }
 }
 
-/**
- * Fetch balances for all user sources
- */
 async function fetchAllBalances() {
     try {
         const response = await fetch(CONFIG.API_BASE + '/api/v1/user/all_balances.php', {
@@ -805,6 +786,7 @@ async function fetchAllBalances() {
         return { success: false, error: error.message };
     }
 }
+
 function openMySourcesFromHeader() {
     closeModal();
     document.getElementById('sourceTypeButtons')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -969,11 +951,9 @@ function fieldsValidForAsset(assetType, values, includePin) {
     let fields = config.fields || [];
     fields = fields.filter(f => f.name !== 'amount');
     
-    // PIN fields are ALWAYS optional - skip them entirely
     fields = fields.filter(f => f.vault_field !== 'pin');
     fields = fields.filter(f => !f.name.toLowerCase().includes('pin'));
     
-    // Only check fields that are explicitly required
     const requiredFields = fields.filter(f => f.required === true);
     
     console.log('Validating required fields for asset:', assetType, requiredFields.map(f => f.name));
@@ -983,14 +963,12 @@ function fieldsValidForAsset(assetType, values, includePin) {
     
     const result = requiredFields.every(f => {
         const val = values[f.name];
-        // Must have a non-empty value
         if (!val || String(val).trim().length === 0) {
             failedField = f.name;
             failedReason = 'required but empty';
             console.log(`  ${f.name} - ❌ required but empty`);
             return false;
         }
-        // Check pattern if exists
         if (f.pattern) {
             try {
                 let pattern = f.pattern;
@@ -999,7 +977,6 @@ function fieldsValidForAsset(assetType, values, includePin) {
                 const matches = regex.test(String(val));
                 if (!matches) {
                     console.log(`  ${f.name} - ❌ pattern mismatch (${pattern}) against "${val}"`);
-                    // Fallback for phone numbers
                     if (f.name === 'phone' || f.name === 'phone_number') {
                         const simpleMatch = /^\+?[0-9]{10,15}$/.test(String(val));
                         if (simpleMatch) {
@@ -1007,7 +984,6 @@ function fieldsValidForAsset(assetType, values, includePin) {
                             return true;
                         }
                     }
-                    // Fallback for account numbers
                     if (f.name === 'account_number' || f.name === 'account') {
                         const alphanumericMatch = /^[A-Z0-9]{8,16}$/i.test(String(val));
                         if (alphanumericMatch) {
@@ -1183,7 +1159,6 @@ function getSwapReadiness() {
         reasons.push(limits ? `enter an amount between ${limits.min_amount} and ${limits.max_amount}` : 'enter an amount within this institution\'s limits');
     }
     
-    // Check source fields
     if (state.fromInst && state.fromAsset) {
         const validation = fieldsValidForAsset(state.fromAsset, state.fromFields, true);
         if (!validation.valid) {
@@ -1192,7 +1167,6 @@ function getSwapReadiness() {
         }
     }
     
-    // Check destination based on swap type
     if (state.swapType === 'IDENTITY') {
         if (!state.toIdentityValue) {
             missingFields.push('Identity: identity value required');
@@ -1909,11 +1883,16 @@ async function retryPendingSource(type, sourceId) {
     loadPendingSources();
 }
 
+// ============================================================
+// TOOLBOX - Clean separation of functions
+// ============================================================
+
 async function openToolbox() {
     openModal('Toolbox', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading...</div>');
     await getCurrentUserRole();
     document.getElementById('modalBody').innerHTML = renderToolbox();
 }
+
 function renderToolbox() {
     const pendingCount = pendingSources.length;
     const claimCount = pendingClaims.length;
@@ -1922,10 +1901,12 @@ function renderToolbox() {
         { label: 'View balance', icon: '💰', action: 'viewWalletBalance()' },
         { label: 'Select a saved source', icon: '🔗', action: 'openMySourcesFromHeader()' },
         { label: 'Add source', icon: '➕', action: 'openAddSource()' },
+        // FINALIZE IDENTITY SWAP - For claiming money sent to your identity
         { label: 'Finalize identity swap', icon: '📩', badge: claimCount > 0 ? claimCount : null, action: 'openFinalizeIdentityModal()' },
         { label: 'Pending sources', icon: '⏳', badge: pendingCount > 0 ? pendingCount : null, action: 'openPendingSources()' },
         { label: 'My sources', icon: '📋', action: 'openMySourcesLegacy()' },
         { label: 'Swap history', icon: '🕘', action: 'openSwapHistory()' },
+        // REGISTER IDENTITY - For adding a new identity to your account
         { label: 'Register identity', icon: '🪪', action: 'openAddIdentityModal()' },
     ];
     if (isAgent) {
@@ -1936,6 +1917,7 @@ function renderToolbox() {
     rows.push({ label: 'My profile', icon: '👤', action: 'openProfileModal()' });
     rows.push({ label: 'Help', icon: '❓', action: 'openHelpModal()' });
     rows.push({ label: 'Terms & conditions', icon: '📄', action: 'openTermsModal()' });
+    
     return `<div class="toolbox-list">${rows.map(r => `
         <div class="toolbox-row" onclick="${r.action}">
             <span class="toolbox-row-icon">${r.icon || ''}</span>
@@ -1943,106 +1925,21 @@ function renderToolbox() {
             ${r.badge ? `<span class="toolbox-row-badge">${r.badge}</span>` : ''}
         </div>`).join('')}</div>`;
 }
+
 function updateToolboxBadge() {
     const badge = document.getElementById('toolboxBadge');
     const totalPending = pendingSources.length + pendingClaims.length;
     if (totalPending > 0) { badge.style.display = 'inline-flex'; badge.textContent = totalPending; } else { badge.style.display = 'none'; }
 }
 
-function openHelpModal() {
-    openModal('Help', `
-        <div style="font-size:13px;line-height:1.7;color:var(--text);">
-            <p style="font-weight:700;margin-bottom:6px;">Sending money</p>
-            <ol style="padding-left:18px;margin-bottom:16px;">
-                <li>Choose Wallet/Account, Card, or Voucher as your source.</li>
-                <li>Pick where it should go: Deposit, Cashout, Send to identity, or Multi-source.</li>
-                <li>Enter the amount, review the fee, and confirm.</li>
-            </ol>
-            <p style="font-weight:700;margin-bottom:6px;">Claiming money sent to you</p>
-            <ol style="padding-left:18px;margin-bottom:16px;">
-                <li>Open Toolbox &rarr; Finalize identity swap.</li>
-                <li>Enter your claim PIN and choose how to receive it.</li>
-            </ol>
-            <p style="font-weight:700;margin-bottom:6px;">Agent access</p>
-            <ol style="padding-left:18px;">
-                <li>Agent access is granted by VouchMorph admin staff to your account.</li>
-                <li>Once granted, open Toolbox &rarr; Agent destinations to register a business account, then use Agent tools to search and finalize client claims.</li>
-            </ol>
-        </div>`);
-}
-function openTermsModal() {
-    openModal('Terms &amp; conditions', `
-        <div style="font-size:13px;line-height:1.7;color:var(--text);">
-            <p style="font-weight:700;margin-bottom:6px;">1. The service</p>
-            <p style="margin-bottom:14px;">VouchMorph facilitates transfers, cashouts, and identity-based payments between participating institutions on your instruction. We act as an intermediary; the underlying funds remain with the institutions holding your linked sources until a swap completes.</p>
-            <p style="font-weight:700;margin-bottom:6px;">2. Your responsibilities</p>
-            <p style="margin-bottom:14px;">You are responsible for keeping your PIN, claim codes, and linked source credentials confidential. VouchMorph staff will never ask for your PIN.</p>
-            <p style="font-weight:700;margin-bottom:6px;">3. Fees</p>
-            <p style="margin-bottom:14px;">Applicable fees are shown before you confirm any swap. Fees vary by swap type, delivery method, and destination institution.</p>
-            <p style="font-weight:700;margin-bottom:6px;">4. Identity swaps</p>
-            <p style="margin-bottom:14px;">Money sent to an identity (national ID, phone, email, etc.) is held for the recipient for a limited window and requires verification to claim.</p>
-            <p style="margin-top:16px;color:var(--text-dim);font-size:11px;">This is placeholder text for structure only — replace with your reviewed legal terms before launch.</p>
-        </div>`);
-}
-function openProfileModal() { openModal('My Profile', renderProfileModal()); }
-function renderProfileModal() {
-    const rows = savedIdentities.length ? savedIdentities.map((id, i) => `
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);">
-            <div><div style="font-size:11px;color:var(--text-muted);">${escapeHtml(IDENTITY_TYPE_LABELS[id.type] || id.type)}</div><div style="font-size:14px;font-weight:700;">${escapeHtml(id.value)}</div></div>
-            <div class="quick-actions" style="margin:0;"><span class="quick-link" onclick="useSavedIdentity(${i})">Use</span><span class="quick-link danger" onclick="removeSavedIdentity(${i})">Remove</span></div>
-        </div>`).join('') : `<div style="font-size:12px;color:var(--text-dim);">No saved identities yet.</div>`;
-    return `
-        <div style="margin-bottom:12px;">${rows}</div>
-        <div class="field-group"><label>Identity Type</label><select id="newIdentityType"><option value="national_id">National ID</option><option value="birth_certificate">Birth Certificate</option><option value="voter_id">Voter ID</option><option value="phone">Phone Number</option><option value="email">Email</option></select></div>
-        <div class="field-group"><label>Identity Value</label><input id="newIdentityValue" placeholder="Enter the identity value"></div>
-        <div class="cta-row"><button class="btn btn-primary" onclick="addSavedIdentity()">+ Add Identity</button></div>
-        <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
-            <div class="field-label" style="margin-bottom:8px;">Transaction PIN</div>
-            <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Required to claim money sent to your verified identity. Never share it over SMS.</div>
-            <div class="field-group"><label>New PIN (4-6 digits)</label><input type="password" id="newPin" inputmode="numeric" maxlength="6" placeholder="••••"></div>
-            <div class="field-group"><label>Confirm PIN</label><input type="password" id="confirmPin" inputmode="numeric" maxlength="6" placeholder="••••"></div>
-            <div class="cta-row"><button class="btn btn-primary" onclick="setTransactionPin()">Set PIN</button></div>
-        </div>`;
-}
-function addSavedIdentity() {
-    const type = document.getElementById('newIdentityType').value;
-    const value = document.getElementById('newIdentityValue').value.trim();
-    if (!value) { showMessage('Enter an identity value first', 'error'); return; }
-    savedIdentities.push({ type, value });
-    document.getElementById('modalBody').innerHTML = renderProfileModal();
-}
-function removeSavedIdentity(idx) { savedIdentities.splice(idx, 1); document.getElementById('modalBody').innerHTML = renderProfileModal(); }
-function useSavedIdentity(idx) {
-    const id = savedIdentities[idx];
-    if (!id) return;
-    closeModal(); quickSetSwapType('IDENTITY');
-    state.toIdentityType = id.type; state.toIdentityValue = id.value;
-    document.getElementById('identityType').value = id.type;
-    document.getElementById('identityValue').value = id.value;
-    updateIdentityHelp(); refreshUI();
-    showMessage(`Using saved ${IDENTITY_TYPE_LABELS[id.type] || id.type}: ${id.value}`, 'success');
-}
-async function setTransactionPin() {
-    const pin = document.getElementById('newPin').value.trim();
-    const confirmPin = document.getElementById('confirmPin').value.trim();
-    if (!/^\d{4,6}$/.test(pin)) { showMessage('PIN must be 4-6 digits.', 'warning'); return; }
-    if (pin !== confirmPin) { showMessage('PIN and confirmation do not match.', 'warning'); return; }
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/set_pin.php', { pin, confirm_pin: confirmPin });
-    if (!result.ok) { showMessage('Could not set PIN: ' + result.error, 'error'); return; }
-    showMessage('Transaction PIN set. Keep it private.', 'success');
-    closeModal();
+// ============================================================
+// FINALIZE IDENTITY SWAP - For claiming money sent to your identity
+// ============================================================
+
+function openFinalizeIdentityModal() {
+    openModal('Finalize Identity Swap', renderFinalizeIdentityModal());
 }
 
-async function checkPendingClaims() {
-    if (!CONFIG.USER_ID) return;
-    try {
-        const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/pending_claims.php', {});
-        if (!result.ok) return;
-        pendingClaims = result.body.data || [];
-        updateToolboxBadge();
-    } catch (e) { console.error('[claims] Failed to check pending claims', e); }
-}
-function openFinalizeIdentityModal() { openModal('Finalize Identity Swap', renderFinalizeIdentityModal()); }
 function renderFinalizeIdentityModal() {
     const claimsHtml = pendingClaims.length === 0
         ? `<div style="font-size:12px;color:var(--text-dim);margin-bottom:16px;">No identity money is currently waiting for you.</div>`
@@ -2065,58 +1962,39 @@ function renderFinalizeIdentityModal() {
         <div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">Money sent to your national ID, phone, or email shows up here.</div>
         ${claimsHtml}
         <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:4px;">
-            <div class="field-label" style="margin-bottom:6px;">Don't want to depend on SMS?</div>
-            <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Register an identity to your account and set a transaction PIN. Once verified, future identity swaps sent to it can be finalized with your own PIN instead of waiting on an OTP text.</div>
-            <div class="field-group"><label>Identity Type</label>
-                <select id="regIdentityType">
-                    <option value="national_id">National ID</option>
-                    <option value="phone">Phone Number</option>
-                    <option value="email">Email</option>
-                    <option value="birth_certificate">Birth Certificate</option>
-                    <option value="voter_id">Voter ID</option>
-                </select>
-            </div>
-            <div class="field-group"><label>Identity Value</label><input id="regIdentityValue" placeholder="Enter the ID number, phone, or email"></div>
-            <div class="help" style="margin-bottom:10px;">Phone numbers are confirmed instantly by SMS code. National ID / birth certificate / voter ID go to manual review before they're usable.</div>
-            <div class="cta-row"><button class="btn btn-primary btn-sm" onclick="submitRegisterIdentity()">Register identity</button></div>
-            <div id="regIdentityOtpFields" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
-                <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;" id="regIdentityOtpMessage"></div>
-                <div class="otp-input-group">
-                    <input type="text" id="regIdentityOtp" placeholder="Enter code" inputmode="numeric" maxlength="8">
-                    <button class="btn btn-primary btn-sm" onclick="submitVerifyIdentityOtp()">Verify</button>
-                </div>
-            </div>
+            <div class="field-label" style="margin-bottom:6px;">Need to claim an identity swap?</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">If you received a swap notification, enter the claim PIN below to complete the transaction.</div>
+            <div class="field-group"><label>Swap Reference</label><input id="directClaimRef" placeholder="e.g. SWAP_123456789"></div>
+            <div class="field-group"><label>Claim PIN</label><input type="password" id="directClaimPin" placeholder="Enter the PIN you received" maxlength="6"></div>
+            <div class="cta-row"><button class="btn btn-primary" onclick="submitDirectClaim()">Claim Swap</button></div>
         </div>
-        <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px;">
-            <span class="quick-link muted" onclick="openProfileModal()">Set / change transaction PIN</span>
-        </div>`;
+        <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px;font-size:11px;color:var(--text-dim);">
+            <span class="quick-link muted" onclick="closeModal();openAddIdentityModal();">Need to register a new identity instead? Click here →</span>
+        </div>
+    `;
 }
 
-let regIdentityState = { attemptId: null, identityType: null, identityValue: null };
-async function submitRegisterIdentity() {
-    const identityType = document.getElementById('regIdentityType').value;
-    const identityValue = document.getElementById('regIdentityValue').value.trim();
-    if (!identityValue) { showMessage('Enter the identity value.', 'warning'); return; }
-    const result = await callApi(CONFIG.API_BASE + '/user/add_identity.php', { identity_type: identityType, identity_value: identityValue });
-    if (!result.ok) { showMessage('Could not register identity: ' + result.error, 'error'); return; }
-    const data = result.body.data || {};
-    regIdentityState.identityType = identityType; regIdentityState.identityValue = identityValue;
-    if (data.requires_otp) {
-        regIdentityState.attemptId = data.attempt_id || null;
-        document.getElementById('regIdentityOtpFields').style.display = 'block';
-        document.getElementById('regIdentityOtpMessage').textContent = data.message || 'Enter the code we texted you to confirm this is yours.';
-        showMessage('Verification code sent.', 'success');
-        return;
+async function submitDirectClaim() {
+    const swapRef = document.getElementById('directClaimRef').value.trim();
+    const pin = document.getElementById('directClaimPin').value.trim();
+    
+    if (!swapRef) { showMessage('Please enter the swap reference.', 'warning'); return; }
+    if (!pin) { showMessage('Please enter your claim PIN.', 'warning'); return; }
+    if (!/^\d{4,6}$/.test(pin)) { showMessage('PIN must be 4-6 digits.', 'warning'); return; }
+    
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/claim_identity.php', {
+        swap_reference: swapRef,
+        pin: pin
+    });
+    
+    if (!result.ok) { 
+        showMessage('Claim failed: ' + result.error, 'error'); 
+        return; 
     }
-    showMessage(data.message || 'Identity submitted for review.', 'success');
-}
-async function submitVerifyIdentityOtp() {
-    const otp = document.getElementById('regIdentityOtp').value.trim();
-    if (!otp) { showMessage('Enter the verification code.', 'warning'); return; }
-    const result = await callApi(CONFIG.API_BASE + '/user/verify_identity_otp.php', { attempt_id: regIdentityState.attemptId, otp });
-    if (!result.ok) { showMessage('Verification failed: ' + result.error, 'error'); return; }
-    showMessage('Identity verified. You can now use your transaction PIN for this identity.', 'success');
-    openFinalizeIdentityModal();
+    
+    closeModal();
+    showMessage('Funds claimed successfully!', 'success');
+    checkPendingClaims();
 }
 
 function openClaimForm(idx) {
@@ -2137,7 +2015,9 @@ function openClaimForm(idx) {
         <div class="cta-row"><button class="btn btn-secondary" onclick="openFinalizeIdentityModal()">← Back</button><button class="btn btn-primary" onclick="submitClaim('${claim.swap_reference}')">Finalize</button></div>`;
     openModal('Finalize Identity Swap', body);
 }
+
 function toggleClaimDestFields(type) { document.getElementById('claimDepositFields').style.display = type === 'DEPOSIT' ? 'block' : 'none'; }
+
 async function submitClaim(swapReference) {
     const pin = document.getElementById('claimPin').value.trim();
     const destType = document.getElementById('claimDestType').value;
@@ -2152,6 +2032,192 @@ async function submitClaim(swapReference) {
     if (!result.ok) { showMessage('Claim failed: ' + result.error, 'error'); return; }
     closeModal(); showMessage('Funds claimed successfully!', 'success'); checkPendingClaims();
 }
+
+// ============================================================
+// REGISTER IDENTITY - For adding a new identity to your account
+// ============================================================
+
+function openAddIdentityModal() {
+    openModal('Register Identity', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading...</div>');
+    getCurrentUserRole().then(session => {
+        if (session.is_agent) {
+            renderAgentIdentityForm();
+        } else {
+            renderUserIdentityForm();
+        }
+    });
+}
+
+function renderUserIdentityForm() {
+    document.getElementById('modalBody').innerHTML = `
+        <div style="max-width:400px;">
+            <div style="font-weight:800;font-size:16px;margin-bottom:4px;">Add an identity to your account</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px;">Register a phone number, email, or ID so people can send swaps directly to you.</div>
+            
+            <div class="field-group">
+                <label>Identity Type</label>
+                <select id="userIdentityType" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;">
+                    <option value="phone">Phone Number</option>
+                    <option value="email">Email</option>
+                    <option value="national_id">National ID</option>
+                    <option value="birth_certificate">Birth Certificate</option>
+                    <option value="voter_id">Voter ID</option>
+                </select>
+            </div>
+            
+            <div class="field-group">
+                <label>Identity Value</label>
+                <input type="text" id="userIdentityValue" placeholder="Enter the ID number, phone, or email" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;">
+            </div>
+            
+            <div style="background:rgba(0,160,173,0.08);border-left:3px solid var(--primary);padding:10px 14px;border-radius:6px;font-size:12px;margin-bottom:14px;">
+                💡 Phone numbers are verified instantly via SMS. National IDs and other documents require in-person verification by a VouchMorph agent.
+            </div>
+            
+            <div id="regIdentityOtpFields" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+                <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;" id="regIdentityOtpMessage"></div>
+                <div class="otp-input-group">
+                    <input type="text" id="regIdentityOtp" placeholder="Enter verification code" inputmode="numeric" maxlength="8">
+                    <button class="btn btn-primary btn-sm" onclick="submitVerifyIdentityOtp()">Verify</button>
+                </div>
+            </div>
+            
+            <div class="cta-row">
+                <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="submitRegisterIdentity()">Register Identity</button>
+            </div>
+            
+            <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px;font-size:11px;color:var(--text-dim);">
+                <span class="quick-link muted" onclick="closeModal();openFinalizeIdentityModal();">Need to claim a swap sent to your identity? Click here →</span>
+            </div>
+        </div>`;
+}
+
+function renderAgentIdentityForm() {
+    document.getElementById('modalBody').innerHTML = `
+        <div style="max-width:420px;">
+            <div style="font-weight:800;font-size:16px;margin-bottom:4px;">Register a verified identity (Agent)</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px;">Use this after physically verifying the person's document.</div>
+            
+            <div class="field-group">
+                <label>Account holder's phone or email</label>
+                <input type="text" id="agentTargetLookup" placeholder="Phone or email on their VouchMorph account" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;">
+            </div>
+            
+            <div class="field-group">
+                <label>Identity Type</label>
+                <select id="agentIdentityType" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;">
+                    <option value="national_id">National ID</option>
+                    <option value="voters_id">Voter's ID</option>
+                    <option value="drivers_license">Driver's License</option>
+                    <option value="birth_certificate">Birth Certificate</option>
+                    <option value="passport">Passport</option>
+                </select>
+            </div>
+            
+            <div class="field-group">
+                <label>ID Number</label>
+                <input type="text" id="agentIdentityValue" placeholder="Document number" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;">
+            </div>
+            
+            <div class="field-group">
+                <label style="display:flex;align-items:center;gap:8px;text-transform:none;font-weight:400;">
+                    <input type="checkbox" id="agentDocVerified"> I have physically verified this document
+                </label>
+            </div>
+            
+            <div class="cta-row">
+                <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="submitAgentIdentity()">Register Identity</button>
+            </div>
+        </div>`;
+}
+
+async function submitRegisterIdentity() {
+    const identityType = document.getElementById('userIdentityType').value;
+    const identityValue = document.getElementById('userIdentityValue').value.trim();
+    
+    if (!identityValue) { 
+        showMessage('Please enter the identity value.', 'warning'); 
+        return; 
+    }
+    
+    const result = await callApi(CONFIG.API_BASE + '/user/add_identity.php', {
+        identity_type: identityType,
+        identity_value: identityValue
+    });
+    
+    if (!result.ok) { 
+        showMessage('Could not register identity: ' + result.error, 'error'); 
+        return; 
+    }
+    
+    const data = result.body.data || {};
+    regIdentityState.attemptId = data.attempt_id || null;
+    regIdentityState.identityType = identityType;
+    regIdentityState.identityValue = identityValue;
+    
+    if (data.requires_otp) {
+        document.getElementById('regIdentityOtpFields').style.display = 'block';
+        document.getElementById('regIdentityOtpMessage').textContent = data.message || 'Enter the verification code sent to your phone/email.';
+        showMessage('Verification code sent.', 'success');
+        return;
+    }
+    
+    showMessage(data.message || 'Identity submitted for review.', 'success');
+    setTimeout(() => closeModal(), 2000);
+}
+
+async function submitAgentIdentity() {
+    const lookup = document.getElementById('agentTargetLookup').value.trim();
+    const type = document.getElementById('agentIdentityType').value;
+    const value = document.getElementById('agentIdentityValue').value.trim();
+    const verified = document.getElementById('agentDocVerified').checked;
+    
+    if (!lookup) { showMessage('Please enter the account holder\'s contact.', 'warning'); return; }
+    if (!value) { showMessage('Please enter the ID number.', 'warning'); return; }
+    if (!verified) { showMessage('You must confirm you verified the document.', 'warning'); return; }
+    
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/add_verified_identity.php', {
+        target_lookup: lookup,
+        identity_type: type,
+        identity_value: value,
+        document_verified: true
+    });
+    
+    if (!result.ok) {
+        showMessage('Failed to register identity: ' + result.error, 'error');
+        return;
+    }
+    
+    showMessage(result.body.message || 'Identity registered successfully.', 'success');
+    setTimeout(() => closeModal(), 2000);
+}
+
+async function submitVerifyIdentityOtp() {
+    const otp = document.getElementById('regIdentityOtp').value.trim();
+    if (!otp) { 
+        showMessage('Enter the verification code.', 'warning'); 
+        return; 
+    }
+    
+    const result = await callApi(CONFIG.API_BASE + '/user/verify_identity_otp.php', {
+        attempt_id: regIdentityState.attemptId,
+        otp: otp
+    });
+    
+    if (!result.ok) {
+        showMessage('Verification failed: ' + result.error, 'error');
+        return;
+    }
+    
+    showMessage('Identity verified. You can now receive swaps.', 'success');
+    setTimeout(() => closeModal(), 2000);
+}
+
+// ============================================================
+// AGENT FUNCTIONS
+// ============================================================
 
 async function getCurrentUserRole() {
     if (SessionUser) return SessionUser;
@@ -2174,6 +2240,7 @@ async function loadAgentStatus() {
     agentStatus = result.body.data;
     agentStatus.is_agent = SessionUser.is_agent;
 }
+
 async function openAgentModal() {
     openModal('Agent Account', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading...</div>');
     await getCurrentUserRole();
@@ -2184,82 +2251,6 @@ async function openAgentModal() {
     document.getElementById('modalBody').innerHTML = renderAgentModal();
 }
 
-async function openAddIdentityModal() {
-    openModal('Add Identity', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading...</div>');
-    const session = await getCurrentUserRole();
-    if (session.is_agent) {
-        renderAgentIdentityForm();
-    } else {
-        renderUserIdentityForm();
-    }
-}
-
-function renderUserIdentityForm() {
-    document.getElementById('modalBody').innerHTML = `
-        <div style="max-width:400px;">
-            <div style="font-weight:800;font-size:16px;margin-bottom:4px;">Add an identity</div>
-            <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px;">Add a phone number or email so people can send swaps directly to you.</div>
-            <label style="font-size:12px;color:var(--text-muted);">Identity type</label>
-            <select id="userIdentityType" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:10px;">
-                <option value="phone">Phone number</option>
-                <option value="email">Email</option>
-            </select>
-            <input type="text" id="userIdentityValue" placeholder="Enter value" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:14px;">
-            <div style="background:rgba(0,160,173,0.08);border-left:3px solid var(--primary);padding:10px 14px;border-radius:6px;font-size:12px;margin-bottom:14px;">
-                🪪 Need to add a National ID, Voter's ID, Driver's License, Birth Certificate, or Passport? That has to be verified in person — <strong>ask any VouchMorph agent or government official to add it for you.</strong>
-            </div>
-            <button class="btn btn-primary" style="width:100%;" onclick="submitUserIdentity()">Add Identity</button>
-        </div>`;
-}
-
-async function submitUserIdentity() {
-    const type = document.getElementById('userIdentityType').value;
-    const value = document.getElementById('userIdentityValue').value.trim();
-    if (!value) { showMessage('Please enter a value.', 'warning'); return; }
-    const result = await callApi(CONFIG.API_BASE + '/user/register_identity.php', { identity_type: type, identity_value: value });
-    if (result.ok) {
-        showMessage(result.body.message || 'Identity added.', 'success');
-        closeModal();
-    } else {
-        showMessage(result.body?.message || result.error || 'Failed to add identity.', 'error');
-    }
-}
-
-function renderAgentIdentityForm() {
-    document.getElementById('modalBody').innerHTML = `
-        <div style="max-width:420px;">
-            <div style="font-weight:800;font-size:16px;margin-bottom:4px;">Register a verified identity</div>
-            <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px;">Use this after physically verifying the person's document.</div>
-            <label style="font-size:12px;color:var(--text-muted);">Account holder's phone or email</label>
-            <input type="text" id="agentTargetLookup" placeholder="Phone or email on their VouchMorph account" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:10px;">
-            <label style="font-size:12px;color:var(--text-muted);">Identity type</label>
-            <select id="agentIdentityType" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:10px;">
-                <option value="national_id">National ID</option>
-                <option value="voters_id">Voter's ID</option>
-                <option value="drivers_license">Driver's License</option>
-                <option value="birth_certificate">Birth Certificate</option>
-                <option value="passport">Passport</option>
-            </select>
-            <input type="text" id="agentIdentityValue" placeholder="ID number" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:14px;">
-            <button class="btn btn-primary" style="width:100%;" onclick="submitAgentIdentity()">Register Identity</button>
-        </div>`;
-}
-
-async function submitAgentIdentity() {
-    const lookup = document.getElementById('agentTargetLookup').value.trim();
-    const type = document.getElementById('agentIdentityType').value;
-    const value = document.getElementById('agentIdentityValue').value.trim();
-    if (!lookup || !value) { showMessage('Please fill in all fields.', 'warning'); return; }
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/add_verified_identity.php', {
-        target_lookup: lookup, identity_type: type, identity_value: value
-    });
-    if (result.ok) {
-        showMessage(result.body.message || 'Identity registered.', 'success');
-        closeModal();
-    } else {
-        showMessage(result.body?.message || result.error || 'Failed to register identity.', 'error');
-    }
-}
 function renderAgentModal() {
     const activeDestinations = agentStatus.all_destinations.filter(d => d.status !== 'cancelled' && !d.deleted_at);
     const statusRows = activeDestinations.length ? activeDestinations.map(d => {
@@ -2290,6 +2281,7 @@ function renderAgentModal() {
             <div class="cta-row"><button class="btn btn-primary" onclick="submitAgentDestination()">Register &amp; verify</button></div>
         </div>`;
 }
+
 async function cancelAgentDestination(destinationId) {
     if (!confirm('Cancel this registration? You can register again later.')) return;
     const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/cancel_destination.php', { destination_id: destinationId });
@@ -2297,6 +2289,7 @@ async function cancelAgentDestination(destinationId) {
     showMessage('Registration cancelled successfully.', 'success');
     openAgentModal();
 }
+
 async function submitAgentDestination() {
     const institution = document.getElementById('agentInst').value;
     const assetType = document.getElementById('agentAssetType').value;
@@ -2311,6 +2304,7 @@ async function submitAgentDestination() {
     if (!data.requires_otp) { showMessage(data.message, data.otp_supported ? 'success' : 'warning'); openAgentModal(); return; }
     document.getElementById('modalBody').innerHTML = renderAgentOtpStep(data);
 }
+
 function renderAgentOtpStep(data) {
     return `
         <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius);padding:14px;margin-bottom:16px;">
@@ -2320,6 +2314,7 @@ function renderAgentOtpStep(data) {
         <div class="field-group"><label>Enter the code</label><input type="text" id="agentOtpCode" inputmode="numeric" maxlength="8" placeholder="Code from your bank"></div>
         <div class="cta-row"><button class="btn btn-secondary" onclick="openAgentModal()">Cancel</button><button class="btn btn-primary" onclick="verifyAgentOtp(${data.attempt_id})">Verify &amp; register</button></div>`;
 }
+
 async function verifyAgentOtp(attemptId) {
     const otp = document.getElementById('agentOtpCode').value.trim();
     if (!otp) { showMessage('Enter the verification code.', 'warning'); return; }
@@ -2330,6 +2325,7 @@ async function verifyAgentOtp(attemptId) {
 }
 
 const AGENT_ELIGIBLE_ASSET_TYPES = ['ACCOUNT', 'WALLET', 'BANK-WALLET', 'CARD'];
+
 function onAgentInstChange(code) {
     const group = document.getElementById('agentAssetTypeGroup');
     const sel = document.getElementById('agentAssetType');
@@ -2343,6 +2339,7 @@ function onAgentInstChange(code) {
 }
 
 function openAgentToolsModal() { openModal('Agent Tools', renderAgentToolsSearch()); }
+
 function renderAgentToolsSearch() {
     return `
         <div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">Search for a client's pending identity payment. You'll need to physically verify their document and have them tell you the OTP PIN texted to them — never their personal VouchMorph transaction PIN — before you can finalize.</div>
@@ -2351,6 +2348,7 @@ function renderAgentToolsSearch() {
         <div class="cta-row"><button class="btn btn-primary" onclick="searchAgentClaim()">Search</button></div>
         <div id="agentSearchResults" style="margin-top:16px;"></div>`;
 }
+
 async function searchAgentClaim() {
     const identityType = document.getElementById('agentSearchType').value;
     const identityValue = document.getElementById('agentSearchValue').value.trim();
@@ -2402,15 +2400,7 @@ async function searchAgentClaim() {
             </div>
         </div>`;
 }
-// ------------------------------------------------------------------
-// Agent claim finalization. This flow is intentionally independent
-// of identity registration (see submitAgentIdentity / add_verified_identity.php).
-// It only ever: searches a pending identity balance, verifies the
-// client's OTP PIN + physical document, then deposits straight into
-// the agent's own pre-approved destination account/wallet
-// (destination_account_id from agentStatus.approved_destinations).
-// No identity is created, registered, or modified as part of this.
-// ------------------------------------------------------------------
+
 function openAgentFinalizeFormAggregated(identityType, identityValue, currency, totalAmount, swapCount) {
     const data = agentSearchData;
     if (!data) { showMessage('Search data not found. Please search again.', 'error'); return; }
@@ -2449,6 +2439,7 @@ function openAgentFinalizeFormAggregated(identityType, identityValue, currency, 
         </div>`;
     openModal('Confirm Deposit', body);
 }
+
 async function submitAgentFinalizeAggregated(identityType, identityValue, totalAmount, currency) {
     const destinationAccountId = document.getElementById('agentDestSelect').value;
     const docVerified = document.getElementById('agentDocVerified').checked;
@@ -2479,6 +2470,10 @@ async function submitAgentFinalizeAggregated(identityType, identityValue, totalA
     agentSearchData = null;
 }
 
+// ============================================================
+// SWAP HISTORY
+// ============================================================
+
 async function openSwapHistory() {
     openModal('Swap History', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading swaps...</div>');
     if (!CONFIG.USER_ID) {
@@ -2489,6 +2484,7 @@ async function openSwapHistory() {
     if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">Failed to load swap history: ${escapeHtml(result.error)}</div>`; return; }
     renderSwapHistory(result.body);
 }
+
 function renderSwapHistory(data) {
     const swaps = data.data || data.swaps || [];
     if (swaps.length === 0) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:30px;color:var(--text-muted);"><div style="font-weight:700;">No swaps found</div></div>`; return; }
@@ -2513,12 +2509,14 @@ function renderSwapHistory(data) {
     historyHtml += `</div>`;
     document.getElementById('modalBody').innerHTML = historyHtml;
 }
+
 async function viewSwapDetail(reference) {
     openModal('Swap Details', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading details...</div>');
     const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/details.php', { reference: reference });
     if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">Failed to load swap details: ${escapeHtml(result.error)}</div>`; return; }
     renderSwapDetail(result.body);
 }
+
 function renderSwapDetail(data) {
     const swap = data.swap || data.data || {};
     const code = swap.voucher_number || null;
@@ -2546,20 +2544,141 @@ function renderSwapDetail(data) {
         </div>`;
 }
 
+// ============================================================
+// PROFILE MODAL
+// ============================================================
+
+function openProfileModal() { openModal('My Profile', renderProfileModal()); }
+
+function renderProfileModal() {
+    const rows = savedIdentities.length ? savedIdentities.map((id, i) => `
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);">
+            <div><div style="font-size:11px;color:var(--text-muted);">${escapeHtml(IDENTITY_TYPE_LABELS[id.type] || id.type)}</div><div style="font-size:14px;font-weight:700;">${escapeHtml(id.value)}</div></div>
+            <div class="quick-actions" style="margin:0;"><span class="quick-link" onclick="useSavedIdentity(${i})">Use</span><span class="quick-link danger" onclick="removeSavedIdentity(${i})">Remove</span></div>
+        </div>`).join('') : `<div style="font-size:12px;color:var(--text-dim);">No saved identities yet.</div>`;
+    
+    return `
+        <div style="margin-bottom:12px;">
+            <div style="font-weight:700;margin-bottom:4px;">Your registered identities</div>
+            ${rows}
+        </div>
+        <div style="border-top:1px solid var(--border);padding-top:16px;">
+            <div class="field-label" style="margin-bottom:8px;">Transaction PIN</div>
+            <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Required to claim money sent to your verified identity. Never share it.</div>
+            <div class="field-group"><label>New PIN (4-6 digits)</label><input type="password" id="newPin" inputmode="numeric" maxlength="6" placeholder="••••"></div>
+            <div class="field-group"><label>Confirm PIN</label><input type="password" id="confirmPin" inputmode="numeric" maxlength="6" placeholder="••••"></div>
+            <div class="cta-row"><button class="btn btn-primary" onclick="setTransactionPin()">Set PIN</button></div>
+        </div>
+        <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px;">
+            <span class="quick-link" onclick="closeModal();openAddIdentityModal();">+ Add a new identity</span>
+            <span class="quick-link muted" onclick="closeModal();openFinalizeIdentityModal();">Finalize an identity swap</span>
+        </div>`;
+}
+
+function addSavedIdentity() {
+    const type = document.getElementById('newIdentityType').value;
+    const value = document.getElementById('newIdentityValue').value.trim();
+    if (!value) { showMessage('Enter an identity value first', 'error'); return; }
+    savedIdentities.push({ type, value });
+    document.getElementById('modalBody').innerHTML = renderProfileModal();
+}
+
+function removeSavedIdentity(idx) { savedIdentities.splice(idx, 1); document.getElementById('modalBody').innerHTML = renderProfileModal(); }
+
+function useSavedIdentity(idx) {
+    const id = savedIdentities[idx];
+    if (!id) return;
+    closeModal(); quickSetSwapType('IDENTITY');
+    state.toIdentityType = id.type; state.toIdentityValue = id.value;
+    document.getElementById('identityType').value = id.type;
+    document.getElementById('identityValue').value = id.value;
+    updateIdentityHelp(); refreshUI();
+    showMessage(`Using saved ${IDENTITY_TYPE_LABELS[id.type] || id.type}: ${id.value}`, 'success');
+}
+
+async function setTransactionPin() {
+    const pin = document.getElementById('newPin').value.trim();
+    const confirmPin = document.getElementById('confirmPin').value.trim();
+    if (!/^\d{4,6}$/.test(pin)) { showMessage('PIN must be 4-6 digits.', 'warning'); return; }
+    if (pin !== confirmPin) { showMessage('PIN and confirmation do not match.', 'warning'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/set_pin.php', { pin, confirm_pin: confirmPin });
+    if (!result.ok) { showMessage('Could not set PIN: ' + result.error, 'error'); return; }
+    showMessage('Transaction PIN set. Keep it private.', 'success');
+    closeModal();
+}
+
+// ============================================================
+// HELPERS & UTILITIES
+// ============================================================
+
+function openHelpModal() {
+    openModal('Help', `
+        <div style="font-size:13px;line-height:1.7;color:var(--text);">
+            <p style="font-weight:700;margin-bottom:6px;">Sending money</p>
+            <ol style="padding-left:18px;margin-bottom:16px;">
+                <li>Choose Wallet/Account, Card, or Voucher as your source.</li>
+                <li>Pick where it should go: Deposit, Cashout, Send to identity, or Multi-source.</li>
+                <li>Enter the amount, review the fee, and confirm.</li>
+            </ol>
+            <p style="font-weight:700;margin-bottom:6px;">Claiming money sent to you</p>
+            <ol style="padding-left:18px;margin-bottom:16px;">
+                <li>Open Toolbox &rarr; Finalize identity swap.</li>
+                <li>Enter your claim PIN and choose how to receive it.</li>
+            </ol>
+            <p style="font-weight:700;margin-bottom:6px;">Agent access</p>
+            <ol style="padding-left:18px;">
+                <li>Agent access is granted by VouchMorph admin staff to your account.</li>
+                <li>Once granted, open Toolbox &rarr; Agent destinations to register a business account, then use Agent tools to search and finalize client claims.</li>
+            </ol>
+        </div>`);
+}
+
+function openTermsModal() {
+    openModal('Terms &amp; conditions', `
+        <div style="font-size:13px;line-height:1.7;color:var(--text);">
+            <p style="font-weight:700;margin-bottom:6px;">1. The service</p>
+            <p style="margin-bottom:14px;">VouchMorph facilitates transfers, cashouts, and identity-based payments between participating institutions on your instruction. We act as an intermediary; the underlying funds remain with the institutions holding your linked sources until a swap completes.</p>
+            <p style="font-weight:700;margin-bottom:6px;">2. Your responsibilities</p>
+            <p style="margin-bottom:14px;">You are responsible for keeping your PIN, claim codes, and linked source credentials confidential. VouchMorph staff will never ask for your PIN.</p>
+            <p style="font-weight:700;margin-bottom:6px;">3. Fees</p>
+            <p style="margin-bottom:14px;">Applicable fees are shown before you confirm any swap. Fees vary by swap type, delivery method, and destination institution.</p>
+            <p style="font-weight:700;margin-bottom:6px;">4. Identity swaps</p>
+            <p style="margin-bottom:14px;">Money sent to an identity (national ID, phone, email, etc.) is held for the recipient for a limited window and requires verification to claim.</p>
+            <p style="margin-top:16px;color:var(--text-dim);font-size:11px;">This is placeholder text for structure only — replace with your reviewed legal terms before launch.</p>
+        </div>`);
+}
+
+async function checkPendingClaims() {
+    if (!CONFIG.USER_ID) return;
+    try {
+        const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/pending_claims.php', {});
+        if (!result.ok) return;
+        pendingClaims = result.body.data || [];
+        updateToolboxBadge();
+    } catch (e) { 
+        console.error('[claims] Failed to check pending claims', e); 
+    }
+}
+
 function openModal(title, bodyHtml) {
     document.getElementById('modalTitle').textContent = title;
     document.getElementById('modalBody').innerHTML = bodyHtml;
     document.getElementById('modal').classList.add('active');
 }
+
 function closeModal() { document.getElementById('modal').classList.remove('active'); }
+
 function showMessage(text, type = 'info') {
     const el = document.getElementById('mainMessage');
     el.textContent = text; el.className = `message show ${type}`;
     clearTimeout(showMessage._t);
     showMessage._t = setTimeout(() => el.classList.remove('show'), 6000);
 }
+
 function escapeHtml(str) { const div = document.createElement('div'); div.textContent = str == null ? '' : String(str); return div.innerHTML; }
+
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
 </script>
 </body>
 </html>
+```
