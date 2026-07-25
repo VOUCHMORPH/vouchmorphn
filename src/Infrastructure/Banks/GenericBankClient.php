@@ -1010,11 +1010,26 @@ class GenericBankClient implements BankAPIInterface
         ];
     }
 
+    /**
+     * FIX: Ensure certificate and signature are sent to the bank's hold endpoint
+     * 
+     * The issue was that ZuruBank's hold.php was receiving requests without
+     * the certificate, causing "Certificate required - please upgrade to 
+     * certificate-based authentication" errors.
+     * 
+     * This method now ensures that:
+     * 1. The payload is properly signed using CertificateManager or MessageSigner
+     * 2. The certificate is included in the payload
+     * 3. The signature is included in the payload
+     */
     public function placeHold(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: placeHold ===");
+        
+        // Add source identifier for the source account
         $payload = $this->addSourceIdentifier($payload);
         
+        // Generate a reference if not provided
         if (!isset($payload['reference'])) {
             $payload['reference'] = 'HOLD_' . uniqid();
         }
@@ -1022,9 +1037,113 @@ class GenericBankClient implements BankAPIInterface
             $payload['expiry'] = date('Y-m-d H:i:s', strtotime('+24 hours'));
         }
         
+        // ============================================================
+        // FIX: Ensure certificate and signature are included in the payload
+        // This is the critical fix for the "Certificate required" error
+        // ============================================================
+        
+        // Check if the payload already has certificate and signature
+        $hasCertificate = isset($payload['certificate']) && !empty($payload['certificate']);
+        $hasSignature = isset($payload['signature']) && !empty($payload['signature']);
+        
+        error_log("[GenericBankClient] placeHold: hasCertificate={$hasCertificate}, hasSignature={$hasSignature}");
+        
+        // If we have a CertificateManager and the payload is not already signed
+        if ($this->certManager && $this->certManager->isConfigured()) {
+            if (!$hasCertificate || !$hasSignature) {
+                error_log("[GenericBankClient] placeHold: Using CertificateManager to sign payload");
+                
+                // Get the certificate from CertificateManager
+                $certificate = $this->certManager->getMyCertificate();
+                if ($certificate) {
+                    $payload['certificate'] = $certificate;
+                    error_log("[GenericBankClient] placeHold: Added certificate (length: " . strlen($certificate) . ")");
+                } else {
+                    error_log("[GenericBankClient] placeHold: WARNING - No certificate available from CertificateManager");
+                }
+                
+                // Sign the payload
+                if (isset($payload['certificate'])) {
+                    // Create a signed request using CertificateManager
+                    $signedResult = $this->certManager->createSignedRequest($payload, 'VOUCHMORPH');
+                    
+                    // Merge the signed result back into the payload
+                    if (isset($signedResult['signature'])) {
+                        $payload['signature'] = $signedResult['signature'];
+                        error_log("[GenericBankClient] placeHold: Added signature (length: " . strlen($payload['signature']) . ")");
+                    }
+                    if (isset($signedResult['certificate'])) {
+                        $payload['certificate'] = $signedResult['certificate'];
+                    }
+                    if (isset($signedResult['requester'])) {
+                        $payload['requester'] = $signedResult['requester'];
+                    }
+                    if (isset($signedResult['timestamp'])) {
+                        $payload['timestamp'] = $signedResult['timestamp'];
+                    }
+                    
+                    error_log("[GenericBankClient] placeHold: Payload signed using CertificateManager");
+                }
+            } else {
+                error_log("[GenericBankClient] placeHold: Payload already has certificate and signature, using as-is");
+            }
+        } elseif ($this->signer && (!$hasCertificate || !$hasSignature)) {
+            // Fallback to MessageSigner if CertificateManager is not available
+            error_log("[GenericBankClient] placeHold: Using MessageSigner to sign payload");
+            
+            $signedResult = $this->signer->createSignedRequest($payload, 'VOUCHMORPH');
+            
+            if (isset($signedResult['signature'])) {
+                $payload['signature'] = $signedResult['signature'];
+                error_log("[GenericBankClient] placeHold: Added signature (length: " . strlen($payload['signature']) . ")");
+            }
+            if (isset($signedResult['certificate'])) {
+                $payload['certificate'] = $signedResult['certificate'];
+            }
+            if (isset($signedResult['requester'])) {
+                $payload['requester'] = $signedResult['requester'];
+            }
+            if (isset($signedResult['timestamp'])) {
+                $payload['timestamp'] = $signedResult['timestamp'];
+            }
+        } elseif (!$hasCertificate || !$hasSignature) {
+            // If no signing method is available, log a warning
+            error_log("[GenericBankClient] placeHold: WARNING - No signing method available, attempting fallback");
+            
+            // Simple fallback using HMAC if a private key is available
+            $privateKey = getenv('VOUCHMORPH_PRIVATE_KEY');
+            if ($privateKey) {
+                $payload['requester'] = 'VOUCHMORPH';
+                $payload['timestamp'] = time();
+                $payloadJson = json_encode($payload);
+                $signature = base64_encode(hash_hmac('sha256', $payloadJson, $privateKey, true));
+                $payload['signature'] = $signature;
+                error_log("[GenericBankClient] placeHold: Using HMAC fallback signature");
+            } else {
+                error_log("[GenericBankClient] placeHold: CRITICAL - No private key available for signing!");
+            }
+        }
+        
+        // Log what we're sending
+        error_log("[GenericBankClient] placeHold: Sending hold request with certificate=" . 
+                  (isset($payload['certificate']) ? 'YES (length: ' . strlen($payload['certificate']) . ')' : 'NO'));
+        error_log("[GenericBankClient] placeHold: Sending hold request with signature=" . 
+                  (isset($payload['signature']) ? 'YES (length: ' . strlen($payload['signature']) . ')' : 'NO'));
+        
+        // Send the request
         $result = $this->send('place_hold', $payload, $payload['access_token'] ?? null);
         
         $data = $result['data'] ?? [];
+        
+        // If the hold failed due to certificate issues, log it clearly
+        if (!$result['success'] && isset($data['message']) && 
+            strpos($data['message'], 'Certificate required') !== false) {
+            error_log("[GenericBankClient] placeHold: ❌ HOLD FAILED - Certificate required but not sent or invalid");
+            error_log("[GenericBankClient] placeHold: Payload certificate key exists: " . 
+                      (isset($payload['certificate']) ? 'YES' : 'NO'));
+            error_log("[GenericBankClient] placeHold: Payload signature key exists: " . 
+                      (isset($payload['signature']) ? 'YES' : 'NO'));
+        }
         
         return [
             'success' => $result['success'] ?? false,
@@ -1037,8 +1156,8 @@ class GenericBankClient implements BankAPIInterface
             'status_code' => $result['status_code'] ?? 0,
             'curl_error' => $result['curl_error'] ?? null,
             'raw_response' => $result['raw_response'] ?? null,
-            'signature' => $data['signature'] ?? null,
-            'certificate' => $data['certificate'] ?? null,
+            'signature' => $data['signature'] ?? $payload['signature'] ?? null,
+            'certificate' => $data['certificate'] ?? $payload['certificate'] ?? null,
             'timestamp' => $data['timestamp'] ?? time()
         ];
     }
@@ -1052,6 +1171,25 @@ class GenericBankClient implements BankAPIInterface
         }
         if (!isset($payload['action'])) {
             $payload['action'] = 'RELEASE_HOLD';
+        }
+        
+        // Ensure certificate and signature are included for release hold too
+        if ($this->certManager && $this->certManager->isConfigured()) {
+            if (!isset($payload['certificate']) || !isset($payload['signature'])) {
+                $signedResult = $this->certManager->createSignedRequest($payload, 'VOUCHMORPH');
+                if (isset($signedResult['certificate'])) {
+                    $payload['certificate'] = $signedResult['certificate'];
+                }
+                if (isset($signedResult['signature'])) {
+                    $payload['signature'] = $signedResult['signature'];
+                }
+                if (isset($signedResult['requester'])) {
+                    $payload['requester'] = $signedResult['requester'];
+                }
+                if (isset($signedResult['timestamp'])) {
+                    $payload['timestamp'] = $signedResult['timestamp'];
+                }
+            }
         }
         
         $result = $this->send('release_hold', $payload);
@@ -1107,11 +1245,20 @@ class GenericBankClient implements BankAPIInterface
             $payload['reference'] = 'DEBIT_' . uniqid();
         }
         
-        $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
+        // Ensure certificate and signature are included for debit
+        if ($this->certManager && $this->certManager->isConfigured()) {
+            if (!isset($payload['certificate']) || !isset($payload['signature'])) {
+                $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
+                $payload = array_merge($payload, $signedPayload);
+            }
+        } else {
+            $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
+            $payload = array_merge($payload, $signedPayload);
+        }
         
-        error_log("[GenericBankClient] debitFunds final: from_institution={$signedPayload['from_institution']}, amount={$signedPayload['amount']}, hold_reference={$signedPayload['hold_reference']}");
+        error_log("[GenericBankClient] debitFunds final: from_institution={$payload['from_institution']}, amount={$payload['amount']}, hold_reference={$payload['hold_reference']}");
         
-        $result = $this->send('debit_funds', $signedPayload, $signedPayload['access_token'] ?? null);
+        $result = $this->send('debit_funds', $payload, $payload['access_token'] ?? null);
         
         $data = $result['data'] ?? [];
         
@@ -1589,6 +1736,16 @@ class GenericBankClient implements BankAPIInterface
         
         $endpoint = ltrim($endpoint, '/');
         $url = $baseUrl . '/' . $endpoint;
+        
+        // Debug: Log whether certificate and signature are in the payload
+        error_log("[GenericBankClient] send({$action}): Payload has certificate: " . (isset($payload['certificate']) ? 'YES' : 'NO'));
+        error_log("[GenericBankClient] send({$action}): Payload has signature: " . (isset($payload['signature']) ? 'YES' : 'NO'));
+        if (isset($payload['certificate'])) {
+            error_log("[GenericBankClient] send({$action}): Certificate length: " . strlen($payload['certificate']));
+        }
+        if (isset($payload['signature'])) {
+            error_log("[GenericBankClient] send({$action}): Signature length: " . strlen($payload['signature']));
+        }
         
         $headers = $this->buildHeaders($payload, $accessToken);
         
