@@ -7231,51 +7231,61 @@ public function isApprovedAgent(int $userId): bool
      * Debit source institution
      * STANDARD: Uses debitFunds not debitHold
      */
-    public function debitSource(array $payload, string $institution): array
-    {
-        $sourceId = $this->extractSourceIdentifier($payload);
-        if ($sourceId['has_value']) {
-            $this->validateAgentMinimumBalance($institution, $sourceId['identifier'], (float)($payload['amount'] ?? 0));
-        }
-
-        $debitPayload = [
-            'reference' => $payload['reference'] ?? $this->currentSwapRef,
-            'hold_reference' => $payload['hold_reference'] ?? $this->currentHoldReference,
-            'amount' => $payload['amount'] ?? 0,
-            'reason' => $payload['reason'] ?? 'Swap completed successfully',
-            'from_institution' => $institution,
-            'source_institution' => $institution,
-            'action' => 'DEBIT_FUNDS'
-        ];
-
-        $this->forwardPin($payload, $debitPayload);
-
-        $adapter = $this->adapterFactory->getAdapter($institution);
-        $result = $adapter->debit($debitPayload, [
-            'swap_reference' => $this->currentSwapRef,
-            'institution' => $institution,
-            'hold_reference' => $this->currentHoldReference,
-            'signed_payloads' => $this->signedPayloads
-        ]);
-
-        $debited = $result['debited'] ?? false;
-
-        // ============================================================
-        // STANDARDIZED RESPONSE STRUCTURE
-        // ============================================================
-        return [
-            'success' => $debited,
-            'debited' => $debited,
-            'transaction_reference' => $result['transaction_reference'] ?? null,
-            'status' => $result['status'] ?? ($debited ? 'COMPLETED' : 'FAILED'),
-            'message' => $result['message'] ?? ($debited ? 'Debit completed' : 'Debit failed'),
-            'status_code' => $result['status_code'] ?? 0,
-            'curl_error' => $result['curl_error'] ?? null,
-            'raw_response' => $result['raw_response'] ?? null,
-            'data' => $result['data'] ?? []
-        ];
+ public function debitSource(array $payload, string $institution): array
+{
+    $sourceId = $this->extractSourceIdentifier($payload);
+    // ============================================================
+    // FIX: The agent float-minimum floor must NOT fire just because
+    // this institution+identifier happens to appear in
+    // agent_destination_accounts. An account is not permanently "an
+    // agent account" - being an agent destination is a role a person
+    // opts into for finalizing identity claims, and the same person
+    // routinely uses that same account as an ordinary source for their
+    // own standard/deposit/cashout swaps. Without this gate, a user who
+    // is also an approved agent gets the agent float rule wrongly
+    // applied to every normal swap they do out of that account.
+    //
+    // The check now only runs when the CALLER explicitly marks this
+    // debit as an agent drawing down their own registered float
+    // (_agent_float_debit => true), never inferred from identity.
+    // ============================================================
+    if ($sourceId['has_value'] && !empty($payload['_agent_float_debit'])) {
+        $this->validateAgentMinimumBalance($institution, $sourceId['identifier'], (float)($payload['amount'] ?? 0));
     }
 
+    $debitPayload = [
+        'reference' => $payload['reference'] ?? $this->currentSwapRef,
+        'hold_reference' => $payload['hold_reference'] ?? $this->currentHoldReference,
+        'amount' => $payload['amount'] ?? 0,
+        'reason' => $payload['reason'] ?? 'Swap completed successfully',
+        'from_institution' => $institution,
+        'source_institution' => $institution,
+        'action' => 'DEBIT_FUNDS'
+    ];
+    $this->forwardPin($payload, $debitPayload);
+    $adapter = $this->adapterFactory->getAdapter($institution);
+    $result = $adapter->debit($debitPayload, [
+        'swap_reference' => $this->currentSwapRef,
+        'institution' => $institution,
+        'hold_reference' => $this->currentHoldReference,
+        'signed_payloads' => $this->signedPayloads
+    ]);
+    $debited = $result['debited'] ?? false;
+    // ============================================================
+    // STANDARDIZED RESPONSE STRUCTURE
+    // ============================================================
+    return [
+        'success' => $debited,
+        'debited' => $debited,
+        'transaction_reference' => $result['transaction_reference'] ?? null,
+        'status' => $result['status'] ?? ($debited ? 'COMPLETED' : 'FAILED'),
+        'message' => $result['message'] ?? ($debited ? 'Debit completed' : 'Debit failed'),
+        'status_code' => $result['status_code'] ?? 0,
+        'curl_error' => $result['curl_error'] ?? null,
+        'raw_response' => $result['raw_response'] ?? null,
+        'data' => $result['data'] ?? []
+    ];
+}
     /**
      * Release hold
      * STANDARD: Consistent with adapter and bank client
