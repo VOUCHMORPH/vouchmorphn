@@ -1,77 +1,92 @@
 <?php
-// test_balance.php
-// Test balance endpoints for ZURUBANK and SACCUSSALIS
+// test_vouchmorph_certificate.php
+// Run on VouchMorph server
 
-$config = [
-    'ZURUBANK' => [
-        'url' => 'https://zurubank-production.up.railway.app/Backend/api/v1/accounts/balance.php',
-        'api_key' => getenv('ZURUBANK_API_KEY') ?: 'zurubank_live_3uV4wX5yZ6aB7cD8', // Use your actual key
-        'account' => '10000001',
-        'param' => 'account_number'
+require_once __DIR__ . '/src/Infrastructure/Crypto/CertificateManager.php';
+
+use Infrastructure\Crypto\CertificateManager;
+
+echo "=== VOUCHMORPH CERTIFICATE MANAGER TEST ===\n\n";
+
+$cm = new CertificateManager('VOUCHMORPH');
+
+echo "CertificateManager configured: " . ($cm->isConfigured() ? "YES" : "NO") . "\n";
+
+// Test payloads
+$testPayloads = [
+    'VERIFY_ASSET' => [
+        'action' => 'VERIFY_ASSET',
+        'reference' => 'TEST_VERIFY_ASSET',
+        'asset_type' => 'ACCOUNT',
+        'amount' => 1000,
+        'currency' => 'BWP',
+        'source_identifier' => '10000001',
+        'source_identifier_type' => 'auto',
+        'from_institution' => 'ZURUBANK',
+        'source_institution' => 'ZURUBANK',
+        'swap_type' => 'DEPOSIT'
     ],
-    'SACCUSSALIS_ACCOUNT' => [
-        'url' => 'https://saccussalis-production.up.railway.app/backend/api/v1/balance.php',
-        'api_key' => 'saccussalis_live_3uV4wX5yZ6aB7cD8',
-        'account' => '10000001',
-        'param' => 'account_id'
+    'PLACE_HOLD' => [
+        'action' => 'PLACE_HOLD',
+        'reference' => 'TEST_PLACE_HOLD',
+        'asset_type' => 'ACCOUNT',
+        'asset_id' => 10,
+        'amount' => 1000,
+        'currency' => 'BWP',
+        'source_identifier' => '10000001',
+        'source_identifier_type' => 'auto',
+        'from_institution' => 'ZURUBANK',
+        'source_institution' => 'ZURUBANK',
+        'destination_institution' => 'SACCUSSALIS',
+        'hold_reason' => 'PENDING_SWAP',
+        'user_id' => 12,
+        'expiry' => date('Y-m-d H:i:s', strtotime('+24 hours'))
     ],
-    'SACCUSSALIS_WALLET' => [
-        'url' => 'https://saccussalis-production.up.railway.app/backend/api/v1/balance.php',
-        'api_key' => 'saccussalis_live_3uV4wX5yZ6aB7cD8',
-        'account' => '+26770000000',
-        'param' => 'wallet_phone'
+    'PROCESS_DEPOSIT_WITH_PROOF' => [
+        '_skip_hold' => true,
+        'action' => 'PROCESS_DEPOSIT_WITH_PROOF',
+        'reference' => 'TEST_DEPOSIT',
+        'amount' => 994,
+        'currency' => 'BWP',
+        'asset_type' => 'WALLET',
+        'destination_asset_type' => 'WALLET',
+        'destination_identifier' => '+26770000000',
+        'destination_identifier_type' => 'phone',
+        'destination_institution' => 'SACCUSSALIS',
+        'from_institution' => 'ZURUBANK',
+        'source_institution' => 'ZURUBANK',
+        'to_institution' => 'SACCUSSALIS',
+        'hold_reference' => 'SWAP_1784973884251',
+        'user_id' => 42,
+        'bank' => 'ZURUBANK'
     ]
 ];
 
-echo "========================================\n";
-echo "BALANCE ENDPOINT TEST\n";
-echo "========================================\n\n";
-
-foreach ($config as $name => $endpoint) {
-    echo "📊 Testing {$name}...\n";
-    echo "   URL: {$endpoint['url']}\n";
-    echo "   Account: {$endpoint['account']}\n";
-    echo "   Parameter: {$endpoint['param']}\n";
-    echo "   API Key: " . substr($endpoint['api_key'], 0, 10) . "...\n";
+foreach ($testPayloads as $name => $payload) {
+    echo "\n=== TESTING $name ===\n";
+    echo "Original payload keys: " . implode(', ', array_keys($payload)) . "\n";
     
-    $url = $endpoint['url'] . '?' . $endpoint['param'] . '=' . urlencode($endpoint['account']);
+    $signed = $cm->createSignedRequest($payload, 'VOUCHMORPH');
     
-    $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, $url);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 10);
-    curl_setopt($ch, CURLOPT_HTTPHEADER, [
-        'X-API-KEY: ' . $endpoint['api_key'],
-        'Content-Type: application/json'
-    ]);
-    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    echo "Signed payload keys: " . implode(', ', array_keys($signed)) . "\n";
+    echo "Has signature: " . (isset($signed['signature']) ? 'YES' : 'NO') . "\n";
+    echo "Has certificate: " . (isset($signed['certificate']) ? 'YES' : 'NO') . "\n";
+    echo "Has requester: " . (isset($signed['requester']) ? 'YES (value: ' . $signed['requester'] . ')' : 'NO') . "\n";
+    echo "Has timestamp: " . (isset($signed['timestamp']) ? 'YES' : 'NO') . "\n";
     
-    $response = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $error = curl_error($ch);
-    curl_close($ch);
+    // Check what was actually signed
+    $payloadToVerify = $signed;
+    unset($payloadToVerify['signature']);
+    unset($payloadToVerify['certificate']);
+    // Keep requester - it's now part of the payload (but is it in the signed data?)
     
-    if ($error) {
-        echo "   ❌ cURL Error: {$error}\n";
-    } else {
-        echo "   HTTP Code: {$httpCode}\n";
-        $data = json_decode($response, true);
-        if ($data) {
-            echo "   Response:\n";
-            echo json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
-            
-            if (isset($data['balance'])) {
-                echo "   ✅ Balance: {$data['balance']} " . ($data['currency'] ?? 'BWP') . "\n";
-            } else {
-                echo "   ⚠️  No balance field found in response\n";
-            }
-        } else {
-            echo "   Raw Response: {$response}\n";
-        }
-    }
-    echo "\n";
+    echo "Payload fields used for signing: " . implode(', ', array_keys($payloadToVerify)) . "\n";
+    echo "JSON to sign: " . json_encode($payloadToVerify, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+    
+    // Verify the signature
+    $verification = $cm->verifySignedRequest($signed);
+    echo "Verification result: " . ($verification['verified'] ? "VALID ✓" : "INVALID ✗") . "\n";
+    echo "Message: " . $verification['message'] . "\n";
 }
 
-echo "========================================\n";
-echo "TEST COMPLETE\n";
-echo "========================================\n";
+echo "\n=== TEST COMPLETE ===\n";
