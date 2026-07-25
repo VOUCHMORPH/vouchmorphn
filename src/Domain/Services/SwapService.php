@@ -4653,14 +4653,14 @@ public function cancelExpiredIdentitySwaps(): array
         ];
     }
 
-   // ============================================================================
-    // CONFIRM CASHOUT - UPDATED WITH SECURE VERSION
-    // ============================================================================
+// ============================================================================
+// CONFIRM CASHOUT - UPDATED WITH SECURE VERSION
+// ============================================================================
 
-    /**
-     * Confirm cashout - Handles both destination bank verification AND ATM callbacks
-     */
-    public function confirmCashout(array $payload): array
+/**
+ * Confirm cashout - Handles both destination bank verification AND ATM callbacks
+ */
+public function confirmCashout(array $payload): array
 {
     error_log("[SwapService] ===== confirmCashout START =====");
     error_log("[SwapService] Payload keys: " . implode(', ', array_keys($payload)));
@@ -4790,6 +4790,28 @@ public function cancelExpiredIdentitySwaps(): array
         } else {
             error_log("[SwapService] ATM Callback - skipping destination verification (cash already dispensed)");
 
+            // ============================================================
+            // FIX: this used to UPDATE instant_money_vouchers, a table that
+            // does not exist on VouchMorph's side (it belongs to the
+            // ZuruBank schema) - every call silently threw and was
+            // swallowed by the catch, doing nothing.
+            //
+            // Two real VouchMorph-side tables actually track this:
+            //
+            // 1. cashout_authorizations.code_used_at - already exists on
+            //    this table, was never being set anywhere. Records "the
+            //    code was used at the ATM/agent", distinct from full debit
+            //    completion (status/completed_at, set later below by
+            //    updateCashoutAuthorizationStatus()).
+            //
+            // 2. swap_vouchers - a separate table keyed by swap_id (the
+            //    NUMERIC swap_requests.swap_id, not the string
+            //    swap_reference), storing a hashed code (code_hash) rather
+            //    than the plaintext voucher/ATM code. Since cash is
+            //    already dispensed by this point, re-verifying the code
+            //    isn't security-critical here - we just need to resolve
+            //    the numeric swap_id and mark that voucher row redeemed.
+            // ============================================================
             try {
                 $stmt = $this->swapDB->prepare("
                     UPDATE cashout_authorizations
@@ -4973,191 +4995,6 @@ public function cancelExpiredIdentitySwaps(): array
         throw $e;
     }
 }
-            // ============================================================
-            // FIX: this used to UPDATE instant_money_vouchers, a table that
-            // does not exist on VouchMorph's side (it belongs to the
-            // ZuruBank schema) - every call silently threw and was
-            // swallowed by the catch, doing nothing.
-            //
-            // Two real VouchMorph-side tables actually track this:
-            //
-            // 1. cashout_authorizations.code_used_at - already exists on
-            //    this table, was never being set anywhere. Records "the
-            //    code was used at the ATM/agent", distinct from full debit
-            //    completion (status/completed_at, set later below by
-            //    updateCashoutAuthorizationStatus()).
-            //
-            // 2. swap_vouchers - a separate table keyed by swap_id (the
-            //    NUMERIC swap_requests.swap_id, not the string
-            //    swap_reference), storing a hashed code (code_hash) rather
-            //    than the plaintext voucher/ATM code. Since cash is
-            //    already dispensed by this point, re-verifying the code
-            //    isn't security-critical here - we just need to resolve
-            //    the numeric swap_id and mark that voucher row redeemed.
-            // ============================================================
-            try {
-                $stmt = $this->swapDB->prepare("
-                    UPDATE cashout_authorizations
-                    SET code_used_at = COALESCE(code_used_at, NOW())
-                    WHERE auth_id = :auth_id
-                ");
-                $stmt->execute([':auth_id' => $authId]);
-                error_log("[SwapService] code_used_at recorded for auth_id={$authId}");
-            } catch (Exception $e) {
-                error_log("[SwapService] Failed to record code_used_at for auth_id={$authId}: " . $e->getMessage());
-            }
-
-            if ($voucherNumber) {
-                try {
-                    $swapIdStmt = $this->swapDB->prepare("
-                        SELECT swap_id FROM swap_requests WHERE swap_uuid = :swap_uuid LIMIT 1
-                    ");
-                    $swapIdStmt->execute([':swap_uuid' => $swapRef]);
-                    $swapIdRow = $swapIdStmt->fetch(PDO::FETCH_ASSOC);
-                    $swapIdForVoucher = $swapIdRow ? (int)$swapIdRow['swap_id'] : null;
-
-                    if ($swapIdForVoucher) {
-                        $voucherStmt = $this->swapDB->prepare("
-                            UPDATE swap_vouchers
-                            SET status = 'redeemed'
-                            WHERE swap_id = :swap_id
-                            AND status IN ('active', 'issued', 'pending')
-                        ");
-                        $voucherStmt->execute([':swap_id' => $swapIdForVoucher]);
-                        error_log("[SwapService] swap_vouchers marked redeemed for swap_id={$swapIdForVoucher}, voucher={$voucherNumber}");
-                    } else {
-                        error_log("[SwapService] No swap_requests row found for swap_ref={$swapRef} - cannot resolve swap_id to update swap_vouchers");
-                    }
-                } catch (Exception $e) {
-                    error_log("[SwapService] Voucher update warning: " . $e->getMessage());
-                }
-            }
-        }
-
-        error_log("[SwapService] Debiting source: {$sourceInstitution}, amount: " . ($amountToSend + $feeAmount));
-
-        try {
-            $sourceAdapter = $this->adapterFactory->getAdapter($sourceInstitution);
-        } catch (Exception $e) {
-            throw new RuntimeException("Failed to get source adapter: " . $e->getMessage());
-        }
-
-        $debitPayload = [
-            'reference' => $swapRef,
-            'hold_reference' => $holdReference,
-            'amount' => $amountToSend + $feeAmount,
-            'reason' => 'Cashout confirmed: ' . $mode,
-            'from_institution' => $sourceInstitution,
-            'source_institution' => $sourceInstitution,
-            'user_id' => $userId,
-            'action' => 'DEBIT_FUNDS'
-        ];
-
-        $debitResult = $sourceAdapter->debit($debitPayload, []);
-
-        $debitSuccess = ($debitResult['success'] ?? false) || ($debitResult['debited'] ?? false);
-        if (!$debitSuccess) {
-            $errorMsg = $debitResult['data']['message'] ?? $debitResult['message'] ?? 'Unknown';
-            error_log("[SwapService] Debit failed: " . $errorMsg);
-            $this->updateCashoutAuthorizationStatus($authId, 'DEBIT_FAILED', $cashoutPoint);
-            throw new RuntimeException("Debit failed: " . $errorMsg);
-        }
-
-        error_log("[SwapService] Debit successful");
-
-        try {
-            $sourceIdentifierForLedger = $authorization['source_identifier'] ?? null;
-            if ($sourceIdentifierForLedger) {
-                $this->consumeEarmarkedBalance($sourceInstitution, $sourceIdentifierForLedger, $amountToSend + $feeAmount, $swapRef);
-            } else {
-                error_log("[SwapService] No source_identifier on cashout_authorizations for auth_id={$authId} (swap_ref={$swapRef}) - cannot consume earmarked balance, likely a pre-migration record.");
-            }
-        } catch (Exception $e) {
-            error_log("[SwapService] Non-fatal: failed to consume earmarked balance after successful debit: " . $e->getMessage());
-        }
-
-        $this->updateCashoutAuthorizationStatus($authId, 'COMPLETED', $cashoutPoint);
-        $this->updateHoldForSwap($swapRef, 'DEBITED');
-        $this->updateSwapRequestStatus($swapRef, 'completed');
-
-        $settlementResult = null;
-        try {
-            $settlementResult = $this->settlement->updateNetPosition(
-                $swapRef,
-                $sourceInstitution,
-                $destinationInstitution,
-                $amountToSend,
-                'CASHOUT_COMPLETED',
-                $currency
-            );
-
-            if ($feeAmount > 0) {
-                $this->settlement->invoiceFee(
-                    $swapRef,
-                    $sourceInstitution,
-                    $this->getParticipantId($sourceInstitution),
-                    'CASHOUT_COMPLETION_FEE',
-                    $feeAmount,
-                    $currency
-                );
-            }
-        } catch (Exception $e) {
-            error_log("[SwapService] Settlement warning: " . $e->getMessage());
-        }
-
-        try {
-            $auditStmt = $this->swapDB->prepare("
-                INSERT INTO audit_logs
-                (entity_type, entity_id, action, category, severity, performed_by, metadata, performed_at)
-                VALUES
-                ('cashout_authorizations', :auth_id, 'CASHOUT_CONFIRMED', 'financial', 'info', :performed_by, :metadata, NOW())
-            ");
-            $auditStmt->execute([
-                ':auth_id' => $authId,
-                ':performed_by' => $isCallback ? $requester : ($payload['performed_by'] ?? 'SYSTEM'),
-                ':metadata' => json_encode([
-                    'mode' => $mode,
-                    'voucher_number' => $voucherNumber ?? $authorization['swap_code'],
-                    'amount' => $amountToSend,
-                    'atm_id' => $atmId,
-                    'cashout_reference' => $cashoutReference,
-                    'swap_reference' => $swapRef,
-                    'source_institution' => $sourceInstitution,
-                    'destination_institution' => $destinationInstitution,
-                    'user_id' => $userId
-                ])
-            ]);
-        } catch (Exception $e) {
-            error_log("[SwapService] Audit log warning: " . $e->getMessage());
-        }
-
-        $response = [
-            'status' => 'completed',
-            'swap_reference' => $swapRef,
-            'auth_id' => $authId,
-            'amount' => $amountToSend,
-            'fee' => $feeAmount,
-            'currency' => $currency,
-            'confirmed_by' => $mode,
-            'debit_result' => $debitResult,
-            'settlement' => $settlementResult,
-            'message' => 'Cashout completed successfully',
-            'timestamp' => date('Y-m-d H:i:s')
-        ];
-
-        if ($isCallback) {
-            $response['voucher_number'] = $voucherNumber;
-            $response['atm_id'] = $atmId;
-            $response['cashout_reference'] = $cashoutReference;
-            $response['requester'] = $requester;
-        }
-
-        error_log("[SwapService] Cashout completed - Swap: {$swapRef}, Mode: {$mode}");
-
-        return $response;
-    }
-
-
  /**
  * Single-identity aggregate: what an agent sees after searching one
  * national_id. Sums all pending, non-expired holds for that identity
