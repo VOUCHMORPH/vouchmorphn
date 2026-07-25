@@ -2778,7 +2778,7 @@ function openTermsModal() {
 async function checkPendingClaims() {
     if (!CONFIG.USER_ID) return;
     try {
-        const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/pending_claims.php', {});
+        const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/pending_claims.php', {}); 
         if (!result.ok) return;
         pendingClaims = result.body.data || [];
         updateToolboxBadge();
