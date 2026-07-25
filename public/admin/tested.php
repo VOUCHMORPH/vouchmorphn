@@ -1,92 +1,141 @@
 <?php
-// test_vouchmorph_certificate.php
-// Run on VouchMorph server
+// test_dashboard_payload.php
+// Run this on VouchMorph server to see what the dashboard payload looks like
 
-require_once __DIR__ . '/../../src/Infrastructure/Crypto/CertificateManager.php';
+echo "=== DASHBOARD PAYLOAD TEST ===\n\n";
 
-use Infrastructure\Crypto\CertificateManager;
+// Simulate what the dashboard's buildPayload() would produce
+// based on the user's input
 
-echo "=== VOUCHMORPH CERTIFICATE MANAGER TEST ===\n\n";https://github.com/VOUCHMORPH/vouchmorphn/edit/main/public/admin/tested.php
-
-$cm = new CertificateManager('VOUCHMORPH');
-
-echo "CertificateManager configured: " . ($cm->isConfigured() ? "YES" : "NO") . "\n";
-
-// Test payloads
-$testPayloads = [
-    'VERIFY_ASSET' => [
-        'action' => 'VERIFY_ASSET',
-        'reference' => 'TEST_VERIFY_ASSET',
-        'asset_type' => 'ACCOUNT',
-        'amount' => 1000,
-        'currency' => 'BWP',
-        'source_identifier' => '10000001',
-        'source_identifier_type' => 'auto',
-        'from_institution' => 'ZURUBANK',
-        'source_institution' => 'ZURUBANK',
-        'swap_type' => 'DEPOSIT'
+$state = [
+    'fromInst' => 'SACCUSSALIS',
+    'fromAsset' => 'ACCOUNT',
+    'fromAmount' => 1000,
+    'fromFields' => [
+        'account_number' => '10000001'
     ],
-    'PLACE_HOLD' => [
-        'action' => 'PLACE_HOLD',
-        'reference' => 'TEST_PLACE_HOLD',
-        'asset_type' => 'ACCOUNT',
-        'asset_id' => 10,
-        'amount' => 1000,
-        'currency' => 'BWP',
-        'source_identifier' => '10000001',
-        'source_identifier_type' => 'auto',
-        'from_institution' => 'ZURUBANK',
-        'source_institution' => 'ZURUBANK',
-        'destination_institution' => 'SACCUSSALIS',
-        'hold_reason' => 'PENDING_SWAP',
-        'user_id' => 12,
-        'expiry' => date('Y-m-d H:i:s', strtotime('+24 hours'))
+    'swapType' => 'DEPOSIT',
+    'toInst' => 'SACCUSSALIS',
+    'toAsset' => 'WALLET',
+    'toFields' => [
+        'phone' => '+26770000000'
     ],
-    'PROCESS_DEPOSIT_WITH_PROOF' => [
-        '_skip_hold' => true,
-        'action' => 'PROCESS_DEPOSIT_WITH_PROOF',
-        'reference' => 'TEST_DEPOSIT',
-        'amount' => 994,
-        'currency' => 'BWP',
-        'asset_type' => 'WALLET',
-        'destination_asset_type' => 'WALLET',
-        'destination_identifier' => '+26770000000',
-        'destination_identifier_type' => 'phone',
-        'destination_institution' => 'SACCUSSALIS',
-        'from_institution' => 'ZURUBANK',
-        'source_institution' => 'ZURUBANK',
-        'to_institution' => 'SACCUSSALIS',
-        'hold_reference' => 'SWAP_1784973884251',
-        'user_id' => 42,
-        'bank' => 'ZURUBANK'
-    ]
+    'beneficiaryPhone' => '',
+    'deliveryMethod' => 'ATM'
 ];
 
-foreach ($testPayloads as $name => $payload) {
-    echo "\n=== TESTING $name ===\n";
-    echo "Original payload keys: " . implode(', ', array_keys($payload)) . "\n";
+// Build payload using the same logic as dashboard
+function buildPayload($state) {
+    $reference = 'SWAP_TEST_' . time();
+    $idempotencyKey = 'IDEMP_TEST_' . time();
+    $userId = 1;
     
-    $signed = $cm->createSignedRequest($payload, 'VOUCHMORPH');
+    // Source currency
+    $sourceCurrency = 'BWP';
     
-    echo "Signed payload keys: " . implode(', ', array_keys($signed)) . "\n";
-    echo "Has signature: " . (isset($signed['signature']) ? 'YES' : 'NO') . "\n";
-    echo "Has certificate: " . (isset($signed['certificate']) ? 'YES' : 'NO') . "\n";
-    echo "Has requester: " . (isset($signed['requester']) ? 'YES (value: ' . $signed['requester'] . ')' : 'NO') . "\n";
-    echo "Has timestamp: " . (isset($signed['timestamp']) ? 'YES' : 'NO') . "\n";
+    // Build source identifier
+    $sourceIdentifier = $state['fromFields']['account_number'] ?? null;
+    $sourceIdentifierType = 'account_number';
     
-    // Check what was actually signed
-    $payloadToVerify = $signed;
-    unset($payloadToVerify['signature']);
-    unset($payloadToVerify['certificate']);
-    // Keep requester - it's now part of the payload (but is it in the signed data?)
+    $payload = [
+        'swap_type' => $state['swapType'],
+        'reference' => $reference,
+        'idempotency_key' => $idempotencyKey,
+        'user_id' => $userId,
+        'from_institution' => $state['fromInst'],
+        'source_institution' => $state['fromInst'],
+        'asset_type' => $state['fromAsset'],
+        'amount' => $state['fromAmount'],
+        'currency' => $sourceCurrency,
+        'wallet_pin' => null,
+        'pin' => null,
+        'asset_fields' => $state['fromFields'],
+        'account_number' => $state['fromFields']['account_number'] ?? null,
+        'source_identifier' => $sourceIdentifier,
+        'source_identifier_type' => $sourceIdentifierType
+    ];
     
-    echo "Payload fields used for signing: " . implode(', ', array_keys($payloadToVerify)) . "\n";
-    echo "JSON to sign: " . json_encode($payloadToVerify, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+    // DEPOSIT
+    if ($state['swapType'] === 'DEPOSIT') {
+        $payload['to_institution'] = $state['toInst'];
+        $payload['destination_institution'] = $state['toInst'];
+        $payload['destination_asset_type'] = $state['toAsset'];
+        $payload['destination_currency'] = 'BWP';
+        
+        $destFields = $state['toFields'];
+        $payload['destination_asset_fields'] = $destFields;
+        
+        // Add destination fields
+        foreach ($destFields as $key => $value) {
+            $payload['destination_' . $key] = $value;
+        }
+        $payload['amount'] = $state['fromAmount'];
+        
+        // Set destination identifier
+        $payload['destination_identifier'] = $state['toFields']['phone'] ?? null;
+        
+        // FIX: Set destination_identifier_type based on asset type
+        if ($state['toAsset'] === 'WALLET') {
+            $payload['destination_identifier_type'] = 'phone';
+        } elseif ($state['toAsset'] === 'ACCOUNT') {
+            $payload['destination_identifier_type'] = 'account_number';
+        } else {
+            $payload['destination_identifier_type'] = 'account';
+        }
+    }
     
-    // Verify the signature
-    $verification = $cm->verifySignedRequest($signed);
-    echo "Verification result: " . ($verification['verified'] ? "VALID ✓" : "INVALID ✗") . "\n";
-    echo "Message: " . $verification['message'] . "\n";
+    return $payload;
 }
 
-echo "\n=== TEST COMPLETE ===\n";
+$payload = buildPayload($state);
+
+echo "=== PAYLOAD STRUCTURE ===\n";
+echo "Swap Type: " . $payload['swap_type'] . "\n";
+echo "Source: " . $payload['from_institution'] . "\n";
+echo "Source Asset: " . $payload['asset_type'] . "\n";
+echo "Source Identifier: " . $payload['source_identifier'] . "\n";
+echo "Source Identifier Type: " . $payload['source_identifier_type'] . "\n";
+echo "Amount: " . $payload['amount'] . "\n";
+echo "Destination: " . $payload['destination_institution'] . "\n";
+echo "Destination Asset: " . $payload['destination_asset_type'] . "\n";
+echo "Destination Identifier: " . $payload['destination_identifier'] . "\n";
+echo "Destination Identifier Type: " . $payload['destination_identifier_type'] . "\n";
+echo "\n";
+
+echo "=== FULL PAYLOAD (JSON) ===\n";
+echo json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n\n";
+
+echo "=== KEY FIELDS TO CHECK ===\n";
+echo "1. source_identifier_type: " . ($payload['source_identifier_type'] ?? 'MISSING') . "\n";
+echo "2. destination_identifier_type: " . ($payload['destination_identifier_type'] ?? 'MISSING') . "\n";
+echo "3. beneficiary_phone (for cashout): " . ($payload['beneficiary_phone'] ?? 'NOT SET (ok for deposit)') . "\n";
+echo "4. client_phone (for cashout): " . ($payload['client_phone'] ?? 'NOT SET (ok for deposit)') . "\n";
+echo "5. requester: " . ($payload['requester'] ?? 'NOT SET') . "\n";
+echo "\n";
+
+echo "=== WHAT SACCUSSALIS EXPECTS ===\n";
+echo "For WALLET deposit:\n";
+echo "  - destination_identifier_type should be: 'phone'\n";
+echo "  - destination_identifier should be: '+26770000000'\n";
+echo "  - destination_asset_type should be: 'WALLET'\n";
+echo "\n";
+
+if ($payload['destination_identifier_type'] === 'phone') {
+    echo "✅ destination_identifier_type is CORRECT: 'phone'\n";
+} else {
+    echo "❌ destination_identifier_type is WRONG: '" . ($payload['destination_identifier_type'] ?? 'null') . "' (should be 'phone')\n";
+}
+
+if ($payload['destination_identifier'] === '+26770000000') {
+    echo "✅ destination_identifier is CORRECT: '+26770000000'\n";
+} else {
+    echo "❌ destination_identifier is WRONG: '" . ($payload['destination_identifier'] ?? 'null') . "' (should be '+26770000000')\n";
+}
+
+echo "\n=== WHAT WOULD CAUSE 'INVALID SIGNATURE' ===\n";
+echo "The signature is invalid because:\n";
+echo "1. VouchMorph signs the payload WITH 'requester' included\n";
+echo "2. Saccussalis verifies WITHOUT 'requester' (removes it)\n";
+echo "3. The payloads don't match → signature verification fails\n";
+echo "\n";
+echo "FIX: Update CertificateManager.php to NOT include 'requester' in signed payload\n";
