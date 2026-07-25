@@ -3851,47 +3851,7 @@ public function cancelExpiredCashouts(int $bufferHours = 6): array
         'is_hooked' => $isHooked
     ];
 }
-
-    /**
- * Refuses to route a deposit to an institution that hasn't declared
- * support for the requested asset type, rather than trusting the
- * adapter's runtime credit() response to self-report honestly.
- *
- * REQUIRES: participants.yaml entries to include a supported_asset_types
- * list per institution, e.g.:
- *   ZURUBANK:
- *     supported_asset_types: [ACCOUNT, WALLET]
- *   SACCUSSALIS:
- *     supported_asset_types: [ACCOUNT]
- *
- * If an institution has no supported_asset_types declared at all, this
- * fails CLOSED (throws) rather than assuming it supports everything -
- * an undeclared capability is not the same as a confirmed one.
- */
-private function assertDestinationSupportsAssetType(string $institution, string $assetType): void
-{
-    $participant = $this->participants[$institution] ?? null;
-    if (!$participant) {
-        throw new RuntimeException("Unknown destination institution: {$institution}");
-    }
-
-    $supported = array_map('strtoupper', $participant['supported_asset_types'] ?? []);
-
-    if (empty($supported)) {
-        throw new RuntimeException(
-            "{$institution} has no declared supported_asset_types in participants.yaml - " .
-            "refusing to route a {$assetType} deposit until this is configured. " .
-            "Add 'supported_asset_types: [ACCOUNT, WALLET]' (as applicable) to this institution's entry."
-        );
-    }
-
-    if (!in_array($assetType, $supported, true)) {
-        throw new RuntimeException(
-            "{$institution} does not support {$assetType} deposits (supports: " . implode(', ', $supported) . ")"
-        );
-    }
-}
-    // ============================================================================
+ // ============================================================================
     // IDENTITY SWAP FLOW
     // ============================================================================
 
