@@ -56,7 +56,7 @@ class GenericBankClient implements BankAPIInterface
         
         // Initialize CertificateManager for Visa/Mastercard style PKI
         try {
-$this->certManager = new CertificateManager('VOUCHMORPH');
+            $this->certManager = new CertificateManager('VOUCHMORPH');
             if ($this->certManager->isConfigured()) {
                 error_log("GenericBankClient: CertificateManager initialized for {$this->bankPrefix}");
             }
@@ -1081,6 +1081,11 @@ $this->certManager = new CertificateManager('VOUCHMORPH');
         error_log("=== GENERIC BANK CLIENT: debitFunds ===");
         error_log("[GenericBankClient] debitFunds received payload keys: " . implode(', ', array_keys($payload)));
         
+        // debitFunds is always a source-directed call (debiting the ORIGIN
+        // account/wallet), so it's safe and correct to backfill phone/
+        // wallet_phone/national_id/email from source_identifier here.
+        $payload = $this->addSourceIdentifier($payload);
+        
         $holdRef = $payload['hold_reference'] ?? $payload['reference'] ?? null;
         error_log("[GenericBankClient] debitFunds: hold_reference extracted: " . ($holdRef ?? 'NULL'));
         
@@ -1170,7 +1175,7 @@ $this->certManager = new CertificateManager('VOUCHMORPH');
     // DESTINATION METHODS - STANDARDIZED
     // ============================================================================
 
-   public function generateToken(array $payload): array
+    public function generateToken(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: generateToken (CASHOUT TOKEN) ===");
         // FIX: Avoid double-signing. If this payload was already signed
@@ -1590,7 +1595,7 @@ $this->certManager = new CertificateManager('VOUCHMORPH');
         error_log("Sending request to: {$url}");
         error_log("Payload length: " . strlen(json_encode($payload)));
         
-$jsonPayload = json_encode($payload, JSON_UNESCAPED_SLASHES);        
+        $jsonPayload = json_encode($payload, JSON_UNESCAPED_SLASHES);        
         
         $ch = curl_init($url);
         curl_setopt_array($ch, [
@@ -1679,11 +1684,13 @@ $jsonPayload = json_encode($payload, JSON_UNESCAPED_SLASHES);
         ];
     }
 
+    // ============================================================================
+    // FIXED: createSignedPayload() - Removed unconditional addSourceIdentifier()
+    // ============================================================================
     protected function createSignedPayload(array $payload, string $requester = 'VOUCHMORPH'): array
     {
         $voucherNumber = $payload['voucher_number'] ?? null;
         $voucherPin = $payload['voucher_pin'] ?? null;
-        $sourceIdentifier = $payload['source_identifier'] ?? null;
         
         if ($voucherNumber) {
             $payload['voucherNumber'] = $voucherNumber;
@@ -1750,7 +1757,31 @@ $jsonPayload = json_encode($payload, JSON_UNESCAPED_SLASHES);
             error_log("[GenericBankClient] No PIN found in payload - using alternative authentication");
         }
         
-        $payload = $this->addSourceIdentifier($payload);
+        // ============================================================
+        // FIX: REMOVED the unconditional addSourceIdentifier() call
+        // that used to sit here. createSignedPayload() is shared by BOTH:
+        //
+        //   - source-directed calls (verifyAssetSigned, placeHoldSigned)
+        //     - where phone/wallet_phone/national_id/email correctly mean
+        //       "the source account's own identifier", and
+        //
+        //   - destination-directed calls (processDepositWithProof,
+        //     generateTokenWithProof, transferWithProof)
+        //     - where SwapService::processDepositWithProof() deliberately
+        //       sets phone/wallet_phone to the DESTINATION wallet's phone
+        //       number.
+        //
+        // addSourceIdentifier() unconditionally overwrote wallet_phone/
+        // phone/national_id/email with the SOURCE identifier regardless of
+        // which of these two cases applied. For every ACCOUNT -> WALLET
+        // deposit between institutions, this meant the destination bank's
+        // credit() call received the SOURCE account number in the phone
+        // field instead of the real destination wallet number.
+        //
+        // addSourceIdentifier() is now called explicitly only by the
+        // source-role methods that need it - see debitFunds(), verifyAsset(),
+        // and placeHold() above/below.
+        // ============================================================
         
         if ($voucherNumber) {
             $payload['voucher_number'] = $voucherNumber;
