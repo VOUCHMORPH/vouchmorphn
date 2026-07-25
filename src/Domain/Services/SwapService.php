@@ -3678,176 +3678,219 @@ public function cancelExpiredCashouts(int $bufferHours = 6): array
     }
 }
     private function executeSignedDeposit(array $payload): array
-    {
-        error_log("[SwapService] ===== executeSignedDeposit START =====");
-        
-        $amount = (float)($payload['amount'] ?? 0);
-        $sourceInstitution = $this->extractSourceInstitution($payload);
-        $destinationInstitution = $this->extractDestinationInstitution($payload);
-        $destinationIdentifier = $this->extractDestinationIdentifier($payload);
-        $destinationAssetType = $this->extractDestinationAssetType($payload);
-        
-        if (empty($payload['destination_currency'])) {
-            $destParticipant = $this->participants[$destinationInstitution] ?? null;
-            $payload['destination_currency'] = $destParticipant['limits']['currency']
-                ?? ($payload['currency'] ?? 'BWP');
-            error_log("[SwapService] No destination_currency provided for DEPOSIT - defaulting from destination institution config: {$payload['destination_currency']}");
-        }
-        
-        $isHooked = isset($payload['_is_hooked']) && $payload['_is_hooked'] === true;
-        $skipHold = isset($payload['_skip_hold']) && $payload['_skip_hold'] === true;
-        
-        error_log("[SwapService] Source: {$sourceInstitution}, Dest: {$destinationInstitution}, Amount: {$amount}, AssetType: {$destinationAssetType}");
-        
-        $verificationResult = $this->executeStep('VERIFY_ASSET_SIGNED', function() use ($payload, $sourceInstitution) {
-            return $this->verifyAssetSigned($payload, $sourceInstitution);
+{
+    error_log("[SwapService] ===== executeSignedDeposit START =====");
+    
+    $amount = (float)($payload['amount'] ?? 0);
+    $sourceInstitution = $this->extractSourceInstitution($payload);
+    $destinationInstitution = $this->extractDestinationInstitution($payload);
+    $destinationIdentifier = $this->extractDestinationIdentifier($payload);
+    $destinationAssetType = $this->extractDestinationAssetType($payload);
+    
+    // Capability gate — refuse to attempt deposit types the destination hasn't declared support for
+    $this->assertDestinationSupportsAssetType($destinationInstitution, $destinationAssetType);
+    
+    if (empty($payload['destination_currency'])) {
+        $destParticipant = $this->participants[$destinationInstitution] ?? null;
+        $payload['destination_currency'] = $destParticipant['limits']['currency']
+            ?? ($payload['currency'] ?? 'BWP');
+        error_log("[SwapService] No destination_currency provided for DEPOSIT - defaulting from destination institution config: {$payload['destination_currency']}");
+    }
+    
+    $isHooked = isset($payload['_is_hooked']) && $payload['_is_hooked'] === true;
+    $skipHold = isset($payload['_skip_hold']) && $payload['_skip_hold'] === true;
+    
+    error_log("[SwapService] Source: {$sourceInstitution}, Dest: {$destinationInstitution}, Amount: {$amount}, AssetType: {$destinationAssetType}");
+    
+    $verificationResult = $this->executeStep('VERIFY_ASSET_SIGNED', function() use ($payload, $sourceInstitution) {
+        return $this->verifyAssetSigned($payload, $sourceInstitution);
+    });
+    
+    if (!($verificationResult['verified'] ?? false)) {
+        throw new RuntimeException("Asset verification failed: " . ($verificationResult['message'] ?? 'Unknown error'));
+    }
+    
+    $this->signedPayloads['verification'] = [
+        'payload' => $verificationResult['original_payload'],
+        'signature' => $verificationResult['signature'],
+        'source' => $sourceInstitution,
+        'timestamp' => $verificationResult['timestamp'],
+        'is_hooked' => $isHooked
+    ];
+    
+    if (empty($destinationIdentifier['identifier'])) {
+        throw new RuntimeException("Destination identifier is required for deposit");
+    }
+    
+    $accountVerification = $this->executeStep('VERIFY_ACCOUNT', function() use ($payload, $destinationInstitution, $destinationIdentifier, $destinationAssetType) {
+        $verifyPayload = $payload;
+        $verifyPayload['destination_asset_type'] = $destinationAssetType;
+        return $this->verifyAccount($verifyPayload, $destinationInstitution, $destinationIdentifier);
+    });
+    
+    if (!($accountVerification['verified'] ?? false)) {
+        throw new RuntimeException("Destination verification failed: " . ($accountVerification['message'] ?? 'Not found'));
+    }
+    
+    $feeBreakdown = $this->calculateFeesWithDetails('DEPOSIT', $amount, $payload);
+    $netAmount = $feeBreakdown['net_amount'] ?? $amount;
+    
+    if (!$skipHold) {
+        $holdResult = $this->executeStep('PLACE_HOLD_SIGNED', function() use ($payload, $sourceInstitution, $verificationResult) {
+            return $this->placeHoldSigned($payload, $sourceInstitution, $verificationResult);
         });
         
-        if (!($verificationResult['verified'] ?? false)) {
-            throw new RuntimeException("Asset verification failed: " . ($verificationResult['message'] ?? 'Unknown error'));
-        }
-        
-        $this->signedPayloads['verification'] = [
-            'payload' => $verificationResult['original_payload'],
-            'signature' => $verificationResult['signature'],
-            'source' => $sourceInstitution,
-            'timestamp' => $verificationResult['timestamp'],
-            'is_hooked' => $isHooked
-        ];
-        
-        if (empty($destinationIdentifier['identifier'])) {
-            throw new RuntimeException("Destination identifier is required for deposit");
-        }
-        
-        $accountVerification = $this->executeStep('VERIFY_ACCOUNT', function() use ($payload, $destinationInstitution, $destinationIdentifier, $destinationAssetType) {
-            $verifyPayload = $payload;
-            $verifyPayload['destination_asset_type'] = $destinationAssetType;
-            return $this->verifyAccount($verifyPayload, $destinationInstitution, $destinationIdentifier);
-        });
-        
-        if (!($accountVerification['verified'] ?? false)) {
-            throw new RuntimeException("Destination verification failed: " . ($accountVerification['message'] ?? 'Not found'));
-        }
-        
-        $feeBreakdown = $this->calculateFeesWithDetails('DEPOSIT', $amount, $payload);
-        $netAmount = $feeBreakdown['net_amount'] ?? $amount;
-        
-        if (!$skipHold) {
-            $holdResult = $this->executeStep('PLACE_HOLD_SIGNED', function() use ($payload, $sourceInstitution, $verificationResult) {
-                return $this->placeHoldSigned($payload, $sourceInstitution, $verificationResult);
-            });
-            
-            if (!($holdResult['hold_placed'] ?? false)) {
-                throw new RuntimeException("Hold failed: " . ($holdResult['message'] ?? 'Unknown error'));
-            }
-            
-            $this->assertStepIntegrity(
-                $holdResult,
-                'hold_placed',
-                $isHooked ? ['hold_reference'] : ['hold_reference', 'signature'],
-                'PLACE_HOLD_SIGNED'
-            );
-            
-            $this->signedPayloads['hold'] = [
-                'payload' => $holdResult['original_payload'],
-                'signature' => $holdResult['signature'],
-                'source' => $sourceInstitution,
-                'timestamp' => $holdResult['timestamp'],
-                'is_hooked' => $isHooked
-            ];
-            
-            $this->currentHoldReference = $holdResult['hold_reference'] ?? null;
-        } else {
-            error_log("[SwapService] SKIPPING hold placement - using existing hold");
-        }
-        
-        $depositResult = $this->executeStep('PROCESS_DEPOSIT_WITH_PROOF', function() use ($payload, $destinationInstitution, $netAmount, $accountVerification, $destinationAssetType) {
-            $depositPayload = $payload;
-            $depositPayload['amount'] = $netAmount;
-            $depositPayload['account_verification'] = $accountVerification;
-            $depositPayload['to_institution'] = $destinationInstitution;
-            $depositPayload['destination_institution'] = $destinationInstitution;
-            $depositPayload['from_institution'] = $this->extractSourceInstitution($payload);
-            $depositPayload['source_institution'] = $this->extractSourceInstitution($payload);
-            $depositPayload['destination_asset_type'] = $destinationAssetType;
-            $depositPayload['asset_type'] = $destinationAssetType;
-            $depositPayload['_skip_hold'] = true;
-            
-            return $this->processDepositWithProof($depositPayload, $destinationInstitution, $netAmount);
-        });
-        
-        if (!($depositResult['credited'] ?? false)) {
-            throw new RuntimeException("Deposit failed: " . ($depositResult['message'] ?? 'Unknown error'));
+        if (!($holdResult['hold_placed'] ?? false)) {
+            throw new RuntimeException("Hold failed: " . ($holdResult['message'] ?? 'Unknown error'));
         }
         
         $this->assertStepIntegrity(
-            $depositResult,
-            'credited',
-            ['transaction_reference'],
-            'PROCESS_DEPOSIT_WITH_PROOF'
+            $holdResult,
+            'hold_placed',
+            $isHooked ? ['hold_reference'] : ['hold_reference', 'signature'],
+            'PLACE_HOLD_SIGNED'
         );
         
-        $debitResult = $this->executeStep('DEBIT_SOURCE', function() use ($payload, $sourceInstitution) {
-            return $this->debitSource($payload, $sourceInstitution);
-        });
-        
-        if (!($debitResult['debited'] ?? false)) {
-            throw new RuntimeException("Debit failed: " . ($debitResult['message'] ?? 'Unknown error'));
-        }
-        
-        $this->updateHoldStatus($this->currentHoldId, 'DEBITED');
-        
-        $settlementResult = $this->settlement->updateNetPosition(
-            $this->currentSwapRef,
-            $sourceInstitution,
-            $destinationInstitution,
-            $netAmount,
-            'DEPOSIT_COMPLETED',
-            $this->config['currency'] ?? 'BWP'
-        );
-        
-        $this->settlement->invoiceFee(
-            $this->currentSwapRef,
-            $sourceInstitution,
-            $this->getParticipantId($sourceInstitution),
-            'VOUCHMORPH_FEE',
-            $feeBreakdown['total_fee'] ?? 0,
-            $this->config['currency'] ?? 'BWP'
-        );
-        
-        $this->populateTrackingTables(
-            [
-                'swap_type' => 'DEPOSIT',
-                'reference' => $this->currentSwapRef,
-                'amount' => $netAmount,
-                'currency' => $payload['currency'] ?? 'BWP',
-                'status' => 'completed',
-                'from_institution' => $sourceInstitution,
-                'to_institution' => $destinationInstitution,
-                'user_id' => $payload['user_id'] ?? null
-            ],
-            $payload,
-            null
-        );
-        
-        return [
-            'status' => 'success',
-            'reference' => $this->currentSwapRef,
-            'amount' => $netAmount,
-            'original_amount' => $amount,
-            'fee' => $feeBreakdown['total_fee'] ?? 0,
-            'fee_calculation_details' => $this->feeCalculationDetails,
-            'deposit_reference' => $depositResult['transaction_reference'] ?? null,
-            'destination_identifier' => $destinationIdentifier['identifier'],
-            'destination_asset_type' => $destinationAssetType,
-            'source_institution' => $sourceInstitution,
-            'destination_institution' => $destinationInstitution,
-            'settlement' => $settlementResult,
-            'signature_chain' => $this->signedPayloads,
+        $this->signedPayloads['hold'] = [
+            'payload' => $holdResult['original_payload'],
+            'signature' => $holdResult['signature'],
+            'source' => $sourceInstitution,
+            'timestamp' => $holdResult['timestamp'],
             'is_hooked' => $isHooked
         ];
+        
+        $this->currentHoldReference = $holdResult['hold_reference'] ?? null;
+    } else {
+        error_log("[SwapService] SKIPPING hold placement - using existing hold");
+    }
+    
+    $depositResult = $this->executeStep('PROCESS_DEPOSIT_WITH_PROOF', function() use ($payload, $destinationInstitution, $netAmount, $accountVerification, $destinationAssetType) {
+        $depositPayload = $payload;
+        $depositPayload['amount'] = $netAmount;
+        $depositPayload['account_verification'] = $accountVerification;
+        $depositPayload['to_institution'] = $destinationInstitution;
+        $depositPayload['destination_institution'] = $destinationInstitution;
+        $depositPayload['from_institution'] = $this->extractSourceInstitution($payload);
+        $depositPayload['source_institution'] = $this->extractSourceInstitution($payload);
+        $depositPayload['destination_asset_type'] = $destinationAssetType;
+        $depositPayload['asset_type'] = $destinationAssetType;
+        $depositPayload['_skip_hold'] = true;
+        
+        return $this->processDepositWithProof($depositPayload, $destinationInstitution, $netAmount);
+    });
+    
+    if (!($depositResult['credited'] ?? false)) {
+        throw new RuntimeException("Deposit failed: " . ($depositResult['message'] ?? 'Unknown error'));
+    }
+    
+    $this->assertStepIntegrity(
+        $depositResult,
+        'credited',
+        ['transaction_reference'],
+        'PROCESS_DEPOSIT_WITH_PROOF'
+    );
+    
+    $debitResult = $this->executeStep('DEBIT_SOURCE', function() use ($payload, $sourceInstitution) {
+        return $this->debitSource($payload, $sourceInstitution);
+    });
+    
+    if (!($debitResult['debited'] ?? false)) {
+        throw new RuntimeException("Debit failed: " . ($debitResult['message'] ?? 'Unknown error'));
+    }
+    
+    $this->updateHoldStatus($this->currentHoldId, 'DEBITED');
+    
+    $settlementResult = $this->settlement->updateNetPosition(
+        $this->currentSwapRef,
+        $sourceInstitution,
+        $destinationInstitution,
+        $netAmount,
+        'DEPOSIT_COMPLETED',
+        $this->config['currency'] ?? 'BWP'
+    );
+    
+    $this->settlement->invoiceFee(
+        $this->currentSwapRef,
+        $sourceInstitution,
+        $this->getParticipantId($sourceInstitution),
+        'VOUCHMORPH_FEE',
+        $feeBreakdown['total_fee'] ?? 0,
+        $this->config['currency'] ?? 'BWP'
+    );
+    
+    // Persist the actual transaction reference from the deposit result
+    $this->populateTrackingTables(
+        [
+            'swap_type' => 'DEPOSIT',
+            'reference' => $this->currentSwapRef,
+            'amount' => $netAmount,
+            'currency' => $payload['currency'] ?? 'BWP',
+            'status' => 'completed',
+            'from_institution' => $sourceInstitution,
+            'to_institution' => $destinationInstitution,
+            'user_id' => $payload['user_id'] ?? null
+        ],
+        $payload,
+        $depositResult  // Now passing the actual deposit result instead of null
+    );
+    
+    return [
+        'status' => 'success',
+        'reference' => $this->currentSwapRef,
+        'amount' => $netAmount,
+        'original_amount' => $amount,
+        'fee' => $feeBreakdown['total_fee'] ?? 0,
+        'fee_calculation_details' => $this->feeCalculationDetails,
+        'deposit_reference' => $depositResult['transaction_reference'] ?? null,
+        'destination_identifier' => $destinationIdentifier['identifier'],
+        'destination_asset_type' => $destinationAssetType,
+        'source_institution' => $sourceInstitution,
+        'destination_institution' => $destinationInstitution,
+        'settlement' => $settlementResult,
+        'signature_chain' => $this->signedPayloads,
+        'is_hooked' => $isHooked
+    ];
+}
+
+    /**
+ * Refuses to route a deposit to an institution that hasn't declared
+ * support for the requested asset type, rather than trusting the
+ * adapter's runtime credit() response to self-report honestly.
+ *
+ * REQUIRES: participants.yaml entries to include a supported_asset_types
+ * list per institution, e.g.:
+ *   ZURUBANK:
+ *     supported_asset_types: [ACCOUNT, WALLET]
+ *   SACCUSSALIS:
+ *     supported_asset_types: [ACCOUNT]
+ *
+ * If an institution has no supported_asset_types declared at all, this
+ * fails CLOSED (throws) rather than assuming it supports everything -
+ * an undeclared capability is not the same as a confirmed one.
+ */
+private function assertDestinationSupportsAssetType(string $institution, string $assetType): void
+{
+    $participant = $this->participants[$institution] ?? null;
+    if (!$participant) {
+        throw new RuntimeException("Unknown destination institution: {$institution}");
     }
 
+    $supported = array_map('strtoupper', $participant['supported_asset_types'] ?? []);
+
+    if (empty($supported)) {
+        throw new RuntimeException(
+            "{$institution} has no declared supported_asset_types in participants.yaml - " .
+            "refusing to route a {$assetType} deposit until this is configured. " .
+            "Add 'supported_asset_types: [ACCOUNT, WALLET]' (as applicable) to this institution's entry."
+        );
+    }
+
+    if (!in_array($assetType, $supported, true)) {
+        throw new RuntimeException(
+            "{$institution} does not support {$assetType} deposits (supports: " . implode(', ', $supported) . ")"
+        );
+    }
+}
     // ============================================================================
     // IDENTITY SWAP FLOW
     // ============================================================================
