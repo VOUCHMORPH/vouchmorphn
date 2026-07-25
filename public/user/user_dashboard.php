@@ -2004,7 +2004,7 @@ function renderToolbox() {
         { label: 'View balance', icon: '💰', action: 'viewWalletBalance()' },
         { label: 'Select a saved source', icon: '🔗', action: 'openMySourcesFromHeader()' },
         { label: 'Add source', icon: '➕', action: 'openAddSource()' },
-        { label: 'Finalize identity swap', icon: '📩', badge: claimCount > 0 ? claimCount : null, action: 'openFinalizeIdentityModal()' },
+        { label: 'Finalize identity swap', icon: '📩', badge: claimCount > 0 ? claimCount : null, action: isAgent ? 'openAgentFinalizeIdentityModal()' : 'openFinalizeIdentityModal()' },
         { label: 'Pending sources', icon: '⏳', badge: pendingCount > 0 ? pendingCount : null, action: 'openPendingSources()' },
         { label: 'My sources', icon: '📋', action: 'openMySourcesLegacy()' },
         { label: 'Swap history', icon: '🕘', action: 'openSwapHistory()' },
@@ -2438,6 +2438,32 @@ function onAgentInstChange(code) {
     sel.innerHTML = eligible.map(t => `<option value="${t}">${getAssetConfig(t)?.label || t}</option>`).join('');
     group.style.display = 'block';
 }
+
+// ============================================================
+// AGENT FINALIZE IDENTITY SWAP — SEARCH + FINALIZE
+// ============================================================
+
+function openAgentFinalizeIdentityModal() {
+    openModal('Finalize Identity Swap', renderAgentFinalizeIdentitySearch());
+}
+
+function renderAgentFinalizeIdentitySearch() {
+    return `
+        <div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">Search for a client's pending identity payment. You'll need to physically verify their document and have them tell you the OTP PIN texted to them — never their personal VouchMorph transaction PIN — before you can finalize.</div>
+        <div class="field-group"><label>Document Type</label><select id="agentSearchType"><option value="national_id">National ID</option><option value="birth_certificate">Birth Certificate</option><option value="voter_id">Voter ID</option></select></div>
+        <div class="field-group"><label>Document Number</label><input id="agentSearchValue" placeholder="Enter the client's ID number"></div>
+        <div class="cta-row"><button class="btn btn-primary" onclick="searchAgentClaim()">Search</button></div>
+        <div id="agentSearchResults" style="margin-top:16px;"></div>
+        <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:20px;">
+            <div class="field-label" style="margin-bottom:6px;">Not what the client needs?</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">If the client wants this identity permanently registered to their VouchMorph account — optional, and separate from finalizing any swap — you can do that here instead.</div>
+            <span class="quick-link muted" onclick="closeModal();openAddIdentityModal();">Register identity to client's account →</span>
+        </div>`;
+}
+
+// ============================================================
+// AGENT TOOLS — Legacy search (kept for reference)
+// ============================================================
 
 function openAgentToolsModal() { openModal('Agent Tools', renderAgentToolsSearch()); }
 
