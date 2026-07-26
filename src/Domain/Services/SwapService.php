@@ -1,6 +1,6 @@
 <?php
 declare(strict_types=1);
-
+ 
 namespace Domain\Services;  
 
 use PDO;
@@ -2481,7 +2481,7 @@ private function populateMessageOutbox(string $swapRef, array $swapData, array $
                 $debitPayload = [
                     'reference' => $subRef,
                     'hold_reference' => $destHoldRef,
-                    'amount' => $destAmount + $feeAmount,
+                    'amount' => $destAmount,
                     'reason' => 'Multi-destination swap - destination ' . ($idx + 1),
                     'from_institution' => $sourceInstitution,
                     'source_institution' => $sourceInstitution
