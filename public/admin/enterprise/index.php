@@ -31,12 +31,12 @@ $departmentId = $user['department_id'] ?? null;
 // ============================================================
 $canCreate = in_array($userRole, ['owner', 'it_manager_enterprise', 'program_officer', 'department_head']);
 $canApprove = in_array($userRole, ['owner', 'approver', 'senior_approver', 'it_manager_enterprise']);
-$canDisburse = in_array($userRole, ['owner', 'it_manager_enterprise']);
+$canDisburse = ($userRole === 'owner');
 $canManageUsers = in_array($userRole, ['owner', 'it_manager_enterprise', 'it_officer_enterprise']);
 $canViewAll = in_array($userRole, ['owner', 'auditor', 'it_manager_enterprise', 'it_officer_enterprise']);
 $isReadOnly = in_array($userRole, ['auditor', 'viewer']);
 $isApprover = in_array($userRole, ['approver', 'senior_approver']);
-$isSupervisor = in_array($userRole, ['owner', 'it_manager_enterprise']);
+$isSupervisor = ($userRole === 'owner'); // Only owners can disburse
 $isTopRole = in_array($userRole, ['owner', 'it_manager_enterprise']); // PATCH #4: alias for clarity
 $isLoader = in_array($userRole, ['program_officer', 'department_head']);
 
