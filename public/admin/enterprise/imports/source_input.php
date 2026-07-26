@@ -3,7 +3,9 @@
 require_once '../auth.php';
 $user = requireEnterpriseAuth();
 require_once '../../../../src/Core/Database/DBConnection.php';
+require_once '../../../../src/Domain/Services/DepartmentService.php';
 use Core\Database\DBConnection;
+use Domain\Services\DepartmentService;
 
 $db = DBConnection::getConnection();
 $orgId = getOrganizationId();
@@ -13,6 +15,34 @@ $role = $user['role'] ?? 'viewer';
 // Same gate as add_source.php - determines whether the "add/manage
 // source accounts" link is shown at all.
 $canManageSourceAccounts = in_array($role, ['finance_officer', 'owner', 'it_manager_enterprise']);
+
+// ============================================================
+// DEPARTMENT / RATION SETUP
+// ============================================================
+// A batch always draws against a department's ration, and that
+// department is decided HERE, at creation time — never guessed later
+// at submit time. Only top roles may pick a department other than
+// their own; everyone else is locked to the department on their
+// account (never trust a posted department_id from a non-top role).
+$deptService = new DepartmentService($db);
+$isTopRole = in_array($role, ['owner', 'it_manager_enterprise'], true);
+$userDepartmentId = isset($user['department_id']) && $user['department_id'] !== null
+    ? (int)$user['department_id']
+    : null;
+
+$departmentOptions = [];
+if ($isTopRole) {
+    try {
+        $departmentOptions = $deptService->getDepartmentsFlat($orgId, true);
+    } catch (\Throwable $e) {
+        error_log("[source_input] Failed to load departments: " . $e->getMessage());
+    }
+}
+
+// Non-top roles with no department assigned cannot create a batch at all —
+// there's nothing to draw ration from. Surface this clearly instead of
+// letting them hit a confusing failure later at submit time.
+$missingDepartment = (!$isTopRole && $userDepartmentId === null);
 
 $error = '';
 $success = '';
@@ -48,6 +78,26 @@ if ($batchId) {
     $batch = $stmt->fetch(PDO::FETCH_ASSOC);
 }
 
+// Resolve which department this batch will be (or already is) scoped to,
+// for both the ration-preview panel and the eventual INSERT/UPDATE.
+$selectedDepartmentId = null;
+if ($batch && !empty($batch['department_id'])) {
+    $selectedDepartmentId = (int)$batch['department_id'];
+} elseif ($isTopRole && !empty($_GET['department_id'])) {
+    $selectedDepartmentId = (int)$_GET['department_id'];
+} elseif ($userDepartmentId !== null) {
+    $selectedDepartmentId = $userDepartmentId;
+}
+
+$rationPreview = null;
+if ($selectedDepartmentId !== null) {
+    try {
+        $rationPreview = $deptService->getAvailableRation($selectedDepartmentId);
+    } catch (\Throwable $e) {
+        error_log("[source_input] Failed to load ration preview: " . $e->getMessage());
+    }
+}
+
 // Handle source selection
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     requireCsrfToken($_POST['csrf_token'] ?? null);
@@ -55,9 +105,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     
     if ($action === 'select_source') {
         $sourceId = $_POST['source_id'] ?? null;
-        
+
+        // Resolve the department to attach to this batch. Top roles may
+        // pick from the posted dropdown (or default to their own, if
+        // they have one); everyone else is hard-locked to their own
+        // department regardless of anything in the POST body.
+        if ($isTopRole) {
+            $postedDeptId = !empty($_POST['department_id']) ? (int)$_POST['department_id'] : null;
+            $departmentIdForBatch = $postedDeptId ?? $userDepartmentId;
+        } else {
+            $departmentIdForBatch = $userDepartmentId;
+        }
+
         if (!$sourceId) {
             $error = 'Please select a source account.';
+        } elseif ($departmentIdForBatch === null) {
+            $error = 'You must belong to a department to create a batch, or select one if you are an admin.';
         } else {
             try {
                 // Get source details - re-check it's confirmed & active.
@@ -73,6 +136,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 
                 if (!$source) {
                     throw new Exception("Source not found or not yet confirmed for use.");
+                }
+
+                // Confirm the department is real, active, and (for non-top
+                // roles) actually the one they belong to. Top roles can
+                // pick any active department in the org.
+                $stmt = $db->prepare("
+                    SELECT id FROM departments
+                    WHERE id = :id AND organization_id = :org_id AND status = 'active'
+                ");
+                $stmt->execute([':id' => $departmentIdForBatch, ':org_id' => $orgId]);
+                if (!$stmt->fetchColumn()) {
+                    throw new Exception("Selected department not found or inactive.");
+                }
+                if (!$isTopRole && $departmentIdForBatch !== $userDepartmentId) {
+                    throw new Exception("You can only create batches for your own department.");
                 }
                 
                 // Create or update batch
@@ -98,17 +176,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $batchRef = 'DISP_' . date('Ymd_His') . '_' . strtoupper(substr(uniqid(), -6));
                     $stmt = $db->prepare("
                         INSERT INTO disbursement_batches (
-                            organization_id, batch_reference, batch_name,
+                            organization_id, department_id, batch_reference, batch_name,
                             source_account_id, source_institution, source_asset_type,
                             source_identifier, currency, status, created_by
                         ) VALUES (
-                            :org_id, :ref, :name,
+                            :org_id, :department_id, :ref, :name,
                             :source_id, :institution, :asset_type,
                             :identifier, :currency, 'DRAFT', :user_id
                         ) RETURNING id
                     ");
                     $stmt->execute([
                         ':org_id' => $orgId,
+                        ':department_id' => $departmentIdForBatch,
                         ':ref' => $batchRef,
                         ':name' => $_POST['batch_name'] ?? 'Multi-Destination Disbursement ' . date('Y-m-d'),
                         ':source_id' => $source['id'],
@@ -135,6 +214,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $csrfToken = generateCsrfToken();
 $roleDisplay = strtoupper($user['role'] ?? 'USER');
 $orgName = htmlspecialchars($user['organization_name'] ?? 'ORGANIZATIONAL');
+
+function formatCurrency($amount, $currency = 'BWP') {
+    return number_format((float)$amount, 2) . ' ' . $currency;
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -156,6 +239,7 @@ $orgName = htmlspecialchars($user['organization_name'] ?? 'ORGANIZATIONAL');
             --brass-tint: #F4EFE3;
             --seal-red: #7A2118;
             --ledger-green: #24513A;
+            --amber: #8A5A0B;
         }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -294,6 +378,36 @@ $orgName = htmlspecialchars($user['organization_name'] ?? 'ORGANIZATIONAL');
         }
         .step.active { color: var(--ink-900); }
         .step.done { color: var(--ledger-green); }
+        /* ============================================================
+           RATION PREVIEW
+           ============================================================ */
+        .ration-preview {
+            border: 1.5px solid var(--line);
+            border-radius: 8px;
+            padding: 14px 16px;
+            margin-bottom: 16px;
+            font-size: 12.5px;
+        }
+        .ration-preview .row {
+            display: flex;
+            justify-content: space-between;
+            padding: 3px 0;
+        }
+        .ration-preview .label { color: var(--ink-500); }
+        .ration-preview .value { font-weight: 600; }
+        .ration-preview .value.danger { color: var(--seal-red); }
+        .ration-preview .value.ok { color: var(--ledger-green); }
+        .ration-bar-track { height: 6px; background: var(--paper); border-radius: 3px; margin: 8px 0; overflow: hidden; }
+        .ration-bar-fill { height: 100%; }
+        .missing-dept-notice {
+            background: #fef3c7;
+            border-left: 3px solid var(--amber);
+            color: var(--amber);
+            padding: 14px 16px;
+            border-radius: 8px;
+            margin-bottom: 16px;
+            font-size: 13px;
+        }
         @media (max-width: 768px) {
             .masthead { flex-direction: column; text-align: center; }
             .step-indicator { flex-wrap: wrap; gap: 8px; }
@@ -328,6 +442,14 @@ $orgName = htmlspecialchars($user['organization_name'] ?? 'ORGANIZATIONAL');
         <div class="success">✅ <?php echo htmlspecialchars($success); ?></div>
         <?php endif; ?>
 
+        <?php if ($missingDepartment): ?>
+        <div class="missing-dept-notice">
+            ⚠️ <strong>No department assigned.</strong> You need to belong to a department before you can
+            create a disbursement batch — it's what your batch draws its budget ration from. Contact an
+            Owner or IT Manager to be assigned to one.
+        </div>
+        <?php endif; ?>
+
         <div class="card">
             <div class="card-header">
                 <span class="card-title">💰 Select Source Account</span>
@@ -345,6 +467,40 @@ $orgName = htmlspecialchars($user['organization_name'] ?? 'ORGANIZATIONAL');
                     <input type="text" name="batch_name" 
                            value="<?php echo $batch ? htmlspecialchars($batch['batch_name']) : 'Multi-Destination Disbursement ' . date('Y-m-d'); ?>">
                 </div>
+
+                <?php if ($isTopRole): ?>
+                <div class="form-group">
+                    <label>Department (draws against its ration)</label>
+                    <select name="department_id" id="departmentSelect" onchange="window.location.href = '?department_id=' + this.value + '<?php echo $batchId ? '&batch_id=' . (int)$batchId : ''; ?>'">
+                        <option value="">Select department&hellip;</option>
+                        <?php foreach ($departmentOptions as $dept): ?>
+                        <option value="<?php echo (int)$dept['id']; ?>" <?php echo ((int)$dept['id'] === $selectedDepartmentId) ? 'selected' : ''; ?>>
+                            <?php echo htmlspecialchars($dept['name']); ?>
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <?php else: ?>
+                <input type="hidden" name="department_id" value="<?php echo (int)$userDepartmentId; ?>">
+                <?php endif; ?>
+
+                <?php if ($rationPreview): ?>
+                <?php
+                    $utilPct = $rationPreview['ceiling'] > 0
+                        ? min(100, round((($rationPreview['disbursed_ytd'] + $rationPreview['reserved_in_flight']) / $rationPreview['ceiling']) * 100, 1))
+                        : 0;
+                    $barColor = $rationPreview['available'] < 0 ? 'var(--seal-red)' : ($utilPct >= 80 ? 'var(--amber)' : 'var(--ledger-green)');
+                ?>
+                <div class="ration-preview">
+                    <div class="row"><span class="label">Department Ceiling</span><span class="value"><?php echo formatCurrency($rationPreview['ceiling'], $rationPreview['currency']); ?></span></div>
+                    <div class="row"><span class="label">Disbursed YTD</span><span class="value"><?php echo formatCurrency($rationPreview['disbursed_ytd'], $rationPreview['currency']); ?></span></div>
+                    <div class="row"><span class="label">Reserved (other pending/approved batches)</span><span class="value"><?php echo formatCurrency($rationPreview['reserved_in_flight'], $rationPreview['currency']); ?></span></div>
+                    <div class="ration-bar-track"><div class="ration-bar-fill" style="width:<?php echo $utilPct; ?>%; background:<?php echo $barColor; ?>;"></div></div>
+                    <div class="row"><span class="label">Available Now</span><span class="value <?php echo $rationPreview['available'] < 0 ? 'danger' : 'ok'; ?>"><?php echo formatCurrency($rationPreview['available'], $rationPreview['currency']); ?></span></div>
+                </div>
+                <?php elseif ($selectedDepartmentId !== null): ?>
+                <div class="error" style="margin-bottom:16px;">Could not load ration info for this department.</div>
+                <?php endif; ?>
 
                 <div class="form-group">
                     <label>Select Source Account</label>
@@ -387,7 +543,7 @@ $orgName = htmlspecialchars($user['organization_name'] ?? 'ORGANIZATIONAL');
                     <?php if ($canManageSourceAccounts): ?>
                     <a href="add_source.php" class="btn btn-secondary">➕ Manage Source Accounts</a>
                     <?php endif; ?>
-                    <button type="submit" class="btn btn-primary" <?php echo empty($sources) ? 'disabled' : ''; ?>>
+                    <button type="submit" class="btn btn-primary" <?php echo (empty($sources) || $missingDepartment) ? 'disabled' : ''; ?>>
                         Continue → Add Destinations
                     </button>
                 </div>
