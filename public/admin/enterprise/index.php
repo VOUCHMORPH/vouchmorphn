@@ -37,11 +37,21 @@ $canViewAll = in_array($userRole, ['owner', 'auditor', 'it_manager_enterprise', 
 $isReadOnly = in_array($userRole, ['auditor', 'viewer']);
 $isApprover = in_array($userRole, ['approver', 'senior_approver']);
 $isSupervisor = in_array($userRole, ['owner', 'it_manager_enterprise']);
+$isTopRole = in_array($userRole, ['owner', 'it_manager_enterprise']); // PATCH #4: alias for clarity
 $isLoader = in_array($userRole, ['program_officer', 'department_head']);
 
 // Source account maker-checker: Finance Officers propose, Owner/IT Manager confirm.
 $canProposeSource = in_array($userRole, ['finance_officer', 'owner']);
 $canConfirmSource = in_array($userRole, ['owner', 'it_manager_enterprise']);
+
+// PATCH #3: Separate from $canManageSourceAccounts (which gates propose/confirm
+// ACTIONS): this gates whether the nav link / info panel appears at all.
+// Batch-creating roles (program_officer, department_head) must never see
+// this area — their job starts and ends at building a batch against
+// their department's ration.
+$canSeeSourceAccountsArea = in_array($userRole, ['owner', 'it_manager_enterprise', 'finance_officer']);
+
+// Keep $canManageSourceAccounts for BC, but now use $canSeeSourceAccountsArea for nav
 $canManageSourceAccounts = $canProposeSource || $canConfirmSource;
 $canTrace = in_array($userRole, ['owner', 'it_manager_enterprise', 'it_officer_enterprise', 'auditor', 'senior_approver', 'approver', 'finance_officer']);
 
@@ -103,9 +113,11 @@ try {
         $status = strtolower($row['status']);
         $batchStatus[$status] = $row['count'];
     }
-    $metrics['pending_batches'] = $batchStatus['pending'] ?? $batchStatus['pending_approval'] ?? 0;
+    
+    // PATCH #1: Fix batches-metrics undercount - sum synonyms instead of picking one
+    $metrics['pending_batches'] = ($batchStatus['pending'] ?? 0) + ($batchStatus['pending_approval'] ?? 0);
     $metrics['approved_batches'] = $batchStatus['approved'] ?? 0;
-    $metrics['executed_batches'] = $batchStatus['executed'] ?? $batchStatus['completed'] ?? 0;
+    $metrics['executed_batches'] = ($batchStatus['executed'] ?? 0) + ($batchStatus['completed'] ?? 0);
     $metrics['rejected_batches'] = $batchStatus['rejected'] ?? 0;
     
     // Total disbursed amount
@@ -176,7 +188,7 @@ try {
         }
     }
     
-    // Recent batches with status-based filtering
+    // PATCH #2: Close permission leak for unmatched roles + scope batch staff to their department
     $statusFilter = "";
     $statusParams = [':org_id' => $orgId];
 
@@ -186,11 +198,17 @@ try {
         $statusFilter = "AND status IN ('completed', 'executed', 'COMPLETED', 'EXECUTED')";
     } elseif ($isApprover) {
         $statusFilter = "AND status IN ('pending', 'pending_approval', 'approved', 'draft', 'PENDING', 'PENDING_APPROVAL', 'APPROVED')";
-    } elseif ($isSupervisor) {
-        $statusFilter = "AND status IN ('approved', 'completed', 'executed', 'APPROVED', 'COMPLETED', 'EXECUTED')";
+    } elseif ($userRole === 'finance_officer') {
+        $statusFilter = "AND status IN ('pending', 'pending_approval', 'approved', 'completed', 'executed', 'PENDING', 'PENDING_APPROVAL', 'APPROVED', 'COMPLETED', 'EXECUTED')";
     } elseif ($isLoader) {
-        $statusFilter = "AND (created_by = :user_id OR status IN ('pending', 'pending_approval', 'approved', 'draft'))";
+        // Batch staff: their own batches, OR any batch in their own department.
+        $statusFilter = "AND (created_by = :user_id OR (department_id = :department_id AND status IN ('pending', 'pending_approval', 'approved', 'draft')))";
         $statusParams[':user_id'] = $userId;
+        $statusParams[':department_id'] = $departmentId;
+    } else {
+        // Default-deny: any role not explicitly matched above sees nothing,
+        // rather than falling through to an empty filter (= everything).
+        $statusFilter = "AND 1=0";
     }
 
     $stmt = $pdo->prepare("
@@ -1116,7 +1134,8 @@ if (($metrics['rejected_batches'] ?? 0) > 0 && ($canCreate || $isSupervisor)) {
         <a href="imports/add_destinations.php" class="nav-item">📝 Add Destinations</a>
         <?php endif; ?>
         
-        <?php if ($canManageSourceAccounts): ?>
+        <!-- PATCH #3: Gate source-account visibility to finance/top roles only -->
+        <?php if ($canSeeSourceAccountsArea): ?>
         <a href="imports/add_source.php" class="nav-item">💰 Source Accounts
             <?php if ($canConfirmSource && ($metrics['pending_source_confirmations'] ?? 0) > 0): ?>
             <span class="badge"><?php echo $metrics['pending_source_confirmations']; ?></span>
@@ -1129,6 +1148,11 @@ if (($metrics['rejected_batches'] ?? 0) > 0 && ($canCreate || $isSupervisor)) {
         <?php endif; ?>
         
         <a href="reports.php" class="nav-item">📈 Reports</a>
+        
+        <!-- PATCH #4: Add the Departments nav link -->
+        <?php if ($isTopRole || $userRole === 'department_head'): ?>
+        <a href="departments/index.php" class="nav-item">🏢 Departments</a>
+        <?php endif; ?>
         
         <?php if ($canManageUsers): ?>
         <a href="settings/users.php" class="nav-item">👤 Manage Users</a>
