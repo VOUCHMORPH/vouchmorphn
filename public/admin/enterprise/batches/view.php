@@ -1,18 +1,60 @@
 <?php
 /**
  * batches/view.php - ENTERPRISE DISBURSEMENT BATCH DETAILS
- * FIXED: Uses disbursement_batches and disbursement_destinations
- * ADDED: Approver actions - approve/reject with proper permissions
+ *
+ * FIX (fatal): formatCurrency() was called but never defined anywhere
+ * in this file's scope — added below, and deliberately does NOT fall
+ * back to a guessed currency (see note on the function itself).
+ *
+ * FIX: submit/approve here now run the same department ration check as
+ * imports/review_batch.php. Previously this page was a second door
+ * through which a batch could be submitted and approved without its
+ * budget ever being verified.
+ *
+ * FIX: the Execute button used to POST action=execute to a branch that
+ * didn't exist — silent no-op, no error shown. Execution is now handled
+ * ONLY on imports/review_batch.php, which has the claim-lock /
+ * idempotency / resume safety logic. Duplicating that here would
+ * recreate the exact class of bug this file just hit (one file patched,
+ * one forgotten), so this page links to it instead of re-implementing it.
  */
 require_once '../auth.php';
 $user = requireEnterpriseAuth();
 require_once '../../../../src/Core/Database/DBConnection.php';
+require_once '../../../../src/Domain/Services/DepartmentService.php';
 use Core\Database\DBConnection;
+use Domain\Services\DepartmentService;
 
 $db = DBConnection::getConnection();
 $orgId = getOrganizationId();
 $userId = $user['id'] ?? $user['user_id'] ?? null;
 $batchId = $_GET['id'] ?? 0;
+
+// ============================================================
+// HELPERS
+// ============================================================
+function safeHtmlView($value) {
+    return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
+}
+
+// ============================================================
+// FIX (fatal error): this was called throughout the file but never
+// defined. Deliberately does NOT default to a guessed currency (the
+// old pattern elsewhere in this codebase was `?? 'BWP'`) — VouchMorph
+// doesn't hold money itself; the currency that actually matters is
+// whichever institution's account is being debited or credited, and
+// guessing wrong silently mislabels a real amount (an AOA payout
+// displayed as if it were BWP is a real operational hazard once you're
+// running outside one market, not just a cosmetic bug). If a currency
+// is genuinely missing, that's surfaced instead of papered over.
+// ============================================================
+function formatCurrency($amount, $currency = null) {
+    $formatted = number_format((float)$amount, 2);
+    if ($currency === null || $currency === '') {
+        return $formatted . ' <span style="color:var(--danger); font-size:11px;">⚠ currency missing</span>';
+    }
+    return $formatted . ' ' . safeHtmlView($currency);
+}
 
 // ============================================================
 // GET BATCH
@@ -41,6 +83,25 @@ if (!$batch) {
 }
 
 // ============================================================
+// CURRENCY RESOLUTION
+// ------------------------------------------------------------
+// The batch's own `currency` column is set at creation time from the
+// SOURCE institution's account (imports/source_input.php) — that's the
+// currency the department's ration ceiling is actually denominated in,
+// since that's the real-world account being drawn down. It is NOT
+// necessarily the currency every destination gets paid in: a destination
+// institution can be in a different currency, in which case a forex
+// conversion happens between source and destination. Each destination
+// row already carries its own `currency` column independently in the
+// schema — this page just needs to stop assuming they all match the
+// batch's, and flag it clearly when they don't.
+// ============================================================
+$batchCurrency = $batch['currency'] ?? null;
+if (!$batchCurrency) {
+    error_log("[batches/view] Batch {$batchId} has no currency set — this should have been populated from the source institution at creation time.");
+}
+
+// ============================================================
 // GET DESTINATIONS
 // ============================================================
 $stmt = $db->prepare("
@@ -52,6 +113,24 @@ $stmt->execute([':batch_id' => $batchId]);
 $destinations = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 // ============================================================
+// DEPARTMENT / RATION CONTEXT
+// ============================================================
+$deptService = new DepartmentService($db);
+$departmentInfo = null;
+$rationInfo = null;
+
+if (!empty($batch['department_id'])) {
+    try {
+        $stmt = $db->prepare("SELECT id, name, code FROM departments WHERE id = :id");
+        $stmt->execute([':id' => $batch['department_id']]);
+        $departmentInfo = $stmt->fetch(PDO::FETCH_ASSOC);
+        $rationInfo = $deptService->getAvailableRation((int)$batch['department_id']);
+    } catch (\Throwable $e) {
+        error_log("[batches/view] Failed to load department/ration info: " . $e->getMessage());
+    }
+}
+
+// ============================================================
 // PERMISSIONS
 // ============================================================
 $role = $user['role'] ?? 'viewer';
@@ -60,15 +139,16 @@ $isOwner = ($role === 'owner');
 $isCreator = ($batch['created_by'] == $userId);
 $isProgramOfficer = in_array($role, ['program_officer', 'department_head']);
 
-// Can approve: Approver or Senior Approver ONLY
 $canApprove = ($isApprover && $batch['status'] === 'pending_approval');
 $canReject = ($isApprover && $batch['status'] === 'pending_approval');
 $canEdit = ($isOwner || ($isProgramOfficer && $isCreator && $batch['status'] === 'draft'));
 $canSubmit = ($isOwner || ($isProgramOfficer && $isCreator && $batch['status'] === 'draft'));
+// Execute/DISBURSE: OWNER ONLY — enforced (for real) on review_batch.php.
+// This flag here only controls whether we show the "Go Execute" link.
 $canExecute = ($isOwner && $batch['status'] === 'approved');
 
 // ============================================================
-// HANDLE APPROVAL ACTIONS
+// HANDLE ACTIONS
 // ============================================================
 $actionResult = null;
 $actionError = null;
@@ -76,9 +156,27 @@ $actionError = null;
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     requireCsrfToken($_POST['csrf_token'] ?? null);
     $action = $_POST['action'] ?? '';
-    
+
     try {
         if ($action === 'approve' && $canApprove) {
+            // ============================================================
+            // FIX: ration re-check before approving — this page used to
+            // let an approver approve a batch that would blow its
+            // department's budget, because only review_batch.php checked
+            // this. Same rule, same place it's enforced everywhere else.
+            // ============================================================
+            if (empty($batch['department_id'])) {
+                throw new Exception("This batch has no department assigned — cannot verify budget ration before approving.");
+            }
+            try {
+                $deptService->assertBatchFitsRation(
+                    (int)$batch['department_id'],
+                    (float)($batch['total_amount'] ?? 0)
+                );
+            } catch (\RuntimeException $e) {
+                throw new Exception("🚫 This batch no longer fits its department's ration: " . $e->getMessage());
+            }
+
             $stmt = $db->prepare("
                 UPDATE disbursement_batches 
                 SET status = 'approved',
@@ -92,10 +190,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $updated = $stmt->fetch(PDO::FETCH_ASSOC);
             
             if ($updated) {
-                $batch = $updated;
+                $batch = array_merge($batch, $updated);
                 $actionResult = "✅ Batch approved successfully!";
                 
-                // Log approval
                 $logStmt = $db->prepare("
                     INSERT INTO organization_audit_logs
                     (organization_id, user_id, action, entity_type, entity_id, new_values, ip_address, user_agent, created_at)
@@ -134,10 +231,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $updated = $stmt->fetch(PDO::FETCH_ASSOC);
             
             if ($updated) {
-                $batch = $updated;
+                $batch = array_merge($batch, $updated);
                 $actionResult = "❌ Batch rejected.";
                 
-                // Log rejection
                 $logStmt = $db->prepare("
                     INSERT INTO organization_audit_logs
                     (organization_id, user_id, action, entity_type, entity_id, new_values, ip_address, user_agent, created_at)
@@ -156,6 +252,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             
         } elseif ($action === 'submit' && $canSubmit) {
+            // Same ration check as review_batch.php's submit_for_approval.
+            if (empty($batch['department_id'])) {
+                throw new Exception("This batch has no department assigned, so its budget ration can't be checked. Contact an admin before submitting.");
+            }
+            try {
+                $deptService->assertBatchFitsRation(
+                    (int)$batch['department_id'],
+                    (float)($batch['total_amount'] ?? 0)
+                );
+            } catch (\RuntimeException $e) {
+                throw new Exception("🚫 " . $e->getMessage());
+            }
+
             $stmt = $db->prepare("
                 UPDATE disbursement_batches 
                 SET status = 'pending_approval',
@@ -169,14 +278,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $updated = $stmt->fetch(PDO::FETCH_ASSOC);
             
             if ($updated) {
-                $batch = $updated;
+                $batch = array_merge($batch, $updated);
                 $actionResult = "📤 Batch submitted for approval.";
             } else {
                 throw new Exception("Batch may have been already submitted.");
             }
+        } elseif ($action === 'execute') {
+            // Deliberately not handled here — see file header. Anyone
+            // POSTing this directly gets an explicit message instead of
+            // the old silent no-op.
+            throw new Exception("Execution isn't performed from this page. Go to the Review page to execute — it has the duplicate-prevention and resume safety checks a disbursement needs.");
         }
     } catch (Exception $e) {
         $actionError = $e->getMessage();
+    }
+
+    // Refresh ration info since an approve/submit above may have changed it.
+    if (!empty($batch['department_id'])) {
+        try {
+            $rationInfo = $deptService->getAvailableRation((int)$batch['department_id']);
+        } catch (\Throwable $e) {
+            error_log("[batches/view] Failed to refresh ration info: " . $e->getMessage());
+        }
     }
 }
 
@@ -192,7 +315,10 @@ $statusClass = match(strtolower($batch['status'] ?? 'draft')) {
     'draft' => 'draft',
     'pending_approval' => 'pending_approval',
     'approved' => 'approved',
+    'executing' => 'pending_approval',
     'completed', 'executed' => 'completed',
+    'partial_success' => 'pending_approval',
+    'failed' => 'rejected',
     'rejected' => 'rejected',
     default => 'draft'
 };
@@ -223,6 +349,7 @@ $statusClass = match(strtolower($batch['status'] ?? 'draft')) {
             --green-tint:   #E5EEE7;
             --blue-tint:    #E7EEF4;
             --warning-bg:   #FEF3C7;
+            --danger:       #b3261e;
             --danger-bg:    #FBEceb;
             --f-body: 'IBM Plex Sans', sans-serif;
             --f-cond: 'IBM Plex Sans Condensed', sans-serif;
@@ -294,6 +421,16 @@ $statusClass = match(strtolower($batch['status'] ?? 'draft')) {
         .detail-item { padding:6px 0; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; }
         .detail-item .label { color:var(--ink-500); font-weight:500; font-size:13px; }
         .detail-item .value { font-weight:600; font-size:13px; }
+        .currency-note {
+            font-size:12px; color:var(--ink-500); margin-top:10px; padding-top:10px;
+            border-top:1px dashed var(--line);
+        }
+        .currency-note strong { color:var(--ink-900); }
+        .fx-flag {
+            display:inline-block; margin-left:6px; padding:1px 7px; font-size:10px;
+            background:var(--warning-bg); color:var(--amber); font-family:var(--f-cond);
+            font-weight:700; letter-spacing:.03em;
+        }
         .status-badge {
             padding:4px 14px; font-size:11px; font-weight:600; text-transform:uppercase;
             font-family:var(--f-cond); letter-spacing:.04em; display:inline-block;
@@ -303,6 +440,17 @@ $statusClass = match(strtolower($batch['status'] ?? 'draft')) {
         .status-badge.approved { background:var(--blue-tint); color:#1e40af; }
         .status-badge.completed { background:var(--green-tint); color:var(--ledger-green); }
         .status-badge.rejected { background:var(--danger-bg); color:var(--danger); }
+        .ration-panel { margin-top:14px; padding-top:14px; border-top:1px solid var(--line); }
+        .ration-panel .ration-title {
+            font-family: var(--f-cond); font-size: 12px; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 0.05em; color: var(--ink-500); margin-bottom: 10px;
+        }
+        .ration-bar-track { height: 8px; background: var(--paper); border: 1px solid var(--line); margin-bottom: 10px; }
+        .ration-bar-fill { height: 100%; }
+        .ration-stats { display: flex; gap: 20px; flex-wrap: wrap; font-size: 12.5px; color: var(--ink-500); }
+        .ration-stats strong { color: var(--ink-900); }
+        .ration-stats .danger strong { color: var(--danger); }
+        .ration-stats .ok strong { color: var(--ledger-green); }
         .table-responsive { overflow-x:auto; }
         table { width:100%; border-collapse:collapse; font-size:13px; }
         th {
@@ -323,12 +471,12 @@ $statusClass = match(strtolower($batch['status'] ?? 'draft')) {
         .status-badge-sm.pending { background:#fef3c7; color:var(--amber); }
         .status-badge-sm.completed { background:var(--green-tint); color:var(--ledger-green); }
         .actions-bar {
-            display:flex; gap:12px; flex-wrap:wrap; margin-top:12px;
+            display:flex; gap:12px; flex-wrap:wrap; margin-top:12px; align-items:center;
         }
         .btn {
             padding:8px 22px; border:none; font-weight:600; font-size:12px;
             cursor:pointer; transition:all 0.15s; font-family:var(--f-cond);
-            text-transform:uppercase; letter-spacing:.04em;
+            text-transform:uppercase; letter-spacing:.04em; text-decoration:none; display:inline-flex; align-items:center;
         }
         .btn:hover { opacity:0.85; }
         .btn-success { background:var(--ledger-green); color:#fff; }
@@ -356,8 +504,8 @@ $statusClass = match(strtolower($batch['status'] ?? 'draft')) {
         .approver-notice .icon { font-size:20px; flex-shrink:0; }
         .approver-notice .content { flex:1; }
         .approver-notice .content strong { color:var(--amber); font-family:var(--f-cond); }
-        .btn-approver-locked { background:#fef3c7; color:var(--amber); border:1px solid #f59e0b; padding:8px 22px; font-weight:600; font-size:12px; cursor:not-allowed; font-family:var(--f-cond); text-transform:uppercase; letter-spacing:.04em; opacity:0.7; }
-        @media (max-width:768px) { .grid-2, .grid-3 { grid-template-columns:1fr; } .masthead { flex-direction:column; text-align:center; } .stage { padding:16px; } .card { padding:16px; } .actions-bar { flex-direction:column; } .btn { width:100%; text-align:center; } }
+        .info-notice { background:var(--blue-tint); border-left:4px solid #3b82f6; padding:12px 16px; margin-bottom:0; font-size:13px; color:#1e40af; }
+        @media (max-width:768px) { .grid-2, .grid-3 { grid-template-columns:1fr; } .masthead { flex-direction:column; text-align:center; } .stage { padding:16px; } .card { padding:16px; } .actions-bar { flex-direction:column; align-items:stretch; } .btn { width:100%; text-align:center; justify-content:center; } }
         @media (prefers-color-scheme:dark) {
             :root { --paper:#1B2733; --panel:#1B2733; --ink-900:#ECEFF2; --ink-700:#D5DCE0; --ink-500:#93A2AC; --ink-300:#6B7A85; --line:#2C3A45; }
             .masthead { background:#0d1a26; }
@@ -383,7 +531,7 @@ $statusClass = match(strtolower($batch['status'] ?? 'draft')) {
         </div>
         <div>
             <span style="color:var(--ink-300); font-size:12px; margin-right:12px;">
-                <?php echo htmlspecialchars($user['full_name'] ?? 'User'); ?>
+                <?php echo safeHtmlView($user['full_name'] ?? 'User'); ?>
             </span>
             <a href="../../logout.php" class="logout-link">Sign Out</a>
         </div>
@@ -393,13 +541,12 @@ $statusClass = match(strtolower($batch['status'] ?? 'draft')) {
         <a href="index.php" class="back-link">← All Batches</a>
 
         <?php if ($actionResult): ?>
-        <div class="success-msg"><?php echo htmlspecialchars($actionResult); ?></div>
+        <div class="success-msg"><?php echo safeHtmlView($actionResult); ?></div>
         <?php endif; ?>
         <?php if ($actionError): ?>
-        <div class="error-msg"><?php echo htmlspecialchars($actionError); ?></div>
+        <div class="error-msg"><?php echo $actionError; ?></div>
         <?php endif; ?>
 
-        <!-- Approver Notice -->
         <?php if ($isApprover && $batch['status'] === 'pending_approval'): ?>
         <div class="approver-notice">
             <span class="icon">🔑</span>
@@ -413,8 +560,8 @@ $statusClass = match(strtolower($batch['status'] ?? 'draft')) {
         <!-- Stats -->
         <div class="stats-grid">
             <div class="stat-card">
-                <div class="stat-value"><?php echo formatCurrency($batch['total_amount'] ?? 0); ?></div>
-                <div class="stat-label">Total Amount</div>
+                <div class="stat-value"><?php echo formatCurrency($batch['total_amount'] ?? 0, $batchCurrency); ?></div>
+                <div class="stat-label">Total Amount (Source Currency)</div>
             </div>
             <div class="stat-card">
                 <div class="stat-value"><?php echo $batch['total_destinations'] ?? 0; ?></div>
@@ -439,33 +586,59 @@ $statusClass = match(strtolower($batch['status'] ?? 'draft')) {
                 </span>
             </div>
             <div class="grid-2">
-                <div class="detail-item"><span class="label">Batch Reference</span><span class="value"><?php echo htmlspecialchars($batch['batch_reference']); ?></span></div>
-                <div class="detail-item"><span class="label">Batch Name</span><span class="value"><?php echo htmlspecialchars($batch['batch_name']); ?></span></div>
-                <div class="detail-item"><span class="label">Source Institution</span><span class="value"><?php echo htmlspecialchars($batch['source_institution']); ?></span></div>
-                <div class="detail-item"><span class="label">Source Identifier</span><span class="value"><?php echo htmlspecialchars($batch['source_identifier']); ?></span></div>
-                <div class="detail-item"><span class="label">Source Asset Type</span><span class="value"><?php echo htmlspecialchars($batch['source_asset_type'] ?? 'ACCOUNT'); ?></span></div>
-                <div class="detail-item"><span class="label">Currency</span><span class="value"><?php echo htmlspecialchars($batch['currency'] ?? 'BWP'); ?></span></div>
-                <div class="detail-item"><span class="label">Created By</span><span class="value"><?php echo htmlspecialchars($batch['created_by_name'] ?? 'N/A'); ?></span></div>
+                <div class="detail-item"><span class="label">Batch Reference</span><span class="value"><?php echo safeHtmlView($batch['batch_reference']); ?></span></div>
+                <div class="detail-item"><span class="label">Batch Name</span><span class="value"><?php echo safeHtmlView($batch['batch_name']); ?></span></div>
+                <div class="detail-item"><span class="label">Source Institution</span><span class="value"><?php echo safeHtmlView($batch['source_institution']); ?></span></div>
+                <div class="detail-item"><span class="label">Source Identifier</span><span class="value"><?php echo safeHtmlView($batch['source_identifier']); ?></span></div>
+                <div class="detail-item"><span class="label">Source Asset Type</span><span class="value"><?php echo safeHtmlView($batch['source_asset_type'] ?? 'ACCOUNT'); ?></span></div>
+                <div class="detail-item"><span class="label">Source Currency</span><span class="value"><?php echo $batchCurrency ? safeHtmlView($batchCurrency) : '<span style="color:var(--danger);">⚠ not set</span>'; ?></span></div>
+                <div class="detail-item"><span class="label">Created By</span><span class="value"><?php echo safeHtmlView($batch['created_by_name'] ?? 'N/A'); ?></span></div>
                 <div class="detail-item"><span class="label">Created At</span><span class="value"><?php echo date('Y-m-d H:i', strtotime($batch['created_at'])); ?></span></div>
+                <div class="detail-item"><span class="label">Department</span><span class="value"><?php echo $departmentInfo ? safeHtmlView($departmentInfo['name']) : '<span style="color:var(--danger);">Not assigned</span>'; ?></span></div>
                 <?php if ($batch['submitted_by_name']): ?>
-                <div class="detail-item"><span class="label">Submitted By</span><span class="value"><?php echo htmlspecialchars($batch['submitted_by_name']); ?></span></div>
+                <div class="detail-item"><span class="label">Submitted By</span><span class="value"><?php echo safeHtmlView($batch['submitted_by_name']); ?></span></div>
                 <div class="detail-item"><span class="label">Submitted At</span><span class="value"><?php echo date('Y-m-d H:i', strtotime($batch['submitted_at'])); ?></span></div>
                 <?php endif; ?>
                 <?php if ($batch['approved_by_name']): ?>
-                <div class="detail-item"><span class="label">Approved By</span><span class="value"><?php echo htmlspecialchars($batch['approved_by_name']); ?></span></div>
+                <div class="detail-item"><span class="label">Approved By</span><span class="value"><?php echo safeHtmlView($batch['approved_by_name']); ?></span></div>
                 <div class="detail-item"><span class="label">Approved At</span><span class="value"><?php echo date('Y-m-d H:i', strtotime($batch['approved_at'])); ?></span></div>
                 <?php endif; ?>
                 <?php if ($batch['executed_by_name']): ?>
-                <div class="detail-item"><span class="label">Executed By</span><span class="value"><?php echo htmlspecialchars($batch['executed_by_name']); ?></span></div>
+                <div class="detail-item"><span class="label">Executed By</span><span class="value"><?php echo safeHtmlView($batch['executed_by_name']); ?></span></div>
                 <div class="detail-item"><span class="label">Executed At</span><span class="value"><?php echo date('Y-m-d H:i', strtotime($batch['executed_at'])); ?></span></div>
                 <?php endif; ?>
                 <?php if ($batch['rejection_reason']): ?>
                 <div class="detail-item" style="grid-column:1/-1; background:var(--danger-bg); padding:12px; border:1px solid var(--danger);">
                     <span class="label" style="color:var(--danger);">Rejection Reason</span>
-                    <span class="value" style="color:var(--danger);"><?php echo htmlspecialchars($batch['rejection_reason']); ?></span>
+                    <span class="value" style="color:var(--danger);"><?php echo safeHtmlView($batch['rejection_reason']); ?></span>
                 </div>
                 <?php endif; ?>
             </div>
+
+            <div class="currency-note">
+                💱 <strong>Currency note:</strong> the amount above is in this batch's <strong>source institution's</strong> currency
+                — that's what your department's budget ration is checked against. Individual destinations may pay out in a
+                different currency; those are marked <span class="fx-flag">⇄ FX</span> in the table below.
+            </div>
+
+            <?php if ($rationInfo): ?>
+            <?php
+                $utilPct = $rationInfo['ceiling'] > 0
+                    ? min(100, round((($rationInfo['disbursed_ytd'] + $rationInfo['reserved_in_flight']) / $rationInfo['ceiling']) * 100, 1))
+                    : 0;
+                $barColor = $rationInfo['available'] < 0 ? 'var(--danger)' : ($utilPct >= 80 ? 'var(--amber)' : 'var(--ledger-green)');
+            ?>
+            <div class="ration-panel">
+                <div class="ration-title">💰 Department Ration<?php echo $departmentInfo ? ' — ' . safeHtmlView($departmentInfo['name']) : ''; ?></div>
+                <div class="ration-bar-track"><div class="ration-bar-fill" style="width:<?php echo $utilPct; ?>%; background:<?php echo $barColor; ?>;"></div></div>
+                <div class="ration-stats">
+                    <span>Ceiling: <strong><?php echo formatCurrency($rationInfo['ceiling'], $rationInfo['currency'] ?? $batchCurrency); ?></strong></span>
+                    <span>Disbursed YTD: <strong><?php echo formatCurrency($rationInfo['disbursed_ytd'], $rationInfo['currency'] ?? $batchCurrency); ?></strong></span>
+                    <span>Reserved: <strong><?php echo formatCurrency($rationInfo['reserved_in_flight'], $rationInfo['currency'] ?? $batchCurrency); ?></strong></span>
+                    <span class="<?php echo $rationInfo['available'] < 0 ? 'danger' : 'ok'; ?>">Available: <strong><?php echo formatCurrency($rationInfo['available'], $rationInfo['currency'] ?? $batchCurrency); ?></strong></span>
+                </div>
+            </div>
+            <?php endif; ?>
         </div>
 
         <!-- Destinations -->
@@ -489,31 +662,39 @@ $statusClass = match(strtolower($batch['status'] ?? 'draft')) {
                         </tr>
                     </thead>
                     <tbody>
-                        <?php foreach ($destinations as $dest): ?>
+                        <?php foreach ($destinations as $dest):
+                            $destCurrency = $dest['currency'] ?? null;
+                            $isFx = $batchCurrency && $destCurrency && $destCurrency !== $batchCurrency;
+                        ?>
                         <tr>
                             <td><?php echo $dest['destination_index']; ?></td>
-                            <td><?php echo htmlspecialchars($dest['beneficiary_name'] ?? 'N/A'); ?></td>
+                            <td><?php echo safeHtmlView($dest['beneficiary_name'] ?? 'N/A'); ?></td>
                             <td>
                                 <?php 
                                 if ($dest['is_identity_recipient'] ?? false) {
-                                    echo htmlspecialchars($dest['identity_type'] . ': ' . $dest['identity_value']);
+                                    echo safeHtmlView(($dest['identity_type'] ?? 'identity') . ': ' . ($dest['identity_value'] ?? ''));
                                 } else {
-                                    echo htmlspecialchars($dest['identifier']);
+                                    echo safeHtmlView($dest['identifier']);
                                 }
                                 ?>
                             </td>
-                            <td><span class="amt"><?php echo formatCurrency($dest['amount']); ?></span></td>
-                            <td><?php echo htmlspecialchars($dest['hold_reference'] ?? $dest['transaction_reference'] ?? '-'); ?></td>
+                            <td>
+                                <span class="amt"><?php echo formatCurrency($dest['amount'], $destCurrency); ?></span>
+                                <?php if ($isFx): ?>
+                                <span class="fx-flag" title="Paid in <?php echo safeHtmlView($destCurrency); ?>, drawn from a <?php echo safeHtmlView($batchCurrency); ?> source — forex applies.">⇄ FX</span>
+                                <?php endif; ?>
+                            </td>
+                            <td><?php echo safeHtmlView($dest['hold_reference'] ?? $dest['transaction_reference'] ?? '-'); ?></td>
                             <td>
                                 <?php 
-                                $status = strtolower($dest['status'] ?? 'pending');
-                                $statusClass = match($status) {
+                                $destStatus = strtolower($dest['status'] ?? 'pending');
+                                $destStatusClass = match($destStatus) {
                                     'success', 'completed' => 'success',
                                     'failed' => 'failed',
                                     default => 'pending'
                                 };
                                 ?>
-                                <span class="status-badge-sm <?php echo $statusClass; ?>"><?php echo strtoupper($dest['status'] ?? 'PENDING'); ?></span>
+                                <span class="status-badge-sm <?php echo $destStatusClass; ?>"><?php echo strtoupper($dest['status'] ?? 'PENDING'); ?></span>
                             </td>
                         </tr>
                         <?php endforeach; ?>
@@ -538,10 +719,9 @@ $statusClass = match(strtolower($batch['status'] ?? 'draft')) {
                 <span class="card-title">⚡ Actions</span>
             </div>
             <div class="actions-bar">
-                <!-- Submit for Approval -->
                 <?php if ($batch['status'] === 'draft' && $canSubmit): ?>
                 <form method="POST">
-                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
+                    <input type="hidden" name="csrf_token" value="<?php echo safeHtmlView($csrfToken); ?>">
                     <input type="hidden" name="action" value="submit">
                     <button type="submit" class="btn btn-primary" onclick="return confirm('Submit this batch for approval?')">
                         📤 Submit for Approval
@@ -549,21 +729,19 @@ $statusClass = match(strtolower($batch['status'] ?? 'draft')) {
                 </form>
                 <?php endif; ?>
 
-                <!-- Approve -->
                 <?php if ($batch['status'] === 'pending_approval' && $canApprove): ?>
                 <form method="POST" onsubmit="return confirm('Approve this batch?')">
-                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
+                    <input type="hidden" name="csrf_token" value="<?php echo safeHtmlView($csrfToken); ?>">
                     <input type="hidden" name="action" value="approve">
                     <button type="submit" class="btn btn-success">✅ Approve</button>
                 </form>
                 <?php endif; ?>
 
-                <!-- Reject -->
                 <?php if ($batch['status'] === 'pending_approval' && $canReject): ?>
                 <button class="btn btn-danger" onclick="toggleRejection()">❌ Reject</button>
                 <div class="rejection-form" id="rejectionForm">
                     <form method="POST">
-                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
+                        <input type="hidden" name="csrf_token" value="<?php echo safeHtmlView($csrfToken); ?>">
                         <input type="hidden" name="action" value="reject">
                         <div class="form-group">
                             <label>Rejection Reason</label>
@@ -575,23 +753,20 @@ $statusClass = match(strtolower($batch['status'] ?? 'draft')) {
                 </div>
                 <?php endif; ?>
 
-                <!-- Execute (Owner only) -->
+                <!-- Execute now links to the hardened flow instead of a local (previously broken) handler -->
                 <?php if ($batch['status'] === 'approved' && $canExecute): ?>
-                <form method="POST" onsubmit="return confirm('⚠️ EXECUTE DISBURSEMENT: This will move real funds. Continue?')">
-                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
-                    <input type="hidden" name="action" value="execute">
-                    <button type="submit" class="btn" style="background:var(--seal-red); color:#fff; font-weight:700; font-size:14px; padding:10px 32px;">
-                        🚀 Execute Disbursement
-                    </button>
-                </form>
+                <a href="../imports/review_batch.php?batch_id=<?php echo $batchId; ?>" class="btn" style="background:var(--seal-red); color:#fff; font-weight:700; font-size:14px; padding:10px 32px;">
+                    🚀 Go Execute Disbursement
+                </a>
+                <span style="font-size:12px; color:var(--ink-500);">Executed from the Review page, with duplicate-prevention and resume safety.</span>
+                <?php elseif (in_array($batch['status'], ['executing', 'partial_success', 'failed'])): ?>
+                <a href="../imports/review_batch.php?batch_id=<?php echo $batchId; ?>" class="btn btn-outline">🔍 View Execution Status / Resume</a>
                 <?php endif; ?>
 
-                <!-- Edit (Draft only) -->
                 <?php if ($batch['status'] === 'draft' && $canEdit): ?>
                 <a href="../imports/add_destinations.php?batch_id=<?php echo $batchId; ?>" class="btn btn-secondary">✏️ Edit Destinations</a>
                 <?php endif; ?>
 
-                <!-- Back -->
                 <a href="index.php" class="btn btn-outline">📋 All Batches</a>
             </div>
         </div>
