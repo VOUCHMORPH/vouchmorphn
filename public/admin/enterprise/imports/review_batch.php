@@ -1,4 +1,4 @@
-// enterprise/imports/review_batch.php - Review and approve batch
+<?php
 require_once '../auth.php';
 $user = requireEnterpriseAuth();
 require_once '../../../../src/Core/Database/DBConnection.php';
