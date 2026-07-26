@@ -1,79 +1,108 @@
 <?php
-// /var/www/html/public/admin/test_preview_debug.php
+require_once __DIR__ . '/../../src/Infrastructure/Crypto/CertificateManager.php';
 
-echo "=== PREVIEW DEBUG TEST ===\n\n";
+use Infrastructure\Crypto\CertificateManager;
 
-$apiKey = 'vouchmorph_live_1aB2cD3eF4gH5iJ6';
-$url = 'https://vouchmorphn-production.up.railway.app/api/v1/swap/preview.php';
-
+// Create a test payload identical to what's being sent
 $payload = [
-    'swap_type' => 'DEPOSIT',
-    'reference' => 'SWAP_DEBUG_' . time(),
-    'idempotency_key' => 'IDEMP_DEBUG_' . time(),
-    'user_id' => 1,
-    'from_institution' => 'SACCUSSALIS',
-    'source_institution' => 'SACCUSSALIS',
-    'asset_type' => 'ACCOUNT',
-    'amount' => 100,
+    '_skip_hold' => true,
+    'action' => 'PROCESS_DEPOSIT_WITH_PROOF',
+    'amount' => 494,
+    'asset_type' => 'WALLET',
     'currency' => 'BWP',
-    'asset_fields' => ['account_number' => '10000001'],
-    'account_number' => '10000001',
-    'source_identifier' => '10000001',
-    'source_identifier_type' => 'account_number',
-    'to_institution' => 'SACCUSSALIS',
-    'destination_institution' => 'SACCUSSALIS',
     'destination_asset_type' => 'WALLET',
-    'destination_currency' => 'BWP',
-    'destination_asset_fields' => ['phone' => '+26770000000'],
-    'destination_phone' => '+26770000000',
-    'destination_identifier' => '+26770000000',
-    'destination_identifier_type' => 'phone'
+    'destination_identifier' => '10000002',
+    'destination_identifier_type' => 'account',
+    'destination_institution' => 'ZURUBANK',
+    'from_institution' => 'SACCUSSALIS',
+    'hold_reference' => 'MIXED_SWAP_1785052432_DEST_0',
+    'phone' => '10000002',
+    'reference' => 'MIXED_SWAP_1785052432_DEST_0',
+    'source_hold' => null,
+    'source_institution' => 'SACCUSSALIS',
+    'source_verification' => [
+        'payload' => [
+            'action' => 'VERIFY_ASSET',
+            'reference' => 'MIXED_SWAP_1785052432',
+            'asset_type' => 'ACCOUNT',
+            'amount' => 2000,
+            'currency' => 'BWP',
+            'institution' => 'SACCUSSALIS',
+            'timestamp' => 1785052434,
+            'swap_type' => 'MULTI_DESTINATION',
+            'requester' => 'VOUCHMORPH',
+            'from_institution' => 'SACCUSSALIS',
+            'source_institution' => 'SACCUSSALIS',
+            'source_identifier' => '10000001',
+            'source_identifier_type' => 'account'
+        ],
+        'signature' => null,
+        'source' => 'SACCUSSALIS',
+        'timestamp' => 1785052434
+    ],
+    'timestamp' => 1785052434,
+    'to_institution' => 'ZURUBANK',
+    'wallet_phone' => '10000002'
 ];
 
-echo "1. PAYLOAD:\n";
-echo json_encode($payload, JSON_PRETTY_PRINT) . "\n\n";
+$certManager = new CertificateManager('VOUCHMORPH');
 
-echo "2. SENDING REQUEST...\n";
+// Step 1: Show what VouchMorph signs
+$payloadWithTimestamp = array_merge($payload, ['timestamp' => time()]);
+ksort($payloadWithTimestamp);
+$jsonToSign = json_encode($payloadWithTimestamp, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
-$ch = curl_init($url);
-curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-curl_setopt($ch, CURLOPT_POST, true);
-curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
-curl_setopt($ch, CURLOPT_HTTPHEADER, [
-    'Content-Type: application/json',
-    'X-API-Key: ' . $apiKey,
-    'X-Country-Code: Botswana'
-]);
-curl_setopt($ch, CURLOPT_TIMEOUT, 30);
-curl_setopt($ch, CURLOPT_VERBOSE, true);
+echo "=== WHAT VOUCHMORPH SIGNS ===\n";
+echo "JSON: " . $jsonToSign . "\n\n";
+echo "JSON length: " . strlen($jsonToSign) . "\n";
+echo "JSON MD5: " . md5($jsonToSign) . "\n\n";
 
-$response = curl_exec($ch);
-$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-$curlError = curl_error($ch);
-$info = curl_getinfo($ch);
-curl_close($ch);
+// Step 2: Create signed request
+$signed = $certManager->createSignedRequest($payload, 'VOUCHMORPH');
 
-echo "3. RESPONSE:\n";
-echo "HTTP Code: " . $httpCode . "\n";
-echo "CURL Error: " . ($curlError ?: 'None') . "\n";
-echo "Response: " . ($response ?: '(empty)') . "\n\n";
+// Step 3: Show what's being sent
+echo "=== WHAT'S BEING SENT ===\n";
+$sentPayload = $signed;
+unset($sentPayload['signature']);
+unset($sentPayload['certificate']);
+ksort($sentPayload);
+$sentJson = json_encode($sentPayload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
-if ($response) {
-    $decoded = json_decode($response, true);
-    if ($decoded) {
-        echo "4. DECODED RESPONSE:\n";
-        echo json_encode($decoded, JSON_PRETTY_PRINT) . "\n";
-        
-        if (isset($decoded['success']) && $decoded['success'] === true) {
-            echo "\n✅ PREVIEW SUCCESSFUL!\n";
-        } else {
-            echo "\n❌ PREVIEW FAILED!\n";
-            echo "Error: " . ($decoded['error'] ?? 'Unknown error') . "\n";
-        }
-    } else {
-        echo "4. RESPONSE IS NOT VALID JSON\n";
-        echo "Raw response: " . substr($response, 0, 500) . "\n";
-    }
+echo "JSON: " . $sentJson . "\n\n";
+echo "JSON length: " . strlen($sentJson) . "\n";
+echo "JSON MD5: " . md5($sentJson) . "\n\n";
+
+// Step 4: Verify the signature locally
+$verifyResult = $certManager->verifySignedRequest($signed);
+
+echo "=== VERIFICATION RESULT ===\n";
+echo "Verified: " . ($verifyResult['verified'] ? "✅ YES" : "❌ NO") . "\n";
+echo "Message: " . ($verifyResult['message'] ?? 'N/A') . "\n";
+
+// Step 5: Debug - try with and without requester
+$testPayloads = [
+    'with_requester' => $sentPayload,
+    'without_requester' => array_diff_key($sentPayload, ['requester' => null])
+];
+
+foreach ($testPayloads as $name => $testPayload) {
+    ksort($testPayload);
+    $testJson = json_encode($testPayload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    $decodedSig = base64_decode($signed['signature']);
+    
+    // Extract public key
+    $cert = $signed['certificate'];
+    $tempCert = tempnam(sys_get_temp_dir(), 'cert_');
+    file_put_contents($tempCert, $cert);
+    $cmd = "openssl x509 -in " . escapeshellarg($tempCert) . " -pubkey -noout 2>&1";
+    $publicKey = shell_exec($cmd);
+    unlink($tempCert);
+    
+    $keyResource = openssl_pkey_get_public($publicKey);
+    $result = openssl_verify($testJson, $decodedSig, $keyResource, OPENSSL_ALGO_SHA256);
+    
+    echo "\n--- Test: $name ---\n";
+    echo "JSON: $testJson\n";
+    echo "Result: " . ($result === 1 ? "VALID ✅" : "INVALID ❌") . " (result: $result)\n";
 }
 
-echo "\n=== DEBUG COMPLETE ===\n";
