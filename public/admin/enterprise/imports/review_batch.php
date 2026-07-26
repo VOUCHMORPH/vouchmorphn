@@ -10,9 +10,11 @@ use Core\Database\DBConnection;
 // ============================================================
 require_once '../../../../vendor/autoload.php';
 require_once '../../../../src/Domain/Services/SwapService.php';
+require_once '../../../../src/Domain/Services/DepartmentService.php';
 require_once '../../../../src/Core/Config/LoadCountry.php';
 
 use Domain\Services\SwapService;
+use Domain\Services\DepartmentService;
 use Core\Config\LoadCountry;
 
 $db = DBConnection::getConnection();
@@ -33,6 +35,14 @@ function canEditBatch($batchCreatedBy, $currentUserId, $userRole) {
         return $batchCreatedBy == $currentUserId;
     }
     return false;
+}
+
+function safeHtmlRb($value) {
+    return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
+}
+
+function formatCurrency($amount, $currency = 'BWP') {
+    return number_format((float)$amount, 2) . ' ' . $currency;
 }
 
 // ============================================================
@@ -105,6 +115,29 @@ if ($isApprover) {
 }
 
 // ============================================================
+// DEPARTMENT / RATION CONTEXT
+// ============================================================
+// Loaded for two purposes: (1) enforce the ration check when
+// submit_for_approval / approve fire below, (2) show the department's
+// live ration status on the summary card so a submitter can see BEFORE
+// hitting submit whether this batch fits.
+$deptService = new DepartmentService($db);
+$departmentInfo = null;
+$rationInfo = null;
+
+if (!empty($batch['department_id'])) {
+    try {
+        $stmt = $db->prepare("SELECT id, name, code FROM departments WHERE id = :id");
+        $stmt->execute([':id' => $batch['department_id']]);
+        $departmentInfo = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        $rationInfo = $deptService->getAvailableRation((int)$batch['department_id']);
+    } catch (\Throwable $e) {
+        error_log("[review_batch] Failed to load department/ration info: " . $e->getMessage());
+    }
+}
+
+// ============================================================
 // GET DESTINATIONS
 // ============================================================
 $destinations = [];
@@ -123,6 +156,7 @@ error_log("=== REVIEW_BATCH DEBUG: RAW DATA ===");
 error_log("Batch ID: " . $batchId);
 error_log("Batch Reference: " . ($batch['batch_reference'] ?? 'NULL'));
 error_log("Source Institution: " . ($batch['source_institution'] ?? 'NULL'));
+error_log("Department ID: " . ($batch['department_id'] ?? 'NULL'));
 error_log("Destinations Count: " . count($destinations));
 error_log("User Role: " . $role);
 error_log("Can Execute: " . ($canExecute ? 'YES' : 'NO'));
@@ -149,30 +183,76 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $error = "You cannot modify this batch. It was created by another user.";
     } else {
         if ($action === 'submit_for_approval') {
-            $stmt = $db->prepare("
-                UPDATE disbursement_batches 
-                SET status = 'pending_approval',
-                    submitted_by = :user_id,
-                    submitted_at = NOW(),
-                    updated_at = NOW()
-                WHERE id = :id AND LOWER(status) = 'draft'
-            ");
-            $stmt->execute([':user_id' => $userId, ':id' => $batchId]);
-            $success = "Batch submitted for approval.";
-            $batch['status'] = 'pending_approval';
+            // ============================================================
+            // RATION CHECK — gates the draft -> pending_approval transition.
+            // A batch that would blow its department's remaining ration
+            // never gets submitted; the submitter sees exactly why (ceiling,
+            // disbursed, reserved, shortfall) and a link to request a borrow
+            // instead of a silent failure or a rejection three steps later.
+            // ============================================================
+            if (empty($batch['department_id'])) {
+                $error = "This batch has no department assigned, so its budget ration can't be checked. Contact an admin before submitting.";
+            } else {
+                try {
+                    $deptService->assertBatchFitsRation(
+                        (int)$batch['department_id'],
+                        (float)($batch['total_amount'] ?? 0)
+                    );
+                } catch (\RuntimeException $e) {
+                    $error = "🚫 " . $e->getMessage()
+                        . ' <a href="../departments/index.php" style="color:var(--brass); font-weight:600;">Request a ration borrow →</a>';
+                }
+            }
+
+            if (!$error) {
+                $stmt = $db->prepare("
+                    UPDATE disbursement_batches 
+                    SET status = 'pending_approval',
+                        submitted_by = :user_id,
+                        submitted_at = NOW(),
+                        updated_at = NOW()
+                    WHERE id = :id AND LOWER(status) = 'draft'
+                ");
+                $stmt->execute([':user_id' => $userId, ':id' => $batchId]);
+                $success = "Batch submitted for approval.";
+                $batch['status'] = 'pending_approval';
+            }
             
         } elseif ($action === 'approve') {
-            $stmt = $db->prepare("
-                UPDATE disbursement_batches 
-                SET status = 'approved',
-                    approved_by = :user_id,
-                    approved_at = NOW(),
-                    updated_at = NOW()
-                WHERE id = :id AND LOWER(status) = 'pending_approval'
-            ");
-            $stmt->execute([':user_id' => $userId, ':id' => $batchId]);
-            $success = "Batch approved.";
-            $batch['status'] = 'approved';
+            // ============================================================
+            // RATION RE-CHECK at approval time too. Ration is live (other
+            // batches for the same department may have been approved,
+            // disbursed, or a borrow may have been rejected since this
+            // batch was submitted), so re-verify rather than trusting the
+            // check that ran at submit time.
+            // ============================================================
+            if (empty($batch['department_id'])) {
+                $error = "This batch has no department assigned — cannot verify budget ration before approving.";
+            } else {
+                try {
+                    $deptService->assertBatchFitsRation(
+                        (int)$batch['department_id'],
+                        (float)($batch['total_amount'] ?? 0)
+                    );
+                } catch (\RuntimeException $e) {
+                    $error = "🚫 This batch no longer fits its department's ration: " . $e->getMessage()
+                        . ' <a href="../departments/index.php" style="color:var(--brass); font-weight:600;">Review ration →</a>';
+                }
+            }
+
+            if (!$error) {
+                $stmt = $db->prepare("
+                    UPDATE disbursement_batches 
+                    SET status = 'approved',
+                        approved_by = :user_id,
+                        approved_at = NOW(),
+                        updated_at = NOW()
+                    WHERE id = :id AND LOWER(status) = 'pending_approval'
+                ");
+                $stmt->execute([':user_id' => $userId, ':id' => $batchId]);
+                $success = "Batch approved.";
+                $batch['status'] = 'approved';
+            }
             
         } elseif ($action === 'reject') {
             $reason = $_POST['rejection_reason'] ?? 'No reason provided';
@@ -426,6 +506,51 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ':is_terminal' => $isTerminal ? 't' : 'f',
                     ':id' => $batchId
                 ]);
+
+                // ============================================================
+                // Ration bookkeeping: amount_disbursed_ytd only reflects
+                // amounts that actually moved. Only the successfully-executed
+                // portion of this batch counts toward it — failed/pending
+                // destinations were never disbursed and must not be added.
+                // This is what "frees up" the reserved-in-flight amount that
+                // was counted against the department at submit/approve time
+                // (once amount_disbursed_ytd goes up, the batch is no longer
+                // in 'approved' status so it stops counting toward
+                // reserved_in_flight — the two never double-count).
+                // ============================================================
+                if (!empty($batch['department_id']) && $overallSuccess > 0) {
+                    try {
+                        $successfulAmount = 0.0;
+                        foreach ($allResults as $resultEntry) {
+                            if (($resultEntry['type'] ?? '') === 'multi_destination') {
+                                foreach ($resultEntry['result']['destinations'] ?? [] as $idx => $destResult) {
+                                    $st = $destResult['status'] ?? '';
+                                    if ($st === 'SUCCESS' || $st === 'COMPLETED') {
+                                        $origDest = $institutionDestinations[$idx] ?? null;
+                                        if ($origDest) {
+                                            $successfulAmount += (float)$origDest['amount'];
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if ($successfulAmount > 0) {
+                            $stmt = $db->prepare("
+                                UPDATE departments
+                                SET amount_disbursed_ytd = amount_disbursed_ytd + :amt, updated_at = NOW()
+                                WHERE id = :id
+                            ");
+                            $stmt->execute([':amt' => $successfulAmount, ':id' => $batch['department_id']]);
+                            error_log("[review_batch] Department {$batch['department_id']} amount_disbursed_ytd increased by {$successfulAmount}");
+                        }
+                    } catch (\Throwable $e) {
+                        // Non-fatal: the actual disbursement already happened via
+                        // SwapService and that result is authoritative. A missed
+                        // ration bookkeeping update here should never be allowed
+                        // to look like the disbursement itself failed.
+                        error_log("[review_batch] Failed to update department amount_disbursed_ytd: " . $e->getMessage());
+                    }
+                }
                 
                 if ($finalStatus === 'completed') {
                     $success = "✅ All $overallSuccess destinations paid successfully!";
@@ -472,6 +597,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 
                 $error = "❌ Execution failed: " . $e->getMessage();
             }
+        }
+    }
+
+    // Ration figures may have changed as a result of the action just taken
+    // (submit/approve reserve ration by keeping the batch counted in
+    // 'reserved_in_flight', execute converts reserved into disbursed) —
+    // refresh before rendering so the summary card shows current numbers,
+    // not the pre-action snapshot loaded above.
+    if (!empty($batch['department_id'])) {
+        try {
+            $rationInfo = $deptService->getAvailableRation((int)$batch['department_id']);
+        } catch (\Throwable $e) {
+            error_log("[review_batch] Failed to refresh ration info: " . $e->getMessage());
         }
     }
 }
@@ -709,6 +847,30 @@ $showExecuteButton = ($status === 'approved' && $canExecute && !$isApprover);
             grid-template-columns: 1fr 1fr 1fr;
             gap: 16px;
         }
+
+        /* ============================================================
+           RATION PANEL
+           ============================================================ */
+        .ration-panel {
+            margin-top: 14px;
+            padding-top: 14px;
+            border-top: 1px solid var(--line);
+        }
+        .ration-panel .ration-title {
+            font-family: var(--f-cond);
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--ink-500);
+            margin-bottom: 10px;
+        }
+        .ration-bar-track { height: 8px; background: var(--paper); border: 1px solid var(--line); margin-bottom: 10px; }
+        .ration-bar-fill { height: 100%; }
+        .ration-stats { display: flex; gap: 20px; flex-wrap: wrap; font-size: 12.5px; color: var(--ink-500); }
+        .ration-stats strong { color: var(--ink-900); }
+        .ration-stats .danger strong { color: var(--danger); }
+        .ration-stats .ok strong { color: var(--ledger-green); }
 
         /* ============================================================
            TABLE
@@ -1082,6 +1244,7 @@ $showExecuteButton = ($status === 'approved' && $canExecute && !$isApprover);
                 <div><strong>Total Amount:</strong> <?php echo number_format($batch['total_amount'] ?? 0, 2); ?> <?php echo htmlspecialchars($batch['currency'] ?? 'BWP'); ?></div>
                 <div><strong>Total Destinations:</strong> <?php echo $batch['total_destinations'] ?? 0; ?></div>
                 <div><strong>Created By:</strong> <?php echo htmlspecialchars($batch['created_by_name'] ?? 'N/A'); ?></div>
+                <div><strong>Department:</strong> <?php echo $departmentInfo ? htmlspecialchars($departmentInfo['name']) : '<span style="color:var(--danger);">Not assigned</span>'; ?></div>
             </div>
             
             <?php if ($batch['submitted_at']): ?>
@@ -1119,6 +1282,39 @@ $showExecuteButton = ($status === 'approved' && $canExecute && !$isApprover);
                     <div><strong style="color:var(--danger);">❌ Failed:</strong> <?php echo $batch['failed_count'] ?? 0; ?></div>
                     <div><strong style="color:var(--amber);">⏳ Pending:</strong> <?php echo $batch['pending_count'] ?? 0; ?></div>
                 </div>
+            </div>
+            <?php endif; ?>
+
+            <!-- ============================================================
+                 RATION PANEL — live department budget status for this batch.
+                 Shown to everyone who can see the batch; only submitters and
+                 approvers act on it, but visibility helps everyone understand
+                 why a submit/approve might get blocked.
+                 ============================================================ -->
+            <?php if ($rationInfo): ?>
+            <?php
+                $utilPct = $rationInfo['ceiling'] > 0
+                    ? min(100, round((($rationInfo['disbursed_ytd'] + $rationInfo['reserved_in_flight']) / $rationInfo['ceiling']) * 100, 1))
+                    : 0;
+                $barColor = $rationInfo['available'] < 0 ? 'var(--danger)' : ($utilPct >= 80 ? 'var(--amber)' : 'var(--ledger-green)');
+                $thisBatchFits = (float)($batch['total_amount'] ?? 0) <= $rationInfo['available'] || in_array($status, ['approved', 'completed', 'executed', 'partial_success']);
+            ?>
+            <div class="ration-panel">
+                <div class="ration-title">💰 Department Ration<?php echo $departmentInfo ? ' — ' . safeHtmlRb($departmentInfo['name']) : ''; ?></div>
+                <div class="ration-bar-track"><div class="ration-bar-fill" style="width:<?php echo $utilPct; ?>%; background:<?php echo $barColor; ?>;"></div></div>
+                <div class="ration-stats">
+                    <span>Ceiling: <strong><?php echo formatCurrency($rationInfo['ceiling'], $rationInfo['currency']); ?></strong></span>
+                    <span>Disbursed YTD: <strong><?php echo formatCurrency($rationInfo['disbursed_ytd'], $rationInfo['currency']); ?></strong></span>
+                    <span>Reserved (pending/approved batches): <strong><?php echo formatCurrency($rationInfo['reserved_in_flight'], $rationInfo['currency']); ?></strong></span>
+                    <span class="<?php echo $rationInfo['available'] < 0 ? 'danger' : 'ok'; ?>">Available: <strong><?php echo formatCurrency($rationInfo['available'], $rationInfo['currency']); ?></strong></span>
+                </div>
+                <?php if (!$thisBatchFits): ?>
+                <div style="margin-top:10px; font-size:12.5px; color:var(--danger);">
+                    ⚠️ This batch's total (<?php echo formatCurrency($batch['total_amount'] ?? 0, $rationInfo['currency']); ?>) exceeds available ration.
+                    Submitting will be blocked until the department borrows more ration or the batch is reduced.
+                    <a href="../departments/index.php" style="color:var(--brass); font-weight:600;">Go to Departments →</a>
+                </div>
+                <?php endif; ?>
             </div>
             <?php endif; ?>
         </div>
