@@ -74,7 +74,7 @@ class UserManagementService
             'description' => 'Heads exactly one department. Can request new sub-departments and ration borrows on that department\'s behalf (both still need approval from a top role or Finance) and can build/submit batches against its budget. Assigning this role also sets that department\'s official head.',
         ],
         'program_officer' => [
-            'label' => 'Program Officer',
+            'label' => 'Uploader',
             'category' => 'Field / Operational',
             'department_mode' => 'required_exact',
             'description' => 'Builds and submits disbursement batches against one specific department\'s ration. Exact match only — never sees a parent or sibling department\'s batches, even if this department is nested under one.',
