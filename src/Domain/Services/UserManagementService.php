@@ -177,7 +177,7 @@ class UserManagementService
     {
         $stmt = $this->db->prepare("
             SELECT COUNT(*) FROM organization_users
-            WHERE organization_id = :org_id AND role = 'owner' AND is_active = true AND id <> :uid
+            WHERE organization_id = :org_id AND role = 'owner' AND is_active = true AND user_id <> :uid
         ");
         $stmt->execute([':org_id' => $organizationId, ':uid' => $excludeUserId]);
         if ((int)$stmt->fetchColumn() === 0) {
@@ -194,13 +194,14 @@ class UserManagementService
      */
     private function assignAsDepartmentHead(int $departmentId, int $userId): void
     {
-        $stmt = $this->db->prepare("SELECT head_user_id FROM departments WHERE id = :id FOR UPDATE");
+        $stmt = $this->db->prepare("SELECT head_user_id, organization_id FROM departments WHERE id = :id FOR UPDATE");
         $stmt->execute([':id' => $departmentId]);
-        $current = $stmt->fetchColumn();
+        $dept = $stmt->fetch(PDO::FETCH_ASSOC);
+        $current = $dept['head_user_id'] ?? null;
 
-        if ($current !== false && $current !== null && (int)$current !== $userId) {
-            $chk = $this->db->prepare("SELECT is_active FROM organization_users WHERE id = :uid");
-            $chk->execute([':uid' => $current]);
+        if ($current !== null && (int)$current !== $userId) {
+            $chk = $this->db->prepare("SELECT is_active FROM organization_users WHERE user_id = :uid AND organization_id = :org_id");
+            $chk->execute([':uid' => $current, ':org_id' => $dept['organization_id']]);
             if ((bool)$chk->fetchColumn()) {
                 throw new RuntimeException("This department already has an active head. Deactivate or reassign the current head first.");
             }
@@ -295,7 +296,7 @@ class UserManagementService
     public function listUsers(int $organizationId): array
     {
         $stmt = $this->db->prepare("
-            SELECT u.id AS user_id, u.full_name, u.email, u.role, u.department_id, u.is_active,
+            SELECT u.user_id, u.full_name, u.email, u.role, u.department_id, u.is_active,
                    u.must_change_password, u.created_at, u.deactivated_at,
                    d.name AS department_name
             FROM organization_users u
@@ -313,7 +314,7 @@ class UserManagementService
             SELECT u.*, d.name AS department_name
             FROM organization_users u
             LEFT JOIN departments d ON d.id = u.department_id
-            WHERE u.id = :uid AND u.organization_id = :org_id
+            WHERE u.user_id = :uid AND u.organization_id = :org_id
         ");
         $stmt->execute([':uid' => $userId, ':org_id' => $organizationId]);
         return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
@@ -400,19 +401,20 @@ class UserManagementService
                 ':created_by' => $createdBy,
             ]);
             // organization_users.id — the membership row's own primary
-            // key, which is what every other piece of enterprise code
-            // (created_by/approved_by/head_user_id, the session's
-            // $user['id'], department scoping, etc.) actually means by
-            // "this person's id." Deliberately NOT the same value as
-            // $globalUserId above.
-            $newUserId = (int)$stmt->fetchColumn();
+            // key. Confirmed against the real login.php: session identity
+            // (and therefore created_by/approved_by/head_user_id/etc.
+            // throughout the rest of the app) is actually the GLOBAL
+            // $globalUserId (users.user_id), not this value. This id is
+            // kept only as 'org_user_id' below for anything that
+            // genuinely needs the membership row itself.
+            $orgUserRowId = (int)$stmt->fetchColumn();
 
             if ($role === 'department_head' && $departmentId !== null) {
-                $this->assignAsDepartmentHead($departmentId, $newUserId);
+                $this->assignAsDepartmentHead($departmentId, $globalUserId);
             }
 
             $this->db->commit();
-            return ['user_id' => $newUserId, 'temp_password' => $tempPassword];
+            return ['user_id' => $globalUserId, 'org_user_id' => $orgUserRowId, 'temp_password' => $tempPassword];
         } catch (\Throwable $e) {
             $this->db->rollBack();
             throw $e;
@@ -431,7 +433,7 @@ class UserManagementService
         $this->assertValidRole($newRole);
         $departmentId = $this->normalizeDepartmentForRole($newRole, $departmentId);
 
-        $stmt = $this->db->prepare("SELECT role FROM organization_users WHERE id = :uid AND organization_id = :org_id");
+        $stmt = $this->db->prepare("SELECT role FROM organization_users WHERE user_id = :uid AND organization_id = :org_id");
         $stmt->execute([':uid' => $targetUserId, ':org_id' => $organizationId]);
         $existing = $stmt->fetch(PDO::FETCH_ASSOC);
         if (!$existing) {
@@ -447,7 +449,7 @@ class UserManagementService
         $stmt = $this->db->prepare("
             UPDATE organization_users
             SET role = :role, department_id = :dept_id, updated_at = NOW()
-            WHERE id = :uid AND organization_id = :org_id
+            WHERE user_id = :uid AND organization_id = :org_id
         ");
         $stmt->execute([
             ':role' => $newRole,
@@ -475,7 +477,7 @@ class UserManagementService
             if ($targetUserId === $updatedBy) {
                 throw new RuntimeException("You can't deactivate your own account.");
             }
-            $stmt = $this->db->prepare("SELECT role FROM organization_users WHERE id = :uid AND organization_id = :org_id");
+            $stmt = $this->db->prepare("SELECT role FROM organization_users WHERE user_id = :uid AND organization_id = :org_id");
             $stmt->execute([':uid' => $targetUserId, ':org_id' => $organizationId]);
             $existing = $stmt->fetch(PDO::FETCH_ASSOC);
             if ($existing && $existing['role'] === 'owner') {
@@ -488,7 +490,7 @@ class UserManagementService
             SET is_active = :active,
                 deactivated_at = CASE WHEN :active2::boolean THEN NULL ELSE NOW() END,
                 updated_at = NOW()
-            WHERE id = :uid AND organization_id = :org_id
+            WHERE user_id = :uid AND organization_id = :org_id
         ");
         $stmt->execute([
             ':active' => $active ? 't' : 'f',
@@ -508,7 +510,7 @@ class UserManagementService
         $stmt = $this->db->prepare("
             UPDATE organization_users
             SET password_hash = :hash, must_change_password = true, updated_at = NOW()
-            WHERE id = :uid AND organization_id = :org_id
+            WHERE user_id = :uid AND organization_id = :org_id
         ");
         $stmt->execute([':hash' => $hash, ':uid' => $targetUserId, ':org_id' => $organizationId]);
 
