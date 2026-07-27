@@ -291,7 +291,16 @@ class UserManagementService
             throw new RuntimeException("A user with this email already exists in this organization.");
         }
 
-        $tempPassword = $this->generateTempPassword();
+        // ============================================================
+        // PRACTICE/DEMO CONVENIENCE: if the caller explicitly supplies a
+        // password (e.g. a UI checkbox for "use a fixed password for this
+        // demo"), use it instead of generating a random one. Defaults to
+        // the random generator whenever nothing is supplied — this is an
+        // opt-in convenience for setting up a practice environment
+        // quickly, never something to leave enabled for a real deployment
+        // with real credentials.
+        // ============================================================
+        $tempPassword = !empty($data['password']) ? (string)$data['password'] : $this->generateTempPassword();
         $hash = password_hash($tempPassword, PASSWORD_DEFAULT);
 
         $this->db->beginTransaction();
