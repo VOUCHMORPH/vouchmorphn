@@ -148,6 +148,99 @@ class DepartmentService
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
+    // ============================================================================
+    // DEPARTMENT SCOPING — who can see/act on which departments' batches
+    // ============================================================================
+    //
+    // Ministry structures need more than one level of "is this the right
+    // department": a province-level approver should be able to approve a
+    // municipality's batch under them, not just their own exact department.
+    // These three methods are the single place that logic lives, so every
+    // page that gates batch visibility/actions by department (dashboard,
+    // review page, batch detail page) uses the same rule.
+    //
+    // The convention throughout: organization_users.department_id = NULL
+    // means "unrestricted for this role" — a deliberate configuration for
+    // HQ-level owners/approvers who should see everything, not a default
+    // to fall back on. Callers for CREATOR roles (program_officer,
+    // department_head, beneficiary_registrar) should NOT treat a null
+    // department_id as unrestricted — for those roles it's a data problem
+    // (every batch creator should belong to exactly one department), and
+    // should be denied access rather than granted org-wide reach. Only
+    // oversight roles (owner, approver, senior_approver) get the "null
+    // means everything" escalation.
+
+    /**
+     * All descendant department IDs under $departmentId (children,
+     * grandchildren, etc.), NOT including $departmentId itself.
+     */
+    public function getDescendantDepartmentIds(int $departmentId): array
+    {
+        $stmt = $this->db->prepare("SELECT id, parent_department_id FROM departments WHERE status = 'active'");
+        $stmt->execute();
+        $all = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $childrenOf = [];
+        foreach ($all as $row) {
+            $pid = $row['parent_department_id'] !== null ? (int)$row['parent_department_id'] : null;
+            if ($pid !== null) {
+                $childrenOf[$pid][] = (int)$row['id'];
+            }
+        }
+
+        $descendants = [];
+        $queue = $childrenOf[$departmentId] ?? [];
+        while (!empty($queue)) {
+            $id = array_shift($queue);
+            if (in_array($id, $descendants, true)) {
+                continue; // guard against a malformed cycle in the data
+            }
+            $descendants[] = $id;
+            foreach ($childrenOf[$id] ?? [] as $childId) {
+                $queue[] = $childId;
+            }
+        }
+        return $descendants;
+    }
+
+    /**
+     * The set of department IDs a user "based" in $departmentId is
+     * authorized to act across: themselves plus every descendant. Returns
+     * NULL (not an array) to mean "unrestricted / every department in the
+     * org" when $departmentId itself is null — see the scoping note above
+     * this section for which roles that's a legitimate reading for.
+     */
+    public function getDepartmentScopeIds(?int $departmentId): ?array
+    {
+        if ($departmentId === null) {
+            return null;
+        }
+        return array_merge([$departmentId], $this->getDescendantDepartmentIds($departmentId));
+    }
+
+    /**
+     * True if $targetDepartmentId falls within the scope rooted at
+     * $userDepartmentId (itself or any descendant). $userDepartmentId =
+     * null means unrestricted. A $targetDepartmentId of null is always
+     * OUT of scope for a scoped (non-null) user — a batch with a missing
+     * department shouldn't become claimable by a scoped approver/disburser
+     * just because the data is incomplete; that should surface as a data
+     * problem on the batch, not silently grant access.
+     */
+    public function isDepartmentInScope(?int $userDepartmentId, ?int $targetDepartmentId): bool
+    {
+        if ($userDepartmentId === null) {
+            return true;
+        }
+        if ($targetDepartmentId === null) {
+            return false;
+        }
+        if ($userDepartmentId === $targetDepartmentId) {
+            return true;
+        }
+        return in_array($targetDepartmentId, $this->getDescendantDepartmentIds($userDepartmentId), true);
+    }
+
     /**
      * Sum of batch totals per department that are submitted/approved but
      * not yet disbursed (so not yet reflected in amount_disbursed_ytd).
