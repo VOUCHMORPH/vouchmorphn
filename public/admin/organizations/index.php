@@ -105,7 +105,7 @@ $csrfToken = generateCsrfToken();
         <div class="page-header">
             <h2>Organizations (<?php echo count($organizations); ?>)</h2>
             <?php if (!empty($admin['can_edit_config'])): ?>
-            <a href="organizations/create.php" class="btn">+ New Organization</a>
+            <a href="create.php" class="btn">+ New Organization</a>
             <?php else: ?>
             <span style="font-size:11px; color:var(--ink-300);">Your role (<?php echo safeHtmlPA($admin['role_name']); ?>) has view access only.</span>
             <?php endif; ?>
@@ -116,7 +116,7 @@ $csrfToken = generateCsrfToken();
             <div class="empty-state">
                 <p>No organizations yet.</p>
                 <?php if (!empty($admin['can_edit_config'])): ?>
-                <div style="margin-top:14px;"><a href="organizations/create.php" class="btn">Create the first one</a></div>
+                <div style="margin-top:14px;"><a href="create.php" class="btn">Create the first one</a></div>
                 <?php endif; ?>
             </div>
             <?php else: ?>
