@@ -28,7 +28,7 @@ declare(strict_types=1);
  * piece of work from wiring up the tables that already exist.
  */
 
-require_once __DIR__ . '/../../../src/Core/Database/DBConnection.php';
+require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
 use Core\Database\DBConnection;
 
 if (session_status() === PHP_SESSION_NONE) {
