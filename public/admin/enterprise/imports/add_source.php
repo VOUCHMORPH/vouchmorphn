@@ -81,19 +81,17 @@ function encryptSecret(string $plain): ?string {
 }
 
 // ============================================================
-// Fetches the full source list with proposer/confirmer names.
-// FIX: was joining a `users` table that doesn't hold these accounts'
-// identity data in this schema — full_name/email/password_hash live on
-// organization_users directly (confirmed against the actual schema),
-// so every proposed_by_name/confirmed_by_name here was likely coming
-// back NULL regardless of who actually did it.
+// Fetches the full source list with proposer/confirmer names, joined
+// against `users` — the real global identity table (confirmed against
+// login.php, which populates the session the same way: proposed_by/
+// confirmed_by store users.user_id, not organization_users.id).
 // ============================================================
 function loadSourceAccounts(PDO $db, int $orgId): array {
     $stmt = $db->prepare("
         SELECT s.*, u1.full_name as proposed_by_name, u2.full_name as confirmed_by_name
         FROM source_accounts s
-        LEFT JOIN organization_users u1 ON s.proposed_by = u1.id
-        LEFT JOIN organization_users u2 ON s.confirmed_by = u2.id
+        LEFT JOIN users u1 ON s.proposed_by = u1.user_id
+        LEFT JOIN users u2 ON s.confirmed_by = u2.user_id
         WHERE s.organization_id = :org_id AND s.deleted_at IS NULL
         ORDER BY 
             CASE WHEN s.status = 'pending_confirmation' THEN 1
