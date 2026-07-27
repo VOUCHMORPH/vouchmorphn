@@ -11,14 +11,30 @@ function safeHtmlPA($value) {
     return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
 }
 
-$stmt = $db->prepare("
+// Same scoping rule as isCountryInAdminScope(): super_admin or a blank
+// country_code sees everything; any other admin with a country_code set
+// only sees organizations in that country. Applied here generally (not
+// just to config-capable roles) so a REGULATOR/COMPLIANCE/AUDITOR account
+// that later gets a country_code assigned is scoped the same way.
+$adminCountryScope = ($admin['role_name'] === 'super_admin' || empty($admin['country_code']))
+    ? null
+    : strtoupper($admin['country_code']);
+
+$sql = "
     SELECT o.id, o.name, o.country_code, o.default_currency, o.status, o.created_at,
            (SELECT COUNT(*) FROM organization_users u WHERE u.organization_id = o.id AND u.is_active = true) AS active_users,
            (SELECT COUNT(*) FROM departments d WHERE d.organization_id = o.id AND d.status = 'active') AS active_departments
     FROM organizations o
-    ORDER BY o.created_at DESC
-");
-$stmt->execute();
+";
+$params = [];
+if ($adminCountryScope !== null) {
+    $sql .= " WHERE o.country_code = :country_scope";
+    $params[':country_scope'] = $adminCountryScope;
+}
+$sql .= " ORDER BY o.created_at DESC";
+
+$stmt = $db->prepare($sql);
+$stmt->execute($params);
 $organizations = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 $csrfToken = generateCsrfToken();
@@ -77,7 +93,10 @@ $csrfToken = generateCsrfToken();
             <div class="sub">Client organizations — separate from, and outside the trust boundary of, every enterprise dashboard below</div>
         </div>
         <div>
-            <span style="font-size:11px; color:rgba(255,255,255,0.75); margin-right:14px;"><?php echo safeHtmlPA($admin['full_name']); ?> · <?php echo safeHtmlPA($admin['role_name']); ?></span>
+            <span style="font-size:11px; color:rgba(255,255,255,0.75); margin-right:14px;">
+                <?php echo safeHtmlPA($admin['full_name']); ?> · <?php echo safeHtmlPA($admin['role_name']); ?>
+                · <?php echo $adminCountryScope ? 'Scoped to ' . safeHtmlPA($adminCountryScope) : 'Global (all countries)'; ?>
+            </span>
             <a href="logout.php" class="nav-link">Sign Out</a>
         </div>
     </div>
