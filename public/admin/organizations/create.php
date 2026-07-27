@@ -7,11 +7,13 @@
  * the organization doesn't exist and nobody could log in to create it
  * from inside the enterprise dashboard, which is exactly the point.
  */
-require_once __DIR__ . '/../auth.php';
+require_once _DIR_ . '/../auth.php';
 $platformAdmin = requirePlatformConfigAuth();
 
-require_once __DIR__ . '/../../../src/Core/Database/DBConnection.php';
+require_once _DIR_ . '/../../../src/Core/Database/DBConnection.php';
+require_once _DIR_ . '/../../../src/Domain/Services/UserManagementService.php';
 use Core\Database\DBConnection;
+use Domain\Services\UserManagementService;
 
 $db = DBConnection::getConnection();
 
@@ -71,22 +73,32 @@ function createOrganizationWithOwner(PDO $db, array $orgData, array $ownerData, 
         ]);
         $orgId = (int)$stmt->fetchColumn();
 
+        // organization_users.user_id is a required FK into the real,
+        // separate `users` table (see UserManagementService::
+        // ensureGlobalUser — reused here rather than duplicated).
+        $userMgmt = new UserManagementService($db);
+        $globalUserId = $userMgmt->ensureGlobalUser($ownerName, $ownerEmail, $hash);
+
         // No department_id — this first Owner is deliberately org-wide
         // (unscoped). Per the department-scoping rule elsewhere in this
         // codebase, that's what a NULL department_id on an owner means:
         // full authority across every department this org will ever create.
         $stmt = $db->prepare("
             INSERT INTO organization_users (
-                organization_id, department_id, full_name, email, password_hash,
+                organization_id, user_id, department_id, full_name, email, password_hash,
                 role, is_active, must_change_password, created_by, created_at, updated_at
             ) VALUES (
-                :org_id, NULL, :name, :email, :hash,
+                :org_id, :global_user_id, NULL, :name, :email, :hash,
                 'owner', true, true, NULL, NOW(), NOW()
-            ) RETURNING user_id
+            ) RETURNING id
         ");
         $stmt->execute([
-            ':org_id' => $orgId, ':name' => $ownerName, ':email' => $ownerEmail, ':hash' => $hash,
+            ':org_id' => $orgId, ':global_user_id' => $globalUserId,
+            ':name' => $ownerName, ':email' => $ownerEmail, ':hash' => $hash,
         ]);
+        // organization_users.id — the membership row's PK, not the same
+        // value as $globalUserId. This is what the rest of the enterprise
+        // dashboard means by "this person's id."
         $ownerUserId = (int)$stmt->fetchColumn();
 
         $db->commit();
