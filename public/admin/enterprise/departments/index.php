@@ -66,7 +66,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     trim($_POST['name'] ?? ''),
                     trim($_POST['code'] ?? '') ?: null,
                     trim($_POST['cost_center'] ?? '') ?: null,
-                    (float)($_POST['budget_ceiling'] ?? 0),
+                    (isset($_POST['budget_ceiling']) && trim($_POST['budget_ceiling']) !== '') ? (float)$_POST['budget_ceiling'] : null,
                     (int)$userId,
                     $userRole
                 );
@@ -81,7 +81,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     trim($_POST['name'] ?? ''),
                     trim($_POST['code'] ?? '') ?: null,
                     trim($_POST['cost_center'] ?? '') ?: null,
-                    (float)($_POST['budget_ceiling'] ?? 0),
+                    (isset($_POST['budget_ceiling']) && trim($_POST['budget_ceiling']) !== '') ? (float)$_POST['budget_ceiling'] : null,
                     (int)$userId,
                     $userRole
                 );
@@ -146,7 +146,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (!$isTopRole) throw new RuntimeException('Not authorized.');
                 $deptService->updateDepartmentCeiling(
                     (int)($_POST['department_id'] ?? 0),
-                    (float)($_POST['new_ceiling'] ?? 0),
+                    (isset($_POST['new_ceiling']) && trim($_POST['new_ceiling']) !== '') ? (float)$_POST['new_ceiling'] : null,
                     (int)$userId,
                     $userRole
                 );
@@ -307,13 +307,20 @@ function renderDepartmentNode(
     }
     $html .= '</div>';
 
-    $html .= '<div class="dept-bar-track"><div class="dept-bar-fill" style="width:' . min(100, $pct) . '%; background:' . $barColor . ';"></div></div>';
+    $html .= $node['has_ceiling']
+        ? '<div class="dept-bar-track"><div class="dept-bar-fill" style="width:' . min(100, $pct) . '%; background:' . $barColor . ';"></div></div>'
+        : '';
 
     $html .= '<div class="dept-stats">';
-    $html .= '<span>Ceiling: <strong>' . formatCurrency($node['budget_ceiling']) . '</strong></span>';
-    $html .= '<span>Disbursed YTD: ' . formatCurrency($node['amount_disbursed_ytd']) . '</span>';
-    $html .= '<span>Reserved (pending): ' . formatCurrency($node['reserved_in_flight']) . '</span>';
-    $html .= '<span class="' . ($node['available'] < 0 ? 'text-danger' : 'text-green') . '">Available: <strong>' . formatCurrency($node['available']) . '</strong></span>';
+    if ($node['has_ceiling']) {
+        $html .= '<span>Ceiling: <strong>' . formatCurrency($node['budget_ceiling']) . '</strong></span>';
+        $html .= '<span>Disbursed YTD: ' . formatCurrency($node['amount_disbursed_ytd']) . '</span>';
+        $html .= '<span>Reserved (pending): ' . formatCurrency($node['reserved_in_flight']) . '</span>';
+        $html .= '<span class="' . ($node['available'] < 0 ? 'text-danger' : 'text-green') . '">Available: <strong>' . formatCurrency($node['available']) . '</strong></span>';
+    } else {
+        $html .= '<span class="no-vote-badge">⚠ No vote assigned — limited only by source account balance, checked at execute time</span>';
+        $html .= '<span>Disbursed YTD: ' . formatCurrency($node['amount_disbursed_ytd']) . '</span>';
+    }
     $html .= '</div>';
 
     // ============================================================
@@ -430,6 +437,8 @@ function renderDepartmentNode(
         .staff-add-desc { font-size: 11px; color: var(--ink-300); margin-bottom: 2px; }
         .staff-add-form input { padding: 6px 8px; border: 1px solid var(--line); font-size: 12.5px; background: var(--panel); }
         .staff-add-form input:focus { outline: none; border-color: var(--brass); }
+        .hint { font-size: 11px; color: var(--ink-300); margin-top: 3px; line-height: 1.4; }
+        .no-vote-badge { font-size: 11.5px; color: var(--amber); font-style: italic; }
 
         .creds-banner { background: var(--ink-900); color: #fff; padding: 18px 22px; margin-bottom: 20px; border-left: 4px solid var(--brass); }
         .creds-banner .warn { color: #fbbf24; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; font-family: var(--f-cond); margin-bottom: 8px; }
@@ -580,7 +589,7 @@ function renderDepartmentNode(
                     <div class="form-group"><label>Name</label><input type="text" name="name" required></div>
                     <div class="form-group"><label>Code</label><input type="text" name="code"></div>
                     <div class="form-group"><label>Cost Center</label><input type="text" name="cost_center"></div>
-                    <div class="form-group"><label>Budget Ceiling</label><input type="number" step="0.01" name="budget_ceiling" required></div>
+                    <div class="form-group"><label>Budget Ceiling <span style="font-weight:400; text-transform:none; color:var(--ink-300);">(optional)</span></label><input type="number" step="0.01" name="budget_ceiling" placeholder="Leave blank for no vote"><div class="hint">Leave blank for "no vote" — this department can spend up to whatever the source account actually has, checked only at execute time instead of caught early at submission.</div></div>
                     <div class="form-group" style="align-self:end;"><button type="submit" class="btn btn-primary">Create</button></div>
                 </form>
             </details>
@@ -601,7 +610,7 @@ function renderDepartmentNode(
                     </div>
                     <div class="form-group"><label>Name</label><input type="text" name="name" required></div>
                     <div class="form-group"><label>Code</label><input type="text" name="code"></div>
-                    <div class="form-group"><label>Budget Ceiling</label><input type="number" step="0.01" name="budget_ceiling" required></div>
+                    <div class="form-group"><label>Budget Ceiling <span style="font-weight:400; text-transform:none; color:var(--ink-300);">(optional)</span></label><input type="number" step="0.01" name="budget_ceiling" placeholder="Leave blank for no vote"><div class="hint">Leave blank for "no vote" — this department can spend up to whatever the source account actually has, checked only at execute time instead of caught early at submission.</div></div>
                     <div class="form-group" style="align-self:end;"><button type="submit" class="btn btn-primary">Create Sub-department</button></div>
                 </form>
                 <p style="font-size:12px; color:var(--ink-300); margin-top:8px;">Must fit within the parent's remaining (unallocated) ceiling.</p>
@@ -621,7 +630,7 @@ function renderDepartmentNode(
                             <?php endforeach; ?>
                         </select>
                     </div>
-                    <div class="form-group"><label>New Ceiling</label><input type="number" step="0.01" name="new_ceiling" required></div>
+                    <div class="form-group"><label>New Ceiling <span style="font-weight:400; text-transform:none; color:var(--ink-300);">(optional)</span></label><input type="number" step="0.01" name="new_ceiling" placeholder="Leave blank for no vote"><div class="hint">Leave blank to switch this department to "no vote."</div></div>
                     <div class="form-group" style="align-self:end;"><button type="submit" class="btn btn-primary">Update</button></div>
                 </form>
             </details>
