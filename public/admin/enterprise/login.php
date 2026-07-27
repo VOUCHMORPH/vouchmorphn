@@ -1,6 +1,3 @@
-Here's the complete `login.php` with the full styling restored (the same style from your original):
-
-```php
 <?php
 // login.php - Enterprise Login with Multi-Destination Workflow Redirects
  
