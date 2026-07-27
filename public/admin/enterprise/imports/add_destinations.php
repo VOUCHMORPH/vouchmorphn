@@ -4,8 +4,10 @@ require_once '../auth.php';
 $user = requireEnterpriseAuth();
 require_once '../../../../src/Core/Database/DBConnection.php';
 require_once '../../../../src/Domain/Services/DepartmentService.php';
+require_once '../../../../src/Domain/Services/UserManagementService.php';
 use Core\Database\DBConnection;
 use Domain\Services\DepartmentService;
+use Domain\Services\UserManagementService;
 
 $db = DBConnection::getConnection();
 $orgId = getOrganizationId();
@@ -356,7 +358,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $csrfToken = generateCsrfToken();
-$roleDisplay = strtoupper($role);
+$roleDisplay = strtoupper(UserManagementService::ROLE_CATALOG[$role]['label'] ?? $role);
 ?>
 <!DOCTYPE html>
 <html lang="en">
