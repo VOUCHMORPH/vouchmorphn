@@ -1,8 +1,8 @@
 <?php
 // enterprise/imports/add_source.php - Manage source accounts (maker-checker controlled)
-require_once '../auth.php';
+require_once _DIR_ . '/../../auth.php';
 $user = requireEnterpriseAuth();
-require_once '../../../../src/Core/Database/DBConnection.php';
+require_once _DIR_ . '/../../../../src/Core/Database/DBConnection.php';
 use Core\Database\DBConnection;
 
 $db = DBConnection::getConnection();
@@ -92,8 +92,8 @@ function loadSourceAccounts(PDO $db, int $orgId): array {
     $stmt = $db->prepare("
         SELECT s.*, u1.full_name as proposed_by_name, u2.full_name as confirmed_by_name
         FROM source_accounts s
-        LEFT JOIN organization_users u1 ON s.proposed_by = u1.user_id
-        LEFT JOIN organization_users u2 ON s.confirmed_by = u2.user_id
+        LEFT JOIN organization_users u1 ON s.proposed_by = u1.id
+        LEFT JOIN organization_users u2 ON s.confirmed_by = u2.id
         WHERE s.organization_id = :org_id AND s.deleted_at IS NULL
         ORDER BY 
             CASE WHEN s.status = 'pending_confirmation' THEN 1
