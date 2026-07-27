@@ -8,9 +8,9 @@
  * NOTE: This file is now merged with source_input.php functionality.
  * You may want to redirect source_input.php to this file or vice versa.
  */
-require_once '../auth.php';
+require_once __DIR__ . '/../auth.php';
 $user = requireEnterpriseAuth();
-require_once '../../../../src/Core/Database/DBConnection.php';
+require_once __DIR__ . '/../../../../src/Core/Database/DBConnection.php';
 use Core\Database\DBConnection;
 
 $db = DBConnection::getConnection();
