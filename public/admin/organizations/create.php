@@ -44,12 +44,14 @@ function createOrganizationWithOwner(PDO $db, array $orgData, array $ownerData, 
 
     $ownerName = trim($ownerData['full_name'] ?? '');
     $ownerEmail = trim(strtolower($ownerData['email'] ?? ''));
+    $ownerPhone = trim($ownerData['phone'] ?? '');
 
     if ($name === '') throw new RuntimeException("Organization name is required.");
     if (strlen($countryCode) !== 2) throw new RuntimeException("Country code must be a 2-letter ISO code (e.g. AO, GH, NG, ZA).");
     if (strlen($currency) !== 3) throw new RuntimeException("Default currency must be a 3-letter ISO code (e.g. AOA, GHS, NGN, ZAR).");
     if ($ownerName === '') throw new RuntimeException("The first Owner's full name is required.");
     if ($ownerEmail === '' || !filter_var($ownerEmail, FILTER_VALIDATE_EMAIL)) throw new RuntimeException("A valid email is required for the first Owner.");
+    if ($ownerPhone === '') throw new RuntimeException("A phone number is required for the first Owner.");
 
     // Same practice/demo convenience as UserManagementService::createUser() —
     // opt-in fixed password if the caller supplies one, random otherwise.
@@ -77,7 +79,7 @@ function createOrganizationWithOwner(PDO $db, array $orgData, array $ownerData, 
         // separate `users` table (see UserManagementService::
         // ensureGlobalUser — reused here rather than duplicated).
         $userMgmt = new UserManagementService($db);
-        $globalUserId = $userMgmt->ensureGlobalUser($ownerName, $ownerEmail, $hash);
+        $globalUserId = $userMgmt->ensureGlobalUser($ownerName, $ownerEmail, $hash, $ownerPhone);
 
         // No department_id — this first Owner is deliberately org-wide
         // (unscoped). Per the department-scoping rule elsewhere in this
@@ -135,6 +137,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ], [
                 'full_name' => $_POST['owner_name'] ?? '',
                 'email' => $_POST['owner_email'] ?? '',
+                'phone' => $_POST['owner_phone'] ?? '',
                 'password' => $_POST['owner_password'] ?? '',
             ], (int)$platformAdmin['admin_id']);
         } catch (\RuntimeException $e) {
@@ -268,6 +271,10 @@ $csrfToken = generateCsrfToken();
                 <div class="form-group">
                     <label>Email</label>
                     <input type="email" name="owner_email" required>
+                </div>
+                <div class="form-group">
+                    <label>Phone</label>
+                    <input type="text" name="owner_phone" required placeholder="+244...">
                 </div>
                 <div class="form-group">
                     <label>Password (optional)</label>
