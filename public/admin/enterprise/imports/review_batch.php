@@ -78,11 +78,11 @@ function loadBatch(PDO $db, $batchId, $orgId) {
                u4.full_name as approved_by_name,
                u5.full_name as executed_by_name
         FROM disbursement_batches b
-        LEFT JOIN users u1 ON b.created_by = u1.user_id
-        LEFT JOIN users u2 ON b.submitted_by = u2.user_id
-        LEFT JOIN users u3 ON b.reviewed_by = u3.user_id
-        LEFT JOIN users u4 ON b.approved_by = u4.user_id
-        LEFT JOIN users u5 ON b.executed_by = u5.user_id
+        LEFT JOIN organization_users u1 ON b.created_by = u1.user_id
+        LEFT JOIN organization_users u2 ON b.submitted_by = u2.user_id
+        LEFT JOIN organization_users u3 ON b.reviewed_by = u3.user_id
+        LEFT JOIN organization_users u4 ON b.approved_by = u4.user_id
+        LEFT JOIN organization_users u5 ON b.executed_by = u5.user_id
         WHERE b.id = :id AND b.organization_id = :org_id
     ");
     $stmt->execute([':id' => $batchId, ':org_id' => $orgId]);
