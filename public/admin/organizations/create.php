@@ -98,24 +98,36 @@ function createOrganizationWithOwner(PDO $db, array $orgData, array $ownerData, 
 $error = '';
 $result = null;
 
+// A country-scoped admin (role 'admin' with its own country_code set)
+// never gets to pick a country — the form locks to it, and this is the
+// server-side enforcement of that in case the lock is ever bypassed.
+$isCountryScoped = $platformAdmin['role_name'] !== 'super_admin' && !empty($platformAdmin['country_code']);
+$lockedCountryCode = $isCountryScoped ? strtoupper($platformAdmin['country_code']) : null;
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     requireCsrfToken($_POST['csrf_token'] ?? null);
-    try {
-        $result = createOrganizationWithOwner($db, [
-            'name' => $_POST['org_name'] ?? '',
-            'country_code' => $_POST['country_code'] ?? '',
-            'default_currency' => $_POST['default_currency'] ?? '',
-            'tax_id' => $_POST['tax_id'] ?? '',
-            'registration_number' => $_POST['registration_number'] ?? '',
-        ], [
-            'full_name' => $_POST['owner_name'] ?? '',
-            'email' => $_POST['owner_email'] ?? '',
-        ], (int)$platformAdmin['admin_id']);
-    } catch (\RuntimeException $e) {
-        $error = $e->getMessage();
-    } catch (\Throwable $e) {
-        error_log("[platform-admin/organizations/create] " . $e->getMessage());
-        $error = "Something went wrong creating the organization. Please try again.";
+    $submittedCountry = strtoupper(trim($_POST['country_code'] ?? ''));
+
+    if ($isCountryScoped && $submittedCountry !== $lockedCountryCode) {
+        $error = "Your admin account is scoped to {$lockedCountryCode} — you can't create an organization for a different country.";
+    } else {
+        try {
+            $result = createOrganizationWithOwner($db, [
+                'name' => $_POST['org_name'] ?? '',
+                'country_code' => $submittedCountry,
+                'default_currency' => $_POST['default_currency'] ?? '',
+                'tax_id' => $_POST['tax_id'] ?? '',
+                'registration_number' => $_POST['registration_number'] ?? '',
+            ], [
+                'full_name' => $_POST['owner_name'] ?? '',
+                'email' => $_POST['owner_email'] ?? '',
+            ], (int)$platformAdmin['admin_id']);
+        } catch (\RuntimeException $e) {
+            $error = $e->getMessage();
+        } catch (\Throwable $e) {
+            error_log("[platform-admin/organizations/create] " . $e->getMessage());
+            $error = "Something went wrong creating the organization. Please try again.";
+        }
     }
 }
 
@@ -204,8 +216,13 @@ $csrfToken = generateCsrfToken();
                 </div>
                 <div class="form-row">
                     <div class="form-group">
-                        <label>Country Code (ISO 2)</label>
+                        <label>Country Code (ISO 2)<?php echo $isCountryScoped ? ' — locked to your account' : ''; ?></label>
+                        <?php if ($isCountryScoped): ?>
+                        <input type="text" value="<?php echo safeHtmlP($lockedCountryCode); ?>" disabled style="opacity:0.6;">
+                        <input type="hidden" name="country_code" value="<?php echo safeHtmlP($lockedCountryCode); ?>">
+                        <?php else: ?>
                         <input type="text" name="country_code" required maxlength="2" placeholder="AO">
+                        <?php endif; ?>
                     </div>
                     <div class="form-group">
                         <label>Default Currency (ISO 3)</label>
