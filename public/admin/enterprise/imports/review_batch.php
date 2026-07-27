@@ -1,4 +1,5 @@
 <?php
+// enterprise/imports/review_batch.php - Review and approve batch
 require_once '../auth.php';
 $user = requireEnterpriseAuth();
 require_once '../../../../src/Core/Database/DBConnection.php';
@@ -25,6 +26,12 @@ $error = '';
 $success = '';
 $failedDestinations = [];
 
+// How long a batch may sit in 'executing' before we treat it as stuck
+// (crashed/timed-out request) rather than genuinely still running, and
+// offer the Owner a manual Resume. See the P0 fix notes below the
+// execute action for why resuming is now safe.
+const EXECUTING_STUCK_THRESHOLD_SECONDS = 600; // 10 minutes
+
 // ============================================================
 // HELPER: Check if user can edit this batch
 // ============================================================
@@ -44,11 +51,23 @@ function formatCurrency($amount, $currency = 'BWP') {
     return number_format((float)$amount, 2) . ' ' . $currency;
 }
 
+// A destination counts as "not yet attempted" only if it has no status
+// or is still the default PENDING. Anything else (SUCCESS, COMPLETED,
+// PENDING_IDENTITY_CONFIRMATION, FAILED) has already had a real attempt
+// made against it and must never be silently re-run by Execute/Resume —
+// FAILED ones are retried explicitly via retry_destination.php instead,
+// exactly like the existing single-destination Retry button already
+// does, so we don't invent a second, less careful retry path here.
+function destinationNotYetAttempted($dest) {
+    $s = strtoupper(trim((string)($dest['status'] ?? 'PENDING')));
+    return $s === '' || $s === 'PENDING';
+}
+
 // ============================================================
-// GET BATCH
+// GET BATCH / DESTINATIONS (as functions so we can cheaply re-fetch
+// after mutating actions, instead of trusting stale in-memory arrays)
 // ============================================================
-$batch = null;
-if ($batchId) {
+function loadBatch(PDO $db, $batchId, $orgId) {
     $stmt = $db->prepare("
         SELECT b.*, 
                u1.full_name as created_by_name,
@@ -65,8 +84,20 @@ if ($batchId) {
         WHERE b.id = :id AND b.organization_id = :org_id
     ");
     $stmt->execute([':id' => $batchId, ':org_id' => $orgId]);
-    $batch = $stmt->fetch(PDO::FETCH_ASSOC);
+    return $stmt->fetch(PDO::FETCH_ASSOC);
 }
+
+function loadDestinations(PDO $db, $batchId): array {
+    $stmt = $db->prepare("
+        SELECT * FROM disbursement_destinations 
+        WHERE batch_id = :batch_id
+        ORDER BY destination_index
+    ");
+    $stmt->execute([':batch_id' => $batchId]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+$batch = loadBatch($db, $batchId, $orgId);
 
 if (!$batch) {
     die("Batch not found.");
@@ -83,24 +114,16 @@ $isReadOnly = !$canEdit;
 // ============================================================
 // EXPLICIT ROLE PERMISSIONS - CLEAR AND UNAMBIGUOUS
 // ============================================================
-// Submit: Owner, Program Officer, Department Head (own batches)
 $canSubmit = in_array($role, ['owner', 'program_officer', 'department_head']) && $canEdit;
-
-// Approve: Approver or Senior Approver ONLY
 $canApprove = in_array($role, ['approver', 'senior_approver']);
 
 // Execute/DISBURSE: OWNER ONLY - NO EXCEPTIONS
 $canExecute = ($role === 'owner');
-
-// SAFETY: Double-check that approvers cannot execute under any circumstances
 if ($role === 'approver' || $role === 'senior_approver') {
     $canExecute = false;
-    $canApprove = true; // Approvers CAN approve
+    $canApprove = true;
 }
 
-// ============================================================
-// EXPLICIT BLOCK: Approvers CANNOT execute/disburse
-// ============================================================
 $isApprover = ($role === 'approver' || $role === 'senior_approver');
 $executeDisabled = !$canExecute;
 $executeDisabledReason = '';
@@ -116,10 +139,6 @@ if ($isApprover) {
 // ============================================================
 // DEPARTMENT / RATION CONTEXT
 // ============================================================
-// Loaded for two purposes: (1) enforce the ration check when
-// submit_for_approval / approve fire below, (2) show the department's
-// live ration status on the summary card so a submitter can see BEFORE
-// hitting submit whether this batch fits.
 $deptService = new DepartmentService($db);
 $departmentInfo = null;
 $rationInfo = null;
@@ -137,20 +156,38 @@ if (!empty($batch['department_id'])) {
 }
 
 // ============================================================
-// GET DESTINATIONS
+// DEPARTMENT SCOPE — narrows approve/execute past the role check above.
+// organization_users.department_id = NULL on an owner/approver/
+// senior_approver account means that account is deliberately
+// unrestricted (an HQ-level signatory) — this is the "some roles can
+// see all departments" case. A department-scoped account of the same
+// role can only approve/execute batches inside its own department or
+// its sub-departments (ministry -> department -> sub-department). This
+// never loosens anything the role check above already forbids — an
+// approver still can never execute, regardless of scope — it only ever
+// narrows further.
 // ============================================================
-$destinations = [];
-$stmt = $db->prepare("
-    SELECT * FROM disbursement_destinations 
-    WHERE batch_id = :batch_id
-    ORDER BY destination_index
-");
-$stmt->execute([':batch_id' => $batchId]);
-$destinations = $stmt->fetchAll(PDO::FETCH_ASSOC);
+$actingUserDepartmentId = $user['department_id'] ?? null;
+$batchDepartmentId = $batch['department_id'] ?? null;
+$inDeptScope = $deptService->isDepartmentInScope($actingUserDepartmentId, $batchDepartmentId);
+
+if (!$inDeptScope) {
+    if ($canApprove) {
+        $canApprove = false;
+    }
+    if ($canExecute) {
+        $canExecute = false;
+    }
+    $executeDisabledReason = $batchDepartmentId === null
+        ? 'This batch has no department assigned, so a department-scoped account cannot act on it. Contact an admin to assign one.'
+        : 'This batch belongs to a different department than the one assigned to your account.';
+}
 
 // ============================================================
-// DEBUG: Log raw data
+// GET DESTINATIONS
 // ============================================================
+$destinations = loadDestinations($db, $batchId);
+
 error_log("=== REVIEW_BATCH DEBUG: RAW DATA ===");
 error_log("Batch ID: " . $batchId);
 error_log("Batch Reference: " . ($batch['batch_reference'] ?? 'NULL'));
@@ -170,25 +207,15 @@ foreach ($destinations as $idx => $dest) {
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     requireCsrfToken($_POST['csrf_token'] ?? null);
     $action = $_POST['action'] ?? '';
-    
-    // ============================================================
-    // SECURITY: Explicitly block execute for non-owners
-    // ============================================================
+
     if ($action === 'execute' && !$canExecute) {
         $error = "🚫 SECURITY BLOCK: You do not have permission to execute this disbursement. Only Owners can disburse funds.";
         error_log("[SECURITY] User " . ($userId ?? 'unknown') . " (role: $role) attempted to execute batch $batchId without permission");
-        // Don't proceed with any further processing
     } elseif ($isReadOnly && !in_array($action, ['approve', 'reject', 'execute'])) {
         $error = "You cannot modify this batch. It was created by another user.";
     } else {
         if ($action === 'submit_for_approval') {
-            // ============================================================
             // RATION CHECK — gates the draft -> pending_approval transition.
-            // A batch that would blow its department's remaining ration
-            // never gets submitted; the submitter sees exactly why (ceiling,
-            // disbursed, reserved, shortfall) and a link to request a borrow
-            // instead of a silent failure or a rejection three steps later.
-            // ============================================================
             if (empty($batch['department_id'])) {
                 $error = "This batch has no department assigned, so its budget ration can't be checked. Contact an admin before submitting.";
             } else {
@@ -214,17 +241,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ");
                 $stmt->execute([':user_id' => $userId, ':id' => $batchId]);
                 $success = "Batch submitted for approval.";
-                $batch['status'] = 'pending_approval';
             }
-            
+
         } elseif ($action === 'approve') {
-            // ============================================================
-            // RATION RE-CHECK at approval time too. Ration is live (other
-            // batches for the same department may have been approved,
-            // disbursed, or a borrow may have been rejected since this
-            // batch was submitted), so re-verify rather than trusting the
-            // check that ran at submit time.
-            // ============================================================
+            // RATION RE-CHECK at approval time too — ration is live.
             if (empty($batch['department_id'])) {
                 $error = "This batch has no department assigned — cannot verify budget ration before approving.";
             } else {
@@ -250,9 +270,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ");
                 $stmt->execute([':user_id' => $userId, ':id' => $batchId]);
                 $success = "Batch approved.";
-                $batch['status'] = 'approved';
             }
-            
+
         } elseif ($action === 'reject') {
             $reason = $_POST['rejection_reason'] ?? 'No reason provided';
             $stmt = $db->prepare("
@@ -266,322 +285,425 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ");
             $stmt->execute([':reason' => $reason, ':user_id' => $userId, ':id' => $batchId]);
             $success = "Batch rejected.";
-            $batch['status'] = 'rejected';
-            
+
         } elseif ($action === 'execute') {
             // ============================================================
-            // UPDATED: NEW IDEMPOTENT EXECUTION LOGIC
-            // This will only run if $canExecute is true (owner only)
+            // P0 FIX — three problems, one block:
+            //
+            // 1. DOUBLE-CLICK / CONCURRENT EXECUTE: two requests hitting
+            //    this action at once used to both run the full destination
+            //    loop. Now the first thing we do is an atomic
+            //    compare-and-set: flip status to 'executing' ONLY if it's
+            //    currently 'approved' (normal case) or stuck in
+            //    'executing' past the timeout threshold (resume case). If
+            //    zero rows are affected, someone else already claimed it.
+            //
+            // 2. TIMEOUT MID-BATCH LEAVES THINGS STUCK: if PHP's execution
+            //    time limit kills this request partway through, the batch
+            //    used to stay 'approved' forever with no record of partial
+            //    progress. Now a stuck 'executing' batch surfaces a manual
+            //    "Resume" option once EXECUTING_STUCK_THRESHOLD_SECONDS has
+            //    passed, and resuming is safe because of #3.
+            //
+            // 3. NOT IDEMPOTENT: nothing filtered out already-completed
+            //    destinations before re-looping, and no idempotency_key
+            //    was ever passed to SwapService. Fixed by filtering
+            //    $destinations down to only never-attempted ones before
+            //    building any payload, plus a deterministic idempotency
+            //    key as defense-in-depth.
             // ============================================================
             error_log("=== REVIEW_BATCH DEBUG: EXECUTION STARTED ===");
-            
-            try {
-                // ============================================================
-                // STEP 1: Lock the batch immediately (prevents double-click)
-                // ============================================================
-                $db->query("UPDATE disbursement_batches SET status = 'executing', 
-                            execution_started_at = NOW() 
-                            WHERE id = ? AND status = 'approved'", 
-                            [$batchId]);
 
-                if ($db->affectedRows() === 0) {
-                    // Check if batch is already in a terminal state
-                    $checkStmt = $db->prepare("SELECT status FROM disbursement_batches WHERE id = ?");
-                    $checkStmt->execute([$batchId]);
-                    $currentStatus = $checkStmt->fetchColumn();
-                    
-                    if (in_array($currentStatus, ['completed', 'partial_success', 'failed'])) {
-                        $error = "Batch has already been processed (status: $currentStatus).";
+            $claimStmt = $db->prepare("
+                UPDATE disbursement_batches
+                SET status = 'executing', updated_at = NOW()
+                WHERE id = :id
+                AND (
+                    LOWER(status) = 'approved'
+                    OR (LOWER(status) = 'executing' AND updated_at < NOW() - (:stuck_seconds || ' seconds')::interval)
+                )
+            ");
+            $claimStmt->execute([':id' => $batchId, ':stuck_seconds' => EXECUTING_STUCK_THRESHOLD_SECONDS]);
+
+            if ($claimStmt->rowCount() === 0) {
+                $error = "This batch is currently being executed (or was already executed) by another request. Refresh the page to see its current status before trying again.";
+                error_log("[review_batch] Execute claim failed for batch {$batchId} — already executing or not in an executable state");
+            } else {
+                error_log("[review_batch] Execute claim succeeded for batch {$batchId} — proceeding");
+
+                $destinationsAtClaim = loadDestinations($db, $batchId);
+
+                $identityDestinationsAll = [];
+                $institutionDestinationsAll = [];
+                foreach ($destinationsAtClaim as $dest) {
+                    $isIdentity = ($dest['is_identity_recipient'] ?? false) || ($dest['institution'] ?? '') === 'IDENTITY_RECIPIENT';
+                    if ($isIdentity) {
+                        $identityDestinationsAll[] = $dest;
                     } else {
-                        $error = "Batch is already being processed or is not approved.";
+                        $institutionDestinationsAll[] = $dest;
                     }
-                    
-                    // Refresh batch status to show current state
-                    $refreshStmt = $db->prepare("SELECT status FROM disbursement_batches WHERE id = ?");
-                    $refreshStmt->execute([$batchId]);
-                    $batch['status'] = $refreshStmt->fetchColumn() ?: $batch['status'];
-                    
-                    header("Location: review_batch.php?batch_id=" . $batchId);
-                    exit;
                 }
 
-                // ============================================================
-                // STEP 2: Fetch destinations, filtering out already-processed ones
-                // ============================================================
-                $countryName = $_ENV['VOUCHMORPH_COUNTRY'] ?? getenv('VOUCHMORPH_COUNTRY') ?? 'Botswana';
-                $fullCountryConfig = LoadCountry::getConfig();
-                
-                error_log("[review_batch] Initializing SwapService...");
-                error_log("[review_batch] Country: " . $countryName);
-                
-                $swapService = new SwapService(
-                    $db,
-                    $fullCountryConfig,
-                    $countryName
-                );
-                
-                error_log("[review_batch] SwapService initialized successfully");
-                
-                // Get destinations that haven't been processed yet
-                $destStmt = $db->prepare("
-                    SELECT * FROM disbursement_destinations 
-                    WHERE batch_id = ? 
-                    AND status NOT IN ('completed', 'success', 'failed')
-                    ORDER BY destination_index
-                ");
-                $destStmt->execute([$batchId]);
-                $pendingDestinations = $destStmt->fetchAll(PDO::FETCH_ASSOC);
-                
-                if (empty($pendingDestinations)) {
-                    $error = "No pending destinations to process.";
-                    $db->query("UPDATE disbursement_batches SET status = 'completed' WHERE id = ?", [$batchId]);
-                    header("Location: review_batch.php?batch_id=" . $batchId);
-                    exit;
-                }
-                
-                error_log("[review_batch] Pending destinations: " . count($pendingDestinations));
-                
+                // array_values() re-indexes sequentially — required because
+                // the MULTI_DESTINATION result-matching below looks up
+                // $institutionDestinations[$idx] assuming positional match
+                // with what was sent in $multiPayload.
+                $identityDestinations = array_values(array_filter($identityDestinationsAll, 'destinationNotYetAttempted'));
+                $institutionDestinations = array_values(array_filter($institutionDestinationsAll, 'destinationNotYetAttempted'));
+
+                $skippedAlreadyDone = (count($identityDestinationsAll) - count($identityDestinations))
+                                    + (count($institutionDestinationsAll) - count($institutionDestinations));
+
+                error_log("[review_batch] Identity destinations to process: " . count($identityDestinations) . " (skipped: " . (count($identityDestinationsAll) - count($identityDestinations)) . ")");
+                error_log("[review_batch] Institution destinations to process: " . count($institutionDestinations) . " (skipped: " . (count($institutionDestinationsAll) - count($institutionDestinations)) . ")");
+
+                $allResults = [];
                 $overallSuccess = 0;
                 $overallFailed = 0;
+                $overallPending = 0;
                 $failedDestinations = [];
-                $sourceInstitution = $batch['source_institution'];
-                $sourceAccountIdentifier = $batch['source_identifier'];
-                $currency = $batch['currency'] ?? 'BWP';
-                
-                // ============================================================
-                // Process each destination with idempotency keys
-                // ============================================================
-                foreach ($pendingDestinations as $dest) {
-                    error_log("[review_batch] Processing destination: " . json_encode($dest));
-                    
-                    // ============================================================
-                    // FIX: PASS THE IDEMPOTENCY KEY
-                    // ============================================================
-                    $idempotencyKey = $batch['batch_reference'] . '_ID_' . $dest['destination_index'];
-                    
-                    // Build the swap request
-                    $swapRequest = [
-                        'reference' => $idempotencyKey,
-                        'idempotency_key' => $idempotencyKey,  // <-- THIS IS THE KEY
-                        'from_institution' => $sourceInstitution,
-                        'to_institution' => $dest['institution'],
-                        'amount' => (float)$dest['amount'],
-                        'currency' => $currency,
-                        'source_identifier' => $sourceAccountIdentifier,
-                        'destination_identifier' => $dest['identifier'],
-                        'destination_identifier_type' => $dest['identifier_type'] ?? 'account',
-                        'asset_type' => $dest['asset_type'] ?? 'WALLET',
-                        'user_id' => $_SESSION['user_id'] ?? $userId,
-                        'beneficiary_name' => $dest['beneficiary_name'] ?? null,
-                        'beneficiary_phone' => $dest['beneficiary_phone'] ?? null,
-                        'delivery_method' => $dest['delivery_method'] ?? 'DEPOSIT',
-                        'swap_type' => 'SINGLE_DESTINATION',
-                        'source_institution' => $sourceInstitution,
-                    ];
-                    
-                    error_log("[review_batch] Swap request with idempotency key: " . $idempotencyKey);
-                    
-                    try {
-                        // ============================================================
-                        // executeAtomicSwap ALREADY checks idempotency internally!
-                        // See lines ~2500-2506 in your SwapService.php
-                        // ============================================================
-                        $result = $swapService->executeAtomicSwap($swapRequest);
-                        
-                        // Mark individual destination as completed
-                        $updateStmt = $db->prepare("
-                            UPDATE disbursement_destinations 
-                            SET status = 'completed', 
-                                completed_at = NOW(), 
-                                transaction_reference = ?,
-                                hold_reference = ?
-                            WHERE id = ?
-                        ");
-                        $updateStmt->execute([
-                            $result['reference'] ?? $result['swap_reference'] ?? $result['transaction_reference'] ?? null,
-                            $result['hold_reference'] ?? null,
-                            $dest['id']
-                        ]);
-                        
-                        $overallSuccess++;
-                        error_log("[review_batch] Destination {$dest['destination_index']} completed successfully");
-                        
-                    } catch (Exception $e) {
-                        // Mark as failed, allow retry for this specific destination
-                        $errorMsg = $e->getMessage();
-                        
-                        $updateStmt = $db->prepare("
-                            UPDATE disbursement_destinations 
-                            SET status = 'failed', 
-                                error_message = ?,
-                                completed_at = NOW()
-                            WHERE id = ?
-                        ");
-                        $updateStmt->execute([$errorMsg, $dest['id']]);
-                        
-                        $failedDestinations[] = [
-                            'index' => $dest['destination_index'],
-                            'institution' => $dest['institution'],
-                            'beneficiary' => $dest['beneficiary_name'] ?? $dest['identifier'],
-                            'amount' => $dest['amount'],
-                            'currency' => $dest['currency'] ?? 'BWP',
-                            'error' => $errorMsg
+
+                try {
+                    $countryName = $_ENV['VOUCHMORPH_COUNTRY'] ?? getenv('VOUCHMORPH_COUNTRY') ?? 'Botswana';
+                    $fullCountryConfig = LoadCountry::getConfig();
+
+                    error_log("[review_batch] Initializing SwapService...");
+                    error_log("[review_batch] Country: " . $countryName);
+
+                    $swapService = new SwapService($db, $fullCountryConfig, $countryName);
+
+                    error_log("[review_batch] SwapService initialized successfully");
+
+                    foreach ($identityDestinations as $dest) {
+                        error_log("[review_batch] Processing identity destination: " . json_encode($dest));
+
+                        $identityPayload = [
+                            'swap_type' => 'IDENTITY',
+                            'reference' => $batch['batch_reference'] . '_ID_' . $dest['destination_index'],
+                            // Deterministic per-destination key: safe to reuse across
+                            // resumes since each identity destination is independent
+                            // of what else is in the batch.
+                            'idempotency_key' => $batch['batch_reference'] . '_ID_' . $dest['destination_index'],
+                            'from_institution' => $batch['source_institution'],
+                            'source_institution' => $batch['source_institution'],
+                            'asset_type' => $batch['source_asset_type'] ?? 'ACCOUNT',
+                            'source_identifier' => $batch['source_identifier'],
+                            'amount' => (float)$dest['amount'],
+                            'currency' => $dest['currency'] ?? $batch['currency'] ?? 'BWP',
+                            'identity_type' => $dest['identity_type'] ?? 'national_id',
+                            'identity_value' => $dest['identity_value'] ?? $dest['identifier'],
                         ];
-                        
-                        $overallFailed++;
-                        error_log("[review_batch] Destination {$dest['destination_index']} failed: " . $errorMsg);
+
+                        if (!empty($dest['beneficiary_phone'])) {
+                            $identityPayload['notification_phone'] = $dest['beneficiary_phone'];
+                        }
+
+                        error_log("[review_batch] Identity payload: " . json_encode($identityPayload));
+
+                        try {
+                            $idResult = $swapService->executeAtomicSwap($identityPayload);
+                            $overallPending++;
+
+                            $stmt = $db->prepare("
+                                UPDATE disbursement_destinations
+                                SET status = 'PENDING_IDENTITY_CONFIRMATION',
+                                    hold_reference = :hold_ref
+                                WHERE batch_id = :batch_id AND destination_index = :idx
+                            ");
+                            $stmt->execute([
+                                ':hold_ref' => $idResult['hold_reference'] ?? null,
+                                ':batch_id' => $batchId,
+                                ':idx' => $dest['destination_index'],
+                            ]);
+
+                            $allResults[] = [
+                                'destination_index' => $dest['destination_index'],
+                                'type' => 'identity',
+                                'result' => $idResult
+                            ];
+
+                            error_log("[review_batch] Identity destination {$dest['destination_index']} placed on hold");
+
+                        } catch (Exception $e) {
+                            $overallFailed++;
+                            $errorMsg = $e->getMessage();
+
+                            $failedDestinations[] = [
+                                'index' => $dest['destination_index'],
+                                'institution' => $dest['institution'] ?? 'IDENTITY_RECIPIENT',
+                                'beneficiary' => $dest['beneficiary_name'] ?? $dest['identity_value'] ?? 'Unknown',
+                                'amount' => $dest['amount'],
+                                'currency' => $dest['currency'] ?? 'BWP',
+                                'error' => $errorMsg
+                            ];
+
+                            error_log("[review_batch] Identity destination {$dest['destination_index']} failed: " . $errorMsg);
+
+                            $stmt = $db->prepare("
+                                UPDATE disbursement_destinations
+                                SET status = 'FAILED',
+                                    error_message = :error
+                                WHERE batch_id = :batch_id AND destination_index = :idx
+                            ");
+                            $stmt->execute([
+                                ':error' => $errorMsg,
+                                ':batch_id' => $batchId,
+                                ':idx' => $dest['destination_index'],
+                            ]);
+                        }
                     }
-                }
-                
-                // ============================================================
-                // STEP 3: Finalize batch status
-                // ============================================================
-                // Count failed destinations after processing
-                $failedCountStmt = $db->prepare("
-                    SELECT COUNT(*) FROM disbursement_destinations 
-                    WHERE batch_id = ? AND status = 'failed'
-                ");
-                $failedCountStmt->execute([$batchId]);
-                $totalFailed = $failedCountStmt->fetchColumn() ?: 0;
-                
-                // Count completed destinations
-                $completedCountStmt = $db->prepare("
-                    SELECT COUNT(*) FROM disbursement_destinations 
-                    WHERE batch_id = ? AND status IN ('completed', 'success')
-                ");
-                $completedCountStmt->execute([$batchId]);
-                $totalCompleted = $completedCountStmt->fetchColumn() ?: 0;
-                
-                // Count total destinations
-                $totalCountStmt = $db->prepare("
-                    SELECT COUNT(*) FROM disbursement_destinations 
-                    WHERE batch_id = ?
-                ");
-                $totalCountStmt->execute([$batchId]);
-                $totalDestinations = $totalCountStmt->fetchColumn() ?: 0;
-                
-                if ($totalFailed > 0 && $totalCompleted == 0) {
-                    // All failed
-                    $updateStmt = $db->prepare("
+
+                    if (!empty($institutionDestinations)) {
+                        error_log("[review_batch] Processing " . count($institutionDestinations) . " institution destinations via MULTI_DESTINATION");
+
+                        // Idempotency key scoped to the EXACT set of destination
+                        // indices in THIS attempt, not just the batch reference —
+                        // a static per-batch key would wrongly return attempt #1's
+                        // cached (partial) result on a resume with a shrunk set.
+                        $idxList = implode(',', array_column($institutionDestinations, 'destination_index'));
+                        $multiIdempotencyKey = $batch['batch_reference'] . '_MULTI_' . substr(md5($idxList), 0, 12);
+
+                        $multiPayload = [
+                            'swap_type' => 'MULTI_DESTINATION',
+                            'reference' => $batch['batch_reference'],
+                            'idempotency_key' => $multiIdempotencyKey,
+                            'from_institution' => $batch['source_institution'],
+                            'source_institution' => $batch['source_institution'],
+                            'asset_type' => $batch['source_asset_type'] ?? 'ACCOUNT',
+                            'source_identifier' => $batch['source_identifier'],
+                            'amount' => array_sum(array_column($institutionDestinations, 'amount')),
+                            'currency' => $batch['currency'] ?? 'BWP',
+                            'destinations' => [],
+                        ];
+
+                        foreach ($institutionDestinations as $dest) {
+                            $multiPayload['destinations'][] = [
+                                'to_institution' => $dest['institution'],
+                                'destination_institution' => $dest['institution'],
+                                'destination_asset_type' => $dest['asset_type'] ?? 'WALLET',
+                                'destination_identifier' => $dest['identifier'],
+                                'destination_identifier_type' => $dest['identifier_type'] ?? 'account',
+                                'amount' => (float)$dest['amount'],
+                                'currency' => $dest['currency'] ?? 'BWP',
+                                'delivery_method' => $dest['delivery_method'] ?? 'DEPOSIT',
+                                'beneficiary_phone' => $dest['beneficiary_phone'] ?? null,
+                                'beneficiary_name' => $dest['beneficiary_name'] ?? null,
+                            ];
+                        }
+
+                        error_log("[review_batch] MULTI_DESTINATION payload: " . json_encode($multiPayload, JSON_PRETTY_PRINT));
+
+                        $multiResult = $swapService->executeAtomicSwap($multiPayload);
+
+                        error_log("[review_batch] MULTI_DESTINATION result: " . json_encode($multiResult, JSON_PRETTY_PRINT));
+
+                        $multiSuccess = $multiResult['successful_destinations'] ?? 0;
+                        $multiFailed = $multiResult['failed_destinations'] ?? 0;
+
+                        $overallSuccess += $multiSuccess;
+                        $overallFailed += $multiFailed;
+
+                        foreach ($multiResult['destinations'] ?? [] as $idx => $destResult) {
+                            $origDest = $institutionDestinations[$idx] ?? null;
+                            if (!$origDest) continue;
+
+                            $status = $destResult['status'] ?? 'FAILED';
+                            $errorMsg = $destResult['error'] ?? null;
+
+                            if ($status !== 'SUCCESS' && $status !== 'COMPLETED') {
+                                $failedDestinations[] = [
+                                    'index' => $origDest['destination_index'],
+                                    'institution' => $origDest['institution'],
+                                    'beneficiary' => $origDest['beneficiary_name'] ?? $origDest['identifier'],
+                                    'amount' => $origDest['amount'],
+                                    'currency' => $origDest['currency'] ?? 'BWP',
+                                    'error' => $errorMsg ?? 'Unknown error'
+                                ];
+                            }
+
+                            $stmt = $db->prepare("
+                                UPDATE disbursement_destinations
+                                SET status = :status,
+                                    hold_reference = :hold_ref,
+                                    transaction_reference = :tx_ref,
+                                    error_message = :error
+                                WHERE batch_id = :batch_id AND destination_index = :idx
+                            ");
+                            $stmt->execute([
+                                ':status' => $status,
+                                ':hold_ref' => $destResult['hold_reference'] ?? null,
+                                ':tx_ref' => $destResult['transaction_reference'] ?? null,
+                                ':error' => $errorMsg,
+                                ':batch_id' => $batchId,
+                                ':idx' => $origDest['destination_index'],
+                            ]);
+                        }
+
+                        $allResults[] = ['type' => 'multi_destination', 'result' => $multiResult];
+                    }
+
+                    // Fold in whatever was already done on a PRIOR attempt so
+                    // the final counts reflect the whole batch, not just what
+                    // THIS request touched.
+                    $priorSuccessCount = 0;
+                    $priorPendingCount = 0;
+                    foreach ($destinationsAtClaim as $d) {
+                        if (!destinationNotYetAttempted($d)) {
+                            $s = strtoupper($d['status'] ?? '');
+                            if (in_array($s, ['SUCCESS', 'COMPLETED'], true)) $priorSuccessCount++;
+                            if ($s === 'PENDING_IDENTITY_CONFIRMATION') $priorPendingCount++;
+                        }
+                    }
+                    $overallSuccess += $priorSuccessCount;
+                    $overallPending += $priorPendingCount;
+
+                    $finalStatus = 'completed';
+                    if ($overallFailed > 0 && ($overallSuccess > 0 || $overallPending > 0)) {
+                        $finalStatus = 'partial_success';
+                    } elseif ($overallFailed > 0 && $overallPending == 0 && $overallSuccess == 0) {
+                        $finalStatus = 'failed';
+                    } elseif ($overallPending > 0) {
+                        $finalStatus = 'pending_identity_confirmation';
+                    }
+
+                    $isTerminal = in_array($finalStatus, ['completed', 'success', 'COMPLETED']);
+
+                    error_log("[review_batch] Final status: $finalStatus (success: $overallSuccess, failed: $overallFailed, pending: $overallPending, skipped: $skippedAlreadyDone)");
+
+                    $stmt = $db->prepare("
                         UPDATE disbursement_batches 
-                        SET status = 'failed', 
-                            execution_completed_at = NOW(),
-                            failed_count = ?,
-                            successful_count = 0,
-                            pending_count = 0,
-                            executed_by = ?
-                        WHERE id = ?
+                        SET status = :status,
+                            successful_count = :success,
+                            failed_count = :failed,
+                            pending_count = :pending,
+                            executed_by = :user_id,
+                            executed_at = NOW(),
+                            results_payload = :results::jsonb,
+                            completed_at = CASE WHEN :is_terminal::boolean THEN NOW() ELSE completed_at END,
+                            updated_at = NOW()
+                        WHERE id = :id
                     ");
-                    $updateStmt->execute([$totalFailed, $userId, $batchId]);
-                    $error = "All destinations failed. $totalFailed destinations failed.";
-                    
-                } elseif ($totalFailed > 0 && $totalCompleted > 0) {
-                    // Partial success
-                    $updateStmt = $db->prepare("
-                        UPDATE disbursement_batches 
-                        SET status = 'partial_success', 
-                            execution_completed_at = NOW(),
-                            failed_count = ?,
-                            successful_count = ?,
-                            pending_count = 0,
-                            executed_by = ?
-                        WHERE id = ?
-                    ");
-                    $updateStmt->execute([$totalFailed, $totalCompleted, $userId, $batchId]);
-                    
-                    $success = "⚠️ Batch partially executed.<br>";
-                    $success .= "✅ <strong>$totalCompleted succeeded</strong><br>";
-                    $success .= "❌ <strong>$totalFailed failed</strong><br><br>";
-                    
-                    if (!empty($failedDestinations)) {
+                    $stmt->execute([
+                        ':status' => $finalStatus,
+                        ':success' => $overallSuccess,
+                        ':failed' => $overallFailed,
+                        ':pending' => $overallPending,
+                        ':user_id' => $userId,
+                        ':results' => json_encode($allResults),
+                        ':is_terminal' => $isTerminal ? 't' : 'f',
+                        ':id' => $batchId
+                    ]);
+
+                    // Ration bookkeeping: only the amount that actually moved on
+                    // THIS attempt gets added — prior attempts' successful
+                    // amounts were already added when they ran.
+                    if (!empty($batch['department_id'])) {
+                        try {
+                            $successfulAmountThisAttempt = 0.0;
+                            foreach ($allResults as $resultEntry) {
+                                if (($resultEntry['type'] ?? '') === 'multi_destination') {
+                                    foreach ($resultEntry['result']['destinations'] ?? [] as $idx => $destResult) {
+                                        $st = $destResult['status'] ?? '';
+                                        if ($st === 'SUCCESS' || $st === 'COMPLETED') {
+                                            $origDest = $institutionDestinations[$idx] ?? null;
+                                            if ($origDest) {
+                                                $successfulAmountThisAttempt += (float)$origDest['amount'];
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if ($successfulAmountThisAttempt > 0) {
+                                $stmt = $db->prepare("
+                                    UPDATE departments
+                                    SET amount_disbursed_ytd = amount_disbursed_ytd + :amt, updated_at = NOW()
+                                    WHERE id = :id
+                                ");
+                                $stmt->execute([':amt' => $successfulAmountThisAttempt, ':id' => $batch['department_id']]);
+                                error_log("[review_batch] Department {$batch['department_id']} amount_disbursed_ytd increased by {$successfulAmountThisAttempt}");
+                            }
+                        } catch (\Throwable $e) {
+                            error_log("[review_batch] Failed to update department amount_disbursed_ytd: " . $e->getMessage());
+                        }
+                    }
+
+                    $skippedNote = $skippedAlreadyDone > 0
+                        ? " ({$skippedAlreadyDone} destination(s) already completed on a previous attempt were correctly skipped.)"
+                        : '';
+
+                    if ($finalStatus === 'completed') {
+                        $success = "✅ All $overallSuccess destinations paid successfully!" . $skippedNote;
+                    } elseif ($finalStatus === 'partial_success') {
+                        $success = "⚠️ Batch partially executed.<br>";
+                        $success .= "✅ <strong>$overallSuccess succeeded</strong><br>";
+                        $success .= "❌ <strong>$overallFailed failed</strong><br>";
+                        $success .= $skippedNote . "<br><br>";
                         $success .= "<strong>Failed Destinations:</strong><br>";
                         foreach ($failedDestinations as $failed) {
                             $success .= "• <strong>#{$failed['index']}</strong> - {$failed['institution']} - ";
                             $success .= "{$failed['beneficiary']} - " . number_format($failed['amount'], 2) . " {$failed['currency']}<br>";
                             $success .= "  <span style='color:#7A2118; font-size:12px;'>Error: " . htmlspecialchars($failed['error']) . "</span><br>";
                         }
-                    }
-                    
-                } else {
-                    // All succeeded
-                    $updateStmt = $db->prepare("
-                        UPDATE disbursement_batches 
-                        SET status = 'completed', 
-                            execution_completed_at = NOW(),
-                            failed_count = 0,
-                            successful_count = ?,
-                            pending_count = 0,
-                            executed_by = ?
-                        WHERE id = ?
-                    ");
-                    $updateStmt->execute([$totalCompleted, $userId, $batchId]);
-                    $success = "✅ All $totalCompleted destinations paid successfully!";
-                }
-                
-                // ============================================================
-                // Ration bookkeeping: amount_disbursed_ytd only reflects
-                // amounts that actually moved. Only the successfully-executed
-                // portion of this batch counts toward it — failed/pending
-                // destinations were never disbursed and must not be added.
-                // ============================================================
-                if (!empty($batch['department_id']) && $totalCompleted > 0) {
-                    try {
-                        // Calculate successful amount from completed destinations
-                        $successAmountStmt = $db->prepare("
-                            SELECT SUM(amount) FROM disbursement_destinations 
-                            WHERE batch_id = ? AND status IN ('completed', 'success')
-                        ");
-                        $successAmountStmt->execute([$batchId]);
-                        $successfulAmount = $successAmountStmt->fetchColumn() ?: 0;
-                        
-                        if ($successfulAmount > 0) {
-                            $stmt = $db->prepare("
-                                UPDATE departments
-                                SET amount_disbursed_ytd = amount_disbursed_ytd + :amt, updated_at = NOW()
-                                WHERE id = :id
-                            ");
-                            $stmt->execute([':amt' => $successfulAmount, ':id' => $batch['department_id']]);
-                            error_log("[review_batch] Department {$batch['department_id']} amount_disbursed_ytd increased by {$successfulAmount}");
+                    } elseif ($finalStatus === 'failed') {
+                        $error = "❌ All $overallFailed destinations failed.<br><br>";
+                        $error .= "<strong>Failed Destinations:</strong><br>";
+                        foreach ($failedDestinations as $failed) {
+                            $error .= "• <strong>#{$failed['index']}</strong> - {$failed['institution']} - ";
+                            $error .= "{$failed['beneficiary']} - " . number_format($failed['amount'], 2) . " {$failed['currency']}<br>";
+                            $error .= "  <span style='color:#7A2118; font-size:12px;'>Error: " . htmlspecialchars($failed['error']) . "</span><br>";
                         }
-                    } catch (\Throwable $e) {
-                        // Non-fatal: the actual disbursement already happened via
-                        // SwapService and that result is authoritative.
-                        error_log("[review_batch] Failed to update department amount_disbursed_ytd: " . $e->getMessage());
+                    } else {
+                        $success = "Batch executed! $overallSuccess succeeded, $overallFailed failed, $overallPending pending identity confirmation." . $skippedNote;
                     }
+
+                } catch (Exception $e) {
+                    error_log("[review_batch] Execution error: " . $e->getMessage());
+                    error_log("[review_batch] Trace: " . $e->getTraceAsString());
+
+                    $stmt = $db->prepare("
+                        UPDATE disbursement_destinations 
+                        SET status = 'FAILED',
+                            error_message = :error,
+                            updated_at = NOW()
+                        WHERE batch_id = :batch_id 
+                        AND status NOT IN ('COMPLETED', 'SUCCESS', 'PENDING_IDENTITY_CONFIRMATION')
+                    ");
+                    $stmt->execute([
+                        ':error' => 'System error: ' . $e->getMessage(),
+                        ':batch_id' => $batchId
+                    ]);
+
+                    // FIX: the original code never reset disbursement_batches.status
+                    // in this catch block, so a caught (non-timeout) exception left
+                    // the batch stuck on 'executing' forever, same as an uncaught
+                    // timeout would.
+                    $recoveryStatus = $overallSuccess > 0 ? 'partial_success' : 'failed';
+                    try {
+                        $stmt = $db->prepare("
+                            UPDATE disbursement_batches
+                            SET status = :status, updated_at = NOW()
+                            WHERE id = :id
+                        ");
+                        $stmt->execute([':status' => $recoveryStatus, ':id' => $batchId]);
+                    } catch (\Throwable $inner) {
+                        error_log("[review_batch] Failed to reset batch status after execution error: " . $inner->getMessage());
+                    }
+
+                    $error = "❌ Execution failed: " . $e->getMessage();
                 }
-                
-                // Refresh batch status
-                $refreshStmt = $db->prepare("SELECT status FROM disbursement_batches WHERE id = ?");
-                $refreshStmt->execute([$batchId]);
-                $batch['status'] = $refreshStmt->fetchColumn() ?: $batch['status'];
-                
-            } catch (Exception $e) {
-                error_log("[review_batch] Execution error: " . $e->getMessage());
-                error_log("[review_batch] Trace: " . $e->getTraceAsString());
-                
-                // Update batch status to failed if critical error
-                try {
-                    $db->query("
-                        UPDATE disbursement_batches 
-                        SET status = 'failed',
-                            error_message = ?,
-                            execution_completed_at = NOW()
-                        WHERE id = ?
-                    ", [$e->getMessage(), $batchId]);
-                } catch (\Exception $updateError) {
-                    error_log("[review_batch] Failed to update batch status: " . $updateError->getMessage());
-                }
-                
-                $error = "❌ Execution failed: " . $e->getMessage();
             }
         }
     }
 
-    // Ration figures may have changed as a result of the action just taken
-    // (submit/approve reserve ration by keeping the batch counted in
-    // 'reserved_in_flight', execute converts reserved into disbursed) —
-    // refresh before rendering so the summary card shows current numbers,
-    // not the pre-action snapshot loaded above.
+    // Refresh everything from DB before rendering — the executing-lock,
+    // status transitions, and department bookkeeping above changed rows
+    // out from under the snapshots loaded at the top of the page.
+    $refreshedBatch = loadBatch($db, $batchId, $orgId);
+    if ($refreshedBatch) {
+        $batch = $refreshedBatch;
+    }
+    $destinations = loadDestinations($db, $batchId);
+
     if (!empty($batch['department_id'])) {
         try {
             $rationInfo = $deptService->getAvailableRation((int)$batch['department_id']);
@@ -596,9 +718,22 @@ $roleDisplay = strtoupper($role);
 $status = strtolower($batch['status'] ?? 'draft');
 
 // ============================================================
-// FINAL SAFETY CHECK: Approvers should NEVER see Execute button
+// STUCK-EXECUTION DETECTION — drives the manual Resume affordance.
+// This is a heuristic, not a guarantee: it can't distinguish "genuinely
+// still running a very large batch" from "crashed 11 minutes ago"
+// without a proper background-job architecture. It's a pragmatic
+// mitigation for a synchronous-request execute path, not a replacement
+// for one.
 // ============================================================
+$isStuckExecuting = false;
+if ($status === 'executing') {
+    $updatedAtTs = strtotime($batch['updated_at'] ?? $batch['created_at'] ?? 'now');
+    $isStuckExecuting = (time() - $updatedAtTs) > EXECUTING_STUCK_THRESHOLD_SECONDS;
+}
+
+// FINAL SAFETY CHECK: Approvers should NEVER see Execute button
 $showExecuteButton = ($status === 'approved' && $canExecute && !$isApprover);
+$showResumeButton = ($status === 'executing' && $isStuckExecuting && $canExecute && !$isApprover);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -609,337 +744,69 @@ $showExecuteButton = ($status === 'approved' && $canExecute && !$isApprover);
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        /* ============================================================
-           VOUCHMORPH STANDARD STYLE
-           Sharp corners · Centralized · Brass/Ink-900 · Appropriate font sizes
-           ============================================================ */
         :root {
-            --paper:        #EEF1EF;
-            --panel:        #FFFFFF;
-            --ink-900:      #0F2138;
-            --ink-700:      #1D3557;
-            --ink-500:      #4A5A6E;
-            --ink-300:      #8A96A3;
-            --line:         #D3DAD6;
-            --line-strong:  #AEB8B2;
-            --brass:        #8A6D3B;
-            --brass-tint:   #F4EFE3;
-            --seal-red:     #7A2118;
-            --amber:        #8A5A0B;
-            --ledger-green: #24513A;
-            --green-tint:   #E5EEE7;
-            --blue-tint:    #E7EEF4;
-            --danger:       #b3261e;
-            --danger-bg:    #fbeceb;
-
-            --f-body: 'IBM Plex Sans', sans-serif;
-            --f-cond: 'IBM Plex Sans Condensed', sans-serif;
-            --f-mono: 'IBM Plex Mono', monospace;
+            --paper: #EEF1EF; --panel: #FFFFFF; --ink-900: #0F2138; --ink-700: #1D3557;
+            --ink-500: #4A5A6E; --ink-300: #8A96A3; --line: #D3DAD6; --line-strong: #AEB8B2;
+            --brass: #8A6D3B; --brass-tint: #F4EFE3; --seal-red: #7A2118; --amber: #8A5A0B;
+            --ledger-green: #24513A; --green-tint: #E5EEE7; --blue-tint: #E7EEF4;
+            --danger: #b3261e; --danger-bg: #fbeceb;
+            --f-body: 'IBM Plex Sans', sans-serif; --f-cond: 'IBM Plex Sans Condensed', sans-serif; --f-mono: 'IBM Plex Mono', monospace;
         }
-
         * { margin: 0; padding: 0; box-sizing: border-box; }
-
-        body {
-            font-family: var(--f-body);
-            background: var(--paper);
-            color: var(--ink-900);
-            min-height: 100vh;
-            font-size: 14px;
-            line-height: 1.5;
-            -webkit-font-smoothing: antialiased;
-        }
-
+        body { font-family: var(--f-body); background: var(--paper); color: var(--ink-900); min-height: 100vh; font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
         :focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
-
-        /* ============================================================
-           HEADER
-           ============================================================ */
-        .masthead {
-            background: var(--ink-900);
-            color: #fff;
-            padding: 14px 32px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-bottom: 3px solid var(--brass);
-            flex-wrap: wrap;
-            gap: 10px;
-        }
-        .masthead h1 {
-            font-family: var(--f-cond);
-            font-size: 18px;
-            font-weight: 700;
-            letter-spacing: 0.04em;
-        }
-        .masthead .role-pill {
-            font-size: 10px;
-            font-weight: 700;
-            color: var(--brass);
-            border: 1px solid var(--brass);
-            padding: 2px 10px;
-            text-transform: uppercase;
-            font-family: var(--f-cond);
-            letter-spacing: 0.05em;
-        }
-        .masthead .role-pill.approver {
-            border-color: #f59e0b;
-            color: #f59e0b;
-        }
-        .masthead .role-pill.owner {
-            border-color: var(--ledger-green);
-            color: var(--ledger-green);
-        }
-        .masthead .ref {
-            color: var(--ink-300);
-            font-size: 12px;
-            margin-left: 12px;
-            font-family: var(--f-mono);
-        }
-        .masthead .logout-link {
-            color: rgba(255,255,255,0.4);
-            text-decoration: none;
-            margin-left: 16px;
-            font-size: 11px;
-            font-family: var(--f-cond);
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-        }
-        .masthead .logout-link:hover {
-            color: var(--brass);
-        }
-
-        /* ============================================================
-           CONTENT
-           ============================================================ */
-        .stage {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 28px 20px;
-        }
-
-        /* ============================================================
-           BACK LINK
-           ============================================================ */
-        .back-link {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            color: var(--ink-500);
-            text-decoration: none;
-            font-size: 13px;
-            font-weight: 600;
-            margin-bottom: 20px;
-            font-family: var(--f-cond);
-            letter-spacing: 0.02em;
-        }
+        .masthead { background: var(--ink-900); color: #fff; padding: 14px 32px; display: flex; justify-content: space-between; align-items: center; border-bottom: 3px solid var(--brass); flex-wrap: wrap; gap: 10px; }
+        .masthead h1 { font-family: var(--f-cond); font-size: 18px; font-weight: 700; letter-spacing: 0.04em; }
+        .masthead .role-pill { font-size: 10px; font-weight: 700; color: var(--brass); border: 1px solid var(--brass); padding: 2px 10px; text-transform: uppercase; font-family: var(--f-cond); letter-spacing: 0.05em; }
+        .masthead .role-pill.approver { border-color: #f59e0b; color: #f59e0b; }
+        .masthead .role-pill.owner { border-color: var(--ledger-green); color: var(--ledger-green); }
+        .masthead .ref { color: var(--ink-300); font-size: 12px; margin-left: 12px; font-family: var(--f-mono); }
+        .masthead .logout-link { color: rgba(255,255,255,0.4); text-decoration: none; margin-left: 16px; font-size: 11px; font-family: var(--f-cond); text-transform: uppercase; letter-spacing: 0.04em; }
+        .masthead .logout-link:hover { color: var(--brass); }
+        .stage { max-width: 1200px; margin: 0 auto; padding: 28px 20px; }
+        .back-link { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-500); text-decoration: none; font-size: 13px; font-weight: 600; margin-bottom: 20px; font-family: var(--f-cond); letter-spacing: 0.02em; }
         .back-link:hover { color: var(--brass); }
-
-        /* ============================================================
-           STEP INDICATOR
-           ============================================================ */
-        .step-indicator {
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 28px;
-            padding: 0 8px;
-        }
-        .step {
-            flex: 1;
-            text-align: center;
-            font-size: 11px;
-            font-weight: 600;
-            color: var(--ink-300);
-            text-transform: uppercase;
-            font-family: var(--f-cond);
-            letter-spacing: 0.04em;
-        }
+        .step-indicator { display: flex; justify-content: space-between; margin-bottom: 28px; padding: 0 8px; }
+        .step { flex: 1; text-align: center; font-size: 11px; font-weight: 600; color: var(--ink-300); text-transform: uppercase; font-family: var(--f-cond); letter-spacing: 0.04em; }
         .step.active { color: var(--ink-900); }
         .step.done { color: var(--ledger-green); }
-
-        /* ============================================================
-           CARDS
-           ============================================================ */
-        .card {
-            background: var(--panel);
-            border: 1px solid var(--line);
-            padding: 24px;
-            margin-bottom: 20px;
-        }
-        .card-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 16px;
-            padding-bottom: 12px;
-            border-bottom: 1px solid var(--line);
-            flex-wrap: wrap;
-            gap: 10px;
-        }
-        .card-title {
-            font-size: 16px;
-            font-weight: 700;
-            font-family: var(--f-cond);
-            letter-spacing: 0.02em;
-        }
-        .readonly-badge {
-            display: inline-block;
-            padding: 4px 12px;
-            background: #fef3c7;
-            color: var(--amber);
-            font-size: 10px;
-            font-weight: 600;
-            text-transform: uppercase;
-            font-family: var(--f-cond);
-            letter-spacing: 0.04em;
-            border: 1px solid #f59e0b;
-        }
-
-        /* ============================================================
-           STATUS
-           ============================================================ */
-        .workflow-status {
-            padding: 4px 14px;
-            font-size: 11px;
-            font-weight: 600;
-            text-transform: uppercase;
-            display: inline-block;
-            font-family: var(--f-cond);
-            letter-spacing: 0.04em;
-        }
+        .card { background: var(--panel); border: 1px solid var(--line); padding: 24px; margin-bottom: 20px; }
+        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; gap: 10px; }
+        .card-title { font-size: 16px; font-weight: 700; font-family: var(--f-cond); letter-spacing: 0.02em; }
+        .readonly-badge { display: inline-block; padding: 4px 12px; background: #fef3c7; color: var(--amber); font-size: 10px; font-weight: 600; text-transform: uppercase; font-family: var(--f-cond); letter-spacing: 0.04em; border: 1px solid #f59e0b; }
+        .workflow-status { padding: 4px 14px; font-size: 11px; font-weight: 600; text-transform: uppercase; display: inline-block; font-family: var(--f-cond); letter-spacing: 0.04em; }
         .status-draft { background: var(--line); color: var(--ink-500); }
         .status-pending_approval { background: #fef3c7; color: var(--amber); }
         .status-approved { background: var(--blue-tint); color: #1e40af; }
+        .status-executing { background: #fef3c7; color: var(--amber); }
         .status-rejected { background: var(--danger-bg); color: var(--danger); }
         .status-completed { background: var(--green-tint); color: var(--ledger-green); }
         .status-failed { background: var(--danger-bg); color: var(--danger); }
         .status-pending_identity_confirmation { background: var(--blue-tint); color: #1e40af; }
         .status-partial_success { background: #fef3c7; color: var(--amber); }
         .status-success { background: var(--green-tint); color: var(--ledger-green); }
-        .status-executing { background: var(--blue-tint); color: #1e40af; }
-
-        /* ============================================================
-           GRID
-           ============================================================ */
-        .grid-3 {
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
-            gap: 16px;
-        }
-
-        /* ============================================================
-           RATION PANEL
-           ============================================================ */
-        .ration-panel {
-            margin-top: 14px;
-            padding-top: 14px;
-            border-top: 1px solid var(--line);
-        }
-        .ration-panel .ration-title {
-            font-family: var(--f-cond);
-            font-size: 12px;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            color: var(--ink-500);
-            margin-bottom: 10px;
-        }
+        .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+        .ration-panel { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+        .ration-panel .ration-title { font-family: var(--f-cond); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-500); margin-bottom: 10px; }
         .ration-bar-track { height: 8px; background: var(--paper); border: 1px solid var(--line); margin-bottom: 10px; }
         .ration-bar-fill { height: 100%; }
         .ration-stats { display: flex; gap: 20px; flex-wrap: wrap; font-size: 12.5px; color: var(--ink-500); }
         .ration-stats strong { color: var(--ink-900); }
         .ration-stats .danger strong { color: var(--danger); }
         .ration-stats .ok strong { color: var(--ledger-green); }
-
-        /* ============================================================
-           TABLE
-           ============================================================ */
+        .executing-notice { background: #fef3c7; border-left: 4px solid #f59e0b; padding: 14px 18px; margin-bottom: 16px; font-size: 13.5px; color: var(--amber); }
+        .executing-notice strong { color: var(--amber); }
+        .stuck-notice { background: var(--danger-bg); border-left: 4px solid var(--danger); padding: 14px 18px; margin-bottom: 16px; font-size: 13.5px; color: var(--danger); }
+        .stuck-notice strong { color: var(--danger); }
         .table-responsive { overflow-x: auto; }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 13px;
-        }
-        th {
-            background: var(--paper);
-            color: var(--ink-500);
-            padding: 10px 14px;
-            text-align: left;
-            font-size: 10px;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            font-weight: 600;
-            border-bottom: 2px solid var(--line);
-            font-family: var(--f-cond);
-        }
-        td {
-            padding: 10px 14px;
-            border-bottom: 1px solid var(--line);
-            vertical-align: middle;
-            font-size: 13px;
-        }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th { background: var(--paper); color: var(--ink-500); padding: 10px 14px; text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; border-bottom: 2px solid var(--line); font-family: var(--f-cond); }
+        td { padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: middle; font-size: 13px; }
         tr:hover { background: var(--brass-tint); }
-        .table-code {
-            font-family: var(--f-mono);
-            font-size: 11px;
-            background: var(--paper);
-            padding: 2px 6px;
-        }
-
-        /* ============================================================
-           MESSAGES
-           ============================================================ */
-        .error {
-            background: var(--danger-bg);
-            color: var(--danger);
-            padding: 14px 18px;
-            margin-bottom: 16px;
-            border-left: 3px solid var(--danger);
-            font-size: 14px;
-            line-height: 1.6;
-        }
-        .error .failed-item {
-            margin-left: 16px;
-            margin-top: 4px;
-            font-size: 13px;
-        }
-        .error .failed-item .error-msg {
-            color: var(--danger);
-            font-size: 12px;
-        }
-        .success {
-            background: var(--green-tint);
-            color: var(--ledger-green);
-            padding: 14px 18px;
-            margin-bottom: 16px;
-            border-left: 3px solid var(--ledger-green);
-            font-size: 14px;
-            line-height: 1.6;
-        }
-        .success .failed-item {
-            margin-left: 16px;
-            margin-top: 4px;
-            font-size: 13px;
-            color: var(--amber);
-        }
-        .success .failed-item .error-msg {
-            color: var(--danger);
-            font-size: 12px;
-        }
-
-        /* ============================================================
-           BUTTONS
-           ============================================================ */
-        .btn {
-            padding: 8px 22px;
-            border: none;
-            font-weight: 600;
-            font-size: 12px;
-            cursor: pointer;
-            transition: all 0.15s;
-            font-family: var(--f-cond);
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-        }
+        .table-code { font-family: var(--f-mono); font-size: 11px; background: var(--paper); padding: 2px 6px; }
+        .error { background: var(--danger-bg); color: var(--danger); padding: 14px 18px; margin-bottom: 16px; border-left: 3px solid var(--danger); font-size: 14px; line-height: 1.6; }
+        .success { background: var(--green-tint); color: var(--ledger-green); padding: 14px 18px; margin-bottom: 16px; border-left: 3px solid var(--ledger-green); font-size: 14px; line-height: 1.6; }
+        .btn { padding: 8px 22px; border: none; font-weight: 600; font-size: 12px; cursor: pointer; transition: all 0.15s; font-family: var(--f-cond); text-transform: uppercase; letter-spacing: 0.04em; }
         .btn:hover { opacity: 0.85; }
         .btn-primary { background: var(--ink-900); color: #fff; }
         .btn-primary:hover { background: var(--brass); color: var(--ink-900); }
@@ -949,145 +816,28 @@ $showExecuteButton = ($status === 'approved' && $canExecute && !$isApprover);
         .btn-danger:hover { background: #5a1812; }
         .btn-secondary { background: var(--line); color: var(--ink-700); }
         .btn-secondary:hover { background: var(--line-strong); }
-        .btn-outline {
-            background: transparent;
-            border: 1px solid var(--line);
-            color: var(--ink-500);
-        }
-        .btn-outline:hover {
-            border-color: var(--brass);
-            color: var(--ink-900);
-            background: var(--brass-tint);
-        }
-        .btn-execute {
-            background: var(--seal-red);
-            color: #fff;
-            font-size: 14px;
-            padding: 10px 32px;
-        }
-        .btn-execute:hover {
-            background: #5a1812;
-        }
-        .btn-execute:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-            background: var(--ink-300);
-        }
-        .btn-retry {
-            background: var(--blue-tint);
-            color: #1e40af;
-            padding: 4px 14px;
-            font-size: 11px;
-            border: none;
-            cursor: pointer;
-            font-family: var(--f-cond);
-            font-weight: 600;
-        }
+        .btn-outline { background: transparent; border: 1px solid var(--line); color: var(--ink-500); }
+        .btn-outline:hover { border-color: var(--brass); color: var(--ink-900); background: var(--brass-tint); }
+        .btn-execute { background: var(--seal-red); color: #fff; font-size: 14px; padding: 10px 32px; }
+        .btn-execute:hover { background: #5a1812; }
+        .btn-execute:disabled { opacity: 0.5; cursor: not-allowed; background: var(--ink-300); }
+        .btn-resume { background: var(--amber); color: #fff; font-size: 13px; padding: 9px 26px; }
+        .btn-resume:hover { background: #6e4800; }
+        .btn-retry { background: var(--blue-tint); color: #1e40af; padding: 4px 14px; font-size: 11px; border: none; cursor: pointer; font-family: var(--f-cond); font-weight: 600; }
         .btn-retry:hover { background: #bfdbfe; }
-        
-        .btn-approver-locked {
-            background: #fef3c7;
-            color: var(--amber);
-            border: 1px solid #f59e0b;
-            padding: 8px 22px;
-            font-weight: 600;
-            font-size: 12px;
-            cursor: not-allowed;
-            font-family: var(--f-cond);
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-            opacity: 0.7;
-        }
-        .btn-approver-locked:hover {
-            opacity: 0.7;
-        }
-
-        /* ============================================================
-           ACTIONS BAR
-           ============================================================ */
-        .actions-bar {
-            display: flex;
-            gap: 12px;
-            flex-wrap: wrap;
-            margin-top: 16px;
-        }
-
-        /* ============================================================
-           REJECTION FORM
-           ============================================================ */
-        .rejection-form {
-            display: none;
-            margin-top: 12px;
-            padding: 16px;
-            background: var(--danger-bg);
-        }
+        .btn-approver-locked { background: #fef3c7; color: var(--amber); border: 1px solid #f59e0b; padding: 8px 22px; font-weight: 600; font-size: 12px; cursor: not-allowed; font-family: var(--f-cond); text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.7; }
+        .btn-approver-locked:hover { opacity: 0.7; }
+        .actions-bar { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
+        .rejection-form { display: none; margin-top: 12px; padding: 16px; background: var(--danger-bg); }
         .rejection-form.show { display: block; }
-        .rejection-form textarea {
-            width: 100%;
-            padding: 10px;
-            border: 1px solid var(--line);
-            min-height: 80px;
-            font-family: var(--f-body);
-            font-size: 13px;
-            background: var(--panel);
-        }
-        .rejection-form textarea:focus {
-            outline: 2px solid var(--brass);
-            outline-offset: 1px;
-        }
-        .rejection-form .form-group {
-            margin-bottom: 12px;
-        }
-        .rejection-form .form-group label {
-            display: block;
-            margin-bottom: 6px;
-            font-weight: 600;
-            font-size: 11px;
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-            font-family: var(--f-cond);
-            color: var(--ink-500);
-        }
-
-        /* ============================================================
-           SECURITY NOTICE
-           ============================================================ */
-        .security-notice {
-            background: #fef3c7;
-            border-left: 4px solid #f59e0b;
-            padding: 12px 16px;
-            margin-top: 12px;
-            font-size: 13px;
-            color: var(--amber);
-        }
-        .security-notice strong {
-            color: var(--amber);
-        }
-        .security-notice .lock-icon {
-            font-size: 18px;
-            margin-right: 8px;
-        }
-
-        /* ============================================================
-           DEBUG PANEL
-           ============================================================ */
-        .debug-panel {
-            background: #1e293b;
-            color: #e2e8f0;
-            padding: 16px;
-            overflow-x: auto;
-            font-family: var(--f-mono);
-            font-size: 12px;
-            white-space: pre-wrap;
-            word-break: break-all;
-            margin-top: 12px;
-        }
-        .debug-panel .label { color: #fbbf24; }
-        .debug-panel .value { color: #4ade80; }
-
-        /* ============================================================
-           RESPONSIVE
-           ============================================================ */
+        .rejection-form textarea { width: 100%; padding: 10px; border: 1px solid var(--line); min-height: 80px; font-family: var(--f-body); font-size: 13px; background: var(--panel); }
+        .rejection-form textarea:focus { outline: 2px solid var(--brass); outline-offset: 1px; }
+        .rejection-form .form-group { margin-bottom: 12px; }
+        .rejection-form .form-group label { display: block; margin-bottom: 6px; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; font-family: var(--f-cond); color: var(--ink-500); }
+        .security-notice { background: #fef3c7; border-left: 4px solid #f59e0b; padding: 12px 16px; margin-top: 12px; font-size: 13px; color: var(--amber); }
+        .security-notice strong { color: var(--amber); }
+        .security-notice .lock-icon { font-size: 18px; margin-right: 8px; }
+        .debug-panel { background: #1e293b; color: #e2e8f0; padding: 16px; overflow-x: auto; font-family: var(--f-mono); font-size: 12px; white-space: pre-wrap; word-break: break-all; margin-top: 12px; }
         @media (max-width: 768px) {
             .grid-3 { grid-template-columns: 1fr; }
             .masthead { flex-direction: column; text-align: center; padding: 12px 16px; }
@@ -1098,27 +848,14 @@ $showExecuteButton = ($status === 'approved' && $canExecute && !$isApprover);
             .actions-bar { flex-direction: column; }
             .btn { width: 100%; text-align: center; }
         }
-
         @media (max-width: 480px) {
             .masthead h1 { font-size: 15px; }
             .step { font-size: 9px; }
             table { font-size: 12px; }
             th, td { padding: 6px 8px; }
         }
-
-        /* ============================================================
-           DARK MODE SUPPORT
-           ============================================================ */
         @media (prefers-color-scheme: dark) {
-            :root {
-                --paper: #1B2733;
-                --panel: #1B2733;
-                --ink-900: #ECEFF2;
-                --ink-700: #D5DCE0;
-                --ink-500: #93A2AC;
-                --ink-300: #6B7A85;
-                --line: #2C3A45;
-            }
+            :root { --paper: #1B2733; --panel: #1B2733; --ink-900: #ECEFF2; --ink-700: #D5DCE0; --ink-500: #93A2AC; --ink-300: #6B7A85; --line: #2C3A45; }
             .masthead { background: #0d1a26; }
             .card { background: #1B2733; border-color: #2C3A45; }
             .card-header { border-color: #2C3A45; }
@@ -1139,9 +876,6 @@ $showExecuteButton = ($status === 'approved' && $canExecute && !$isApprover);
     </style>
 </head>
 <body>
-    <!-- ============================================================ -->
-    <!-- HEADER -->
-    <!-- ============================================================ -->
     <div class="masthead">
         <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
             <h1>VOUCHMORPH · Review Batch</h1>
@@ -1155,13 +889,9 @@ $showExecuteButton = ($status === 'approved' && $canExecute && !$isApprover);
         </div>
     </div>
 
-    <!-- ============================================================ -->
-    <!-- CONTENT -->
-    <!-- ============================================================ -->
     <div class="stage">
         <a href="add_destinations.php?batch_id=<?php echo $batchId; ?>" class="back-link">← Back to Destinations</a>
 
-        <!-- Step Indicator -->
         <div class="step-indicator">
             <span class="step done">1. Select Source</span>
             <span class="step done">2. Add Destinations</span>
@@ -1170,20 +900,31 @@ $showExecuteButton = ($status === 'approved' && $canExecute && !$isApprover);
             <span class="step">5. Execute</span>
         </div>
 
-        <!-- Messages -->
         <?php if ($error): ?>
-        <div class="error">
-            ⚠️ <?php echo $error; ?>
-        </div>
+        <div class="error">⚠️ <?php echo $error; ?></div>
         <?php endif; ?>
-        
+
         <?php if ($success): ?>
-        <div class="success">
-            ✅ <?php echo $success; ?>
+        <div class="success">✅ <?php echo $success; ?></div>
+        <?php endif; ?>
+
+        <?php if ($status === 'executing' && !$isStuckExecuting): ?>
+        <div class="executing-notice">
+            ⏳ <strong>Execution in progress.</strong> Do not close this page or click Execute again — refresh in a
+            moment to see the result. Large batches can take a while.
+        </div>
+        <?php elseif ($status === 'executing' && $isStuckExecuting): ?>
+        <div class="stuck-notice">
+            ⚠️ <strong>Execution appears stuck.</strong> It started more than <?php echo (int)(EXECUTING_STUCK_THRESHOLD_SECONDS / 60); ?> minutes ago
+            and never finished — most likely a timed-out request, not a genuinely still-running one.
+            <?php if ($canExecute): ?>
+            It is safe to resume: destinations already paid on the earlier attempt are automatically skipped.
+            <?php else: ?>
+            Only the Owner can resume it.
+            <?php endif; ?>
         </div>
         <?php endif; ?>
 
-        <!-- Read-Only Notice -->
         <?php if ($isReadOnly && !in_array($role, ['owner', 'approver', 'senior_approver'])): ?>
         <div class="card" style="border-left: 3px solid #f59e0b; background: #fef3c7;">
             <div style="display:flex; align-items:center; gap:12px;">
@@ -1199,14 +940,11 @@ $showExecuteButton = ($status === 'approved' && $canExecute && !$isApprover);
         </div>
         <?php endif; ?>
 
-        <!-- Batch Summary -->
         <div class="card">
             <div class="card-header">
                 <span class="card-title">📋 Batch Summary</span>
                 <span>
-                    <span class="workflow-status status-<?php echo $status; ?>">
-                        <?php echo htmlspecialchars($status); ?>
-                    </span>
+                    <span class="workflow-status status-<?php echo $status; ?>"><?php echo htmlspecialchars($status); ?></span>
                     <?php if ($isReadOnly): ?>
                     <span class="readonly-badge" style="margin-left:8px;">🔒 Read-Only</span>
                     <?php endif; ?>
@@ -1224,36 +962,36 @@ $showExecuteButton = ($status === 'approved' && $canExecute && !$isApprover);
                 <div><strong>Created By:</strong> <?php echo htmlspecialchars($batch['created_by_name'] ?? 'N/A'); ?></div>
                 <div><strong>Department:</strong> <?php echo $departmentInfo ? htmlspecialchars($departmentInfo['name']) : '<span style="color:var(--danger);">Not assigned</span>'; ?></div>
             </div>
-            
+
             <?php if ($batch['submitted_at']): ?>
             <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--line);">
                 <strong>Submitted:</strong> <?php echo date('Y-m-d H:i', strtotime($batch['submitted_at'])); ?>
                 by <?php echo htmlspecialchars($batch['submitted_by_name'] ?? 'N/A'); ?>
             </div>
             <?php endif; ?>
-            
+
             <?php if ($batch['approved_at']): ?>
             <div>
                 <strong>Approved:</strong> <?php echo date('Y-m-d H:i', strtotime($batch['approved_at'])); ?>
                 by <?php echo htmlspecialchars($batch['approved_by_name'] ?? 'N/A'); ?>
             </div>
             <?php endif; ?>
-            
+
             <?php if ($batch['rejection_reason']): ?>
             <div style="margin-top:14px; padding:14px; background:var(--danger-bg);">
-                <strong style="color:var(--danger);">Rejection Reason:</strong> 
+                <strong style="color:var(--danger);">Rejection Reason:</strong>
                 <span style="color:var(--danger);"><?php echo htmlspecialchars($batch['rejection_reason']); ?></span>
             </div>
             <?php endif; ?>
-            
+
             <?php if ($batch['executed_at']): ?>
             <div>
-                <strong>Executed:</strong> <?php echo date('Y-m-d H:i', strtotime($batch['executed_at'])); ?>
+                <strong>Last Execution Attempt:</strong> <?php echo date('Y-m-d H:i', strtotime($batch['executed_at'])); ?>
                 by <?php echo htmlspecialchars($batch['executed_by_name'] ?? 'N/A'); ?>
             </div>
             <?php endif; ?>
-            
-            <?php if (in_array($status, ['partial_success', 'failed'])): ?>
+
+            <?php if (in_array($status, ['partial_success', 'failed', 'completed', 'executing'])): ?>
             <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--line);">
                 <div style="display:flex; gap:24px; flex-wrap:wrap; font-size:14px;">
                     <div><strong style="color:var(--ledger-green);">✅ Successful:</strong> <?php echo $batch['successful_count'] ?? 0; ?></div>
@@ -1263,19 +1001,13 @@ $showExecuteButton = ($status === 'approved' && $canExecute && !$isApprover);
             </div>
             <?php endif; ?>
 
-            <!-- ============================================================
-                 RATION PANEL — live department budget status for this batch.
-                 Shown to everyone who can see the batch; only submitters and
-                 approvers act on it, but visibility helps everyone understand
-                 why a submit/approve might get blocked.
-                 ============================================================ -->
             <?php if ($rationInfo): ?>
             <?php
                 $utilPct = $rationInfo['ceiling'] > 0
                     ? min(100, round((($rationInfo['disbursed_ytd'] + $rationInfo['reserved_in_flight']) / $rationInfo['ceiling']) * 100, 1))
                     : 0;
                 $barColor = $rationInfo['available'] < 0 ? 'var(--danger)' : ($utilPct >= 80 ? 'var(--amber)' : 'var(--ledger-green)');
-                $thisBatchFits = (float)($batch['total_amount'] ?? 0) <= $rationInfo['available'] || in_array($status, ['approved', 'completed', 'executed', 'partial_success']);
+                $thisBatchFits = (float)($batch['total_amount'] ?? 0) <= $rationInfo['available'] || in_array($status, ['approved', 'completed', 'executing', 'partial_success']);
             ?>
             <div class="ration-panel">
                 <div class="ration-title">💰 Department Ration<?php echo $departmentInfo ? ' — ' . safeHtmlRb($departmentInfo['name']) : ''; ?></div>
@@ -1297,7 +1029,6 @@ $showExecuteButton = ($status === 'approved' && $canExecute && !$isApprover);
             <?php endif; ?>
         </div>
 
-        <!-- Destinations -->
         <div class="card">
             <div class="card-header">
                 <span class="card-title">👥 Destinations (<?php echo count($destinations); ?>)</span>
@@ -1311,15 +1042,9 @@ $showExecuteButton = ($status === 'approved' && $canExecute && !$isApprover);
                 <table>
                     <thead>
                         <tr>
-                            <th>#</th>
-                            <th>Institution</th>
-                            <th>Identifier</th>
-                            <th>Amount</th>
-                            <th>Beneficiary</th>
-                            <th>Delivery</th>
-                            <th>Status</th>
-                            <th>Transaction Ref</th>
-                            <th>Error Message</th>
+                            <th>#</th><th>Institution</th><th>Identifier</th><th>Amount</th>
+                            <th>Beneficiary</th><th>Delivery</th><th>Status</th>
+                            <th>Transaction Ref</th><th>Error Message</th>
                             <?php if ($role === 'owner' && in_array($status, ['partial_success', 'failed'])): ?>
                             <th>Action</th>
                             <?php endif; ?>
@@ -1338,7 +1063,6 @@ $showExecuteButton = ($status === 'approved' && $canExecute && !$isApprover);
                                 <?php
                                 $statusClass = strtolower($dest['status'] ?? 'PENDING');
                                 $displayStatus = $dest['status'] ?? 'PENDING';
-                                
                                 if (in_array($statusClass, ['completed', 'success'])) {
                                     $displayStatus = '✅ ' . $displayStatus;
                                 } elseif ($statusClass === 'failed') {
@@ -1347,26 +1071,19 @@ $showExecuteButton = ($status === 'approved' && $canExecute && !$isApprover);
                                     $displayStatus = '⏳ ' . $displayStatus;
                                 }
                                 ?>
-                                <span class="workflow-status status-<?php echo $statusClass; ?>">
-                                    <?php echo $displayStatus; ?>
-                                </span>
+                                <span class="workflow-status status-<?php echo $statusClass; ?>"><?php echo $displayStatus; ?></span>
                             </td>
                             <td>
                                 <?php if (!empty($dest['transaction_reference'])): ?>
                                     <code class="table-code"><?php echo htmlspecialchars($dest['transaction_reference']); ?></code>
-                                <?php else: ?>
-                                    —
-                                <?php endif; ?>
+                                <?php else: ?>—<?php endif; ?>
                             </td>
                             <td style="color:var(--danger); font-size:12px; max-width:200px;">
                                 <?php echo htmlspecialchars($dest['error_message'] ?? ''); ?>
                             </td>
                             <?php if ($role === 'owner' && in_array($status, ['partial_success', 'failed']) && strtolower($dest['status'] ?? '') === 'failed'): ?>
                             <td>
-                                <a href="retry_destination.php?batch_id=<?php echo $batchId; ?>&dest_idx=<?php echo $dest['destination_index']; ?>" 
-                                   class="btn-retry">
-                                    🔄 Retry
-                                </a>
+                                <a href="retry_destination.php?batch_id=<?php echo $batchId; ?>&dest_idx=<?php echo $dest['destination_index']; ?>" class="btn-retry">🔄 Retry</a>
                             </td>
                             <?php endif; ?>
                         </tr>
@@ -1376,7 +1093,6 @@ $showExecuteButton = ($status === 'approved' && $canExecute && !$isApprover);
             </div>
         </div>
 
-        <!-- Actions -->
         <div class="card">
             <div class="card-header">
                 <span class="card-title">⚡ Actions</span>
@@ -1384,24 +1100,18 @@ $showExecuteButton = ($status === 'approved' && $canExecute && !$isApprover);
                 <span class="readonly-badge">🔒 Read-Only</span>
                 <?php endif; ?>
                 <?php if ($isApprover): ?>
-                <span class="readonly-badge" style="background: #fef3c7; border-color: #f59e0b; color: var(--amber);">
-                    🔑 Approver Mode
-                </span>
+                <span class="readonly-badge" style="background: #fef3c7; border-color: #f59e0b; color: var(--amber);">🔑 Approver Mode</span>
                 <?php endif; ?>
             </div>
             <div class="actions-bar">
-                <!-- Submit for Approval -->
                 <?php if ($status === 'draft' && $canSubmit && !$isReadOnly): ?>
                 <form method="POST" style="display:inline;">
                     <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
                     <input type="hidden" name="action" value="submit_for_approval">
-                    <button type="submit" class="btn btn-primary" onclick="return confirm('Submit this batch for approval?')">
-                        📤 Submit for Approval
-                    </button>
+                    <button type="submit" class="btn btn-primary" onclick="return confirm('Submit this batch for approval?')">📤 Submit for Approval</button>
                 </form>
                 <?php endif; ?>
 
-                <!-- Approve / Reject -->
                 <?php if ($status === 'pending_approval' && $canApprove): ?>
                 <form method="POST" style="display:inline;" onsubmit="return confirm('Approve this batch?')">
                     <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
@@ -1421,53 +1131,53 @@ $showExecuteButton = ($status === 'approved' && $canExecute && !$isApprover);
                         <button type="button" class="btn btn-secondary" onclick="toggleRejection()" style="margin-left:8px;">Cancel</button>
                     </form>
                 </div>
+                <?php elseif ($status === 'pending_approval' && $isApprover && !$canApprove): ?>
+                <button class="btn-approver-locked" disabled style="cursor:not-allowed;">🔒 OUTSIDE YOUR DEPARTMENT</button>
+                <span style="font-size:12px; color:var(--ink-500); margin-left:4px;"><?php echo safeHtmlRb($executeDisabledReason); ?></span>
                 <?php endif; ?>
 
-                <!-- ============================================================ -->
-                <!-- EXECUTE / DISBURSE BUTTON - STRICTLY CONTROLLED                -->
-                <!-- APPROVERS CANNOT SEE OR USE THIS BUTTON                       -->
-                <!-- ============================================================ -->
                 <?php if ($status === 'approved'): ?>
                     <?php if ($showExecuteButton): ?>
-                        <!-- Owner only - Execute button visible -->
-                        <form method="POST" style="display:inline;" onsubmit="return confirm('⚠️ EXECUTE DISBURSEMENT: This will move real funds. Only proceed if you have verified all approvals. Continue?')">
-                            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
-                            <input type="hidden" name="action" value="execute">
-                            <button type="submit" class="btn btn-execute">
-                                🚀 EXECUTE DISBURSEMENT
-                            </button>
-                        </form>
+                    <form method="POST" style="display:inline;" onsubmit="return confirm('⚠️ EXECUTE DISBURSEMENT: This will move real funds. Only proceed if you have verified all approvals. Continue?')">
+                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
+                        <input type="hidden" name="action" value="execute">
+                        <button type="submit" class="btn btn-execute">🚀 EXECUTE DISBURSEMENT</button>
+                    </form>
                     <?php else: ?>
-                        <!-- Non-Owner (Approver, Program Officer, Viewer) - Show locked button -->
-                        <button class="btn-approver-locked" disabled style="cursor:not-allowed;">
-                            🔒 DISBURSEMENT LOCKED
-                        </button>
-                        <span style="font-size:12px; color:var(--ink-500); margin-left:4px;">
-                            <?php echo $executeDisabledReason ?: 'Only Owners can execute disbursements'; ?>
-                        </span>
-                        
-                        <?php if ($isApprover): ?>
-                        <div class="security-notice" style="margin-top:8px; width:100%;">
-                            <span class="lock-icon">🔑</span>
-                            <strong>Approver Notice:</strong> You have approved this batch. The disbursement will be executed by an 
-                            <strong>Owner</strong> after final review. You do not have permission to disburse funds.
-                        </div>
-                        <?php endif; ?>
+                    <button class="btn-approver-locked" disabled style="cursor:not-allowed;">🔒 DISBURSEMENT LOCKED</button>
+                    <span style="font-size:12px; color:var(--ink-500); margin-left:4px;">
+                        <?php echo $executeDisabledReason ?: 'Only Owners can execute disbursements'; ?>
+                    </span>
+                    <?php if ($isApprover): ?>
+                    <div class="security-notice" style="margin-top:8px; width:100%;">
+                        <span class="lock-icon">🔑</span>
+                        <strong>Approver Notice:</strong> You have approved this batch. The disbursement will be executed by an
+                        <strong>Owner</strong> after final review. You do not have permission to disburse funds.
+                    </div>
+                    <?php endif; ?>
                     <?php endif; ?>
                 <?php endif; ?>
 
-                <!-- Edit Destinations - Draft only -->
+                <?php if ($showResumeButton): ?>
+                <form method="POST" style="display:inline;" onsubmit="return confirm('Resume execution? Destinations already paid on the earlier attempt will be skipped automatically — only unpaid ones will be attempted.')">
+                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
+                    <input type="hidden" name="action" value="execute">
+                    <button type="submit" class="btn btn-resume">▶️ RESUME EXECUTION</button>
+                </form>
+                <?php elseif ($status === 'executing' && !$isStuckExecuting): ?>
+                <button class="btn-approver-locked" disabled style="cursor:not-allowed;">⏳ EXECUTING…</button>
+                <a href="review_batch.php?batch_id=<?php echo $batchId; ?>" class="btn btn-outline">🔄 Refresh Status</a>
+                <?php endif; ?>
+
                 <?php if ($status === 'draft' && $canEdit && !$isReadOnly): ?>
                 <a href="add_destinations.php?batch_id=<?php echo $batchId; ?>" class="btn btn-secondary">✏️ Edit Destinations</a>
                 <?php endif; ?>
 
-                <!-- Navigation -->
                 <a href="../batches/index.php" class="btn btn-outline">📋 All Batches</a>
                 <a href="../index.php" class="btn btn-outline">🏠 Dashboard</a>
             </div>
         </div>
 
-        <!-- Debug Panel -->
         <?php if ($error && strpos($error, 'Execution failed') !== false): ?>
         <div class="card" style="border-left: 3px solid #f59e0b; background: #fffbeb; margin-top: 20px;">
             <div class="card-header">
@@ -1481,7 +1191,6 @@ $showExecuteButton = ($status === 'approved' && $canExecute && !$isApprover);
                 <strong style="color: #fbbf24;">Source Institution:</strong> <?php echo htmlspecialchars($batch['source_institution']); ?><br>
                 <strong style="color: #fbbf24;">Total Amount:</strong> <?php echo number_format($batch['total_amount'] ?? 0, 2); ?><br>
                 <strong style="color: #fbbf24;">Destinations:</strong> <?php echo count($destinations); ?><br><br>
-                
                 <strong style="color: #60a5fa;">Destination Details:</strong><br>
                 <?php foreach ($destinations as $idx => $dest): ?>
                 <span style="color: #94a3b8;">Destination <?php echo $idx + 1; ?>:</span><br>
@@ -1489,14 +1198,11 @@ $showExecuteButton = ($status === 'approved' && $canExecute && !$isApprover);
                 &nbsp;&nbsp;Identifier: <span style="color: #4ade80;"><?php echo htmlspecialchars($dest['identifier'] ?? 'NULL'); ?></span><br>
                 &nbsp;&nbsp;Amount: <span style="color: #4ade80;"><?php echo htmlspecialchars($dest['amount'] ?? 'NULL'); ?></span><br>
                 &nbsp;&nbsp;Currency: <span style="color: #4ade80;"><?php echo htmlspecialchars($dest['currency'] ?? 'NULL'); ?></span><br>
-                &nbsp;&nbsp;Identity: <span style="color: <?php echo ($dest['is_identity_recipient'] ?? false) ? '#fbbf24' : '#94a3b8'; ?>;"><?php echo ($dest['is_identity_recipient'] ?? false) ? 'YES' : 'NO'; ?></span><br>
                 &nbsp;&nbsp;Status: <span style="color: #4ade80;"><?php echo htmlspecialchars($dest['status'] ?? 'PENDING'); ?></span><br>
                 <?php endforeach; ?>
             </div>
             <div style="margin-top: 14px;">
-                <p style="color: var(--ink-500); font-size: 13px;">
-                    💡 Check the server logs for the full payload dump.
-                </p>
+                <p style="color: var(--ink-500); font-size: 13px;">💡 Check the server logs for the full payload dump.</p>
             </div>
         </div>
         <?php endif; ?>
