@@ -22,8 +22,10 @@ require_once '../auth.php';
 $user = requireEnterpriseAuth();
 require_once '../../../../src/Core/Database/DBConnection.php';
 require_once '../../../../src/Domain/Services/DepartmentService.php';
+require_once '../../../../src/Domain/Services/UserManagementService.php';
 use Core\Database\DBConnection;
 use Domain\Services\DepartmentService;
+use Domain\Services\UserManagementService;
 
 $db = DBConnection::getConnection();
 $orgId = getOrganizationId();
@@ -548,7 +550,7 @@ $statusClass = match(strtolower($batch['status'] ?? 'draft')) {
         <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
             <h1>VOUCHMORPH · Batch Details</h1>
             <span class="role-pill <?php echo $isApprover ? 'approver' : ($isOwner ? 'owner' : ''); ?>">
-                <?php echo strtoupper($role); ?>
+                <?php echo strtoupper(UserManagementService::ROLE_CATALOG[$role]['label'] ?? $role); ?>
             </span>
         </div>
         <div>
