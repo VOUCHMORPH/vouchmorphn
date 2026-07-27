@@ -8653,93 +8653,143 @@ private function beginAtomicSwap(string $reference): void
         }
     }
 
-    private function rollbackAtomicSwap(string $reason): array
-    {
-        $holdReference = $this->currentHoldReference;
-        $holdInstitution = $this->currentHoldInstitution;
-        $swapRef = $this->currentSwapRef;
+ /**
+ * Get asset context (asset_type, source_identifier, source_identifier_type) 
+ * for a hold from hold_transactions.source_details
+ * 
+ * This allows releaseHold() calls to include the correct asset context
+ * so the bank's hold.php can properly resolve the asset type.
+ */
+private function getHoldAssetContext(?int $holdId): array
+{
+    if (!$holdId) return [];
+    
+    try {
+        $stmt = $this->swapDB->prepare("
+            SELECT source_details 
+            FROM hold_transactions 
+            WHERE hold_id = :id
+        ");
+        $stmt->execute([':id' => $holdId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$row || empty($row['source_details'])) {
+            return [];
+        }
+        
+        $details = json_decode($row['source_details'], true) ?: [];
+        
+        return array_filter([
+            'asset_type' => $details['asset_type'] ?? null,
+            'source_identifier' => $details['source_identifier'] ?? null,
+            'source_identifier_type' => $details['source_identifier_type'] ?? null,
+        ]);
+    } catch (\Throwable $e) {
+        error_log("[SwapService] getHoldAssetContext failed for hold_id={$holdId}: " . $e->getMessage());
+        return [];
+    }
+}
 
-        $releaseResult = null;
-        if ($holdReference && $holdInstitution) {
-            try {
-                $adapter = $this->adapterFactory->getAdapter($holdInstitution);
-                $releaseResult = $adapter->releaseHold([
-                    'hold_reference' => $holdReference,
-                    'action' => 'RELEASE_HOLD',
-                    'reason' => 'Atomic swap rolled back: ' . $reason
-                ], [
-                    'swap_reference' => $swapRef,
-                    'institution' => $holdInstitution
-                ]);
+   private function rollbackAtomicSwap(string $reason): array
+{
+    $holdReference = $this->currentHoldReference;
+    $holdInstitution = $this->currentHoldInstitution;
+    $swapRef = $this->currentSwapRef;
 
-                $this->logger->info("Released real hold during rollback", [
-                    'reference' => $swapRef,
-                    'hold_reference' => $holdReference,
-                    'institution' => $holdInstitution,
-                    'release_success' => $releaseResult['released'] ?? false
-                ]);
-            } catch (Exception $releaseError) {
-                $this->logger->error("Failed to release real hold during rollback - hold may be stuck at institution", [
-                    'reference' => $swapRef,
-                    'hold_reference' => $holdReference,
-                    'institution' => $holdInstitution,
-                    'release_error' => $releaseError->getMessage()
-                ]);
-            }
-        } elseif ($this->currentHoldId) {
-            $this->logger->warning("Rollback has a local hold_id but no hold_reference/institution to release externally", [
+    // FIX: Get asset context for the hold before releasing
+    // This ensures source_identifier and asset_type are sent to the bank's release endpoint
+    $assetContext = [];
+    if ($this->currentHoldId) {
+        $assetContext = $this->getHoldAssetContext($this->currentHoldId);
+        if (!empty($assetContext)) {
+            error_log("[SwapService] rollbackAtomicSwap: Retrieved asset context for hold_id={$this->currentHoldId}: " . json_encode($assetContext));
+        }
+    }
+
+    $releaseResult = null;
+    if ($holdReference && $holdInstitution) {
+        try {
+            $adapter = $this->adapterFactory->getAdapter($holdInstitution);
+            $releasePayload = array_merge([
+                'hold_reference' => $holdReference,
+                'action' => 'RELEASE_HOLD',
+                'reason' => 'Atomic swap rolled back: ' . $reason
+            ], $assetContext);
+            
+            $releaseResult = $adapter->releaseHold($releasePayload, [
+                'swap_reference' => $swapRef,
+                'institution' => $holdInstitution
+            ]);
+
+            $this->logger->info("Released real hold during rollback", [
                 'reference' => $swapRef,
-                'hold_id' => $this->currentHoldId
+                'hold_reference' => $holdReference,
+                'institution' => $holdInstitution,
+                'asset_context' => $assetContext,
+                'release_success' => $releaseResult['released'] ?? false
+            ]);
+        } catch (Exception $releaseError) {
+            $this->logger->error("Failed to release real hold during rollback - hold may be stuck at institution", [
+                'reference' => $swapRef,
+                'hold_reference' => $holdReference,
+                'institution' => $holdInstitution,
+                'release_error' => $releaseError->getMessage()
             ]);
         }
-
-        $this->swapDB->rollBack();
-
-        if ($holdReference) {
-            try {
-                $this->swapDB->exec("
-                    CREATE TABLE IF NOT EXISTS swap_rollback_log (
-                        id BIGSERIAL PRIMARY KEY,
-                        swap_reference VARCHAR(255),
-                        hold_reference VARCHAR(255),
-                        institution VARCHAR(100),
-                        reason TEXT,
-                        release_attempted BOOLEAN DEFAULT FALSE,
-                        release_succeeded BOOLEAN DEFAULT FALSE,
-                        created_at TIMESTAMP DEFAULT NOW()
-                    )
-                ");
-                $stmt = $this->swapDB->prepare("
-                    INSERT INTO swap_rollback_log
-                        (swap_reference, hold_reference, institution, reason, release_attempted, release_succeeded)
-                    VALUES
-                        (:swap_ref, :hold_ref, :institution, :reason, :attempted, :succeeded)
-                ");
-                $stmt->execute([
-                    ':swap_ref' => $swapRef,
-                    ':hold_ref' => $holdReference,
-                    ':institution' => $holdInstitution,
-                    ':reason' => $reason,
-                    ':attempted' => $releaseResult !== null ? 1 : 0,
-                    ':succeeded' => ($releaseResult['released'] ?? false) ? 1 : 0
-                ]);
-            } catch (Exception $logError) {
-                error_log("[SwapService] Failed to write rollback audit log: " . $logError->getMessage());
-            }
-        }
-
-        $result = [
-            'status' => 'rolled_back',
+    } elseif ($this->currentHoldId) {
+        $this->logger->warning("Rollback has a local hold_id but no hold_reference/institution to release externally", [
             'reference' => $swapRef,
-            'reason' => $reason,
-            'hold_released' => $releaseResult['released'] ?? null,
-            'hold_reference' => $holdReference
-        ];
-        
-        $this->logger->warning("Atomic swap rolled back", $result);
-        $this->resetAtomicState();
-        return $result;
+            'hold_id' => $this->currentHoldId
+        ]);
     }
+
+    $this->swapDB->rollBack();
+
+    if ($holdReference) {
+        try {
+            $this->swapDB->exec("
+                CREATE TABLE IF NOT EXISTS swap_rollback_log (
+                    id BIGSERIAL PRIMARY KEY,
+                    swap_reference VARCHAR(255),
+                    hold_reference VARCHAR(255),
+                    institution VARCHAR(100),
+                    reason TEXT,
+                    release_attempted BOOLEAN DEFAULT FALSE,
+                    release_succeeded BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            ");
+            $stmt = $this->swapDB->prepare("
+                INSERT INTO swap_rollback_log
+                    (swap_reference, hold_reference, institution, reason, release_attempted, release_succeeded)
+                VALUES
+                    (:swap_ref, :hold_ref, :institution, :reason, :attempted, :succeeded)
+            ");
+            $stmt->execute([
+                ':swap_ref' => $swapRef,
+                ':hold_ref' => $holdReference,
+                ':institution' => $holdInstitution,
+                ':reason' => $reason,
+                ':attempted' => $releaseResult !== null ? 1 : 0,
+                ':succeeded' => ($releaseResult['released'] ?? false) ? 1 : 0
+            ]);
+        } catch (Exception $logError) {
+            error_log("[SwapService] Failed to write rollback audit log: " . $logError->getMessage());
+        }
+    }
+
+    $result = [
+        'status' => 'rolled_back',
+        'reference' => $swapRef,
+        'reason' => $reason,
+        'hold_released' => $releaseResult['released'] ?? null,
+        'hold_reference' => $holdReference
+    ];
+    
+    $this->logger->warning("Atomic swap rolled back", $result);
+    $this->resetAtomicState();
+    return $result;
+}
 
     private function resetAtomicState(): void
     {
