@@ -154,6 +154,49 @@ function attemptPlatformAdminLogin(string $usernameOrEmail, string $password): ?
     return loadAdminWithRole((int)$row['admin_id']);
 }
 
+/**
+ * True if this admin is allowed to act on an organization with the given
+ * country code.
+ *   - role 'super_admin' is ALWAYS unrestricted, regardless of whatever
+ *     happens to be sitting in that admin's own country_code column —
+ *     the role itself (Global Owner) is the source of truth, not a
+ *     per-row field that might just reflect setup history.
+ *   - any other admin: country_code = NULL means unrestricted (covers
+ *     every country); a set value means that admin is scoped to exactly
+ *     that one country — this is the "one admin per country" shape,
+ *     e.g. a VouchMorph Angola admin with country_code = 'AO' who can
+ *     never create or see an organization outside Angola.
+ * A scoped admin against an organization with no country_code set
+ * returns false deliberately — don't grant access by omission.
+ */
+function isCountryInAdminScope(array $admin, ?string $countryCode): bool {
+    if (($admin['role_name'] ?? null) === 'super_admin') {
+        return true;
+    }
+    if (empty($admin['country_code'])) {
+        return true;
+    }
+    if ($countryCode === null || $countryCode === '') {
+        return false;
+    }
+    return strtoupper($admin['country_code']) === strtoupper($countryCode);
+}
+
+/**
+ * requirePlatformConfigAuth() plus a country check against the target
+ * country code — use this instead of the bare check when the action is
+ * scoped to a specific organization/country (e.g. creating an org for a
+ * known country, or acting on an existing one).
+ */
+function requirePlatformConfigAuthForCountry(?string $countryCode): array {
+    $admin = requirePlatformConfigAuth();
+    if (!isCountryInAdminScope($admin, $countryCode)) {
+        http_response_code(403);
+        die("Your admin account is scoped to " . htmlspecialchars($admin['country_code'], ENT_QUOTES, 'UTF-8') . " and can't act on an organization in " . htmlspecialchars((string)$countryCode, ENT_QUOTES, 'UTF-8') . ".");
+    }
+    return $admin;
+}
+
 function platformAdminLogout(): void {
     session_unset();
     session_destroy();
