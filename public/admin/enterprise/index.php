@@ -425,7 +425,7 @@ function getRoleLabel($role) {
         'it_officer_enterprise' => 'IT Officer',
         'it_support' => 'IT Support',
         'department_head' => 'Department Head',
-        'program_officer' => 'Program Officer',
+        'program_officer' => 'Uploader',
         'finance_officer' => 'Finance Officer',
         'approver' => 'Approver',
         'senior_approver' => 'Senior Approver',
