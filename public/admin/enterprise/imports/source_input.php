@@ -1,9 +1,9 @@
 <?php
 // enterprise/imports/source_input.php - Select source account
-require_once '../auth.php';
+require_once __DIR__ . '/../../auth.php';
 $user = requireEnterpriseAuth();
-require_once '../../../../src/Core/Database/DBConnection.php';
-require_once '../../../../src/Domain/Services/DepartmentService.php';
+require_once __DIR__ . '/../../../../src/Core/Database/DBConnection.php';
+require_once __DIR__ . '/../../../../src/Domain/Services/DepartmentService.php';
 use Core\Database\DBConnection;
 use Domain\Services\DepartmentService;
 
