@@ -18,11 +18,11 @@
  * recreate the exact class of bug this file just hit (one file patched,
  * one forgotten), so this page links to it instead of re-implementing it.
  */
-require_once _DIR_ . '/../../auth.php';
+require_once __DIR__ . '/../../auth.php';
 $user = requireEnterpriseAuth();
-require_once _DIR_ . '/../../../../src/Core/Database/DBConnection.php';
-require_once _DIR_ . '/../../../../src/Domain/Services/DepartmentService.php';
-require_once _DIR_ . '/../../../../src/Domain/Services/UserManagementService.php';
+require_once __DIR__ . '/../../../../src/Core/Database/DBConnection.php';
+require_once __DIR__ . '/../../../../src/Domain/Services/DepartmentService.php';
+require_once __DIR__ . '/../../../../src/Domain/Services/UserManagementService.php';
 use Core\Database\DBConnection;
 use Domain\Services\DepartmentService;
 use Domain\Services\UserManagementService;
