@@ -6,9 +6,9 @@
  * Different roles see different views based on their permissions.
  */
 
-// ============================================================================ 
+// ============================================================ 
 // FIX: Session settings MUST be set BEFORE any output (just in case)
-// ============================================================================
+// ============================================================
 if (session_status() === PHP_SESSION_NONE) {
     ini_set('session.cookie_httponly', '1');
     ini_set('session.cookie_secure', '1');
@@ -17,6 +17,9 @@ if (session_status() === PHP_SESSION_NONE) {
 }
 
 require_once 'auth.php';
+require_once '../../../src/Domain/Services/DepartmentService.php';
+use Domain\Services\DepartmentService;
+
 $user = requireEnterpriseAuth();
 $pdo = getDBConnection();
 $orgId = getOrganizationId();
@@ -26,34 +29,95 @@ $fullName = $user['full_name'] ?? $user['username'] ?? 'User';
 $orgName = $user['organization_name'] ?? 'Organization';
 $departmentId = $user['department_id'] ?? null;
 
+$deptService = new DepartmentService($pdo);
+
+// ============================================================
+// DEPARTMENT SCOPE — for a ministry/government structure where oversight
+// roles are devolved: an Owner or Approver/Senior Approver assigned to a
+// specific department only sees and acts on that department's (and its
+// sub-departments') batches. Leaving organization_users.department_id
+// NULL for one of these accounts is the deliberate "sees everything"
+// configuration (e.g. an HQ-level signatory), not a default — see
+// DepartmentService::isDepartmentInScope for the full rule. This does
+// NOT apply to creator roles (program_officer/department_head/
+// beneficiary_registrar), which are scoped separately below by exact
+// department match, and it doesn't apply to it_manager_enterprise, which
+// stays an always-org-wide administrative role.
+// ============================================================
+$scopableOversightRoles = ['owner', 'approver', 'senior_approver'];
+$userDeptScopeIds = in_array($userRole, $scopableOversightRoles, true)
+    ? $deptService->getDepartmentScopeIds($departmentId)
+    : null;
+
+/**
+ * Builds a " AND department_id IN (...)" fragment (with its own bound
+ * params merged into &$params) for the given scope, or '' if the scope
+ * is null (unrestricted). Centralizing this so the badge counts and the
+ * batch list below can never disagree with each other.
+ */
+function departmentScopeSql(?array $scopeIds, array &$params, string $prefix = 'sdep'): string {
+    if ($scopeIds === null) {
+        return '';
+    }
+    if (empty($scopeIds)) {
+        return ' AND 1=0';
+    }
+    $placeholders = [];
+    foreach (array_values($scopeIds) as $i => $id) {
+        $key = ":{$prefix}{$i}";
+        $placeholders[] = $key;
+        $params[$key] = $id;
+    }
+    return ' AND department_id IN (' . implode(',', $placeholders) . ')';
+}
+
 // ============================================================
 // ROLE PERMISSIONS
 // ============================================================
+$isTopRole = in_array($userRole, ['owner', 'it_manager_enterprise'], true);
+
 $canCreate = in_array($userRole, ['owner', 'it_manager_enterprise', 'program_officer', 'department_head']);
 $canApprove = in_array($userRole, ['owner', 'approver', 'senior_approver', 'it_manager_enterprise']);
+
+// ============================================================
+// FIX (P0): Disbursement execution is OWNER-ONLY, matching the hard
+// enforcement in imports/review_batch.php ($canExecute = role === 'owner',
+// "NO EXCEPTIONS"). This dashboard used to tell IT Managers they could
+// disburse (nav link, badge counts, quick-action card, info panel) and
+// then silently lock them out on the actual execute screen — the single
+// worst failure mode to hit live in front of a client. The two files now
+// agree: only 'owner' sees, is counted for, or is invited toward
+// disbursement anywhere in the product.
+// ============================================================
 $canDisburse = ($userRole === 'owner');
+$isSupervisor = ($userRole === 'owner');
+
 $canManageUsers = in_array($userRole, ['owner', 'it_manager_enterprise', 'it_officer_enterprise']);
 $canViewAll = in_array($userRole, ['owner', 'auditor', 'it_manager_enterprise', 'it_officer_enterprise']);
 $isReadOnly = in_array($userRole, ['auditor', 'viewer']);
 $isApprover = in_array($userRole, ['approver', 'senior_approver']);
-$isSupervisor = ($userRole === 'owner'); // Only owners can disburse
-$isTopRole = in_array($userRole, ['owner', 'it_manager_enterprise']); // PATCH #4: alias for clarity
 $isLoader = in_array($userRole, ['program_officer', 'department_head']);
 
 // Source account maker-checker: Finance Officers propose, Owner/IT Manager confirm.
 $canProposeSource = in_array($userRole, ['finance_officer', 'owner']);
 $canConfirmSource = in_array($userRole, ['owner', 'it_manager_enterprise']);
+$canManageSourceAccounts = $canProposeSource || $canConfirmSource;
 
-// PATCH #3: Separate from $canManageSourceAccounts (which gates propose/confirm
-// ACTIONS): this gates whether the nav link / info panel appears at all.
+// ============================================================
+// Separate from $canManageSourceAccounts (which gates propose/confirm
+// ACTIONS): this gates whether the nav link / info panels appear at all.
 // Batch-creating roles (program_officer, department_head) must never see
 // this area — their job starts and ends at building a batch against
 // their department's ration.
+// ============================================================
 $canSeeSourceAccountsArea = in_array($userRole, ['owner', 'it_manager_enterprise', 'finance_officer']);
 
-// Keep $canManageSourceAccounts for BC, but now use $canSeeSourceAccountsArea for nav
-$canManageSourceAccounts = $canProposeSource || $canConfirmSource;
 $canTrace = in_array($userRole, ['owner', 'it_manager_enterprise', 'it_officer_enterprise', 'auditor', 'senior_approver', 'approver', 'finance_officer']);
+
+// Departments & rations
+$canManageDepartments = $isTopRole;
+$isDepartmentHead = ($userRole === 'department_head');
+$canApproveBorrow = in_array($userRole, ['owner', 'it_manager_enterprise', 'finance_officer']);
 
 // ============================================================
 // HELPER: Check if user can edit a batch
@@ -113,8 +177,14 @@ try {
         $status = strtolower($row['status']);
         $batchStatus[$status] = $row['count'];
     }
-    
-    // PATCH #1: Fix batches-metrics undercount - sum synonyms instead of picking one
+
+    // ============================================================
+    // FIX: these were `??` (pick ONE synonym), not a sum. Every status
+    // filter elsewhere in this file treats pending/pending_approval and
+    // executed/completed as the same thing, so the metric cards must
+    // add both variants or they silently undercount and disagree with
+    // the action-queue numbers on the same page.
+    // ============================================================
     $metrics['pending_batches'] = ($batchStatus['pending'] ?? 0) + ($batchStatus['pending_approval'] ?? 0);
     $metrics['approved_batches'] = $batchStatus['approved'] ?? 0;
     $metrics['executed_batches'] = ($batchStatus['executed'] ?? 0) + ($batchStatus['completed'] ?? 0);
@@ -148,26 +218,34 @@ try {
     $stmt->execute([':org_id' => $orgId]);
     $metrics['total_users'] = (int)$stmt->fetchColumn();
 
-    // For supervisors - approved batches ready for disbursement
+    // For the (now owner-only) disburser - approved batches ready for disbursement,
+    // scoped to their department + sub-departments if this Owner account is scoped.
     if ($canDisburse) {
+        $adfParams = [':org_id' => $orgId];
+        $adfScopeSql = departmentScopeSql($userDeptScopeIds, $adfParams, 'adf');
         $stmt = $pdo->prepare("
             SELECT COUNT(*) as total 
             FROM disbursement_batches 
             WHERE organization_id = :org_id 
             AND status = 'approved'
+            $adfScopeSql
         ");
-        $stmt->execute([':org_id' => $orgId]);
+        $stmt->execute($adfParams);
         $metrics['approved_for_disbursement'] = (int)$stmt->fetchColumn();
     }
 
-    // For approvers - pending approvals
+    // For approvers - pending approvals, scoped to their department + sub-departments
+    // if this approver (or owner viewing this count) is a scoped account.
+    $papParams = [':org_id' => $orgId];
+    $papScopeSql = departmentScopeSql($userDeptScopeIds, $papParams, 'pap');
     $stmt = $pdo->prepare("
         SELECT COUNT(*) as total 
         FROM disbursement_batches 
         WHERE organization_id = :org_id 
         AND status IN ('pending', 'pending_approval', 'PENDING', 'PENDING_APPROVAL')
+        $papScopeSql
     ");
-    $stmt->execute([':org_id' => $orgId]);
+    $stmt->execute($papParams);
     $metrics['pending_approvals'] = (int)$stmt->fetchColumn();
 
     // For Owner/IT Manager - source accounts awaiting confirmation
@@ -188,17 +266,26 @@ try {
         }
     }
     
-    // PATCH #2: Close permission leak for unmatched roles + scope batch staff to their department
+    // Recent batches with status-based filtering
     $statusFilter = "";
     $statusParams = [':org_id' => $orgId];
 
-    if ($userRole === 'owner' || $userRole === 'it_manager_enterprise') {
-        $statusFilter = "AND 1=1";
+    if ($isTopRole) {
+        // it_manager_enterprise is always org-wide; a department-scoped
+        // Owner (userDeptScopeIds non-null) is narrowed like an approver.
+        if ($userRole === 'it_manager_enterprise' || $userDeptScopeIds === null) {
+            $statusFilter = "AND 1=1";
+        } else {
+            $statusFilter = "AND 1=1" . departmentScopeSql($userDeptScopeIds, $statusParams, 'own');
+        }
     } elseif ($isReadOnly) {
         $statusFilter = "AND status IN ('completed', 'executed', 'COMPLETED', 'EXECUTED')";
     } elseif ($isApprover) {
-        $statusFilter = "AND status IN ('pending', 'pending_approval', 'approved', 'draft', 'PENDING', 'PENDING_APPROVAL', 'APPROVED')";
+        $statusFilter = "AND status IN ('pending', 'pending_approval', 'approved', 'draft', 'PENDING', 'PENDING_APPROVAL', 'APPROVED')"
+            . departmentScopeSql($userDeptScopeIds, $statusParams, 'apr');
     } elseif ($userRole === 'finance_officer') {
+        // Finance sees batches for ration/borrow visibility, but read-only,
+        // not the unrestricted "everything" it used to fall through to.
         $statusFilter = "AND status IN ('pending', 'pending_approval', 'approved', 'completed', 'executed', 'PENDING', 'PENDING_APPROVAL', 'APPROVED', 'COMPLETED', 'EXECUTED')";
     } elseif ($isLoader) {
         // Batch staff: their own batches, OR any batch in their own department.
@@ -206,8 +293,14 @@ try {
         $statusParams[':user_id'] = $userId;
         $statusParams[':department_id'] = $departmentId;
     } else {
-        // Default-deny: any role not explicitly matched above sees nothing,
-        // rather than falling through to an empty filter (= everything).
+        // ============================================================
+        // FIX: default-deny. Any role not explicitly matched above used
+        // to fall through with $statusFilter = "" — no filter at all,
+        // meaning that role saw EVERY batch in the organization. Roles
+        // like beneficiary_registrar hit this. Now they see nothing
+        // until given an explicit scope, which is the safe direction to
+        // fail in.
+        // ============================================================
         $statusFilter = "AND 1=0";
     }
 
@@ -302,6 +395,7 @@ function getStatusClass($status) {
         'draft' => 'draft',
         'pending', 'pending_approval' => 'pending',
         'approved' => 'approved',
+        'executing' => 'pending',
         'completed', 'executed' => 'completed',
         'rejected' => 'rejected',
         'cancelled' => 'rejected',
@@ -315,6 +409,7 @@ function getStatusLabel($status) {
         'draft' => '📝 Draft',
         'pending', 'pending_approval' => '⏳ Pending',
         'approved' => '✅ Approved',
+        'executing' => '⚙️ Executing',
         'completed' => '✔️ Completed',
         'executed' => '🚀 Executed',
         'rejected' => '❌ Rejected',
@@ -1134,7 +1229,6 @@ if (($metrics['rejected_batches'] ?? 0) > 0 && ($canCreate || $isSupervisor)) {
         <a href="imports/add_destinations.php" class="nav-item">📝 Add Destinations</a>
         <?php endif; ?>
         
-        <!-- PATCH #3: Gate source-account visibility to finance/top roles only -->
         <?php if ($canSeeSourceAccountsArea): ?>
         <a href="imports/add_source.php" class="nav-item">💰 Source Accounts
             <?php if ($canConfirmSource && ($metrics['pending_source_confirmations'] ?? 0) > 0): ?>
@@ -1143,16 +1237,15 @@ if (($metrics['rejected_batches'] ?? 0) > 0 && ($canCreate || $isSupervisor)) {
         </a>
         <?php endif; ?>
 
+        <?php if ($canManageDepartments || $isDepartmentHead): ?>
+        <a href="departments/index.php" class="nav-item">🏢 Departments</a>
+        <?php endif; ?>
+
         <?php if ($canTrace): ?>
         <a href="#trace" class="nav-item">🔍 Trace Payment</a>
         <?php endif; ?>
         
         <a href="reports.php" class="nav-item">📈 Reports</a>
-        
-        <!-- PATCH #4: Add the Departments nav link -->
-        <?php if ($isTopRole || $userRole === 'department_head'): ?>
-        <a href="departments/index.php" class="nav-item">🏢 Departments</a>
-        <?php endif; ?>
         
         <?php if ($canManageUsers): ?>
         <a href="settings/users.php" class="nav-item">👤 Manage Users</a>
@@ -1504,9 +1597,10 @@ if (($metrics['rejected_batches'] ?? 0) > 0 && ($canCreate || $isSupervisor)) {
 
         <?php if ($isSupervisor): ?>
         <div class="info-panel" style="border-left-color: var(--ledger-green); background: var(--green-tint);">
-            <div class="label">💸 Supervisor Access</div>
+            <div class="label">💸 Owner Disbursement Access</div>
             <div class="desc">
-                You can disburse funds for approved batches.
+                You can disburse funds for approved batches. This is the only role that can — it is the
+                final, non-delegable step in the disbursement chain.
                 <?php if (($metrics['approved_for_disbursement'] ?? 0) > 0): ?>
                 <span class="highlight"><?php echo $metrics['approved_for_disbursement']; ?> batches ready for disbursement.</span>
                 <?php endif; ?>
