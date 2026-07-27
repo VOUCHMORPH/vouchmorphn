@@ -1,5 +1,5 @@
 <?php
-require_once __DIR__ . '/auth.php';
+require_once __DIR__ . '/../auth.php';
 
 if (!empty($_SESSION['platform_admin_id'])) {
     header('Location: index.php');
