@@ -329,11 +329,45 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
             }
             
             $data = $result['data'] ?? [];
+
+            // ============================================================
+            // FIX: debit() was the one core money-movement operation with
+            // no proof-of-completion check — placeHold() already refuses
+            // to report success without a hold_reference, credit() already
+            // refuses without a transaction_reference, but debit() would
+            // report debited=true off nothing but the bank's HTTP-level
+            // success flag. That flag can itself default to true on an
+            // ambiguous-but-200 response (see GenericBankClient::send()'s
+            // fallback when a response body has none of success/status/
+            // hold_placed) — meaning a debit could be reported all the way
+            // up through SwapService as completed with zero evidence it
+            // actually happened. Debit is the operation that actually
+            // removes money; it's the one that most needs this guard, not
+            // the one that can safely skip it. Same required-field pattern
+            // as placeHold()/credit() above.
+            // ============================================================
+            $transactionReference = $data['transaction_reference'] ?? $data['reference'] ?? null;
+
+            if (empty($transactionReference)) {
+                if ($this->logger) {
+                    $this->logger->error("debit: bank returned success but no transaction_reference", [
+                        'institution' => $this->institution,
+                        'response_data' => $data
+                    ]);
+                }
+                return [
+                    'debited' => false,
+                    'success' => false,
+                    'message' => 'Bank accepted the debit request but returned no transaction_reference - cannot confirm funds were actually debited',
+                    'raw_response' => $result['raw_response'] ?? null,
+                    'status_code' => $result['status_code'] ?? 0
+                ];
+            }
             
             return [
                 'debited' => true,
                 'success' => true,
-                'transaction_reference' => $data['transaction_reference'] ?? $data['reference'] ?? null,
+                'transaction_reference' => $transactionReference,
                 'status' => $data['status'] ?? 'COMPLETED',
                 'message' => $data['message'] ?? 'Debit successful',
                 'raw_response' => $result['raw_response'] ?? null,
@@ -608,29 +642,20 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
                 ];
             }
             
-          $data = $result['data'] ?? [];
-error_log("[DIAG] generateCashoutToken result keys: " . implode(',', array_keys($result)));
-error_log("[DIAG] generateCashoutToken result top-level voucher_number: " . var_export($result['voucher_number'] ?? 'MISSING', true));
-error_log("[DIAG] generateCashoutToken data keys: " . implode(',', array_keys($data)));
-error_log("[DIAG] generateCashoutToken data sat_number: " . var_export($data['sat_number'] ?? 'MISSING', true));
-// Prefer the already-normalized top-level fields GenericBankClient::generateToken()
-// computed (it maps bank-specific keys like sat_number -> voucher_number/swap_code).
-// Fall back to raw $data only if those are missing, and add sat_number as a last
-// resort there too — this is the same class of bug as before, one hop later: this
-// method was re-deriving everything from the RAW bank response instead of trusting
-// the mapping GenericBankClient already did.
-return [
-    'success' => true,
-    'cashout_code' => $result['cashout_code'] ?? $data['cashout_code'] ?? $data['code'] ?? $data['sat_number'] ?? null,
-    'atm_pin' => $result['atm_pin'] ?? $data['atm_pin'] ?? $data['pin'] ?? null,
-    'voucher_number' => $result['voucher_number'] ?? $data['voucher_number'] ?? $data['sat_number'] ?? null,
-    'swap_code' => $result['swap_code'] ?? $data['swap_code'] ?? $data['voucher_number'] ?? $data['sat_number'] ?? null,
-    'expires_at' => $result['expires_at'] ?? $data['expires_at'] ?? date('Y-m-d H:i:s', strtotime('+24 hours')),
-    'transaction_reference' => $result['transaction_reference'] ?? $data['transaction_reference'] ?? $data['sat_number'] ?? null,
-    'message' => $data['message'] ?? 'Token generated',
-    'raw_response' => $result['raw_response'] ?? null,
-    'status_code' => $result['status_code'] ?? 0
-];
+            $data = $result['data'] ?? [];
+
+            return [
+                'success' => true,
+                'cashout_code' => $result['cashout_code'] ?? $data['cashout_code'] ?? $data['code'] ?? $data['sat_number'] ?? null,
+                'atm_pin' => $result['atm_pin'] ?? $data['atm_pin'] ?? $data['pin'] ?? null,
+                'voucher_number' => $result['voucher_number'] ?? $data['voucher_number'] ?? $data['sat_number'] ?? null,
+                'swap_code' => $result['swap_code'] ?? $data['swap_code'] ?? $data['voucher_number'] ?? $data['sat_number'] ?? null,
+                'expires_at' => $result['expires_at'] ?? $data['expires_at'] ?? date('Y-m-d H:i:s', strtotime('+24 hours')),
+                'transaction_reference' => $result['transaction_reference'] ?? $data['transaction_reference'] ?? $data['sat_number'] ?? null,
+                'message' => $data['message'] ?? 'Token generated',
+                'raw_response' => $result['raw_response'] ?? null,
+                'status_code' => $result['status_code'] ?? 0
+            ];
             
         } catch (\Exception $e) {
             return [
