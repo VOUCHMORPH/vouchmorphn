@@ -148,6 +148,28 @@ $canSubmit = ($isOwner || ($isProgramOfficer && $isCreator && $batch['status'] =
 $canExecute = ($isOwner && $batch['status'] === 'approved');
 
 // ============================================================
+// DEPARTMENT SCOPE — same rule as review_batch.php: a department-scoped
+// approver/owner (organization_users.department_id set) can only act on
+// batches in their own department or its sub-departments. NULL means
+// unrestricted (deliberate HQ-level configuration). This must match
+// review_batch.php exactly, or the two pages disagree about who can act
+// on the same batch — precisely the class of bug this session started
+// with (formatCurrency existing on one page, missing on the other).
+// ============================================================
+$actingUserDepartmentId = $user['department_id'] ?? null;
+$batchDepartmentId = $batch['department_id'] ?? null;
+$inDeptScope = $deptService->isDepartmentInScope($actingUserDepartmentId, $batchDepartmentId);
+$scopeDeniedMessage = '';
+if (!$inDeptScope) {
+    $canApprove = false;
+    $canReject = false;
+    $canExecute = false;
+    $scopeDeniedMessage = $batchDepartmentId === null
+        ? 'This batch has no department assigned, so a department-scoped account cannot act on it.'
+        : 'This batch belongs to a different department than the one assigned to your account.';
+}
+
+// ============================================================
 // HANDLE ACTIONS
 // ============================================================
 $actionResult = null;
@@ -718,6 +740,9 @@ $statusClass = match(strtolower($batch['status'] ?? 'draft')) {
             <div class="card-header">
                 <span class="card-title">⚡ Actions</span>
             </div>
+            <?php if ($scopeDeniedMessage && $isApprover): ?>
+            <div class="info-notice" style="margin-bottom:14px;">🔒 <?php echo safeHtmlView($scopeDeniedMessage); ?></div>
+            <?php endif; ?>
             <div class="actions-bar">
                 <?php if ($batch['status'] === 'draft' && $canSubmit): ?>
                 <form method="POST">
