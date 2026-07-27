@@ -7,7 +7,7 @@
  * the organization doesn't exist and nobody could log in to create it
  * from inside the enterprise dashboard, which is exactly the point.
  */
-require_once '../auth.php';
+require_once '../../auth.php';
 $platformAdmin = requirePlatformConfigAuth();
 
 require_once '../../../../src/Core/Database/DBConnection.php';
