@@ -1,5 +1,5 @@
 <?php
-require_once __DIR__ . '/auth.php';
+require_once __DIR__ . '/../auth.php';
 $admin = requirePlatformAdminAuth();
 
 require_once __DIR__ . '/../../../src/Core/Database/DBConnection.php';
