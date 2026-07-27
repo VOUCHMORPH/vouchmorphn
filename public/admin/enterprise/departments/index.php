@@ -17,8 +17,10 @@ if (session_status() === PHP_SESSION_NONE) {
 
 require_once '../auth.php';
 require_once '../../src/Domain/Services/DepartmentService.php';
+require_once '../../src/Domain/Services/UserManagementService.php';
 
 use Domain\Services\DepartmentService;
+use Domain\Services\UserManagementService;
 
 $user = requireEnterpriseAuth();
 $pdo = getDBConnection();
@@ -41,21 +43,25 @@ if (!$isTopRole && !$isDepartmentHead) {
 }
 
 $deptService = new DepartmentService($pdo);
+$userMgmt = new UserManagementService($pdo);
 
 // ============================================================
 // HANDLE FORM SUBMISSIONS (POST)
 // ============================================================
 $flashMessage = null;
 $flashType = 'success';
+$newDepartmentId = null;
+$newStaffCredentials = null;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    requireCsrfToken($_POST['csrf_token'] ?? null);
     $action = $_POST['action'] ?? '';
 
     try {
         switch ($action) {
             case 'create_department':
                 if (!$isTopRole) throw new RuntimeException('Not authorized.');
-                $deptService->createDepartment(
+                $newId = $deptService->createDepartment(
                     $orgId,
                     trim($_POST['name'] ?? ''),
                     trim($_POST['code'] ?? '') ?: null,
@@ -64,12 +70,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     (int)$userId,
                     $userRole
                 );
-                $flashMessage = 'Department created.';
+                $newDepartmentId = $newId;
+                $flashMessage = 'Department created. Assign an Uploader, Approver, and/or Disburser below — all optional, leave any of them blank and Headquarters covers it.';
                 break;
 
             case 'create_sub_department':
                 if (!$isTopRole) throw new RuntimeException('Not authorized.');
-                $deptService->createSubDepartment(
+                $newId = $deptService->createSubDepartment(
                     (int)($_POST['parent_id'] ?? 0),
                     trim($_POST['name'] ?? ''),
                     trim($_POST['code'] ?? '') ?: null,
@@ -78,7 +85,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     (int)$userId,
                     $userRole
                 );
-                $flashMessage = 'Sub-department created.';
+                $newDepartmentId = $newId;
+                $flashMessage = 'Sub-department created. Assign an Uploader, Approver, and/or Disburser below — all optional, leave any of them blank and the parent department (or Headquarters) covers it.';
+                break;
+
+            case 'quick_add_staff':
+                if (!$isTopRole) throw new RuntimeException('Not authorized.');
+                $staffDeptId = (int)($_POST['department_id'] ?? 0);
+                $staffRole = $_POST['staff_role'] ?? '';
+                // Only the three roles this quick-add panel is for. Anything
+                // else (finance_officer, auditor, etc.) belongs in the full
+                // HR screen (settings/users.php), not this shortcut.
+                if (!in_array($staffRole, ['program_officer', 'approver', 'owner'], true)) {
+                    throw new RuntimeException('Invalid role for quick-add — use Manage Users for other roles.');
+                }
+                $staffName = trim($_POST['staff_name'] ?? '');
+                $staffEmail = trim($_POST['staff_email'] ?? '');
+                $result = $userMgmt->createUser($orgId, [
+                    'full_name' => $staffName,
+                    'email' => $staffEmail,
+                    'role' => $staffRole,
+                    'department_id' => $staffDeptId,
+                ], (int)$userId, $userRole);
+                $newDepartmentId = $staffDeptId; // keep this department's panel open to show the result
+                $newStaffCredentials = [
+                    'name' => $staffName,
+                    'email' => strtolower($staffEmail),
+                    'temp_password' => $result['temp_password'],
+                ];
+                $flashMessage = 'Staff account created.';
                 break;
 
             case 'request_sub_department':
@@ -159,7 +194,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     // PRG pattern - avoid resubmission on refresh
-    $_SESSION['dept_flash'] = ['message' => $flashMessage, 'type' => $flashType];
+    $_SESSION['dept_flash'] = [
+        'message' => $flashMessage,
+        'type' => $flashType,
+        'new_department_id' => $newDepartmentId,
+        'staff_credentials' => $newStaffCredentials,
+    ];
     header('Location: index.php');
     exit;
 }
@@ -167,6 +207,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 if (isset($_SESSION['dept_flash'])) {
     $flashMessage = $_SESSION['dept_flash']['message'];
     $flashType = $_SESSION['dept_flash']['type'];
+    $newDepartmentId = $_SESSION['dept_flash']['new_department_id'] ?? null;
+    $newStaffCredentials = $_SESSION['dept_flash']['staff_credentials'] ?? null;
     unset($_SESSION['dept_flash']);
 }
 
@@ -181,6 +223,37 @@ $myDepartmentRation = $myDepartment ? $deptService->getAvailableRation((int)$myD
 
 $pendingSubDeptRequests = $isTopRole ? $deptService->getPendingSubDepartmentRequests($orgId) : [];
 $pendingBorrowRequests = $canApproveBorrow ? $deptService->getPendingBorrowRequests($orgId) : [];
+
+// Staff already assigned per department, keyed by department_id, for the
+// inline "who's staffing this department" panel — so the quick-add form
+// shows what's already filled instead of just an empty form every time.
+$staffByDepartment = [];
+if ($isTopRole) {
+    $stmt = $pdo->prepare("
+        SELECT department_id, full_name, role, is_active
+        FROM organization_users
+        WHERE organization_id = :org_id AND department_id IS NOT NULL
+        ORDER BY role ASC, full_name ASC
+    ");
+    $stmt->execute([':org_id' => $orgId]);
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        $staffByDepartment[(int)$row['department_id']][] = $row;
+    }
+}
+
+// The three roles this page's quick-add panel offers, with names matched
+// to how the org actually talks about these jobs. 'owner' here is a
+// DEPARTMENT-SCOPED owner account — same role, same hard "only owner can
+// execute" rule as everywhere else, just dedicated to one department
+// rather than the whole org. Doesn't have to be the same person running
+// IT or HQ — that's the point of calling it out as its own slot.
+$quickAddSlots = [
+    'program_officer' => ['label' => 'Uploader', 'desc' => 'Builds and submits this department\'s batches.'],
+    'approver' => ['label' => 'Approver', 'desc' => 'Approves or rejects this department\'s batches.'],
+    'owner' => ['label' => 'Disburser', 'desc' => 'Executes this department\'s approved batches.'],
+];
+
+$csrfToken = generateCsrfToken();
 
 function safeHtml($value) {
     return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
@@ -198,7 +271,16 @@ function ratioBarColor(float $percent): string {
 // only ever load their own subtree via $tree already being scoped... but
 // since getDepartmentTree returns the whole org tree, we filter for
 // non-top roles below at render time).
-function renderDepartmentNode(array $node, bool $isTopRole, ?int $myDeptId, int $depth = 0): string {
+function renderDepartmentNode(
+    array $node,
+    bool $isTopRole,
+    ?int $myDeptId,
+    array $staffByDepartment,
+    array $quickAddSlots,
+    ?int $newDepartmentId,
+    string $csrfToken,
+    int $depth = 0
+): string {
     // department_head only sees their own department + its descendants
     if (!$isTopRole && $myDeptId !== null) {
         $isMine = ((int)$node['id'] === $myDeptId);
@@ -211,6 +293,7 @@ function renderDepartmentNode(array $node, bool $isTopRole, ?int $myDeptId, int 
     $pct = $node['utilization_percent'];
     $barColor = ratioBarColor($pct);
     $indent = $depth * 28;
+    $deptId = (int)$node['id'];
 
     $html = '<div class="dept-row" style="margin-left:' . $indent . 'px;">';
     $html .= '<div class="dept-row-header">';
@@ -233,10 +316,56 @@ function renderDepartmentNode(array $node, bool $isTopRole, ?int $myDeptId, int 
     $html .= '<span class="' . ($node['available'] < 0 ? 'text-danger' : 'text-green') . '">Available: <strong>' . formatCurrency($node['available']) . '</strong></span>';
     $html .= '</div>';
 
+    // ============================================================
+    // INLINE STAFFING PANEL — only for top roles, who are the only ones
+    // allowed to create these accounts anyway. Auto-opens right after this
+    // exact department was just created, so "who's staffing this?" is the
+    // very next thing shown, not a separate screen someone has to go find.
+    // ============================================================
+    if ($isTopRole) {
+        $assigned = $staffByDepartment[$deptId] ?? [];
+        $autoOpen = ($newDepartmentId !== null && $deptId === (int)$newDepartmentId);
+
+        $html .= '<details class="staff-panel"' . ($autoOpen ? ' open' : '') . '>';
+        $html .= '<summary>👥 Staffing' . (!empty($assigned) ? ' (' . count($assigned) . ')' : ' — none assigned yet') . '</summary>';
+        $html .= '<div class="staff-panel-body">';
+
+        if (!empty($assigned)) {
+            $html .= '<div class="staff-list">';
+            foreach ($assigned as $person) {
+                $roleLabel = $quickAddSlots[$person['role']]['label'] ?? ucfirst(str_replace('_', ' ', $person['role']));
+                $statusClass = $person['is_active'] ? 'staff-active' : 'staff-inactive';
+                $html .= '<div class="staff-chip ' . $statusClass . '">' . safeHtml($roleLabel) . ': <strong>' . safeHtml($person['full_name']) . '</strong>'
+                    . (!$person['is_active'] ? ' (inactive)' : '') . '</div>';
+            }
+            $html .= '</div>';
+        } else {
+            $html .= '<p class="staff-empty-note">No one assigned here yet — that\'s fine. Headquarters (or the parent department) covers anything left blank.</p>';
+        }
+
+        $html .= '<div class="staff-add-grid">';
+        foreach ($quickAddSlots as $roleKey => $slot) {
+            $html .= '<form method="post" class="staff-add-form">';
+            $html .= '<input type="hidden" name="csrf_token" value="' . safeHtml($csrfToken) . '">';
+            $html .= '<input type="hidden" name="action" value="quick_add_staff">';
+            $html .= '<input type="hidden" name="department_id" value="' . $deptId . '">';
+            $html .= '<input type="hidden" name="staff_role" value="' . safeHtml($roleKey) . '">';
+            $html .= '<label class="staff-add-label">+ Add ' . safeHtml($slot['label']) . '</label>';
+            $html .= '<span class="staff-add-desc">' . safeHtml($slot['desc']) . '</span>';
+            $html .= '<input type="text" name="staff_name" placeholder="Full name" required>';
+            $html .= '<input type="email" name="staff_email" placeholder="Email" required>';
+            $html .= '<button type="submit" class="btn btn-secondary btn-sm">Create Login</button>';
+            $html .= '</form>';
+        }
+        $html .= '</div>';
+
+        $html .= '</div></details>';
+    }
+
     $html .= '</div>';
 
     foreach ($node['children'] as $child) {
-        $html .= renderDepartmentNode($child, $isTopRole, $myDeptId, $depth + 1);
+        $html .= renderDepartmentNode($child, $isTopRole, $myDeptId, $staffByDepartment, $quickAddSlots, $newDepartmentId, $csrfToken, $depth + 1);
     }
 
     return $html;
@@ -286,6 +415,29 @@ function renderDepartmentNode(array $node, bool $isTopRole, ?int $myDeptId, int 
         .dept-bar-track { height: 8px; background: var(--paper); border: 1px solid var(--line); margin-bottom: 8px; }
         .dept-bar-fill { height: 100%; transition: width 0.2s; }
         .dept-stats { display: flex; gap: 20px; flex-wrap: wrap; font-size: 12px; color: var(--ink-500); }
+
+        .staff-panel { margin-top: 12px; border-top: 1px dashed var(--line); padding-top: 10px; }
+        .staff-panel summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--ink-500); font-family: var(--f-cond); text-transform: uppercase; letter-spacing: .03em; }
+        .staff-panel summary:hover { color: var(--brass); }
+        .staff-panel-body { margin-top: 10px; padding-left: 4px; }
+        .staff-list { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+        .staff-chip { font-size: 12px; padding: 4px 10px; background: var(--paper); border: 1px solid var(--line); }
+        .staff-chip.staff-inactive { opacity: 0.5; text-decoration: line-through; }
+        .staff-empty-note { font-size: 12.5px; color: var(--ink-300); margin-bottom: 12px; font-style: italic; }
+        .staff-add-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+        .staff-add-form { background: var(--paper); border: 1px solid var(--line); padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+        .staff-add-label { font-size: 11.5px; font-weight: 700; font-family: var(--f-cond); text-transform: uppercase; letter-spacing: .03em; color: var(--ink-900); }
+        .staff-add-desc { font-size: 11px; color: var(--ink-300); margin-bottom: 2px; }
+        .staff-add-form input { padding: 6px 8px; border: 1px solid var(--line); font-size: 12.5px; background: var(--panel); }
+        .staff-add-form input:focus { outline: none; border-color: var(--brass); }
+
+        .creds-banner { background: var(--ink-900); color: #fff; padding: 18px 22px; margin-bottom: 20px; border-left: 4px solid var(--brass); }
+        .creds-banner .warn { color: #fbbf24; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; font-family: var(--f-cond); margin-bottom: 8px; }
+        .creds-banner .row { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13.5px; margin-bottom: 4px; }
+        .creds-banner .row .k { color: var(--ink-300); font-family: var(--f-cond); font-size: 10.5px; text-transform: uppercase; min-width: 90px; }
+        .creds-banner .row .v { font-family: var(--f-mono); font-weight: 700; }
+
+        .empty-state { text-align: center; padding: 32px 20px; color: var(--ink-300); font-size: 13.5px; }
         .text-danger { color: var(--danger); }
         .text-green { color: var(--ledger-green); }
         .status { display: inline-block; padding: 2px 12px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; font-family: var(--f-cond); }
@@ -335,6 +487,15 @@ function renderDepartmentNode(array $node, bool $isTopRole, ?int $myDeptId, int 
             </div>
         </div>
 
+        <?php if ($newStaffCredentials): ?>
+        <div class="creds-banner">
+            <div class="warn">⚠ One-time display — copy this now, it will not be shown again</div>
+            <div class="row"><span class="k">Name</span><span class="v" style="font-weight:400;"><?php echo safeHtml($newStaffCredentials['name']); ?></span></div>
+            <div class="row"><span class="k">Email</span><span class="v" style="font-weight:400;"><?php echo safeHtml($newStaffCredentials['email']); ?></span></div>
+            <div class="row"><span class="k">Temp password</span><span class="v"><?php echo safeHtml($newStaffCredentials['temp_password']); ?></span></div>
+        </div>
+        <?php endif; ?>
+
         <?php if ($flashMessage): ?>
         <div class="flash flash-<?php echo $flashType; ?>"><?php echo safeHtml($flashMessage); ?></div>
         <?php endif; ?>
@@ -360,6 +521,7 @@ function renderDepartmentNode(array $node, bool $isTopRole, ?int $myDeptId, int 
             <details>
                 <summary>+ Request a sub-department</summary>
                 <form method="post" class="form-grid" style="margin-top:10px;">
+                    <input type="hidden" name="csrf_token" value="<?php echo safeHtml($csrfToken); ?>">
                     <input type="hidden" name="action" value="request_sub_department">
                     <input type="hidden" name="parent_id" value="<?php echo (int)$myDepartment['id']; ?>">
                     <div class="form-group"><label>Name</label><input type="text" name="name" required></div>
@@ -373,6 +535,7 @@ function renderDepartmentNode(array $node, bool $isTopRole, ?int $myDeptId, int 
             <details style="margin-top:14px;">
                 <summary>+ Request to borrow ration from another department</summary>
                 <form method="post" class="form-grid" style="margin-top:10px;">
+                    <input type="hidden" name="csrf_token" value="<?php echo safeHtml($csrfToken); ?>">
                     <input type="hidden" name="action" value="request_borrow">
                     <input type="hidden" name="borrowing_department_id" value="<?php echo (int)$myDepartment['id']; ?>">
                     <div class="form-group">
@@ -406,12 +569,13 @@ function renderDepartmentNode(array $node, bool $isTopRole, ?int $myDeptId, int 
             <?php if (empty($tree)): ?>
             <div class="empty-state">No departments yet. Create the first one below.</div>
             <?php else: ?>
-                <?php foreach ($tree as $node) { echo renderDepartmentNode($node, true, null); } ?>
+                <?php foreach ($tree as $node) { echo renderDepartmentNode($node, true, null, $staffByDepartment, $quickAddSlots, $newDepartmentId, $csrfToken); } ?>
             <?php endif; ?>
 
             <details style="margin-top:18px;">
                 <summary>+ Create top-level department</summary>
                 <form method="post" class="form-grid" style="margin-top:10px;">
+                    <input type="hidden" name="csrf_token" value="<?php echo safeHtml($csrfToken); ?>">
                     <input type="hidden" name="action" value="create_department">
                     <div class="form-group"><label>Name</label><input type="text" name="name" required></div>
                     <div class="form-group"><label>Code</label><input type="text" name="code"></div>
@@ -424,6 +588,7 @@ function renderDepartmentNode(array $node, bool $isTopRole, ?int $myDeptId, int 
             <details style="margin-top:14px;">
                 <summary>+ Create sub-department directly</summary>
                 <form method="post" class="form-grid" style="margin-top:10px;">
+                    <input type="hidden" name="csrf_token" value="<?php echo safeHtml($csrfToken); ?>">
                     <input type="hidden" name="action" value="create_sub_department">
                     <div class="form-group">
                         <label>Parent Department</label>
@@ -445,6 +610,7 @@ function renderDepartmentNode(array $node, bool $isTopRole, ?int $myDeptId, int 
             <details style="margin-top:14px;">
                 <summary>+ Adjust an existing department's ceiling</summary>
                 <form method="post" class="form-grid" style="margin-top:10px;">
+                    <input type="hidden" name="csrf_token" value="<?php echo safeHtml($csrfToken); ?>">
                     <input type="hidden" name="action" value="update_ceiling">
                     <div class="form-group">
                         <label>Department</label>
@@ -483,12 +649,14 @@ function renderDepartmentNode(array $node, bool $isTopRole, ?int $myDeptId, int 
                     </div>
                     <div class="request-actions">
                         <form method="post" style="display:inline;">
+                    <input type="hidden" name="csrf_token" value="<?php echo safeHtml($csrfToken); ?>">
                             <input type="hidden" name="action" value="decide_sub_department_request">
                             <input type="hidden" name="request_id" value="<?php echo (int)$req['id']; ?>">
                             <input type="hidden" name="decision" value="approve">
                             <button type="submit" class="btn btn-success btn-sm">Approve</button>
                         </form>
                         <form method="post" style="display:inline;">
+                    <input type="hidden" name="csrf_token" value="<?php echo safeHtml($csrfToken); ?>">
                             <input type="hidden" name="action" value="decide_sub_department_request">
                             <input type="hidden" name="request_id" value="<?php echo (int)$req['id']; ?>">
                             <input type="hidden" name="decision" value="reject">
@@ -523,11 +691,13 @@ function renderDepartmentNode(array $node, bool $isTopRole, ?int $myDeptId, int 
                     </div>
                     <div class="request-actions">
                         <form method="post" style="display:inline;">
+                    <input type="hidden" name="csrf_token" value="<?php echo safeHtml($csrfToken); ?>">
                             <input type="hidden" name="action" value="approve_borrow">
                             <input type="hidden" name="request_id" value="<?php echo (int)$req['id']; ?>">
                             <button type="submit" class="btn btn-success btn-sm">Approve</button>
                         </form>
                         <form method="post" style="display:inline;">
+                    <input type="hidden" name="csrf_token" value="<?php echo safeHtml($csrfToken); ?>">
                             <input type="hidden" name="action" value="reject_borrow">
                             <input type="hidden" name="request_id" value="<?php echo (int)$req['id']; ?>">
                             <button type="submit" class="btn btn-danger btn-sm">Reject</button>
