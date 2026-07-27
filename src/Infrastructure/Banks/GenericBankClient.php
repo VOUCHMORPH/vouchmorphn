@@ -1,7 +1,7 @@
 <?php
 // Infrastructure/Banks/GenericBankClient.php
 
-namespace Infrastructure\Banks; 
+namespace Infrastructure\Banks;    
 
 
 require_once __DIR__ . '/Contracts/BankAPIInterface.php';
@@ -1214,67 +1214,72 @@ class GenericBankClient implements BankAPIInterface
     // DEBIT FUNDS - STANDARDIZED
     // ============================================================================
 
-    public function debitFunds(array $payload): array
-    {
-        error_log("=== GENERIC BANK CLIENT: debitFunds ===");
-        error_log("[GenericBankClient] debitFunds received payload keys: " . implode(', ', array_keys($payload)));
-        
-        // debitFunds is always a source-directed call (debiting the ORIGIN
-        // account/wallet), so it's safe and correct to backfill phone/
-        // wallet_phone/national_id/email from source_identifier here.
-        $payload = $this->addSourceIdentifier($payload);
-        
-        $holdRef = $payload['hold_reference'] ?? $payload['reference'] ?? null;
-        error_log("[GenericBankClient] debitFunds: hold_reference extracted: " . ($holdRef ?? 'NULL'));
-        
-        if ($holdRef) {
-            $payload['hold_reference'] = $holdRef;
-            $payload['reference'] = $holdRef;
-        }
-        
-        if (!isset($payload['from_institution'])) {
-            $payload['from_institution'] = $payload['source_institution'] ?? $this->bankPrefix;
-        }
-        if (!isset($payload['source_institution'])) {
-            $payload['source_institution'] = $payload['from_institution'] ?? $this->bankPrefix;
-        }
-        if (!isset($payload['action'])) {
-            $payload['action'] = 'DEBIT_FUNDS';
-        }
-        if (!isset($payload['reference']) || empty($payload['reference'])) {
-            $payload['reference'] = 'DEBIT_' . uniqid();
-        }
-        
-        // Ensure certificate and signature are included for debit
-        if ($this->certManager && $this->certManager->isConfigured()) {
-            if (!isset($payload['certificate']) || !isset($payload['signature'])) {
-                $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
-                $payload = array_merge($payload, $signedPayload);
-            }
-        } else {
+   public function debitFunds(array $payload): array
+{
+    error_log("=== GENERIC BANK CLIENT: debitFunds ===");
+    error_log("[GenericBankClient] debitFunds received payload keys: " . implode(', ', array_keys($payload)));
+    
+    // debitFunds is always a source-directed call (debiting the ORIGIN
+    // account/wallet), so it's safe and correct to backfill phone/
+    // wallet_phone/national_id/email from source_identifier here.
+    $payload = $this->addSourceIdentifier($payload);
+    
+    $holdRef = $payload['hold_reference'] ?? $payload['reference'] ?? null;
+    error_log("[GenericBankClient] debitFunds: hold_reference extracted: " . ($holdRef ?? 'NULL'));
+    
+    if ($holdRef) {
+        $payload['hold_reference'] = $holdRef;
+        $payload['reference'] = $holdRef;
+    }
+    
+    if (!isset($payload['from_institution'])) {
+        $payload['from_institution'] = $payload['source_institution'] ?? $this->bankPrefix;
+    }
+    if (!isset($payload['source_institution'])) {
+        $payload['source_institution'] = $payload['from_institution'] ?? $this->bankPrefix;
+    }
+    if (!isset($payload['action'])) {
+        $payload['action'] = 'DEBIT_FUNDS';
+    }
+    if (!isset($payload['reference']) || empty($payload['reference'])) {
+        $payload['reference'] = 'DEBIT_' . uniqid();
+    }
+    
+    // Ensure certificate and signature are included for debit
+    if ($this->certManager && $this->certManager->isConfigured()) {
+        if (!isset($payload['certificate']) || !isset($payload['signature'])) {
             $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
             $payload = array_merge($payload, $signedPayload);
         }
-        
-        error_log("[GenericBankClient] debitFunds final: from_institution={$payload['from_institution']}, amount={$payload['amount']}, hold_reference={$payload['hold_reference']}");
-        
-        $result = $this->send('debit_funds', $payload, $payload['access_token'] ?? null);
-        
-        $data = $result['data'] ?? [];
-        
-        return [
-            'success' => $result['success'] ?? false,
-            'debited' => $result['success'] ?? false,
-            'transaction_reference' => $data['transaction_reference'] ?? $data['reference'] ?? null,
-            'status' => $data['status'] ?? 'COMPLETED',
-            'data' => $data,
-            'message' => $data['message'] ?? ($result['success'] ? 'Debit successful' : 'Debit failed'),
-            'status_code' => $result['status_code'] ?? 0,
-            'curl_error' => $result['curl_error'] ?? null,
-            'raw_response' => $result['raw_response'] ?? null
-        ];
+    } else {
+        $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
+        $payload = array_merge($payload, $signedPayload);
     }
-
+    
+    error_log("[GenericBankClient] debitFunds final: from_institution={$payload['from_institution']}, amount={$payload['amount']}, hold_reference={$payload['hold_reference']}");
+    
+    $result = $this->send('debit_funds', $payload, $payload['access_token'] ?? null);
+    
+    $data = $result['data'] ?? [];
+    
+    // FIX: ZuruBank's notify_debit.php nests transaction_reference one level
+    // deeper under "data" instead of flattening it like hold.php/credit_funds.php do.
+    if (isset($data['data']) && is_array($data['data'])) {
+        $data = array_merge($data, $data['data']);
+    }
+    
+    return [
+        'success' => $result['success'] ?? false,
+        'debited' => $result['success'] ?? false,
+        'transaction_reference' => $data['transaction_reference'] ?? $data['reference'] ?? null,
+        'status' => $data['status'] ?? 'COMPLETED',
+        'data' => $data,
+        'message' => $data['message'] ?? ($result['success'] ? 'Debit successful' : 'Debit failed'),
+        'status_code' => $result['status_code'] ?? 0,
+        'curl_error' => $result['curl_error'] ?? null,
+        'raw_response' => $result['raw_response'] ?? null
+    ];
+}
     public function getBalance(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: getBalance ===");
