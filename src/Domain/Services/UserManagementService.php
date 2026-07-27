@@ -177,7 +177,7 @@ class UserManagementService
     {
         $stmt = $this->db->prepare("
             SELECT COUNT(*) FROM organization_users
-            WHERE organization_id = :org_id AND role = 'owner' AND is_active = true AND user_id <> :uid
+            WHERE organization_id = :org_id AND role = 'owner' AND is_active = true AND id <> :uid
         ");
         $stmt->execute([':org_id' => $organizationId, ':uid' => $excludeUserId]);
         if ((int)$stmt->fetchColumn() === 0) {
@@ -199,7 +199,7 @@ class UserManagementService
         $current = $stmt->fetchColumn();
 
         if ($current !== false && $current !== null && (int)$current !== $userId) {
-            $chk = $this->db->prepare("SELECT is_active FROM organization_users WHERE user_id = :uid");
+            $chk = $this->db->prepare("SELECT is_active FROM organization_users WHERE id = :uid");
             $chk->execute([':uid' => $current]);
             if ((bool)$chk->fetchColumn()) {
                 throw new RuntimeException("This department already has an active head. Deactivate or reassign the current head first.");
@@ -208,6 +208,67 @@ class UserManagementService
 
         $stmt = $this->db->prepare("UPDATE departments SET head_user_id = :uid, updated_at = NOW() WHERE id = :id");
         $stmt->execute([':uid' => $userId, ':id' => $departmentId]);
+    }
+
+    /**
+     * organization_users.user_id is a required FK into the real, separate
+     * `users` table (global identity — shared with the consumer app and
+     * platform admins' underlying accounts). This looks up-or-creates the
+     * matching users row for a given email, so organization_users always
+     * has something valid to point at. Checks by email first rather than
+     * assuming one doesn't exist, since the same person could plausibly
+     * already have a users row (e.g. they use the consumer app too, or
+     * they're being added to a second organization).
+     *
+     * users.role_id defaults to 1 ('user' — "Regular system user" in the
+     * shared roles table also used by admins) since this person's actual
+     * authority comes entirely from their organization_users.role, not
+     * from anything on the global users row.
+     *
+     * NOTE: users.phone is left NULL here since none of the enterprise
+     * HR forms collect a phone number today. If that column turns out to
+     * be NOT NULL, this is the exact line that will need a value — worth
+     * knowing in advance rather than being surprised by it.
+     */
+    public function ensureGlobalUser(string $fullName, string $email, string $passwordHash): int
+    {
+        $email = trim(strtolower($email));
+
+        $stmt = $this->db->prepare("SELECT user_id FROM users WHERE email = :email LIMIT 1");
+        $stmt->execute([':email' => $email]);
+        $existing = $stmt->fetchColumn();
+        if ($existing) {
+            return (int)$existing;
+        }
+
+        $usernameBase = preg_replace('/[^a-z0-9_]/', '', strtolower(explode('@', $email)[0]));
+        if ($usernameBase === '') {
+            $usernameBase = 'user';
+        }
+        $username = $usernameBase;
+        $suffix = 0;
+        while (true) {
+            $stmt = $this->db->prepare("SELECT 1 FROM users WHERE username = :u");
+            $stmt->execute([':u' => $username]);
+            if (!$stmt->fetchColumn()) {
+                break;
+            }
+            $suffix++;
+            $username = $suffix < 20 ? ($usernameBase . $suffix) : ($usernameBase . '_' . bin2hex(random_bytes(3)));
+        }
+
+        $stmt = $this->db->prepare("
+            INSERT INTO users (username, email, phone, password_hash, role_id, full_name, created_at, updated_at)
+            VALUES (:username, :email, NULL, :hash, 1, :full_name, NOW(), NOW())
+            RETURNING user_id
+        ");
+        $stmt->execute([
+            ':username' => $username,
+            ':email' => $email,
+            ':hash' => $passwordHash,
+            ':full_name' => $fullName,
+        ]);
+        return (int)$stmt->fetchColumn();
     }
 
     private function generateTempPassword(): string
@@ -229,7 +290,7 @@ class UserManagementService
     public function listUsers(int $organizationId): array
     {
         $stmt = $this->db->prepare("
-            SELECT u.user_id, u.full_name, u.email, u.role, u.department_id, u.is_active,
+            SELECT u.id AS user_id, u.full_name, u.email, u.role, u.department_id, u.is_active,
                    u.must_change_password, u.created_at, u.deactivated_at,
                    d.name AS department_name
             FROM organization_users u
@@ -247,7 +308,7 @@ class UserManagementService
             SELECT u.*, d.name AS department_name
             FROM organization_users u
             LEFT JOIN departments d ON d.id = u.department_id
-            WHERE u.user_id = :uid AND u.organization_id = :org_id
+            WHERE u.id = :uid AND u.organization_id = :org_id
         ");
         $stmt->execute([':uid' => $userId, ':org_id' => $organizationId]);
         return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
@@ -305,17 +366,23 @@ class UserManagementService
 
         $this->db->beginTransaction();
         try {
+            // organization_users.user_id is a required FK into the real,
+            // separate `users` table — this must exist before the INSERT
+            // below can succeed at all.
+            $globalUserId = $this->ensureGlobalUser($fullName, $email, $hash);
+
             $stmt = $this->db->prepare("
                 INSERT INTO organization_users (
-                    organization_id, department_id, full_name, email, password_hash,
+                    organization_id, user_id, department_id, full_name, email, password_hash,
                     role, is_active, must_change_password, created_by, created_at, updated_at
                 ) VALUES (
-                    :org_id, :dept_id, :name, :email, :hash,
+                    :org_id, :global_user_id, :dept_id, :name, :email, :hash,
                     :role, true, true, :created_by, NOW(), NOW()
-                ) RETURNING user_id
+                ) RETURNING id
             ");
             $stmt->execute([
                 ':org_id' => $organizationId,
+                ':global_user_id' => $globalUserId,
                 ':dept_id' => $departmentId,
                 ':name' => $fullName,
                 ':email' => $email,
@@ -323,6 +390,12 @@ class UserManagementService
                 ':role' => $role,
                 ':created_by' => $createdBy,
             ]);
+            // organization_users.id — the membership row's own primary
+            // key, which is what every other piece of enterprise code
+            // (created_by/approved_by/head_user_id, the session's
+            // $user['id'], department scoping, etc.) actually means by
+            // "this person's id." Deliberately NOT the same value as
+            // $globalUserId above.
             $newUserId = (int)$stmt->fetchColumn();
 
             if ($role === 'department_head' && $departmentId !== null) {
@@ -349,7 +422,7 @@ class UserManagementService
         $this->assertValidRole($newRole);
         $departmentId = $this->normalizeDepartmentForRole($newRole, $departmentId);
 
-        $stmt = $this->db->prepare("SELECT role FROM organization_users WHERE user_id = :uid AND organization_id = :org_id");
+        $stmt = $this->db->prepare("SELECT role FROM organization_users WHERE id = :uid AND organization_id = :org_id");
         $stmt->execute([':uid' => $targetUserId, ':org_id' => $organizationId]);
         $existing = $stmt->fetch(PDO::FETCH_ASSOC);
         if (!$existing) {
@@ -365,7 +438,7 @@ class UserManagementService
         $stmt = $this->db->prepare("
             UPDATE organization_users
             SET role = :role, department_id = :dept_id, updated_at = NOW()
-            WHERE user_id = :uid AND organization_id = :org_id
+            WHERE id = :uid AND organization_id = :org_id
         ");
         $stmt->execute([
             ':role' => $newRole,
@@ -393,7 +466,7 @@ class UserManagementService
             if ($targetUserId === $updatedBy) {
                 throw new RuntimeException("You can't deactivate your own account.");
             }
-            $stmt = $this->db->prepare("SELECT role FROM organization_users WHERE user_id = :uid AND organization_id = :org_id");
+            $stmt = $this->db->prepare("SELECT role FROM organization_users WHERE id = :uid AND organization_id = :org_id");
             $stmt->execute([':uid' => $targetUserId, ':org_id' => $organizationId]);
             $existing = $stmt->fetch(PDO::FETCH_ASSOC);
             if ($existing && $existing['role'] === 'owner') {
@@ -406,7 +479,7 @@ class UserManagementService
             SET is_active = :active,
                 deactivated_at = CASE WHEN :active2::boolean THEN NULL ELSE NOW() END,
                 updated_at = NOW()
-            WHERE user_id = :uid AND organization_id = :org_id
+            WHERE id = :uid AND organization_id = :org_id
         ");
         $stmt->execute([
             ':active' => $active ? 't' : 'f',
@@ -426,7 +499,7 @@ class UserManagementService
         $stmt = $this->db->prepare("
             UPDATE organization_users
             SET password_hash = :hash, must_change_password = true, updated_at = NOW()
-            WHERE user_id = :uid AND organization_id = :org_id
+            WHERE id = :uid AND organization_id = :org_id
         ");
         $stmt->execute([':hash' => $hash, ':uid' => $targetUserId, ':org_id' => $organizationId]);
 
