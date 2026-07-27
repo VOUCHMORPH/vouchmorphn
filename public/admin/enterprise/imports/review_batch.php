@@ -1,18 +1,18 @@
 <?php
 // enterprise/imports/review_batch.php - Review and approve batch
-require_once '../auth.php';
+require_once _DIR_ . '/../../auth.php';
 $user = requireEnterpriseAuth();
-require_once '../../../../src/Core/Database/DBConnection.php';
+require_once _DIR_ . '/../../../../src/Core/Database/DBConnection.php';
 use Core\Database\DBConnection;
 
 // ============================================================
 // LOAD SWAPSERVICE AND DEPENDENCIES
 // ============================================================
-require_once '../../../../vendor/autoload.php';
-require_once '../../../../src/Domain/Services/SwapService.php';
-require_once '../../../../src/Domain/Services/DepartmentService.php';
-require_once '../../../../src/Domain/Services/UserManagementService.php';
-require_once '../../../../src/Core/Config/LoadCountry.php';
+require_once _DIR_ . '/../../../../vendor/autoload.php';
+require_once _DIR_ . '/../../../../src/Domain/Services/SwapService.php';
+require_once _DIR_ . '/../../../../src/Domain/Services/DepartmentService.php';
+require_once _DIR_ . '/../../../../src/Domain/Services/UserManagementService.php';
+require_once _DIR_ . '/../../../../src/Core/Config/LoadCountry.php';
 
 use Domain\Services\SwapService;
 use Domain\Services\DepartmentService;
@@ -78,11 +78,11 @@ function loadBatch(PDO $db, $batchId, $orgId) {
                u4.full_name as approved_by_name,
                u5.full_name as executed_by_name
         FROM disbursement_batches b
-        LEFT JOIN organization_users u1 ON b.created_by = u1.user_id
-        LEFT JOIN organization_users u2 ON b.submitted_by = u2.user_id
-        LEFT JOIN organization_users u3 ON b.reviewed_by = u3.user_id
-        LEFT JOIN organization_users u4 ON b.approved_by = u4.user_id
-        LEFT JOIN organization_users u5 ON b.executed_by = u5.user_id
+        LEFT JOIN organization_users u1 ON b.created_by = u1.id
+        LEFT JOIN organization_users u2 ON b.submitted_by = u2.id
+        LEFT JOIN organization_users u3 ON b.reviewed_by = u3.id
+        LEFT JOIN organization_users u4 ON b.approved_by = u4.id
+        LEFT JOIN organization_users u5 ON b.executed_by = u5.id
         WHERE b.id = :id AND b.organization_id = :org_id
     ");
     $stmt->execute([':id' => $batchId, ':org_id' => $orgId]);
