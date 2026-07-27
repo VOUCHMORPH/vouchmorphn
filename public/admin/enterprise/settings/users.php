@@ -12,11 +12,11 @@
  * that no in-org role can ever spin up a rival organization from inside
  * its own dashboard.
  */
-require_once _DIR_ . '/../../auth.php';
+require_once __DIR__ . '/../../auth.php';
 $user = requireEnterpriseAuth();
-require_once _DIR_ . '/../../../../src/Core/Database/DBConnection.php';
-require_once _DIR_ . '/../../../../src/Domain/Services/DepartmentService.php';
-require_once _DIR_ . '/../../../../src/Domain/Services/UserManagementService.php';
+require_once __DIR__ . '/../../../../src/Core/Database/DBConnection.php';
+require_once __DIR__ . '/../../../../src/Domain/Services/DepartmentService.php';
+require_once __DIR__ . '/../../../../src/Domain/Services/UserManagementService.php';
 use Core\Database\DBConnection;
 use Domain\Services\DepartmentService;
 use Domain\Services\UserManagementService;
@@ -78,6 +78,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $result = $userMgmt->createUser($orgId, [
                 'full_name' => $_POST['full_name'] ?? '',
                 'email' => $_POST['email'] ?? '',
+                'phone' => $_POST['phone'] ?? '',
                 'role' => $_POST['role'] ?? '',
                 'department_id' => $_POST['department_id'] ?? null,
                 'password' => $_POST['password'] ?? '',
@@ -266,6 +267,10 @@ $roleCatalogJson = json_encode(UserManagementService::ROLE_CATALOG, JSON_HEX_APO
                     <div class="form-group">
                         <label>Email</label>
                         <input type="email" name="email" required placeholder="name@organization.gov">
+                    </div>
+                    <div class="form-group">
+                        <label>Phone</label>
+                        <input type="text" name="phone" required placeholder="+244...">
                     </div>
                 </div>
                 <div class="form-group">
