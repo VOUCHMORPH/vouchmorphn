@@ -15,9 +15,9 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-require_once '../auth.php';
-require_once '../../src/Domain/Services/DepartmentService.php';
-require_once '../../src/Domain/Services/UserManagementService.php';
+require_once _DIR_ . '/../../auth.php';
+require_once _DIR_ . '/../../../../src/Domain/Services/DepartmentService.php';
+require_once _DIR_ . '/../../../../src/Domain/Services/UserManagementService.php';
 
 use Domain\Services\DepartmentService;
 use Domain\Services\UserManagementService;
@@ -106,6 +106,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'email' => $staffEmail,
                     'role' => $staffRole,
                     'department_id' => $staffDeptId,
+                    'password' => $_POST['staff_password'] ?? '',
                 ], (int)$userId, $userRole);
                 $newDepartmentId = $staffDeptId; // keep this department's panel open to show the result
                 $newStaffCredentials = [
@@ -361,6 +362,7 @@ function renderDepartmentNode(
             $html .= '<span class="staff-add-desc">' . safeHtml($slot['desc']) . '</span>';
             $html .= '<input type="text" name="staff_name" placeholder="Full name" required>';
             $html .= '<input type="email" name="staff_email" placeholder="Email" required>';
+            $html .= '<input type="text" name="staff_password" placeholder="Password (optional, random if blank)">';
             $html .= '<button type="submit" class="btn btn-secondary btn-sm">Create Login</button>';
             $html .= '</form>';
         }
