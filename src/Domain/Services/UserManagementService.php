@@ -225,14 +225,18 @@ class UserManagementService
      * authority comes entirely from their organization_users.role, not
      * from anything on the global users row.
      *
-     * NOTE: users.phone is left NULL here since none of the enterprise
-     * HR forms collect a phone number today. If that column turns out to
-     * be NOT NULL, this is the exact line that will need a value — worth
-     * knowing in advance rather than being surprised by it.
+     * $phone is required — users.phone is NOT NULL on this schema. Throws
+     * a clear error rather than attempting the insert and letting it
+     * crash with a raw constraint violation.
      */
-    public function ensureGlobalUser(string $fullName, string $email, string $passwordHash): int
+    public function ensureGlobalUser(string $fullName, string $email, string $passwordHash, string $phone): int
     {
         $email = trim(strtolower($email));
+        $phone = trim($phone);
+
+        if ($phone === '') {
+            throw new RuntimeException("A phone number is required to create this login — the underlying users table requires one.");
+        }
 
         $stmt = $this->db->prepare("SELECT user_id FROM users WHERE email = :email LIMIT 1");
         $stmt->execute([':email' => $email]);
@@ -259,12 +263,13 @@ class UserManagementService
 
         $stmt = $this->db->prepare("
             INSERT INTO users (username, email, phone, password_hash, role_id, full_name, created_at, updated_at)
-            VALUES (:username, :email, NULL, :hash, 1, :full_name, NOW(), NOW())
+            VALUES (:username, :email, :phone, :hash, 1, :full_name, NOW(), NOW())
             RETURNING user_id
         ");
         $stmt->execute([
             ':username' => $username,
             ':email' => $email,
+            ':phone' => $phone,
             ':hash' => $passwordHash,
             ':full_name' => $fullName,
         ]);
@@ -331,6 +336,7 @@ class UserManagementService
 
         $fullName = trim($data['full_name'] ?? '');
         $email = trim(strtolower($data['email'] ?? ''));
+        $phone = trim($data['phone'] ?? '');
         $role = $data['role'] ?? '';
         $departmentId = !empty($data['department_id']) ? (int)$data['department_id'] : null;
 
@@ -339,6 +345,9 @@ class UserManagementService
         }
         if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
             throw new RuntimeException("A valid email is required.");
+        }
+        if ($phone === '') {
+            throw new RuntimeException("A phone number is required.");
         }
         $this->assertValidRole($role);
         $departmentId = $this->normalizeDepartmentForRole($role, $departmentId);
@@ -369,7 +378,7 @@ class UserManagementService
             // organization_users.user_id is a required FK into the real,
             // separate `users` table — this must exist before the INSERT
             // below can succeed at all.
-            $globalUserId = $this->ensureGlobalUser($fullName, $email, $hash);
+            $globalUserId = $this->ensureGlobalUser($fullName, $email, $hash, $phone);
 
             $stmt = $this->db->prepare("
                 INSERT INTO organization_users (
