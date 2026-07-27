@@ -49,7 +49,9 @@ function createOrganizationWithOwner(PDO $db, array $orgData, array $ownerData, 
     if ($ownerName === '') throw new RuntimeException("The first Owner's full name is required.");
     if ($ownerEmail === '' || !filter_var($ownerEmail, FILTER_VALIDATE_EMAIL)) throw new RuntimeException("A valid email is required for the first Owner.");
 
-    $tempPassword = generateTempPasswordP();
+    // Same practice/demo convenience as UserManagementService::createUser() —
+    // opt-in fixed password if the caller supplies one, random otherwise.
+    $tempPassword = !empty($ownerData['password']) ? (string)$ownerData['password'] : generateTempPasswordP();
     $hash = password_hash($tempPassword, PASSWORD_DEFAULT);
 
     $db->beginTransaction();
@@ -121,6 +123,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ], [
                 'full_name' => $_POST['owner_name'] ?? '',
                 'email' => $_POST['owner_email'] ?? '',
+                'password' => $_POST['owner_password'] ?? '',
             ], (int)$platformAdmin['admin_id']);
         } catch (\RuntimeException $e) {
             $error = $e->getMessage();
@@ -253,6 +256,10 @@ $csrfToken = generateCsrfToken();
                 <div class="form-group">
                     <label>Email</label>
                     <input type="email" name="owner_email" required>
+                </div>
+                <div class="form-group">
+                    <label>Password (optional)</label>
+                    <input type="text" name="owner_password" placeholder="Leave blank for a random generated one">
                 </div>
             </div>
             <button type="submit" class="btn">Create Organization</button>
