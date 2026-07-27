@@ -69,7 +69,7 @@ function loadAdminWithRole(int $adminId): ?array {
  */
 function requirePlatformAdminAuth(): array {
     if (empty($_SESSION['admin_id'])) {
-        header('Location: /organizations/login.php');
+        header('Location: /../organizations/login.php');
         exit;
     }
 
@@ -77,13 +77,13 @@ function requirePlatformAdminAuth(): array {
     if (!$admin || $admin['deleted_at'] !== null) {
         session_unset();
         session_destroy();
-        header('Location: /organizations/login.php');
+        header('Location: /../organizations/login.php');
         exit;
     }
     if (!empty($admin['locked_until']) && strtotime($admin['locked_until']) > time()) {
         session_unset();
         session_destroy();
-        header('Location: /organizations/login.php?locked=1');
+        header('Location: /../organizations/login.php?locked=1');
         exit;
     }
 
