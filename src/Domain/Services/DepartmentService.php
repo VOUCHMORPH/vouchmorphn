@@ -96,19 +96,30 @@ class DepartmentService
         $byId = [];
         foreach ($rows as $row) {
             $deptId = (int)$row['id'];
-            $ceiling = (float)$row['budget_ceiling'];
+            // NULL means "no vote assigned — unlimited locally, limited only
+            // by the source account's real balance at execute time" (see
+            // assertBatchFitsRation). Casting NULL to float would silently
+            // become 0.0, which reads as "zero budget" — the exact opposite
+            // of what NULL is meant to mean here, so it's checked explicitly.
+            $hasCeiling = ($row['budget_ceiling'] !== null);
+            $ceiling = $hasCeiling ? (float)$row['budget_ceiling'] : null;
             $disbursed = (float)$row['amount_disbursed_ytd'];
             $reserved = $reservedByDept[$deptId] ?? 0.0;
-            $available = $ceiling - $disbursed - $reserved;
+            $available = $hasCeiling ? ($ceiling - $disbursed - $reserved) : null;
 
             $row['budget_ceiling'] = $ceiling;
+            $row['has_ceiling'] = $hasCeiling;
             $row['amount_disbursed_ytd'] = $disbursed;
             $row['reserved_in_flight'] = $reserved;
             $row['available'] = $available;
-            $row['utilization_percent'] = $ceiling > 0
+            $row['utilization_percent'] = ($hasCeiling && $ceiling > 0)
                 ? round((($disbursed + $reserved) / $ceiling) * 100, 1)
                 : 0.0;
-            $row['is_over_ration'] = $available < 0;
+            // A department with no vote can never be "over ration" locally —
+            // there's no local number to be over. Its real constraint is
+            // whatever the source account actually has, checked at execute
+            // time, not tracked here.
+            $row['is_over_ration'] = $hasCeiling && ($available < 0);
             $row['children'] = [];
 
             $byId[$deptId] = $row;
@@ -293,12 +304,14 @@ class DepartmentService
         $reservedMap = $this->getReservedAmountsByDepartment((int)$dept['organization_id']);
         $reserved = $reservedMap[$departmentId] ?? 0.0;
 
-        $ceiling = (float)$dept['budget_ceiling'];
+        $hasCeiling = ($dept['budget_ceiling'] !== null);
+        $ceiling = $hasCeiling ? (float)$dept['budget_ceiling'] : null;
         $disbursed = (float)$dept['amount_disbursed_ytd'];
-        $available = $ceiling - $disbursed - $reserved;
+        $available = $hasCeiling ? ($ceiling - $disbursed - $reserved) : null;
 
         return [
             'department_id' => $departmentId,
+            'has_ceiling' => $hasCeiling,
             'ceiling' => $ceiling,
             'disbursed_ytd' => $disbursed,
             'reserved_in_flight' => $reserved,
@@ -321,10 +334,26 @@ class DepartmentService
     {
         $ration = $this->getAvailableRation($departmentId);
 
+        // No vote assigned — this department deliberately has no local
+        // ceiling; it's constrained only by the source account's real
+        // balance, which is checked at execute time (SwapService/adapter
+        // layer), not here. Trade-off worth remembering: a budget problem
+        // on a no-vote department is caught late (at execute), not early
+        // (at submit) — see the department-creation UI copy for this.
+        if (!$ration['has_ceiling']) {
+            return [
+                'can_submit' => true,
+                'requires_borrow' => false,
+                'unlimited' => true,
+                'ration' => $ration,
+            ];
+        }
+
         if ($batchTotal <= $ration['available']) {
             return [
                 'can_submit' => true,
                 'requires_borrow' => false,
+                'unlimited' => false,
                 'ration' => $ration,
             ];
         }
@@ -369,7 +398,7 @@ class DepartmentService
         string $name,
         ?string $code,
         ?string $costCenter,
-        float $budgetCeiling,
+        ?float $budgetCeiling,
         int $createdBy,
         string $creatorRole
     ): int {
@@ -405,20 +434,37 @@ class DepartmentService
      * rations to the parent; it's enforced here in application code since
      * it's a cross-row check Postgres can't express as a simple CHECK.
      */
-    private function assertCeilingFitsUnderParent(int $parentId, float $newChildCeiling, ?int $excludeDepartmentId = null): void
+    private function assertCeilingFitsUnderParent(int $parentId, ?float $newChildCeiling, ?int $excludeDepartmentId = null): void
     {
         $stmt = $this->db->prepare("SELECT budget_ceiling FROM departments WHERE id = :id AND status = 'active'");
         $stmt->execute([':id' => $parentId]);
-        $parentCeiling = $stmt->fetchColumn();
-        if ($parentCeiling === false) {
+        $parentCeilingRaw = $stmt->fetchColumn();
+        if ($parentCeilingRaw === false) {
             throw new RuntimeException("Parent department not found or inactive.");
         }
-        $parentCeiling = (float)$parentCeiling;
+
+        // Parent has no vote (unlimited) — nothing to fit under, any child
+        // ceiling (including another unlimited one) is fine.
+        if ($parentCeilingRaw === null) {
+            return;
+        }
+
+        // Parent DOES have a real ceiling — a child can't claim "unlimited"
+        // underneath it, since that would let it silently escape the
+        // parent's actual cap. The child must have its own number here.
+        if ($newChildCeiling === null) {
+            throw new RuntimeException(
+                "The parent department has a fixed budget ceiling, so this sub-department needs one too — "
+                . "it can't be set to \"no vote\" underneath a department that does have one."
+            );
+        }
+
+        $parentCeiling = (float)$parentCeilingRaw;
 
         $sql = "
             SELECT COALESCE(SUM(budget_ceiling), 0)
             FROM departments
-            WHERE parent_department_id = :parent_id AND status = 'active'
+            WHERE parent_department_id = :parent_id AND status = 'active' AND budget_ceiling IS NOT NULL
         ";
         $params = [':parent_id' => $parentId];
         if ($excludeDepartmentId !== null) {
@@ -450,7 +496,7 @@ class DepartmentService
         string $name,
         ?string $code,
         ?string $costCenter,
-        float $budgetCeiling,
+        ?float $budgetCeiling,
         int $createdBy,
         string $creatorRole
     ): int {
@@ -487,7 +533,7 @@ class DepartmentService
      * Top role adjusting an existing department's (or sub-department's)
      * ceiling. If it's a sub-department, re-checks the parent-fit rule.
      */
-    public function updateDepartmentCeiling(int $departmentId, float $newCeiling, int $updatedBy, string $updaterRole): void
+    public function updateDepartmentCeiling(int $departmentId, ?float $newCeiling, int $updatedBy, string $updaterRole): void
     {
         $this->assertTopRole($updaterRole, "change a department's ceiling");
 
@@ -498,7 +544,7 @@ class DepartmentService
             throw new RuntimeException("Department not found or inactive.");
         }
 
-        if ($newCeiling < (float)$dept['amount_disbursed_ytd']) {
+        if ($newCeiling !== null && $newCeiling < (float)$dept['amount_disbursed_ytd']) {
             throw new RuntimeException(
                 "New ceiling (" . number_format($newCeiling, 2) . ") can't be less than what's already "
                 . "been disbursed this year (" . number_format((float)$dept['amount_disbursed_ytd'], 2) . ")."
@@ -507,6 +553,27 @@ class DepartmentService
 
         if ($dept['parent_department_id'] !== null) {
             $this->assertCeilingFitsUnderParent((int)$dept['parent_department_id'], $newCeiling, $departmentId);
+        }
+
+        // Switching an EXISTING department TO "no vote" is only safe if it
+        // has no active sub-departments with their own real ceilings — those
+        // ceilings were only ever validated against THIS department having a
+        // number to fit under (assertCeilingFitsUnderParent). Removing that
+        // number after the fact would leave the children's caps referencing
+        // a parent constraint that no longer exists to have been checked
+        // against, so that flip is blocked here rather than allowed silently.
+        if ($newCeiling === null) {
+            $stmt = $this->db->prepare("
+                SELECT COUNT(*) FROM departments
+                WHERE parent_department_id = :id AND status = 'active' AND budget_ceiling IS NOT NULL
+            ");
+            $stmt->execute([':id' => $departmentId]);
+            if ((int)$stmt->fetchColumn() > 0) {
+                throw new RuntimeException(
+                    "Can't switch this department to \"no vote\" while it has sub-departments with their own fixed ceilings — "
+                    . "their caps were validated against this department's ceiling existing. Update or remove those first."
+                );
+            }
         }
 
         $stmt = $this->db->prepare("UPDATE departments SET budget_ceiling = :ceiling, updated_at = NOW() WHERE id = :id");
