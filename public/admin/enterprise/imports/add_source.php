@@ -62,7 +62,10 @@ function logSourceAudit($db, $orgId, $userId, $action, $entityId, $values) {
 // Requires VOUCHMORPH_TOKEN_ENC_KEY (32-byte key) set in environment.
 // This is a stopgap so tokens are never stored in plaintext; proper
 // key management (rotation, vault/HSM storage) should replace this
-// before production use with real banking credentials.
+// before production use with real banking credentials. Also worth
+// noting: AES-256-CBC here has no integrity check (no HMAC/auth tag) —
+// fine as a stopgap against casual DB inspection, not a substitute for
+// authenticated encryption if this ever handles real production tokens.
 // ============================================================
 function encryptSecret(string $plain): ?string {
     if ($plain === '') return null;
@@ -77,24 +80,42 @@ function encryptSecret(string $plain): ?string {
     return base64_encode($iv . $cipher);
 }
 
-// Get existing sources for dropdown / list (ALL statuses, so approvers can see pending ones)
-$sources = [];
-$stmt = $db->prepare("
-    SELECT s.*, u1.full_name as proposed_by_name, u2.full_name as confirmed_by_name
-    FROM source_accounts s
-    LEFT JOIN users u1 ON s.proposed_by = u1.user_id
-    LEFT JOIN users u2 ON s.confirmed_by = u2.user_id
-    WHERE s.organization_id = :org_id AND s.deleted_at IS NULL
-    ORDER BY 
-        CASE WHEN s.status = 'pending_confirmation' THEN 1
-             WHEN s.status = 'active' THEN 2
-             ELSE 3 END,
-        s.institution, s.source_identifier
-");
-$stmt->execute([':org_id' => $orgId]);
-$sources = $stmt->fetchAll(PDO::FETCH_ASSOC);
+// ============================================================
+// Fetches the full source list with proposer/confirmer names.
+// FIX: was joining a `users` table that doesn't hold these accounts'
+// identity data in this schema — full_name/email/password_hash live on
+// organization_users directly (confirmed against the actual schema),
+// so every proposed_by_name/confirmed_by_name here was likely coming
+// back NULL regardless of who actually did it.
+// ============================================================
+function loadSourceAccounts(PDO $db, int $orgId): array {
+    $stmt = $db->prepare("
+        SELECT s.*, u1.full_name as proposed_by_name, u2.full_name as confirmed_by_name
+        FROM source_accounts s
+        LEFT JOIN organization_users u1 ON s.proposed_by = u1.user_id
+        LEFT JOIN organization_users u2 ON s.confirmed_by = u2.user_id
+        WHERE s.organization_id = :org_id AND s.deleted_at IS NULL
+        ORDER BY 
+            CASE WHEN s.status = 'pending_confirmation' THEN 1
+                 WHEN s.status = 'active' THEN 2
+                 ELSE 3 END,
+            s.institution, s.source_identifier
+    ");
+    $stmt->execute([':org_id' => $orgId]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+$sources = loadSourceAccounts($db, $orgId);
 
 // Get participants from config
+// NOTE: this reads Botswana's participants.yaml specifically (hardcoded
+// path) and falls back to ZURUBANK/SACCUSSALIS/CAZACOM/VOUCHMORPH if
+// that file is missing or the regex parse finds nothing — the same
+// placeholder institution names seen in add_destinations.php. Real
+// participant configuration per country is exactly what
+// tools/market_readiness_check.php's participant check exists to catch
+// before go-live; this fallback list should never be what a live
+// disbursement actually uses.
 $participants = [];
 try {
     $configPath = __DIR__ . '/../../../../src/Core/Config/Countries/Botswana/participants.yaml';
@@ -201,7 +222,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             ':user_id' => $userId
                         ]);
 
-                        $sourceId = $db->lastInsertId();
+                        // ============================================================
+                        // FIX: lastInsertId() is not reliable for a RETURNING clause
+                        // under PDO's pgsql driver — it needs an explicit sequence
+                        // name to be trustworthy there, which wasn't provided. The
+                        // value actually returned by the query is read straight off
+                        // the statement instead, which is always correct regardless
+                        // of driver-specific lastInsertId() behavior.
+                        // ============================================================
+                        $sourceId = (int)$stmt->fetchColumn();
                         $success = "Source account proposed. It will not be available for disbursements until an Owner or IT Manager confirms it.";
 
                         logSourceAudit($db, $orgId, $userId, 'SOURCE_PROPOSED', $sourceId, [
@@ -329,7 +358,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $source = $stmt->fetch(PDO::FETCH_ASSOC);
 
             if ($source && $source['is_hooked']) {
-                // TODO: Implement real token refresh via institution's OAuth endpoint
+                // ============================================================
+                // NOTE: this is still a stub — it extends token_expires_at by
+                // an hour without calling the institution's real OAuth
+                // refresh endpoint. Flagging prominently rather than quietly:
+                // this means neither the token NOR the account's `balance`
+                // column reflect anything live from the institution today.
+                // That matters beyond just this feature — it directly bears
+                // on the "vote optional, limited by source account balance"
+                // mode built earlier this session. That mode is only a real
+                // safety check if something in this system verifies the
+                // actual live balance at execute time (SwapService's adapter
+                // layer, not this `balance` column, which is user-typed
+                // reference data). If SwapService's execute-time check also
+                // just reads this same stale column instead of calling the
+                // institution live, "vote optional" currently has no real
+                // check behind it at all — worth confirming before relying
+                // on that mode for anything beyond practice.
+                // ============================================================
                 $stmt = $db->prepare("
                     UPDATE source_accounts 
                     SET token_expires_at = NOW() + INTERVAL '1 hour',
@@ -337,7 +383,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     WHERE id = :id
                 ");
                 $stmt->execute([':id' => $sourceId]);
-                $success = "Token refreshed successfully.";
+                $success = "Token expiry extended (simulated — real OAuth refresh against the institution is not implemented yet).";
                 logSourceAudit($db, $orgId, $userId, 'SOURCE_TOKEN_REFRESHED', $sourceId, []);
             } else {
                 $error = "Source is not hooked or not found.";
@@ -346,20 +392,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     // Re-fetch list after any action so the page reflects the new state
-    $stmt = $db->prepare("
-        SELECT s.*, u1.full_name as proposed_by_name, u2.full_name as confirmed_by_name
-        FROM source_accounts s
-        LEFT JOIN users u1 ON s.proposed_by = u1.user_id
-        LEFT JOIN users u2 ON s.confirmed_by = u2.user_id
-        WHERE s.organization_id = :org_id AND s.deleted_at IS NULL
-        ORDER BY 
-            CASE WHEN s.status = 'pending_confirmation' THEN 1
-                 WHEN s.status = 'active' THEN 2
-                 ELSE 3 END,
-            s.institution, s.source_identifier
-    ");
-    $stmt->execute([':org_id' => $orgId]);
-    $sources = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $sources = loadSourceAccounts($db, $orgId);
 }
 
 $csrfToken = generateCsrfToken();
@@ -655,7 +688,7 @@ function sourceStatusBadge($status) {
                         <label>Balance</label>
                         <input type="number" name="balance" step="0.01" min="0" 
                                placeholder="0.00" value="0">
-                        <div class="help">Current balance (optional, for reference)</div>
+                        <div class="help">Reference value only — not a live balance from the institution. See note on Refresh Token below.</div>
                     </div>
 
                     <div class="form-group">
