@@ -6,29 +6,11 @@
  * login (an Owner account) in a single transaction — before this runs,
  * the organization doesn't exist and nobody could log in to create it
  * from inside the enterprise dashboard, which is exactly the point.
- *
- * ============================================================
- * IMPORTANT — AUTH DEPENDENCY NOT YET WIRED
- * ============================================================
- * This file assumes a requirePlatformAdminAuth() function exists,
- * analogous to requireEnterpriseAuth() but for VouchMorph's own staff —
- * people who administer MULTIPLE client organizations, not a member of
- * any one of them. I have no visibility into whether that mechanism
- * exists yet in this codebase. Do NOT deploy this file reachable by the
- * public internet, or by any organization_users account, until that's
- * wired up — as written, anyone who can reach this URL can create a new
- * organization with a fresh Owner login. Treat requirePlatformAdminAuth()
- * below as a placeholder that must be replaced with your actual
- * platform-level admin authentication before this goes anywhere near
- * production.
  */
-require_once '../auth.php'; // expected to define requirePlatformAdminAuth() and getDBConnection()
-$platformAdmin = function_exists('requirePlatformAdminAuth') ? requirePlatformAdminAuth() : null;
-if ($platformAdmin === null) {
-    die("requirePlatformAdminAuth() is not wired up yet — see the comment block at the top of this file. Refusing to run unauthenticated.");
-}
+require_once '../auth.php';
+$platformAdmin = requirePlatformConfigAuth();
 
-require_once '../../../src/Core/Database/DBConnection.php';
+require_once '../../../../src/Core/Database/DBConnection.php';
 use Core\Database\DBConnection;
 
 $db = DBConnection::getConnection();
@@ -51,7 +33,7 @@ function generateTempPasswordP(): string {
  * if either half fails, neither is left behind. Returns the new org id,
  * owner user id, and the owner's one-time temp password.
  */
-function createOrganizationWithOwner(PDO $db, array $orgData, array $ownerData): array {
+function createOrganizationWithOwner(PDO $db, array $orgData, array $ownerData, int $createdByAdminId): array {
     $name = trim($orgData['name'] ?? '');
     $countryCode = strtoupper(trim($orgData['country_code'] ?? ''));
     $currency = strtoupper(trim($orgData['default_currency'] ?? ''));
@@ -75,15 +57,15 @@ function createOrganizationWithOwner(PDO $db, array $orgData, array $ownerData):
         $stmt = $db->prepare("
             INSERT INTO organizations (
                 name, tax_id, registration_number, country_code, default_currency,
-                status, created_at, updated_at
+                status, created_by_admin_id, created_at, updated_at
             ) VALUES (
                 :name, :tax_id, :reg_number, :country, :currency,
-                'active', NOW(), NOW()
+                'active', :created_by, NOW(), NOW()
             ) RETURNING id
         ");
         $stmt->execute([
             ':name' => $name, ':tax_id' => $taxId, ':reg_number' => $regNumber,
-            ':country' => $countryCode, ':currency' => $currency,
+            ':country' => $countryCode, ':currency' => $currency, ':created_by' => $createdByAdminId,
         ]);
         $orgId = (int)$stmt->fetchColumn();
 
@@ -128,7 +110,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ], [
             'full_name' => $_POST['owner_name'] ?? '',
             'email' => $_POST['owner_email'] ?? '',
-        ]);
+        ], (int)$platformAdmin['admin_id']);
     } catch (\RuntimeException $e) {
         $error = $e->getMessage();
     } catch (\Throwable $e) {
@@ -156,9 +138,11 @@ $csrfToken = generateCsrfToken();
         }
         * { margin:0; padding:0; box-sizing:border-box; }
         body { font-family: var(--f-body); background: var(--paper); color: var(--ink-900); min-height:100vh; font-size:14px; line-height:1.5; }
-        .masthead { background: var(--seal-red); color:#fff; padding:14px 32px; border-bottom:3px solid var(--ink-900); }
+        .masthead { background: var(--seal-red); color:#fff; padding:14px 32px; border-bottom:3px solid var(--ink-900); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; }
         .masthead h1 { font-family:var(--f-cond); font-size:16px; font-weight:700; letter-spacing:.04em; }
         .masthead .sub { font-size:11px; color:rgba(255,255,255,0.75); margin-top:2px; }
+        .masthead .nav-link { color:rgba(255,255,255,0.85); text-decoration:none; font-size:11px; font-family:var(--f-cond); text-transform:uppercase; letter-spacing:.04em; }
+        .masthead .nav-link:hover { color:#fff; text-decoration:underline; }
         .stage { max-width:640px; margin:0 auto; padding:32px 20px; }
         .card { background:var(--panel); border:1px solid var(--line); padding:24px; margin-bottom:20px; }
         .card-title { font-size:16px; font-weight:700; font-family:var(--f-cond); margin-bottom:16px; padding-bottom:12px; border-bottom:1px solid var(--line); }
@@ -180,8 +164,15 @@ $csrfToken = generateCsrfToken();
 </head>
 <body>
     <div class="masthead">
-        <h1>🔒 PLATFORM ADMIN · New Organization</h1>
-        <div class="sub">Not part of the enterprise dashboard — this creates a client organization from scratch, before it has any staff of its own.</div>
+        <div>
+            <h1>🔒 PLATFORM ADMIN · New Organization</h1>
+            <div class="sub">Not part of the enterprise dashboard — this creates a client organization from scratch, before it has any staff of its own.</div>
+        </div>
+        <div>
+            <a href="../index.php" class="nav-link">← All Organizations</a>
+            &nbsp;&nbsp;
+            <a href="../logout.php" class="nav-link">Sign Out (<?php echo safeHtmlP($platformAdmin['full_name']); ?>)</a>
+        </div>
     </div>
 
     <div class="stage">
