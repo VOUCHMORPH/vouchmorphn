@@ -11,10 +11,12 @@ use Core\Database\DBConnection;
 require_once '../../../../vendor/autoload.php';
 require_once '../../../../src/Domain/Services/SwapService.php';
 require_once '../../../../src/Domain/Services/DepartmentService.php';
+require_once '../../../../src/Domain/Services/UserManagementService.php';
 require_once '../../../../src/Core/Config/LoadCountry.php';
 
 use Domain\Services\SwapService;
 use Domain\Services\DepartmentService;
+use Domain\Services\UserManagementService;
 use Core\Config\LoadCountry;
 
 $db = DBConnection::getConnection();
@@ -714,7 +716,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $csrfToken = generateCsrfToken();
-$roleDisplay = strtoupper($role);
+$roleDisplay = UserManagementService::ROLE_CATALOG[$role]['label'] ?? strtoupper($role);
+$roleDisplay = strtoupper($roleDisplay);
 $status = strtolower($batch['status'] ?? 'draft');
 
 // ============================================================
