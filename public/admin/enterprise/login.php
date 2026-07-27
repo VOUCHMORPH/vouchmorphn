@@ -13,7 +13,12 @@ if (session_status() === PHP_SESSION_NONE) {
 
 require_once __DIR__ . '/../auth.php';
 
-$pdo = getDBConnection();
+$pdo = DBConnection::getConnection();
+
+if (!$pdo) {
+    die("Database connection failed. Please check your DATABASE_URL configuration.");
+}
+
 $error = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
