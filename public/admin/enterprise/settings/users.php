@@ -12,11 +12,11 @@
  * that no in-org role can ever spin up a rival organization from inside
  * its own dashboard.
  */
-require_once '../auth.php';
+require_once _DIR_ . '/../../auth.php';
 $user = requireEnterpriseAuth();
-require_once '../../../../src/Core/Database/DBConnection.php';
-require_once '../../../../src/Domain/Services/DepartmentService.php';
-require_once '../../../../src/Domain/Services/UserManagementService.php';
+require_once _DIR_ . '/../../../../src/Core/Database/DBConnection.php';
+require_once _DIR_ . '/../../../../src/Domain/Services/DepartmentService.php';
+require_once _DIR_ . '/../../../../src/Domain/Services/UserManagementService.php';
 use Core\Database\DBConnection;
 use Domain\Services\DepartmentService;
 use Domain\Services\UserManagementService;
@@ -80,6 +80,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'email' => $_POST['email'] ?? '',
                 'role' => $_POST['role'] ?? '',
                 'department_id' => $_POST['department_id'] ?? null,
+                'password' => $_POST['password'] ?? '',
             ], (int)$userId, $role);
 
             $newCredentials = [
@@ -266,6 +267,10 @@ $roleCatalogJson = json_encode(UserManagementService::ROLE_CATALOG, JSON_HEX_APO
                         <label>Email</label>
                         <input type="email" name="email" required placeholder="name@organization.gov">
                     </div>
+                </div>
+                <div class="form-group">
+                    <label>Password (optional)</label>
+                    <input type="text" name="password" placeholder="Leave blank for a random generated one">
                 </div>
                 <div class="form-group">
                     <label>Role</label>
