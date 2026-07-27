@@ -1,18 +1,18 @@
 <?php
 // enterprise/imports/review_batch.php - Review and approve batch
-require_once _DIR_ . '/../../auth.php';
+require_once __DIR__ . '/../../auth.php';
 $user = requireEnterpriseAuth();
-require_once _DIR_ . '/../../../../src/Core/Database/DBConnection.php';
+require_once __DIR__ . '/../../../../src/Core/Database/DBConnection.php';
 use Core\Database\DBConnection;
 
 // ============================================================
 // LOAD SWAPSERVICE AND DEPENDENCIES
 // ============================================================
-require_once _DIR_ . '/../../../../vendor/autoload.php';
-require_once _DIR_ . '/../../../../src/Domain/Services/SwapService.php';
-require_once _DIR_ . '/../../../../src/Domain/Services/DepartmentService.php';
-require_once _DIR_ . '/../../../../src/Domain/Services/UserManagementService.php';
-require_once _DIR_ . '/../../../../src/Core/Config/LoadCountry.php';
+require_once __DIR__ . '/../../../../vendor/autoload.php';
+require_once __DIR__ . '/../../../../src/Domain/Services/SwapService.php';
+require_once __DIR__ . '/../../../../src/Domain/Services/DepartmentService.php';
+require_once __DIR__ . '/../../../../src/Domain/Services/UserManagementService.php';
+require_once __DIR__ . '/../../../../src/Core/Config/LoadCountry.php';
 
 use Domain\Services\SwapService;
 use Domain\Services\DepartmentService;
