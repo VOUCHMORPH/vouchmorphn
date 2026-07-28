@@ -1,33 +1,39 @@
 <?php
 
-require_once dirname(__DIR__, 2) . '/src/bootstrap.php';
-
 declare(strict_types=1);
 
-namespace DFSP_ADAPTER_LAYER\handlers;
+namespace Application\Handlers\Mojaloop;
 
-use DFSP_ADAPTER_LAYER\dto\PartyLookupRequest;
-use BUSINESS_LOGIC_LAYER\services\SwapService;
-use PDO;
+use Core\Config\LoadCountry;
+use Infrastructure\Mojaloop\Dto\PartyLookupRequest;
 
+/**
+ * Previous version read $this->swapService->participants as a public
+ * property. That's never been confirmed to actually be public on the
+ * real SwapService - given how carefully this class guards its
+ * internal state everywhere else (private $currentHoldId,
+ * $currentSwapRef, etc.), assuming a public property here is risky.
+ * This reads the same LoadCountry config PartiesHandler uses instead,
+ * so it doesn't depend on SwapService's internals at all.
+ */
 class ParticipantsHandler
 {
-    private SwapService $swapService;
+    private array $participants;
 
-    public function __construct(SwapService $swapService)
+    public function __construct(string $country = 'Botswana')
     {
-        $this->swapService = $swapService;
+        $countryConfig = LoadCountry::getConfig($country);
+        $this->participants = $countryConfig['participants'] ?? $countryConfig ?? [];
     }
 
     public function lookup(PartyLookupRequest $request): array
     {
-        // Simplified: Return participant info from SwapService participants
-        $participants = $this->swapService->participants ?? [];
         $id = strtoupper($request->partyIdentifier);
-        if (!isset($participants[$id])) {
+
+        if (!isset($this->participants[$id])) {
             return ['status' => 'error', 'message' => 'Participant not found'];
         }
-        return ['status' => 'success', 'participant' => $participants[$id]];
+
+        return ['status' => 'success', 'participant' => $this->participants[$id]];
     }
 }
-
