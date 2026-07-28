@@ -40,7 +40,16 @@ function requireEnterpriseAuth() {
         $stmt->execute([':org_user_id' => $user['org_user_id'] ?? $user['id'] ?? null]);
         $result = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        if (!$result || !$result['is_active'] || $result['org_status'] !== 'ACTIVE') {
+        // ============================================================
+        // FIX: org_status was compared with a case-sensitive !== 'ACTIVE',
+        // but organizations.status is stored lowercase ('active'). login.php's
+        // own initial query already had (and had this same bug fixed in) a
+        // case-insensitive check; this re-validation on every subsequent
+        // request did not, so it was undoing that fix immediately after
+        // login — the account passed the login query, then failed this
+        // check on the very next page load, every time, for every account.
+        // ============================================================
+        if (!$result || !$result['is_active'] || strtoupper((string)$result['org_status']) !== 'ACTIVE') {
             session_destroy();
             header('Location: /admin/enterprise/login.php?error=Account+inactive');
             exit;
