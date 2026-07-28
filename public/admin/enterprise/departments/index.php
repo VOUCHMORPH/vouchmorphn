@@ -230,6 +230,8 @@ $pendingBorrowRequests = $canApproveBorrow ? $deptService->getPendingBorrowReque
 // inline "who's staffing this department" panel — so the quick-add form
 // shows what's already filled instead of just an empty form every time.
 $staffByDepartment = [];
+$hqStaff = [];
+$sourceAccountSummary = ['confirmed' => 0, 'pending' => 0, 'names' => []];
 if ($isTopRole) {
     $stmt = $pdo->prepare("
         SELECT department_id, full_name, role, is_active
@@ -240,6 +242,41 @@ if ($isTopRole) {
     $stmt->execute([':org_id' => $orgId]);
     foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
         $staffByDepartment[(int)$row['department_id']][] = $row;
+    }
+
+    // Unscoped ("HQ") staff — department_id IS NULL — for the organogram's
+    // top row. This is the org-wide roster: Owner plus anyone whose
+    // authority isn't tied to one department.
+    $stmt = $pdo->prepare("
+        SELECT full_name, role, is_active
+        FROM organization_users
+        WHERE organization_id = :org_id AND department_id IS NULL AND is_active = true
+        ORDER BY role ASC, full_name ASC
+    ");
+    $stmt->execute([':org_id' => $orgId]);
+    $hqStaff = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // Source account counts for the organogram's "money in" node — same
+    // active/pending distinction used everywhere else (add_source.php,
+    // the setup checklist), so this box never disagrees with those pages.
+    try {
+        $stmt = $pdo->prepare("
+            SELECT status, COUNT(*) as c, array_agg(institution) as institutions
+            FROM source_accounts
+            WHERE organization_id = :org_id AND deleted_at IS NULL
+            GROUP BY status
+        ");
+        $stmt->execute([':org_id' => $orgId]);
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            if ($row['status'] === 'active') {
+                $sourceAccountSummary['confirmed'] = (int)$row['c'];
+                $sourceAccountSummary['names'] = array_filter((array)($row['institutions'] ?? []));
+            } elseif ($row['status'] === 'pending_confirmation') {
+                $sourceAccountSummary['pending'] = (int)$row['c'];
+            }
+        }
+    } catch (PDOException $e) {
+        error_log("[departments] Source account summary error: " . $e->getMessage());
     }
 }
 
@@ -267,6 +304,95 @@ function ratioBarColor(float $percent): string {
     if ($percent >= 100) return 'var(--danger)';
     if ($percent >= 80) return 'var(--amber)';
     return 'var(--ledger-green)';
+}
+
+/**
+ * Visual, always-current snapshot of the organization: HQ team + source
+ * accounts on one row, top-level departments on the row below. Rebuilt
+ * fresh from the database on every page load — there's no separate
+ * "state" to keep in sync, so it can never drift from what the tree/
+ * staff list below it already shows in detail. Deliberately stops at
+ * top-level departments rather than recursing into every sub-department
+ * — the detailed tree further down the page already covers that depth;
+ * this is meant to be the "what have I built so far, at a glance" view,
+ * not a duplicate of it.
+ */
+function renderOrganogram(string $orgName, array $hqStaff, array $tree, array $staffByDepartment, array $sourceAccountSummary): string {
+    $roleLabels = [
+        'owner' => 'Owner', 'it_manager_enterprise' => 'IT Manager', 'it_officer_enterprise' => 'IT Officer',
+        'finance_officer' => 'Finance Officer', 'approver' => 'Approver', 'senior_approver' => 'Senior Approver',
+        'auditor' => 'Auditor', 'viewer' => 'Viewer', 'department_head' => 'Dept Head',
+        'program_officer' => 'Uploader', 'beneficiary_registrar' => 'Beneficiary Registrar',
+    ];
+
+    $html = '<div class="organogram">';
+    $html .= '<div class="org-root">' . safeHtml($orgName) . '</div>';
+    $html .= '<div class="org-connector"></div>';
+
+    // Level 1: HQ Team + Source Accounts, side by side.
+    $html .= '<div class="org-row">';
+
+    $html .= '<div class="org-branch"><div class="org-node-stub"></div><div class="org-node hq">';
+    $html .= '<div class="org-node-head">👥 HQ Team</div><div class="org-node-body">';
+    if (empty($hqStaff)) {
+        $html .= '<div class="org-node-empty">Only you so far</div>';
+    } else {
+        foreach ($hqStaff as $s) {
+            $label = $roleLabels[$s['role']] ?? ucfirst(str_replace('_', ' ', $s['role']));
+            $html .= '<div class="role-line">' . safeHtml($s['full_name']) . ' <span style="color:var(--ink-300);">— ' . safeHtml($label) . '</span></div>';
+        }
+    }
+    $html .= '<a href="settings/users.php" class="org-node-cta">+ Add / Manage Team →</a>';
+    $html .= '</div></div></div>';
+
+    $html .= '<div class="org-branch"><div class="org-node-stub"></div><div class="org-node source">';
+    $html .= '<div class="org-node-head">💰 Source Accounts</div><div class="org-node-body">';
+    if ($sourceAccountSummary['confirmed'] > 0) {
+        $names = array_unique(array_filter((array)$sourceAccountSummary['names']));
+        $html .= '<div class="role-line">✅ ' . (int)$sourceAccountSummary['confirmed'] . ' confirmed';
+        if (!empty($names)) {
+            $html .= ' <span style="color:var(--ink-300);">(' . safeHtml(implode(', ', $names)) . ')</span>';
+        }
+        $html .= '</div>';
+    } else {
+        $html .= '<div class="org-node-empty">None confirmed yet</div>';
+    }
+    if ($sourceAccountSummary['pending'] > 0) {
+        $html .= '<div class="role-line" style="color:var(--amber);">⏳ ' . (int)$sourceAccountSummary['pending'] . ' awaiting confirmation</div>';
+    }
+    $html .= '<a href="imports/add_source.php" class="org-node-cta">+ Add Source Account →</a>';
+    $html .= '</div></div></div>';
+
+    $html .= '</div>';
+
+    // Level 2: top-level departments.
+    if (!empty($tree)) {
+        $html .= '<div class="org-connector"></div>';
+        $html .= '<div class="org-row">';
+        foreach ($tree as $node) {
+            $deptId = (int)$node['id'];
+            $subCount = count($node['children'] ?? []);
+            $staffHere = $staffByDepartment[$deptId] ?? [];
+
+            $html .= '<div class="org-branch"><div class="org-node-stub"></div><div class="org-node dept">';
+            $html .= '<div class="org-node-head">🏢 ' . safeHtml($node['name']) . '</div><div class="org-node-body">';
+            $html .= $node['has_ceiling']
+                ? '<div class="role-line">Ceiling: ' . number_format((float)$node['budget_ceiling'], 2) . '</div>'
+                : '<div class="role-line" style="color:var(--ink-300);">No vote (source-limited)</div>';
+            $html .= empty($staffHere)
+                ? '<div class="org-node-empty">No staff assigned yet</div>'
+                : '<div class="role-line">' . count($staffHere) . ' staff assigned</div>';
+            if ($subCount > 0) {
+                $html .= '<div class="role-line" style="color:var(--ink-300);">' . $subCount . ' sub-department' . ($subCount > 1 ? 's' : '') . '</div>';
+            }
+            $html .= '<a href="#dept-' . $deptId . '" class="org-node-cta">+ Add Staff / Sub-dept ↓</a>';
+            $html .= '</div></div></div>';
+        }
+        $html .= '</div>';
+    }
+
+    $html .= '</div>';
+    return $html;
 }
 
 // Recursive department row renderer (top roles see everything; dept heads
@@ -297,7 +423,7 @@ function renderDepartmentNode(
     $indent = $depth * 28;
     $deptId = (int)$node['id'];
 
-    $html = '<div class="dept-row" style="margin-left:' . $indent . 'px;">';
+    $html = '<div class="dept-row" id="dept-' . $deptId . '" style="margin-left:' . $indent . 'px;">';
     $html .= '<div class="dept-row-header">';
     $html .= '<span class="dept-name">' . ($depth > 0 ? '&#8627; ' : '') . safeHtml($node['name']);
     if (!empty($node['code'])) {
@@ -410,6 +536,44 @@ function renderDepartmentNode(
         .page-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px; margin-bottom: 24px; }
         .page-header h1 { font-family: var(--f-cond); font-size: 24px; font-weight: 700; }
         .page-header .sub { color: var(--ink-500); font-size: 14px; }
+
+        /* ============================================================
+           ORGANOGRAM — always-current visual snapshot of the org.
+           Simple "each box has its own connector stub" pattern rather
+           than a true measured bus-line, which needs JS to get right
+           for variable-width rows — this reads as a tree clearly enough
+           without it, for an internal setup tool.
+           ============================================================ */
+        .organogram { display: flex; flex-direction: column; align-items: center; padding: 24px 8px 8px; }
+        .org-root {
+            background: var(--ink-900); color: #fff; padding: 10px 26px;
+            font-family: var(--f-cond); font-weight: 700; font-size: 14px;
+            text-transform: uppercase; letter-spacing: 0.05em;
+        }
+        .org-connector { width: 2px; height: 22px; background: var(--line-strong); }
+        .org-row { display: flex; gap: 22px; justify-content: center; flex-wrap: wrap; }
+        .org-branch { display: flex; flex-direction: column; align-items: center; }
+        .org-node-stub { width: 2px; height: 22px; background: var(--line-strong); }
+        .org-node { background: var(--panel); border: 1.5px solid var(--line); width: 220px; }
+        .org-node.hq { border-top: 3px solid var(--brass); }
+        .org-node.source { border-top: 3px solid #1e40af; }
+        .org-node.dept { border-top: 3px solid var(--ledger-green); }
+        .org-node-head {
+            background: var(--paper); padding: 8px 14px; font-family: var(--f-cond);
+            font-weight: 700; font-size: 13px; border-bottom: 1px solid var(--line);
+        }
+        .org-node-body { padding: 10px 14px 12px; font-size: 12px; color: var(--ink-500); }
+        .org-node-body .role-line { margin-bottom: 4px; }
+        .org-node-empty { color: var(--ink-300); font-style: italic; margin-bottom: 4px; }
+        .org-node-cta {
+            display: inline-block; margin-top: 6px; font-size: 10.5px; font-weight: 700;
+            color: var(--brass); text-decoration: none; text-transform: uppercase; letter-spacing: 0.03em;
+            font-family: var(--f-cond);
+        }
+        .org-node-cta:hover { text-decoration: underline; }
+        @media (max-width: 768px) {
+            .org-row { flex-direction: column; align-items: center; }
+        }
         .flash { padding: 14px 20px; margin-bottom: 20px; border-left: 4px solid; font-size: 13.5px; }
         .flash-success { background: var(--green-tint); border-color: var(--ledger-green); color: var(--ledger-green); }
         .flash-error { background: var(--danger-bg); border-color: var(--danger); color: var(--danger); }
@@ -570,6 +734,17 @@ function renderDepartmentNode(
 
         <?php if ($isTopRole): ?>
         <!-- ============================================================
+             ORGANOGRAM — the "what have I built so far" snapshot, first
+             thing seen, always reflecting the current database state.
+             ============================================================ -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">🗺️ Organization Structure</span>
+            </div>
+            <?php echo renderOrganogram($orgName, $hqStaff, $tree, $staffByDepartment, $sourceAccountSummary); ?>
+        </div>
+
+        <!-- ============================================================
              TOP ROLE VIEW: full org tree + create controls
              ============================================================ -->
         <div class="card">
@@ -589,9 +764,21 @@ function renderDepartmentNode(
                 <form method="post" class="form-grid" style="margin-top:10px;">
                     <input type="hidden" name="csrf_token" value="<?php echo safeHtml($csrfToken); ?>">
                     <input type="hidden" name="action" value="create_department">
-                    <div class="form-group"><label>Name</label><input type="text" name="name" required></div>
-                    <div class="form-group"><label>Code</label><input type="text" name="code"></div>
-                    <div class="form-group"><label>Cost Center</label><input type="text" name="cost_center"></div>
+                    <div class="form-group">
+                        <label>Name</label>
+                        <input type="text" name="name" required placeholder="e.g. Huíla Province">
+                        <div class="hint">What staff and reports will call it. Use the real name of the province, ministry, or program this represents — this is what shows up everywhere in the dashboard, so it's worth getting right the first time.</div>
+                    </div>
+                    <div class="form-group">
+                        <label>Code <span style="font-weight:400; text-transform:none; color:var(--ink-300);">(optional)</span></label>
+                        <input type="text" name="code" placeholder="e.g. HUI">
+                        <div class="hint">A short internal reference (like an abbreviation). Not shown to beneficiaries, only used in exports and cross-references — leave blank if this department doesn't need one.</div>
+                    </div>
+                    <div class="form-group">
+                        <label>Cost Center <span style="font-weight:400; text-transform:none; color:var(--ink-300);">(optional)</span></label>
+                        <input type="text" name="cost_center" placeholder="e.g. GOV-HUI-01">
+                        <div class="hint">Your own accounting or ledger code for this department, if your organization tracks spending against one externally. Purely for your records — VouchMorph doesn't use this for anything itself.</div>
+                    </div>
                     <div class="form-group"><label>Budget Ceiling <span style="font-weight:400; text-transform:none; color:var(--ink-300);">(optional)</span></label><input type="number" step="0.01" name="budget_ceiling" placeholder="Leave blank for no vote"><div class="hint">Leave blank for "no vote" — this department can spend up to whatever the source account actually has, checked only at execute time instead of caught early at submission.</div></div>
                     <div class="form-group" style="align-self:end;"><button type="submit" class="btn btn-primary">Create</button></div>
                 </form>
