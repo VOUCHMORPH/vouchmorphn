@@ -599,7 +599,7 @@ if ($canDisburse && ($metrics['approved_for_disbursement'] ?? 0) > 0) {
 if ($canConfirmSource && ($metrics['pending_source_confirmations'] ?? 0) > 0) {
     $actionItems[] = [
         'icon' => '💰', 'label' => 'Source accounts awaiting confirmation',
-        'count' => $metrics['pending_source_confirmations'], 'href' => 'imports/add_source.php',
+        'count' => $metrics['pending_source_confirmations'], 'href' => '/admin/enterprise/imports/add_source.php',
         'cta' => 'Confirm Now', 'tone' => 'amber',
     ];
 }
@@ -1373,7 +1373,7 @@ if (($metrics['rejected_batches'] ?? 0) > 0 && ($canCreate || $isSupervisor)) {
         <?php endif; ?>
         
         <?php if ($canSeeSourceAccountsArea): ?>
-        <a href="imports/add_source.php" class="nav-item">💰 Source Accounts
+        <a href="/admin/enterprise/imports/add_source.php" class="nav-item">💰 Source Accounts
             <?php if ($canConfirmSource && ($metrics['pending_source_confirmations'] ?? 0) > 0): ?>
             <span class="badge"><?php echo $metrics['pending_source_confirmations']; ?></span>
             <?php endif; ?>
@@ -1781,7 +1781,7 @@ if (($metrics['rejected_batches'] ?? 0) > 0 && ($canCreate || $isSupervisor)) {
             <div class="label">💰 Source Accounts Awaiting Confirmation</div>
             <div class="desc">
                 <span class="highlight"><?php echo $metrics['pending_source_confirmations']; ?> source account(s)</span> proposed by Finance are waiting for an Owner or IT Manager to confirm before they can be used in disbursements.
-                <a href="imports/add_source.php" class="btn btn-warning btn-sm" style="margin-left:12px;">Review Now</a>
+                <a href="/admin/enterprise/imports/add_source.php" class="btn btn-warning btn-sm" style="margin-left:12px;">Review Now</a>
             </div>
         </div>
         <?php endif; ?>
@@ -1791,7 +1791,7 @@ if (($metrics['rejected_batches'] ?? 0) > 0 && ($canCreate || $isSupervisor)) {
             <div class="label">💰 Finance Officer Access</div>
             <div class="desc">
                 You can propose new source accounts for disbursements. An Owner or IT Manager (not you) must confirm each one before it becomes usable.
-                <a href="imports/add_source.php" class="btn btn-primary btn-sm" style="margin-left:12px;">Manage Source Accounts</a>
+                <a href="/admin/enterprise/imports/add_source.php" class="btn btn-primary btn-sm" style="margin-left:12px;">Manage Source Accounts</a>
             </div>
         </div>
         <?php endif; ?>
