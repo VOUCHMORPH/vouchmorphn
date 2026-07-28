@@ -5,7 +5,7 @@
  * FIXED: Uses disbursement_batches and disbursement_destinations
  * instead of import_batches and import_rows
  */
-require_once __DIR__ . '/../../auth.php';
+require_once __DIR__ . '/../auth.php';
 $user = requireEnterpriseAuth();
 require_once __DIR__ . '/../../../../src/Core/Database/DBConnection.php';
 use Core\Database\DBConnection;
