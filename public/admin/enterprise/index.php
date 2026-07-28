@@ -17,8 +17,10 @@ if (session_status() === PHP_SESSION_NONE) {
 }
 
 require_once __DIR__ . '/auth.php';
-require_once __DIR__ . '/../../../src/Domain/Services/DepartmentService.php';
+require_once '../../../src/Domain/Services/DepartmentService.php';
+require_once '../../../src/Domain/Services/SetupChecklistService.php';
 use Domain\Services\DepartmentService;
+use Domain\Services\SetupChecklistService;
 
 $user = requireEnterpriseAuth();
 $pdo = getDBConnection();
@@ -30,6 +32,145 @@ $orgName = $user['organization_name'] ?? 'Organization';
 $departmentId = $user['department_id'] ?? null;
 
 $deptService = new DepartmentService($pdo);
+
+// ============================================================
+// GUIDED SETUP — before anything else loads. A fresh organization has
+// no staff, no departments, and no confirmed source account, so every
+// other part of this dashboard (batches, beneficiaries, rations) is
+// either empty or actively misleading to show. The Owner — the only
+// role that can actually complete every one of these steps — gets the
+// full guided wizard instead of the normal dashboard until setup is
+// done. Every other role just sees the normal dashboard with "New
+// Disbursement" disabled and a short explanation, since they can't act
+// on any of these steps themselves.
+// ============================================================
+$setupChecklist = new SetupChecklistService($pdo);
+$setupStatus = $setupChecklist->getStatus((int)$orgId);
+$setupReady = $setupStatus['ready_for_batches'];
+
+if ($userRole === 'owner' && !$setupReady) {
+    renderSetupWizard($orgName, $fullName, $setupStatus);
+    exit;
+}
+
+function safeHtmlSetup($value) {
+    return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
+}
+
+function renderSetupWizard(string $orgName, string $fullName, array $setupStatus): void {
+    $steps = $setupStatus['steps'];
+    $doneCount = count(array_filter($steps, fn($s) => $s['done']));
+    $totalCount = count($steps);
+    // The first not-done step is the one to push the person toward right now.
+    $nextStepKey = null;
+    foreach ($steps as $s) {
+        if (!$s['done']) { $nextStepKey = $s['key']; break; }
+    }
+    ?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VOUCHMORPH · Set Up · <?php echo safeHtmlSetup($orgName); ?></title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --paper: #EEF1EF; --panel: #FFFFFF; --ink-900: #0F2138; --ink-700: #1D3557;
+            --ink-500: #4A5A6E; --ink-300: #8A96A3; --line: #D3DAD6; --line-strong: #AEB8B2;
+            --brass: #8A6D3B; --brass-tint: #F4EFE3; --ledger-green: #24513A; --green-tint: #E5EEE7;
+            --f-body: 'IBM Plex Sans', sans-serif; --f-cond: 'IBM Plex Sans Condensed', sans-serif; --f-mono: 'IBM Plex Mono', monospace;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: var(--f-body); background: var(--paper); color: var(--ink-900); min-height: 100vh; font-size: 14px; line-height: 1.5; }
+        .header { background: var(--ink-900); color: #fff; border-bottom: 3px solid var(--brass); padding: 16px 32px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
+        .logo { font-family: var(--f-cond); font-weight: 700; font-size: 18px; letter-spacing: 0.08em; text-transform: uppercase; }
+        .logo span { color: var(--brass); }
+        .header-right { font-size: 12px; color: var(--ink-300); display: flex; align-items: center; gap: 16px; }
+        .header-right a { color: var(--brass); text-decoration: none; }
+        .wrap { max-width: 760px; margin: 0 auto; padding: 48px 24px; }
+        .eyebrow { font-family: var(--f-cond); font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--brass); margin-bottom: 8px; }
+        h1 { font-family: var(--f-cond); font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+        .sub { color: var(--ink-500); font-size: 14.5px; margin-bottom: 28px; max-width: 560px; }
+        .progress-track { height: 8px; background: var(--line); margin-bottom: 6px; }
+        .progress-fill { height: 100%; background: var(--brass); transition: width 0.3s; }
+        .progress-label { font-size: 11.5px; color: var(--ink-500); font-family: var(--f-mono); margin-bottom: 32px; }
+        .step {
+            background: var(--panel); border: 1.5px solid var(--line); padding: 22px 24px; margin-bottom: 14px;
+            display: flex; gap: 18px; align-items: flex-start;
+        }
+        .step.current { border-color: var(--brass); background: var(--brass-tint); }
+        .step.done { border-color: var(--ledger-green); background: var(--green-tint); }
+        .step-num {
+            width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0;
+            display: flex; align-items: center; justify-content: center;
+            font-family: var(--f-cond); font-weight: 700; font-size: 15px;
+            background: var(--ink-900); color: #fff;
+        }
+        .step.current .step-num { background: var(--brass); }
+        .step.done .step-num { background: var(--ledger-green); }
+        .step-body { flex: 1; }
+        .step-label { font-family: var(--f-cond); font-size: 16px; font-weight: 700; margin-bottom: 4px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+        .step-desc { color: var(--ink-500); font-size: 13px; margin-bottom: 12px; }
+        .step-count { font-family: var(--f-mono); font-size: 11px; color: var(--ink-300); }
+        .btn {
+            display: inline-flex; align-items: center; height: 34px; padding: 0 18px;
+            font-size: 12px; font-weight: 600; font-family: var(--f-cond); text-transform: uppercase;
+            letter-spacing: 0.04em; text-decoration: none; border: 1px solid var(--ink-900);
+            background: var(--ink-900); color: #fff; transition: all 0.15s;
+        }
+        .btn:hover { background: var(--brass); border-color: var(--brass); color: var(--ink-900); }
+        .btn-done { background: var(--ledger-green); border-color: var(--ledger-green); color: #fff; cursor: default; }
+        .badge-done { font-size: 10px; font-weight: 700; text-transform: uppercase; background: var(--ledger-green); color: #fff; padding: 2px 10px; font-family: var(--f-cond); }
+        .footnote { margin-top: 32px; padding: 16px 20px; border-left: 3px solid var(--brass); background: var(--brass-tint); font-size: 13px; color: var(--ink-700); }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="logo">VOUCHMORPH <span>·</span> <?php echo safeHtmlSetup($orgName); ?></div>
+        <div class="header-right">
+            <?php echo safeHtmlSetup($fullName); ?> · Owner
+            <a href="logout.php">Sign Out</a>
+        </div>
+    </div>
+    <div class="wrap">
+        <div class="eyebrow">Getting Started</div>
+        <h1>Let's get <?php echo safeHtmlSetup($orgName); ?> ready</h1>
+        <p class="sub">A few things need to be in place before disbursements can begin. Work through these in order — each one unlocks the next.</p>
+
+        <div class="progress-track"><div class="progress-fill" style="width:<?php echo $totalCount > 0 ? round(($doneCount / $totalCount) * 100) : 0; ?>%;"></div></div>
+        <div class="progress-label"><?php echo $doneCount; ?> OF <?php echo $totalCount; ?> COMPLETE</div>
+
+        <?php foreach ($steps as $i => $step):
+            $stateClass = $step['done'] ? 'done' : ($step['key'] === $nextStepKey ? 'current' : '');
+        ?>
+        <div class="step <?php echo $stateClass; ?>">
+            <div class="step-num"><?php echo $step['done'] ? '✓' : ($i + 1); ?></div>
+            <div class="step-body">
+                <div class="step-label">
+                    <?php echo safeHtmlSetup($step['label']); ?>
+                    <?php if ($step['done']): ?><span class="badge-done">Done</span><?php endif; ?>
+                </div>
+                <div class="step-desc"><?php echo safeHtmlSetup($step['description']); ?></div>
+                <?php if ($step['done']): ?>
+                    <div class="step-count"><?php echo (int)$step['count']; ?> on record</div>
+                <?php else: ?>
+                    <a href="<?php echo safeHtmlSetup($step['action_href']); ?>" class="btn"><?php echo safeHtmlSetup($step['action_label']); ?> →</a>
+                <?php endif; ?>
+            </div>
+        </div>
+        <?php endforeach; ?>
+
+        <div class="footnote">
+            💡 A department without a budget set isn't incomplete — it's a deliberate choice ("no vote"), meaning it's limited only by the real balance of whatever source account it draws from, checked at the moment funds actually move. Set one if you want a hard local cap; leave it blank if you don't.
+        </div>
+    </div>
+</body>
+</html>
+    <?php
+}
+
 
 // ============================================================
 // DEPARTMENT SCOPE — for a ministry/government structure where oversight
@@ -1193,8 +1334,10 @@ if (($metrics['rejected_batches'] ?? 0) > 0 && ($canCreate || $isSupervisor)) {
         <div class="nav-inner">
         <a href="index.php" class="nav-item active">📊 Dashboard</a>
         
-        <?php if ($canCreate): ?>
+        <?php if ($canCreate && $setupReady): ?>
         <a href="imports/source_input.php" class="nav-item">💰 New Disbursement</a>
+        <?php elseif ($canCreate): ?>
+        <span class="nav-item" style="color: var(--ink-300); cursor: default;" title="Your Owner needs to finish setup (team, department, source account) before batches can be created">💰 New Disbursement 🔒</span>
         <?php endif; ?>
         
         <a href="batches/index.php?status=all" class="nav-item">
@@ -1373,7 +1516,7 @@ if (($metrics['rejected_batches'] ?? 0) > 0 && ($canCreate || $isSupervisor)) {
 
         <!-- Quick Actions - Role Specific -->
         <div class="quick-actions">
-            <?php if ($canCreate): ?>
+            <?php if ($canCreate && $setupReady): ?>
             <a href="imports/source_input.php" class="quick-action">
                 <span class="icon">💰</span>
                 <div>
@@ -1381,6 +1524,14 @@ if (($metrics['rejected_batches'] ?? 0) > 0 && ($canCreate || $isSupervisor)) {
                     <div class="desc">Create a payment batch</div>
                 </div>
             </a>
+            <?php elseif ($canCreate): ?>
+            <div class="quick-action" style="opacity: 0.55; cursor: default;">
+                <span class="icon">🔒</span>
+                <div>
+                    <div class="label">New Disbursement</div>
+                    <div class="desc">Waiting on Owner setup</div>
+                </div>
+            </div>
             <?php endif; ?>
             
             <?php if ($isApprover): ?>
@@ -1502,7 +1653,7 @@ if (($metrics['rejected_batches'] ?? 0) > 0 && ($canCreate || $isSupervisor)) {
                 <span class="card-badge"><?php echo count($recentBatches); ?> RECENT</span>
                 <div class="card-actions">
                     <a href="batches/index.php?status=all" class="btn btn-outline btn-sm">View All</a>
-                    <?php if ($canCreate): ?>
+                    <?php if ($canCreate && $setupReady): ?>
                     <a href="imports/source_input.php" class="btn btn-primary btn-sm">➕ New Batch</a>
                     <?php endif; ?>
                 </div>
@@ -1511,8 +1662,10 @@ if (($metrics['rejected_batches'] ?? 0) > 0 && ($canCreate || $isSupervisor)) {
             <div class="empty-state">
                 <div class="icon">📭</div>
                 <p>No batches found. Create your first disbursement batch to get started.</p>
-                <?php if ($canCreate): ?>
+                <?php if ($canCreate && $setupReady): ?>
                 <a href="imports/source_input.php" class="btn btn-primary" style="margin-top:14px;">Create First Batch</a>
+                <?php elseif ($canCreate): ?>
+                <p style="font-size:12px; color:var(--ink-300); margin-top:8px;">🔒 Waiting on your Owner to finish setup (team, department, source account).</p>
                 <?php endif; ?>
             </div>
             <?php else: ?>
@@ -1577,7 +1730,11 @@ if (($metrics['rejected_batches'] ?? 0) > 0 && ($canCreate || $isSupervisor)) {
             <div class="desc">
                 You can create and upload new disbursement batches. 
                 Once created, they will be sent for approval.
+                <?php if ($setupReady): ?>
                 <a href="imports/source_input.php" class="btn btn-primary btn-sm" style="margin-left:12px;">Create New Batch</a>
+                <?php else: ?>
+                <span style="margin-left:12px; font-size:12px; color:var(--ink-500);">🔒 Waiting on your Owner to finish setup first.</span>
+                <?php endif; ?>
             </div>
         </div>
         <?php endif; ?>
