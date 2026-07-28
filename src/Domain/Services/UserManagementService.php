@@ -226,24 +226,36 @@ class UserManagementService
      * authority comes entirely from their organization_users.role, not
      * from anything on the global users row.
      *
-     * $phone is required — users.phone is NOT NULL on this schema. Throws
-     * a clear error rather than attempting the insert and letting it
-     * crash with a raw constraint violation.
+     * users.phone is NOT NULL *and* UNIQUE on this schema, so it can't
+     * actually be left null and can't be reused across people. $phone is
+     * genuinely optional here: if blank, a unique synthetic placeholder
+     * (+000 prefix — unambiguously fake, never a real dialable number) is
+     * generated instead of forcing every practice/demo account to have a
+     * real, distinct number. If a real phone IS supplied and collides
+     * with a different existing account, that's a real conflict — it
+     * throws a clear, specific error instead of leaking a raw constraint
+     * violation to the screen.
      */
-    public function ensureGlobalUser(string $fullName, string $email, string $passwordHash, string $phone): int
+    public function ensureGlobalUser(string $fullName, string $email, string $passwordHash, string $phone = ''): int
     {
         $email = trim(strtolower($email));
         $phone = trim($phone);
-
-        if ($phone === '') {
-            throw new RuntimeException("A phone number is required to create this login — the underlying users table requires one.");
-        }
 
         $stmt = $this->db->prepare("SELECT user_id FROM users WHERE email = :email LIMIT 1");
         $stmt->execute([':email' => $email]);
         $existing = $stmt->fetchColumn();
         if ($existing) {
             return (int)$existing;
+        }
+
+        if ($phone === '') {
+            $phone = $this->generateUniquePlaceholderPhone();
+        } else {
+            $stmt = $this->db->prepare("SELECT 1 FROM users WHERE phone = :phone");
+            $stmt->execute([':phone' => $phone]);
+            if ($stmt->fetchColumn()) {
+                throw new RuntimeException("That phone number is already in use by a different account. Leave the field blank to have one generated automatically, or use a different number.");
+            }
         }
 
         $usernameBase = preg_replace('/[^a-z0-9_]/', '', strtolower(explode('@', $email)[0]));
@@ -275,6 +287,26 @@ class UserManagementService
             ':full_name' => $fullName,
         ]);
         return (int)$stmt->fetchColumn();
+    }
+
+    /**
+     * Generates a placeholder phone number that can never collide with a
+     * real one and can never be mistaken for one — +000 is not a real
+     * country code. Retries on the (astronomically unlikely) chance of a
+     * collision with a previously generated placeholder.
+     */
+    private function generateUniquePlaceholderPhone(): string
+    {
+        for ($attempt = 0; $attempt < 10; $attempt++) {
+            $candidate = '+000' . str_pad((string)random_int(0, 999999999), 9, '0', STR_PAD_LEFT);
+            $stmt = $this->db->prepare("SELECT 1 FROM users WHERE phone = :phone");
+            $stmt->execute([':phone' => $candidate]);
+            if (!$stmt->fetchColumn()) {
+                return $candidate;
+            }
+        }
+        // Fall back to a fully random suffix if we somehow collided 10 times in a row.
+        return '+000' . bin2hex(random_bytes(6));
     }
 
     private function generateTempPassword(): string
@@ -346,9 +378,6 @@ class UserManagementService
         }
         if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
             throw new RuntimeException("A valid email is required.");
-        }
-        if ($phone === '') {
-            throw new RuntimeException("A phone number is required.");
         }
         $this->assertValidRole($role);
         $departmentId = $this->normalizeDepartmentForRole($role, $departmentId);
