@@ -1,10 +1,8 @@
 <?php
 
-require_once dirname(__DIR__, 2) . '/src/bootstrap.php';
-
 declare(strict_types=1);
 
-namespace DFSP_ADAPTER_LAYER\dto;
+namespace Infrastructure\Mojaloop\Dto;
 
 class PartyLookupRequest
 {
@@ -19,4 +17,3 @@ class PartyLookupRequest
         $this->fspId = $data['fspId'] ?? null;
     }
 }
-
