@@ -526,16 +526,16 @@ function renderDepartmentNode(
             --f-body: 'IBM Plex Sans', sans-serif; --f-cond: 'IBM Plex Sans Condensed', sans-serif; --f-mono: 'IBM Plex Mono', monospace;
         }
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: var(--f-body); background: var(--paper); color: var(--ink-900); font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
-        .header { background: var(--ink-900); color: #fff; border-bottom: 3px solid var(--brass); }
-        .header-inner { max-width: var(--max-width); margin: 0 auto; padding: 16px 32px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
+        body { font-family: var(--f-body); background: var(--paper); color: var(--ink-900); font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; text-align: center; }
+        .header { background: var(--ink-900); color: #fff; border-bottom: 3px solid var(--brass); text-align: center; }
+        .header-inner { max-width: var(--max-width); margin: 0 auto; padding: 16px 32px; display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 12px; }
         .logo { font-family: var(--f-cond); font-weight: 700; font-size: 18px; letter-spacing: 0.08em; text-transform: uppercase; }
         .logo span { color: var(--brass); }
         .back-link { color: var(--brass); text-decoration: none; font-size: 12px; font-family: var(--f-cond); text-transform: uppercase; letter-spacing: 0.04em; }
-        .content { max-width: var(--max-width); margin: 0 auto; padding: 28px 32px; }
-        .page-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px; margin-bottom: 24px; }
-        .page-header h1 { font-family: var(--f-cond); font-size: 24px; font-weight: 700; }
-        .page-header .sub { color: var(--ink-500); font-size: 14px; }
+        .content { max-width: var(--max-width); margin: 0 auto; padding: 28px 32px; text-align: center; }
+        .page-header { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 16px; margin-bottom: 24px; text-align: center; }
+        .page-header h1 { font-family: var(--f-cond); font-size: 24px; font-weight: 700; text-align: center; }
+        .page-header .sub { color: var(--ink-500); font-size: 14px; text-align: center; }
 
         /* ============================================================
            ORGANOGRAM — always-current visual snapshot of the org.
@@ -550,19 +550,20 @@ function renderDepartmentNode(
             font-family: var(--f-cond); font-weight: 700; font-size: 14px;
             text-transform: uppercase; letter-spacing: 0.05em;
         }
-        .org-connector { width: 2px; height: 22px; background: var(--line-strong); }
+        .org-connector { width: 2px; height: 22px; background: var(--line-strong); margin: 0 auto; }
         .org-row { display: flex; gap: 22px; justify-content: center; flex-wrap: wrap; }
         .org-branch { display: flex; flex-direction: column; align-items: center; }
         .org-node-stub { width: 2px; height: 22px; background: var(--line-strong); }
-        .org-node { background: var(--panel); border: 1.5px solid var(--line); width: 220px; }
+        .org-node { background: var(--panel); border: 1.5px solid var(--line); width: 220px; text-align: left; }
         .org-node.hq { border-top: 3px solid var(--brass); }
         .org-node.source { border-top: 3px solid #1e40af; }
         .org-node.dept { border-top: 3px solid var(--ledger-green); }
         .org-node-head {
             background: var(--paper); padding: 8px 14px; font-family: var(--f-cond);
             font-weight: 700; font-size: 13px; border-bottom: 1px solid var(--line);
+            text-align: left;
         }
-        .org-node-body { padding: 10px 14px 12px; font-size: 12px; color: var(--ink-500); }
+        .org-node-body { padding: 10px 14px 12px; font-size: 12px; color: var(--ink-500); text-align: left; }
         .org-node-body .role-line { margin-bottom: 4px; }
         .org-node-empty { color: var(--ink-300); font-style: italic; margin-bottom: 4px; }
         .org-node-cta {
@@ -574,42 +575,42 @@ function renderDepartmentNode(
         @media (max-width: 768px) {
             .org-row { flex-direction: column; align-items: center; }
         }
-        .flash { padding: 14px 20px; margin-bottom: 20px; border-left: 4px solid; font-size: 13.5px; }
+        .flash { padding: 14px 20px; margin-bottom: 20px; border-left: 4px solid; font-size: 13.5px; text-align: center; max-width: 800px; margin-left: auto; margin-right: auto; }
         .flash-success { background: var(--green-tint); border-color: var(--ledger-green); color: var(--ledger-green); }
         .flash-error { background: var(--danger-bg); border-color: var(--danger); color: var(--danger); }
-        .card { background: var(--panel); border: 1px solid var(--line); padding: 20px 24px; margin-bottom: 20px; }
-        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; gap: 8px; }
-        .card-title { font-size: 16px; font-weight: 700; font-family: var(--f-cond); }
+        .card { background: var(--panel); border: 1px solid var(--line); padding: 20px 24px; margin-bottom: 20px; text-align: left; max-width: 1200px; margin-left: auto; margin-right: auto; }
+        .card-header { display: flex; justify-content: center; align-items: center; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; gap: 8px; text-align: center; }
+        .card-title { font-size: 16px; font-weight: 700; font-family: var(--f-cond); text-align: center; }
         .card-badge { padding: 2px 12px; background: var(--ink-900); color: #fff; font-size: 10px; font-weight: 600; font-family: var(--f-cond); }
-        .dept-row { padding: 14px 0; border-bottom: 1px solid var(--line); }
+        .dept-row { padding: 14px 0; border-bottom: 1px solid var(--line); text-align: left; }
         .dept-row:last-child { border-bottom: none; }
         .dept-row-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
         .dept-name { font-weight: 600; font-size: 14px; }
         .dept-code { color: var(--ink-300); font-size: 12px; font-weight: 400; }
         .dept-bar-track { height: 8px; background: var(--paper); border: 1px solid var(--line); margin-bottom: 8px; }
         .dept-bar-fill { height: 100%; transition: width 0.2s; }
-        .dept-stats { display: flex; gap: 20px; flex-wrap: wrap; font-size: 12px; color: var(--ink-500); }
+        .dept-stats { display: flex; gap: 20px; flex-wrap: wrap; font-size: 12px; color: var(--ink-500); justify-content: center; }
 
-        .staff-panel { margin-top: 12px; border-top: 1px dashed var(--line); padding-top: 10px; }
+        .staff-panel { margin-top: 12px; border-top: 1px dashed var(--line); padding-top: 10px; text-align: left; }
         .staff-panel summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--ink-500); font-family: var(--f-cond); text-transform: uppercase; letter-spacing: .03em; }
         .staff-panel summary:hover { color: var(--brass); }
         .staff-panel-body { margin-top: 10px; padding-left: 4px; }
-        .staff-list { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+        .staff-list { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; justify-content: center; }
         .staff-chip { font-size: 12px; padding: 4px 10px; background: var(--paper); border: 1px solid var(--line); }
         .staff-chip.staff-inactive { opacity: 0.5; text-decoration: line-through; }
-        .staff-empty-note { font-size: 12.5px; color: var(--ink-300); margin-bottom: 12px; font-style: italic; }
+        .staff-empty-note { font-size: 12.5px; color: var(--ink-300); margin-bottom: 12px; font-style: italic; text-align: center; }
         .staff-add-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
-        .staff-add-form { background: var(--paper); border: 1px solid var(--line); padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+        .staff-add-form { background: var(--paper); border: 1px solid var(--line); padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; text-align: left; }
         .staff-add-label { font-size: 11.5px; font-weight: 700; font-family: var(--f-cond); text-transform: uppercase; letter-spacing: .03em; color: var(--ink-900); }
         .staff-add-desc { font-size: 11px; color: var(--ink-300); margin-bottom: 2px; }
         .staff-add-form input { padding: 6px 8px; border: 1px solid var(--line); font-size: 12.5px; background: var(--panel); }
         .staff-add-form input:focus { outline: none; border-color: var(--brass); }
-        .hint { font-size: 11px; color: var(--ink-300); margin-top: 3px; line-height: 1.4; }
+        .hint { font-size: 11px; color: var(--ink-300); margin-top: 3px; line-height: 1.4; text-align: center; }
         .no-vote-badge { font-size: 11.5px; color: var(--amber); font-style: italic; }
 
-        .creds-banner { background: var(--ink-900); color: #fff; padding: 18px 22px; margin-bottom: 20px; border-left: 4px solid var(--brass); }
+        .creds-banner { background: var(--ink-900); color: #fff; padding: 18px 22px; margin-bottom: 20px; border-left: 4px solid var(--brass); text-align: center; max-width: 800px; margin-left: auto; margin-right: auto; }
         .creds-banner .warn { color: #fbbf24; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; font-family: var(--f-cond); margin-bottom: 8px; }
-        .creds-banner .row { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13.5px; margin-bottom: 4px; }
+        .creds-banner .row { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13.5px; margin-bottom: 4px; justify-content: center; }
         .creds-banner .row .k { color: var(--ink-300); font-family: var(--f-cond); font-size: 10.5px; text-transform: uppercase; min-width: 90px; }
         .creds-banner .row .v { font-family: var(--f-mono); font-weight: 700; }
 
@@ -619,10 +620,12 @@ function renderDepartmentNode(
         .status { display: inline-block; padding: 2px 12px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; font-family: var(--f-cond); }
         .status-rejected { background: var(--danger-bg); color: var(--danger); }
         .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 12px; }
-        .form-group label { display: block; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-500); margin-bottom: 6px; font-family: var(--f-cond); }
+        .form-group { text-align: left; }
+        .form-group label { display: block; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-500); margin-bottom: 6px; font-family: var(--f-cond); text-align: left; }
         .form-group input, .form-group select, .form-group textarea {
             width: 100%; height: var(--btn-h); padding: 0 12px; border: 1.5px solid var(--line);
             font-size: 13.5px; font-family: var(--f-body); background: var(--paper); color: var(--ink-900); box-sizing: border-box;
+            text-align: left;
         }
         .form-group textarea { height: 70px; padding: 8px 12px; resize: vertical; }
         .form-group input:focus, .form-group select:focus, .form-group textarea:focus { outline: none; border-color: var(--brass); background: var(--panel); }
@@ -634,17 +637,22 @@ function renderDepartmentNode(
         .btn-outline { background: transparent; border: 1px solid var(--line); color: var(--ink-500); }
         .btn-outline:hover { border-color: var(--brass); color: var(--ink-900); background: var(--brass-tint); }
         .btn-sm { height: var(--btn-h-sm); padding: 0 14px; font-size: 11px; }
-        .request-row { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; gap: 10px; }
+        .request-row { display: flex; justify-content: center; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; gap: 10px; text-align: center; }
         .request-row:last-child { border-bottom: none; }
-        .request-info { font-size: 13px; }
+        .request-info { font-size: 13px; text-align: center; }
         .request-info .meta { color: var(--ink-300); font-size: 11px; margin-top: 2px; }
         .request-actions { display: flex; gap: 8px; }
         .empty-state { text-align: center; padding: 32px 20px; color: var(--ink-300); font-size: 13.5px; }
         .toggle-form { display: none; margin-top: 16px; padding-top: 16px; border-top: 1px dashed var(--line); }
         .toggle-form.open { display: block; }
-        details summary { cursor: pointer; font-weight: 600; font-size: 13px; color: var(--brass); list-style: none; }
+        details summary { cursor: pointer; font-weight: 600; font-size: 13px; color: var(--brass); list-style: none; text-align: center; }
         details summary::-webkit-details-marker { display: none; }
         details[open] summary { margin-bottom: 14px; }
+        details { text-align: center; }
+        details form { text-align: left; }
+        .form-group:last-child { text-align: center; }
+        .form-group:last-child .btn { margin: 0 auto; }
+        .request-actions form { display: inline-block; }
     </style>
 </head>
 <body>
@@ -657,7 +665,7 @@ function renderDepartmentNode(
 
     <main class="content">
         <div class="page-header">
-            <div>
+            <div style="text-align: center; width: 100%;">
                 <h1>Departments &amp; Rations</h1>
                 <div class="sub">Welcome, <?php echo safeHtml($fullName); ?></div>
             </div>
@@ -685,7 +693,7 @@ function renderDepartmentNode(
                 <span class="card-title">🏢 <?php echo safeHtml($myDepartment['name']); ?></span>
                 <span class="card-badge">MY DEPARTMENT</span>
             </div>
-            <div class="dept-stats" style="margin-bottom:16px;">
+            <div class="dept-stats" style="margin-bottom:16px; justify-content: center;">
                 <span>Ceiling: <strong><?php echo formatCurrency($myDepartmentRation['ceiling'], $myDepartmentRation['currency']); ?></strong></span>
                 <span>Disbursed YTD: <?php echo formatCurrency($myDepartmentRation['disbursed_ytd'], $myDepartmentRation['currency']); ?></span>
                 <span>Reserved (pending batches): <?php echo formatCurrency($myDepartmentRation['reserved_in_flight'], $myDepartmentRation['currency']); ?></span>
@@ -696,21 +704,21 @@ function renderDepartmentNode(
 
             <details>
                 <summary>+ Request a sub-department</summary>
-                <form method="post" class="form-grid" style="margin-top:10px;">
+                <form method="post" class="form-grid" style="margin-top:10px; text-align: left; max-width: 800px; margin-left: auto; margin-right: auto;">
                     <input type="hidden" name="csrf_token" value="<?php echo safeHtml($csrfToken); ?>">
                     <input type="hidden" name="action" value="request_sub_department">
                     <input type="hidden" name="parent_id" value="<?php echo (int)$myDepartment['id']; ?>">
                     <div class="form-group"><label>Name</label><input type="text" name="name" required></div>
                     <div class="form-group"><label>Code (optional)</label><input type="text" name="code"></div>
                     <div class="form-group"><label>Requested Ceiling (optional)</label><input type="number" step="0.01" name="requested_ceiling"></div>
-                    <div class="form-group" style="align-self:end;"><button type="submit" class="btn btn-primary">Submit Request</button></div>
+                    <div class="form-group" style="align-self:end; text-align: center;"><button type="submit" class="btn btn-primary">Submit Request</button></div>
                 </form>
-                <p style="font-size:12px; color:var(--ink-300); margin-top:8px;">Goes to a top-level admin (Owner / IT Manager) for approval before it becomes an active sub-department.</p>
+                <p style="font-size:12px; color:var(--ink-300); margin-top:8px; text-align: center;">Goes to a top-level admin (Owner / IT Manager) for approval before it becomes an active sub-department.</p>
             </details>
 
             <details style="margin-top:14px;">
                 <summary>+ Request to borrow ration from another department</summary>
-                <form method="post" class="form-grid" style="margin-top:10px;">
+                <form method="post" class="form-grid" style="margin-top:10px; text-align: left; max-width: 800px; margin-left: auto; margin-right: auto;">
                     <input type="hidden" name="csrf_token" value="<?php echo safeHtml($csrfToken); ?>">
                     <input type="hidden" name="action" value="request_borrow">
                     <input type="hidden" name="borrowing_department_id" value="<?php echo (int)$myDepartment['id']; ?>">
@@ -725,9 +733,9 @@ function renderDepartmentNode(
                     </div>
                     <div class="form-group"><label>Amount</label><input type="number" step="0.01" name="amount" required></div>
                     <div class="form-group" style="grid-column: 1 / -1;"><label>Reason</label><textarea name="reason" required></textarea></div>
-                    <div class="form-group" style="align-self:end;"><button type="submit" class="btn btn-warning" style="background:var(--amber);color:#fff;">Submit Borrow Request</button></div>
+                    <div class="form-group" style="align-self:end; text-align: center;"><button type="submit" class="btn btn-warning" style="background:var(--amber);color:#fff;">Submit Borrow Request</button></div>
                 </form>
-                <p style="font-size:12px; color:var(--ink-300); margin-top:8px;">Only Owner, IT Manager, or Finance Officer can approve this — the lending department is not asked to agree.</p>
+                <p style="font-size:12px; color:var(--ink-300); margin-top:8px; text-align: center;">Only Owner, IT Manager, or Finance Officer can approve this — the lending department is not asked to agree.</p>
             </details>
         </div>
         <?php endif; ?>
@@ -761,7 +769,7 @@ function renderDepartmentNode(
 
             <details style="margin-top:18px;">
                 <summary>+ Create top-level department</summary>
-                <form method="post" class="form-grid" style="margin-top:10px;">
+                <form method="post" class="form-grid" style="margin-top:10px; text-align: left; max-width: 800px; margin-left: auto; margin-right: auto;">
                     <input type="hidden" name="csrf_token" value="<?php echo safeHtml($csrfToken); ?>">
                     <input type="hidden" name="action" value="create_department">
                     <div class="form-group">
@@ -780,13 +788,13 @@ function renderDepartmentNode(
                         <div class="hint">Your own accounting or ledger code for this department, if your organization tracks spending against one externally. Purely for your records — VouchMorph doesn't use this for anything itself.</div>
                     </div>
                     <div class="form-group"><label>Budget Ceiling <span style="font-weight:400; text-transform:none; color:var(--ink-300);">(optional)</span></label><input type="number" step="0.01" name="budget_ceiling" placeholder="Leave blank for no vote"><div class="hint">Leave blank for "no vote" — this department can spend up to whatever the source account actually has, checked only at execute time instead of caught early at submission.</div></div>
-                    <div class="form-group" style="align-self:end;"><button type="submit" class="btn btn-primary">Create</button></div>
+                    <div class="form-group" style="align-self:end; text-align: center;"><button type="submit" class="btn btn-primary">Create</button></div>
                 </form>
             </details>
 
             <details style="margin-top:14px;">
                 <summary>+ Create sub-department directly</summary>
-                <form method="post" class="form-grid" style="margin-top:10px;">
+                <form method="post" class="form-grid" style="margin-top:10px; text-align: left; max-width: 800px; margin-left: auto; margin-right: auto;">
                     <input type="hidden" name="csrf_token" value="<?php echo safeHtml($csrfToken); ?>">
                     <input type="hidden" name="action" value="create_sub_department">
                     <div class="form-group">
@@ -801,14 +809,14 @@ function renderDepartmentNode(
                     <div class="form-group"><label>Name</label><input type="text" name="name" required></div>
                     <div class="form-group"><label>Code</label><input type="text" name="code"></div>
                     <div class="form-group"><label>Budget Ceiling <span style="font-weight:400; text-transform:none; color:var(--ink-300);">(optional)</span></label><input type="number" step="0.01" name="budget_ceiling" placeholder="Leave blank for no vote"><div class="hint">Leave blank for "no vote" — this department can spend up to whatever the source account actually has, checked only at execute time instead of caught early at submission.</div></div>
-                    <div class="form-group" style="align-self:end;"><button type="submit" class="btn btn-primary">Create Sub-department</button></div>
+                    <div class="form-group" style="align-self:end; text-align: center;"><button type="submit" class="btn btn-primary">Create Sub-department</button></div>
                 </form>
-                <p style="font-size:12px; color:var(--ink-300); margin-top:8px;">Must fit within the parent's remaining (unallocated) ceiling.</p>
+                <p style="font-size:12px; color:var(--ink-300); margin-top:8px; text-align: center;">Must fit within the parent's remaining (unallocated) ceiling.</p>
             </details>
 
             <details style="margin-top:14px;">
                 <summary>+ Adjust an existing department's ceiling</summary>
-                <form method="post" class="form-grid" style="margin-top:10px;">
+                <form method="post" class="form-grid" style="margin-top:10px; text-align: left; max-width: 800px; margin-left: auto; margin-right: auto;">
                     <input type="hidden" name="csrf_token" value="<?php echo safeHtml($csrfToken); ?>">
                     <input type="hidden" name="action" value="update_ceiling">
                     <div class="form-group">
@@ -821,7 +829,7 @@ function renderDepartmentNode(
                         </select>
                     </div>
                     <div class="form-group"><label>New Ceiling <span style="font-weight:400; text-transform:none; color:var(--ink-300);">(optional)</span></label><input type="number" step="0.01" name="new_ceiling" placeholder="Leave blank for no vote"><div class="hint">Leave blank to switch this department to "no vote."</div></div>
-                    <div class="form-group" style="align-self:end;"><button type="submit" class="btn btn-primary">Update</button></div>
+                    <div class="form-group" style="align-self:end; text-align: center;"><button type="submit" class="btn btn-primary">Update</button></div>
                 </form>
             </details>
         </div>
