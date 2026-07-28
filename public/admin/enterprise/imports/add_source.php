@@ -1,6 +1,6 @@
 <?php
 // enterprise/imports/add_source.php - Manage source accounts (maker-checker controlled)
-require_once __DIR__ . '/../../auth.php';
+require_once __DIR__ . '/../auth.php';
 $user = requireEnterpriseAuth();
 require_once __DIR__ . '/../../../../src/Core/Database/DBConnection.php';
 use Core\Database\DBConnection;
