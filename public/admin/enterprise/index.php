@@ -17,8 +17,8 @@ if (session_status() === PHP_SESSION_NONE) {
 }
 
 require_once __DIR__ . '/auth.php';
-require_once '../../../src/Domain/Services/DepartmentService.php';
-require_once '../../../src/Domain/Services/SetupChecklistService.php';
+require_once __DIR__ . '/../../../src/Domain/Services/DepartmentService.php';
+require_once __DIR__ . '/../../../src/Domain/Services/SetupChecklistService.php';
 use Domain\Services\DepartmentService;
 use Domain\Services\SetupChecklistService;
 
