@@ -342,7 +342,7 @@ function renderOrganogram(string $orgName, array $hqStaff, array $tree, array $s
             $html .= '<div class="role-line">' . safeHtml($s['full_name']) . ' <span style="color:var(--ink-300);">— ' . safeHtml($label) . '</span></div>';
         }
     }
-    $html .= '<a href="/../settings/users.php" class="org-node-cta">+ Add / Manage Team →</a>';
+    $html .= '<a href="/admin/enterprise/settings/users.php" class="org-node-cta">+ Add / Manage Team →</a>';
     $html .= '</div></div></div>';
 
     $html .= '<div class="org-branch"><div class="org-node-stub"></div><div class="org-node source">';
