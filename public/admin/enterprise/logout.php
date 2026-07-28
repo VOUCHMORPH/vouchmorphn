@@ -1,6 +1,6 @@
 <?php
 // logout.php - Enterprise Logout
-require_once __DIR__ . '/../auth.php';
+require_once __DIR__ . '/auth.php';
 
 // Ensure user is logged in before logging out
 if (!isAuthenticated()) {
