@@ -1,10 +1,8 @@
 <?php
 
-require_once dirname(__DIR__, 2) . '/src/bootstrap.php';
-
 declare(strict_types=1);
 
-namespace DFSP_ADAPTER_LAYER\dto;
+namespace Infrastructure\Mojaloop\Dto;
 
 class TransferRequest
 {
@@ -18,13 +16,12 @@ class TransferRequest
 
     public function __construct(array $data)
     {
-        $this->transferId = $data['transferId'];
-        $this->payerFsp = $data['payerFsp'];
-        $this->payeeFsp = $data['payeeFsp'];
-        $this->amount = (float)$data['amount'];
-        $this->currency = $data['currency'];
+        $this->transferId = $data['transferId'] ?? bin2hex(random_bytes(16));
+        $this->payerFsp = strtoupper($data['payerFsp'] ?? '');
+        $this->payeeFsp = strtoupper($data['payeeFsp'] ?? '');
+        $this->amount = (float)($data['amount'] ?? 0);
+        $this->currency = $data['currency'] ?? 'BWP';
         $this->transactionType = $data['transactionType'] ?? 'TRANSFER';
         $this->metadata = $data['metadata'] ?? [];
     }
 }
-
