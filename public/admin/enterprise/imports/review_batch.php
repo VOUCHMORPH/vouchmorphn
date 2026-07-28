@@ -12,11 +12,13 @@ require_once __DIR__ . '/../../../../vendor/autoload.php';
 require_once __DIR__ . '/../../../../src/Domain/Services/SwapService.php';
 require_once __DIR__ . '/../../../../src/Domain/Services/DepartmentService.php';
 require_once __DIR__ . '/../../../../src/Domain/Services/UserManagementService.php';
+require_once __DIR__ . '/../../../../src/Domain/Services/BatchExecutionQueueService.php';
 require_once __DIR__ . '/../../../../src/Core/Config/LoadCountry.php';
 
 use Domain\Services\SwapService;
 use Domain\Services\DepartmentService;
 use Domain\Services\UserManagementService;
+use Domain\Services\BatchExecutionQueueService;
 use Core\Config\LoadCountry;
 
 $db = DBConnection::getConnection();
@@ -142,6 +144,7 @@ if ($isApprover) {
 // DEPARTMENT / RATION CONTEXT
 // ============================================================
 $deptService = new DepartmentService($db);
+$executionQueue = new BatchExecutionQueueService($db);
 $departmentInfo = null;
 $rationInfo = null;
 
@@ -189,19 +192,6 @@ if (!$inDeptScope) {
 // GET DESTINATIONS
 // ============================================================
 $destinations = loadDestinations($db, $batchId);
-
-error_log("=== REVIEW_BATCH DEBUG: RAW DATA ===");
-error_log("Batch ID: " . $batchId);
-error_log("Batch Reference: " . ($batch['batch_reference'] ?? 'NULL'));
-error_log("Source Institution: " . ($batch['source_institution'] ?? 'NULL'));
-error_log("Department ID: " . ($batch['department_id'] ?? 'NULL'));
-error_log("Destinations Count: " . count($destinations));
-error_log("User Role: " . $role);
-error_log("Can Execute: " . ($canExecute ? 'YES' : 'NO'));
-
-foreach ($destinations as $idx => $dest) {
-    error_log("Destination $idx: " . json_encode($dest));
-}
 
 // ============================================================
 // HANDLE ACTIONS
@@ -290,414 +280,52 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         } elseif ($action === 'execute') {
             // ============================================================
-            // P0 FIX — three problems, one block:
+            // ASYNC EXECUTION — replaces the old synchronous "loop every
+            // destination inline inside this one HTTP request" path. That
+            // approach could not survive real batch sizes (a batch of
+            // thousands to millions of destinations will exceed PHP's
+            // execution time limit long before finishing, leaving the
+            // batch stuck mid-run with no way to know how far it got).
             //
-            // 1. DOUBLE-CLICK / CONCURRENT EXECUTE: two requests hitting
-            //    this action at once used to both run the full destination
-            //    loop. Now the first thing we do is an atomic
-            //    compare-and-set: flip status to 'executing' ONLY if it's
-            //    currently 'approved' (normal case) or stuck in
-            //    'executing' past the timeout threshold (resume case). If
-            //    zero rows are affected, someone else already claimed it.
+            // Execution is now: explode the batch into one durable job
+            // per destination (BatchExecutionQueueService::enqueueBatch),
+            // and let independent worker.php processes drain that queue
+            // — see 006_batch_execution_queue_migration.sql and
+            // worker.php. This request's only job is to enqueue and
+            // return immediately; per-destination status, transaction
+            // references, and department ration bookkeeping are now
+            // updated incrementally by the workers as each job completes,
+            // not all at once here.
             //
-            // 2. TIMEOUT MID-BATCH LEAVES THINGS STUCK: if PHP's execution
-            //    time limit kills this request partway through, the batch
-            //    used to stay 'approved' forever with no record of partial
-            //    progress. Now a stuck 'executing' batch surfaces a manual
-            //    "Resume" option once EXECUTING_STUCK_THRESHOLD_SECONDS has
-            //    passed, and resuming is safe because of #3.
-            //
-            // 3. NOT IDEMPOTENT: nothing filtered out already-completed
-            //    destinations before re-looping, and no idempotency_key
-            //    was ever passed to SwapService. Fixed by filtering
-            //    $destinations down to only never-attempted ones before
-            //    building any payload, plus a deterministic idempotency
-            //    key as defense-in-depth.
+            // enqueueBatch() is itself safe against double-clicks/
+            // concurrent requests (it locks the batch row and only
+            // creates jobs for destinations that don't already have one),
+            // so the separate atomic claim-lock this file used to do
+            // inline is now handled there instead.
             // ============================================================
-            error_log("=== REVIEW_BATCH DEBUG: EXECUTION STARTED ===");
+            try {
+                $created = $executionQueue->enqueueBatch((int)$batchId);
+                $success = $created > 0
+                    ? "🚀 Batch queued for execution — {$created} destination(s) enqueued. Refresh this page to see live progress as workers process them."
+                    : "This batch's destinations were already queued or resolved on a previous attempt — nothing new to enqueue. Refresh to see current status.";
+            } catch (\RuntimeException $e) {
+                $error = "❌ " . $e->getMessage();
+                error_log("[review_batch] enqueueBatch failed for batch {$batchId}: " . $e->getMessage());
+            }
 
-            $claimStmt = $db->prepare("
-                UPDATE disbursement_batches
-                SET status = 'executing', updated_at = NOW()
-                WHERE id = :id
-                AND (
-                    LOWER(status) = 'approved'
-                    OR (LOWER(status) = 'executing' AND updated_at < NOW() - (:stuck_seconds || ' seconds')::interval)
-                )
-            ");
-            $claimStmt->execute([':id' => $batchId, ':stuck_seconds' => EXECUTING_STUCK_THRESHOLD_SECONDS]);
-
-            if ($claimStmt->rowCount() === 0) {
-                $error = "This batch is currently being executed (or was already executed) by another request. Refresh the page to see its current status before trying again.";
-                error_log("[review_batch] Execute claim failed for batch {$batchId} — already executing or not in an executable state");
+        } elseif ($action === 'retry_failed_jobs') {
+            if (!$canExecute) {
+                $error = "🚫 Only the Owner can retry failed destinations.";
             } else {
-                error_log("[review_batch] Execute claim succeeded for batch {$batchId} — proceeding");
-
-                $destinationsAtClaim = loadDestinations($db, $batchId);
-
-                $identityDestinationsAll = [];
-                $institutionDestinationsAll = [];
-                foreach ($destinationsAtClaim as $dest) {
-                    $isIdentity = ($dest['is_identity_recipient'] ?? false) || ($dest['institution'] ?? '') === 'IDENTITY_RECIPIENT';
-                    if ($isIdentity) {
-                        $identityDestinationsAll[] = $dest;
-                    } else {
-                        $institutionDestinationsAll[] = $dest;
-                    }
-                }
-
-                // array_values() re-indexes sequentially — required because
-                // the MULTI_DESTINATION result-matching below looks up
-                // $institutionDestinations[$idx] assuming positional match
-                // with what was sent in $multiPayload.
-                $identityDestinations = array_values(array_filter($identityDestinationsAll, 'destinationNotYetAttempted'));
-                $institutionDestinations = array_values(array_filter($institutionDestinationsAll, 'destinationNotYetAttempted'));
-
-                $skippedAlreadyDone = (count($identityDestinationsAll) - count($identityDestinations))
-                                    + (count($institutionDestinationsAll) - count($institutionDestinations));
-
-                error_log("[review_batch] Identity destinations to process: " . count($identityDestinations) . " (skipped: " . (count($identityDestinationsAll) - count($identityDestinations)) . ")");
-                error_log("[review_batch] Institution destinations to process: " . count($institutionDestinations) . " (skipped: " . (count($institutionDestinationsAll) - count($institutionDestinations)) . ")");
-
-                $allResults = [];
-                $overallSuccess = 0;
-                $overallFailed = 0;
-                $overallPending = 0;
-                $failedDestinations = [];
-
-                try {
-                    $countryName = $_ENV['VOUCHMORPH_COUNTRY'] ?? getenv('VOUCHMORPH_COUNTRY') ?? 'Botswana';
-                    $fullCountryConfig = LoadCountry::getConfig();
-
-                    error_log("[review_batch] Initializing SwapService...");
-                    error_log("[review_batch] Country: " . $countryName);
-
-                    $swapService = new SwapService($db, $fullCountryConfig, $countryName);
-
-                    error_log("[review_batch] SwapService initialized successfully");
-
-                    foreach ($identityDestinations as $dest) {
-                        error_log("[review_batch] Processing identity destination: " . json_encode($dest));
-
-                        $identityPayload = [
-                            'swap_type' => 'IDENTITY',
-                            'reference' => $batch['batch_reference'] . '_ID_' . $dest['destination_index'],
-                            // Deterministic per-destination key: safe to reuse across
-                            // resumes since each identity destination is independent
-                            // of what else is in the batch.
-                            'idempotency_key' => $batch['batch_reference'] . '_ID_' . $dest['destination_index'],
-                            'from_institution' => $batch['source_institution'],
-                            'source_institution' => $batch['source_institution'],
-                            'asset_type' => $batch['source_asset_type'] ?? 'ACCOUNT',
-                            'source_identifier' => $batch['source_identifier'],
-                            'amount' => (float)$dest['amount'],
-                            'currency' => $dest['currency'] ?? $batch['currency'] ?? 'BWP',
-                            'identity_type' => $dest['identity_type'] ?? 'national_id',
-                            'identity_value' => $dest['identity_value'] ?? $dest['identifier'],
-                        ];
-
-                        if (!empty($dest['beneficiary_phone'])) {
-                            $identityPayload['notification_phone'] = $dest['beneficiary_phone'];
-                        }
-
-                        error_log("[review_batch] Identity payload: " . json_encode($identityPayload));
-
-                        try {
-                            $idResult = $swapService->executeAtomicSwap($identityPayload);
-                            $overallPending++;
-
-                            $stmt = $db->prepare("
-                                UPDATE disbursement_destinations
-                                SET status = 'PENDING_IDENTITY_CONFIRMATION',
-                                    hold_reference = :hold_ref
-                                WHERE batch_id = :batch_id AND destination_index = :idx
-                            ");
-                            $stmt->execute([
-                                ':hold_ref' => $idResult['hold_reference'] ?? null,
-                                ':batch_id' => $batchId,
-                                ':idx' => $dest['destination_index'],
-                            ]);
-
-                            $allResults[] = [
-                                'destination_index' => $dest['destination_index'],
-                                'type' => 'identity',
-                                'result' => $idResult
-                            ];
-
-                            error_log("[review_batch] Identity destination {$dest['destination_index']} placed on hold");
-
-                        } catch (Exception $e) {
-                            $overallFailed++;
-                            $errorMsg = $e->getMessage();
-
-                            $failedDestinations[] = [
-                                'index' => $dest['destination_index'],
-                                'institution' => $dest['institution'] ?? 'IDENTITY_RECIPIENT',
-                                'beneficiary' => $dest['beneficiary_name'] ?? $dest['identity_value'] ?? 'Unknown',
-                                'amount' => $dest['amount'],
-                                'currency' => $dest['currency'] ?? 'BWP',
-                                'error' => $errorMsg
-                            ];
-
-                            error_log("[review_batch] Identity destination {$dest['destination_index']} failed: " . $errorMsg);
-
-                            $stmt = $db->prepare("
-                                UPDATE disbursement_destinations
-                                SET status = 'FAILED',
-                                    error_message = :error
-                                WHERE batch_id = :batch_id AND destination_index = :idx
-                            ");
-                            $stmt->execute([
-                                ':error' => $errorMsg,
-                                ':batch_id' => $batchId,
-                                ':idx' => $dest['destination_index'],
-                            ]);
-                        }
-                    }
-
-                    if (!empty($institutionDestinations)) {
-                        error_log("[review_batch] Processing " . count($institutionDestinations) . " institution destinations via MULTI_DESTINATION");
-
-                        // Idempotency key scoped to the EXACT set of destination
-                        // indices in THIS attempt, not just the batch reference —
-                        // a static per-batch key would wrongly return attempt #1's
-                        // cached (partial) result on a resume with a shrunk set.
-                        $idxList = implode(',', array_column($institutionDestinations, 'destination_index'));
-                        $multiIdempotencyKey = $batch['batch_reference'] . '_MULTI_' . substr(md5($idxList), 0, 12);
-
-                        $multiPayload = [
-                            'swap_type' => 'MULTI_DESTINATION',
-                            'reference' => $batch['batch_reference'],
-                            'idempotency_key' => $multiIdempotencyKey,
-                            'from_institution' => $batch['source_institution'],
-                            'source_institution' => $batch['source_institution'],
-                            'asset_type' => $batch['source_asset_type'] ?? 'ACCOUNT',
-                            'source_identifier' => $batch['source_identifier'],
-                            'amount' => array_sum(array_column($institutionDestinations, 'amount')),
-                            'currency' => $batch['currency'] ?? 'BWP',
-                            'destinations' => [],
-                        ];
-
-                        foreach ($institutionDestinations as $dest) {
-                            $multiPayload['destinations'][] = [
-                                'to_institution' => $dest['institution'],
-                                'destination_institution' => $dest['institution'],
-                                'destination_asset_type' => $dest['asset_type'] ?? 'WALLET',
-                                'destination_identifier' => $dest['identifier'],
-                                'destination_identifier_type' => $dest['identifier_type'] ?? 'account',
-                                'amount' => (float)$dest['amount'],
-                                'currency' => $dest['currency'] ?? 'BWP',
-                                'delivery_method' => $dest['delivery_method'] ?? 'DEPOSIT',
-                                'beneficiary_phone' => $dest['beneficiary_phone'] ?? null,
-                                'beneficiary_name' => $dest['beneficiary_name'] ?? null,
-                            ];
-                        }
-
-                        error_log("[review_batch] MULTI_DESTINATION payload: " . json_encode($multiPayload, JSON_PRETTY_PRINT));
-
-                        $multiResult = $swapService->executeAtomicSwap($multiPayload);
-
-                        error_log("[review_batch] MULTI_DESTINATION result: " . json_encode($multiResult, JSON_PRETTY_PRINT));
-
-                        $multiSuccess = $multiResult['successful_destinations'] ?? 0;
-                        $multiFailed = $multiResult['failed_destinations'] ?? 0;
-
-                        $overallSuccess += $multiSuccess;
-                        $overallFailed += $multiFailed;
-
-                        foreach ($multiResult['destinations'] ?? [] as $idx => $destResult) {
-                            $origDest = $institutionDestinations[$idx] ?? null;
-                            if (!$origDest) continue;
-
-                            $status = $destResult['status'] ?? 'FAILED';
-                            $errorMsg = $destResult['error'] ?? null;
-
-                            if ($status !== 'SUCCESS' && $status !== 'COMPLETED') {
-                                $failedDestinations[] = [
-                                    'index' => $origDest['destination_index'],
-                                    'institution' => $origDest['institution'],
-                                    'beneficiary' => $origDest['beneficiary_name'] ?? $origDest['identifier'],
-                                    'amount' => $origDest['amount'],
-                                    'currency' => $origDest['currency'] ?? 'BWP',
-                                    'error' => $errorMsg ?? 'Unknown error'
-                                ];
-                            }
-
-                            $stmt = $db->prepare("
-                                UPDATE disbursement_destinations
-                                SET status = :status,
-                                    hold_reference = :hold_ref,
-                                    transaction_reference = :tx_ref,
-                                    error_message = :error
-                                WHERE batch_id = :batch_id AND destination_index = :idx
-                            ");
-                            $stmt->execute([
-                                ':status' => $status,
-                                ':hold_ref' => $destResult['hold_reference'] ?? null,
-                                ':tx_ref' => $destResult['transaction_reference'] ?? null,
-                                ':error' => $errorMsg,
-                                ':batch_id' => $batchId,
-                                ':idx' => $origDest['destination_index'],
-                            ]);
-                        }
-
-                        $allResults[] = ['type' => 'multi_destination', 'result' => $multiResult];
-                    }
-
-                    // Fold in whatever was already done on a PRIOR attempt so
-                    // the final counts reflect the whole batch, not just what
-                    // THIS request touched.
-                    $priorSuccessCount = 0;
-                    $priorPendingCount = 0;
-                    foreach ($destinationsAtClaim as $d) {
-                        if (!destinationNotYetAttempted($d)) {
-                            $s = strtoupper($d['status'] ?? '');
-                            if (in_array($s, ['SUCCESS', 'COMPLETED'], true)) $priorSuccessCount++;
-                            if ($s === 'PENDING_IDENTITY_CONFIRMATION') $priorPendingCount++;
-                        }
-                    }
-                    $overallSuccess += $priorSuccessCount;
-                    $overallPending += $priorPendingCount;
-
-                    $finalStatus = 'completed';
-                    if ($overallFailed > 0 && ($overallSuccess > 0 || $overallPending > 0)) {
-                        $finalStatus = 'partial_success';
-                    } elseif ($overallFailed > 0 && $overallPending == 0 && $overallSuccess == 0) {
-                        $finalStatus = 'failed';
-                    } elseif ($overallPending > 0) {
-                        $finalStatus = 'pending_identity_confirmation';
-                    }
-
-                    $isTerminal = in_array($finalStatus, ['completed', 'success', 'COMPLETED']);
-
-                    error_log("[review_batch] Final status: $finalStatus (success: $overallSuccess, failed: $overallFailed, pending: $overallPending, skipped: $skippedAlreadyDone)");
-
-                    $stmt = $db->prepare("
-                        UPDATE disbursement_batches 
-                        SET status = :status,
-                            successful_count = :success,
-                            failed_count = :failed,
-                            pending_count = :pending,
-                            executed_by = :user_id,
-                            executed_at = NOW(),
-                            results_payload = :results::jsonb,
-                            completed_at = CASE WHEN :is_terminal::boolean THEN NOW() ELSE completed_at END,
-                            updated_at = NOW()
-                        WHERE id = :id
-                    ");
-                    $stmt->execute([
-                        ':status' => $finalStatus,
-                        ':success' => $overallSuccess,
-                        ':failed' => $overallFailed,
-                        ':pending' => $overallPending,
-                        ':user_id' => $userId,
-                        ':results' => json_encode($allResults),
-                        ':is_terminal' => $isTerminal ? 't' : 'f',
-                        ':id' => $batchId
-                    ]);
-
-                    // Ration bookkeeping: only the amount that actually moved on
-                    // THIS attempt gets added — prior attempts' successful
-                    // amounts were already added when they ran.
-                    if (!empty($batch['department_id'])) {
-                        try {
-                            $successfulAmountThisAttempt = 0.0;
-                            foreach ($allResults as $resultEntry) {
-                                if (($resultEntry['type'] ?? '') === 'multi_destination') {
-                                    foreach ($resultEntry['result']['destinations'] ?? [] as $idx => $destResult) {
-                                        $st = $destResult['status'] ?? '';
-                                        if ($st === 'SUCCESS' || $st === 'COMPLETED') {
-                                            $origDest = $institutionDestinations[$idx] ?? null;
-                                            if ($origDest) {
-                                                $successfulAmountThisAttempt += (float)$origDest['amount'];
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            if ($successfulAmountThisAttempt > 0) {
-                                $stmt = $db->prepare("
-                                    UPDATE departments
-                                    SET amount_disbursed_ytd = amount_disbursed_ytd + :amt, updated_at = NOW()
-                                    WHERE id = :id
-                                ");
-                                $stmt->execute([':amt' => $successfulAmountThisAttempt, ':id' => $batch['department_id']]);
-                                error_log("[review_batch] Department {$batch['department_id']} amount_disbursed_ytd increased by {$successfulAmountThisAttempt}");
-                            }
-                        } catch (\Throwable $e) {
-                            error_log("[review_batch] Failed to update department amount_disbursed_ytd: " . $e->getMessage());
-                        }
-                    }
-
-                    $skippedNote = $skippedAlreadyDone > 0
-                        ? " ({$skippedAlreadyDone} destination(s) already completed on a previous attempt were correctly skipped.)"
-                        : '';
-
-                    if ($finalStatus === 'completed') {
-                        $success = "✅ All $overallSuccess destinations paid successfully!" . $skippedNote;
-                    } elseif ($finalStatus === 'partial_success') {
-                        $success = "⚠️ Batch partially executed.<br>";
-                        $success .= "✅ <strong>$overallSuccess succeeded</strong><br>";
-                        $success .= "❌ <strong>$overallFailed failed</strong><br>";
-                        $success .= $skippedNote . "<br><br>";
-                        $success .= "<strong>Failed Destinations:</strong><br>";
-                        foreach ($failedDestinations as $failed) {
-                            $success .= "• <strong>#{$failed['index']}</strong> - {$failed['institution']} - ";
-                            $success .= "{$failed['beneficiary']} - " . number_format($failed['amount'], 2) . " {$failed['currency']}<br>";
-                            $success .= "  <span style='color:#7A2118; font-size:12px;'>Error: " . htmlspecialchars($failed['error']) . "</span><br>";
-                        }
-                    } elseif ($finalStatus === 'failed') {
-                        $error = "❌ All $overallFailed destinations failed.<br><br>";
-                        $error .= "<strong>Failed Destinations:</strong><br>";
-                        foreach ($failedDestinations as $failed) {
-                            $error .= "• <strong>#{$failed['index']}</strong> - {$failed['institution']} - ";
-                            $error .= "{$failed['beneficiary']} - " . number_format($failed['amount'], 2) . " {$failed['currency']}<br>";
-                            $error .= "  <span style='color:#7A2118; font-size:12px;'>Error: " . htmlspecialchars($failed['error']) . "</span><br>";
-                        }
-                    } else {
-                        $success = "Batch executed! $overallSuccess succeeded, $overallFailed failed, $overallPending pending identity confirmation." . $skippedNote;
-                    }
-
-                } catch (Exception $e) {
-                    error_log("[review_batch] Execution error: " . $e->getMessage());
-                    error_log("[review_batch] Trace: " . $e->getTraceAsString());
-
-                    $stmt = $db->prepare("
-                        UPDATE disbursement_destinations 
-                        SET status = 'FAILED',
-                            error_message = :error,
-                            updated_at = NOW()
-                        WHERE batch_id = :batch_id 
-                        AND status NOT IN ('COMPLETED', 'SUCCESS', 'PENDING_IDENTITY_CONFIRMATION')
-                    ");
-                    $stmt->execute([
-                        ':error' => 'System error: ' . $e->getMessage(),
-                        ':batch_id' => $batchId
-                    ]);
-
-                    // FIX: the original code never reset disbursement_batches.status
-                    // in this catch block, so a caught (non-timeout) exception left
-                    // the batch stuck on 'executing' forever, same as an uncaught
-                    // timeout would.
-                    $recoveryStatus = $overallSuccess > 0 ? 'partial_success' : 'failed';
-                    try {
-                        $stmt = $db->prepare("
-                            UPDATE disbursement_batches
-                            SET status = :status, updated_at = NOW()
-                            WHERE id = :id
-                        ");
-                        $stmt->execute([':status' => $recoveryStatus, ':id' => $batchId]);
-                    } catch (\Throwable $inner) {
-                        error_log("[review_batch] Failed to reset batch status after execution error: " . $inner->getMessage());
-                    }
-
-                    $error = "❌ Execution failed: " . $e->getMessage();
-                }
+                $retried = $executionQueue->retryFailedJobs((int)$batchId);
+                $success = $retried > 0
+                    ? "🔁 {$retried} failed destination(s) requeued for another attempt."
+                    : "No permanently-failed destinations found to retry.";
             }
         }
     }
 
-    // Refresh everything from DB before rendering — the executing-lock,
+    // Refresh everything from DB before rendering — the enqueue action,
     // status transitions, and department bookkeeping above changed rows
     // out from under the snapshots loaded at the top of the page.
     $refreshedBatch = loadBatch($db, $batchId, $orgId);
@@ -721,22 +349,27 @@ $roleDisplay = strtoupper($roleDisplay);
 $status = strtolower($batch['status'] ?? 'draft');
 
 // ============================================================
-// STUCK-EXECUTION DETECTION — drives the manual Resume affordance.
-// This is a heuristic, not a guarantee: it can't distinguish "genuinely
-// still running a very large batch" from "crashed 11 minutes ago"
-// without a proper background-job architecture. It's a pragmatic
-// mitigation for a synchronous-request execute path, not a replacement
-// for one.
+// QUEUE PROGRESS — replaces the old single-request "stuck after 10
+// minutes" heuristic. With async execution, 'executing' is the NORMAL
+// state for as long as workers are still draining the queue — for a
+// million-destination batch that could genuinely be hours, not a sign
+// of anything wrong. The real signal is whether jobs are still moving,
+// which getBatchProgress() reports directly instead of guessing from a
+// timestamp.
 // ============================================================
-$isStuckExecuting = false;
-if ($status === 'executing') {
-    $updatedAtTs = strtotime($batch['updated_at'] ?? $batch['created_at'] ?? 'now');
-    $isStuckExecuting = (time() - $updatedAtTs) > EXECUTING_STUCK_THRESHOLD_SECONDS;
+$queueProgress = null;
+if (in_array($status, ['executing', 'partially_completed', 'completed'], true)) {
+    try {
+        $queueProgress = $executionQueue->getBatchProgress((int)$batchId);
+    } catch (\Throwable $e) {
+        error_log("[review_batch] Failed to get queue progress: " . $e->getMessage());
+    }
 }
+$hasFailedJobs = $queueProgress && (int)($queueProgress['permanently_failed'] ?? 0) > 0;
 
 // FINAL SAFETY CHECK: Approvers should NEVER see Execute button
 $showExecuteButton = ($status === 'approved' && $canExecute && !$isApprover);
-$showResumeButton = ($status === 'executing' && $isStuckExecuting && $canExecute && !$isApprover);
+$showRetryFailedButton = ($hasFailedJobs && $canExecute && !$isApprover);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -785,6 +418,7 @@ $showResumeButton = ($status === 'executing' && $isStuckExecuting && $canExecute
         .status-rejected { background: var(--danger-bg); color: var(--danger); }
         .status-completed { background: var(--green-tint); color: var(--ledger-green); }
         .status-failed { background: var(--danger-bg); color: var(--danger); }
+        .status-partially_completed { background: #fef3c7; color: var(--amber); }
         .status-pending_identity_confirmation { background: var(--blue-tint); color: #1e40af; }
         .status-partial_success { background: #fef3c7; color: var(--amber); }
         .status-success { background: var(--green-tint); color: var(--ledger-green); }
@@ -797,10 +431,14 @@ $showResumeButton = ($status === 'executing' && $isStuckExecuting && $canExecute
         .ration-stats strong { color: var(--ink-900); }
         .ration-stats .danger strong { color: var(--danger); }
         .ration-stats .ok strong { color: var(--ledger-green); }
-        .executing-notice { background: #fef3c7; border-left: 4px solid #f59e0b; padding: 14px 18px; margin-bottom: 16px; font-size: 13.5px; color: var(--amber); }
-        .executing-notice strong { color: var(--amber); }
-        .stuck-notice { background: var(--danger-bg); border-left: 4px solid var(--danger); padding: 14px 18px; margin-bottom: 16px; font-size: 13.5px; color: var(--danger); }
-        .stuck-notice strong { color: var(--danger); }
+        .queue-progress { background: var(--panel); border: 1.5px solid var(--brass); padding: 18px 22px; margin-bottom: 16px; }
+        .queue-progress .qp-title { font-family: var(--f-cond); font-weight: 700; font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--brass); margin-bottom: 10px; }
+        .queue-bar-track { height: 12px; background: var(--paper); border: 1px solid var(--line); margin-bottom: 10px; }
+        .queue-bar-fill { height: 100%; background: var(--ledger-green); transition: width 0.3s; }
+        .queue-bar-fill.has-failures { background: var(--amber); }
+        .queue-stats { display: flex; gap: 20px; flex-wrap: wrap; font-size: 13px; color: var(--ink-500); }
+        .queue-stats strong { color: var(--ink-900); }
+        .queue-stats .danger strong { color: var(--danger); }
         .table-responsive { overflow-x: auto; }
         table { width: 100%; border-collapse: collapse; font-size: 13px; }
         th { background: var(--paper); color: var(--ink-500); padding: 10px 14px; text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; border-bottom: 2px solid var(--line); font-family: var(--f-cond); }
@@ -840,7 +478,6 @@ $showResumeButton = ($status === 'executing' && $isStuckExecuting && $canExecute
         .security-notice { background: #fef3c7; border-left: 4px solid #f59e0b; padding: 12px 16px; margin-top: 12px; font-size: 13px; color: var(--amber); }
         .security-notice strong { color: var(--amber); }
         .security-notice .lock-icon { font-size: 18px; margin-right: 8px; }
-        .debug-panel { background: #1e293b; color: #e2e8f0; padding: 16px; overflow-x: auto; font-family: var(--f-mono); font-size: 12px; white-space: pre-wrap; word-break: break-all; margin-top: 12px; }
         @media (max-width: 768px) {
             .grid-3 { grid-template-columns: 1fr; }
             .masthead { flex-direction: column; text-align: center; padding: 12px 16px; }
@@ -872,7 +509,6 @@ $showResumeButton = ($status === 'executing' && $isStuckExecuting && $canExecute
             .status-draft { background: #2C3A45; color: #93A2AC; }
             .table-code { background: #2C3A45; color: #93A2AC; }
             .rejection-form textarea { background: #1B2733; border-color: #2C3A45; color: #ECEFF2; }
-            .debug-panel { background: #0d1a26; }
             .security-notice { background: #1e293b; border-left-color: #f59e0b; color: #fbbf24; }
             .btn-approver-locked { background: #1e293b; border-color: #f59e0b; color: #fbbf24; }
         }
@@ -911,19 +547,26 @@ $showResumeButton = ($status === 'executing' && $isStuckExecuting && $canExecute
         <div class="success">✅ <?php echo $success; ?></div>
         <?php endif; ?>
 
-        <?php if ($status === 'executing' && !$isStuckExecuting): ?>
-        <div class="executing-notice">
-            ⏳ <strong>Execution in progress.</strong> Do not close this page or click Execute again — refresh in a
-            moment to see the result. Large batches can take a while.
-        </div>
-        <?php elseif ($status === 'executing' && $isStuckExecuting): ?>
-        <div class="stuck-notice">
-            ⚠️ <strong>Execution appears stuck.</strong> It started more than <?php echo (int)(EXECUTING_STUCK_THRESHOLD_SECONDS / 60); ?> minutes ago
-            and never finished — most likely a timed-out request, not a genuinely still-running one.
-            <?php if ($canExecute): ?>
-            It is safe to resume: destinations already paid on the earlier attempt are automatically skipped.
-            <?php else: ?>
-            Only the Owner can resume it.
+        <?php if ($queueProgress && $queueProgress['total'] > 0): ?>
+        <div class="queue-progress">
+            <div class="qp-title">⚙️ Execution Progress</div>
+            <div class="queue-bar-track">
+                <div class="queue-bar-fill<?php echo $hasFailedJobs ? ' has-failures' : ''; ?>" style="width:<?php echo $queueProgress['percent_done']; ?>%;"></div>
+            </div>
+            <div class="queue-stats">
+                <span>Total: <strong><?php echo (int)$queueProgress['total']; ?></strong></span>
+                <span>✅ Completed: <strong><?php echo (int)$queueProgress['completed']; ?></strong></span>
+                <span>⏳ In flight: <strong><?php echo (int)$queueProgress['in_flight']; ?></strong></span>
+                <?php if ($hasFailedJobs): ?>
+                <span class="danger">❌ Failed: <strong><?php echo (int)$queueProgress['permanently_failed']; ?></strong></span>
+                <?php endif; ?>
+                <span><?php echo $queueProgress['percent_done']; ?>% done</span>
+            </div>
+            <?php if ((int)$queueProgress['in_flight'] > 0): ?>
+            <p style="font-size:12.5px; color:var(--ink-300); margin-top:10px;">
+                Workers are processing this batch in the background — safe to leave this page and check back later.
+                Refresh to see the latest progress.
+            </p>
             <?php endif; ?>
         </div>
         <?php endif; ?>
@@ -994,23 +637,13 @@ $showResumeButton = ($status === 'executing' && $isStuckExecuting && $canExecute
             </div>
             <?php endif; ?>
 
-            <?php if (in_array($status, ['partial_success', 'failed', 'completed', 'executing'])): ?>
-            <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--line);">
-                <div style="display:flex; gap:24px; flex-wrap:wrap; font-size:14px;">
-                    <div><strong style="color:var(--ledger-green);">✅ Successful:</strong> <?php echo $batch['successful_count'] ?? 0; ?></div>
-                    <div><strong style="color:var(--danger);">❌ Failed:</strong> <?php echo $batch['failed_count'] ?? 0; ?></div>
-                    <div><strong style="color:var(--amber);">⏳ Pending:</strong> <?php echo $batch['pending_count'] ?? 0; ?></div>
-                </div>
-            </div>
-            <?php endif; ?>
-
             <?php if ($rationInfo): ?>
             <?php
                 $utilPct = $rationInfo['ceiling'] > 0
                     ? min(100, round((($rationInfo['disbursed_ytd'] + $rationInfo['reserved_in_flight']) / $rationInfo['ceiling']) * 100, 1))
                     : 0;
                 $barColor = $rationInfo['available'] < 0 ? 'var(--danger)' : ($utilPct >= 80 ? 'var(--amber)' : 'var(--ledger-green)');
-                $thisBatchFits = (float)($batch['total_amount'] ?? 0) <= $rationInfo['available'] || in_array($status, ['approved', 'completed', 'executing', 'partial_success']);
+                $thisBatchFits = (float)($batch['total_amount'] ?? 0) <= $rationInfo['available'] || in_array($status, ['approved', 'completed', 'executing', 'partial_success', 'partially_completed']);
             ?>
             <div class="ration-panel">
                 <div class="ration-title">💰 Department Ration<?php echo $departmentInfo ? ' — ' . safeHtmlRb($departmentInfo['name']) : ''; ?></div>
@@ -1035,9 +668,9 @@ $showResumeButton = ($status === 'executing' && $isStuckExecuting && $canExecute
         <div class="card">
             <div class="card-header">
                 <span class="card-title">👥 Destinations (<?php echo count($destinations); ?>)</span>
-                <?php if (in_array($status, ['partial_success', 'failed'])): ?>
+                <?php if ($hasFailedJobs): ?>
                 <span style="color:var(--danger); font-weight:600; font-family:var(--f-cond);">
-                    ⚠️ <?php echo $batch['failed_count'] ?? 0; ?> failed
+                    ⚠️ <?php echo (int)$queueProgress['permanently_failed']; ?> failed
                 </span>
                 <?php endif; ?>
             </div>
@@ -1048,7 +681,7 @@ $showResumeButton = ($status === 'executing' && $isStuckExecuting && $canExecute
                             <th>#</th><th>Institution</th><th>Identifier</th><th>Amount</th>
                             <th>Beneficiary</th><th>Delivery</th><th>Status</th>
                             <th>Transaction Ref</th><th>Error Message</th>
-                            <?php if ($role === 'owner' && in_array($status, ['partial_success', 'failed'])): ?>
+                            <?php if ($role === 'owner'): ?>
                             <th>Action</th>
                             <?php endif; ?>
                         </tr>
@@ -1084,7 +717,7 @@ $showResumeButton = ($status === 'executing' && $isStuckExecuting && $canExecute
                             <td style="color:var(--danger); font-size:12px; max-width:200px;">
                                 <?php echo htmlspecialchars($dest['error_message'] ?? ''); ?>
                             </td>
-                            <?php if ($role === 'owner' && in_array($status, ['partial_success', 'failed']) && strtolower($dest['status'] ?? '') === 'failed'): ?>
+                            <?php if ($role === 'owner' && strtolower($dest['status'] ?? '') === 'failed'): ?>
                             <td>
                                 <a href="retry_destination.php?batch_id=<?php echo $batchId; ?>&dest_idx=<?php echo $dest['destination_index']; ?>" class="btn-retry">🔄 Retry</a>
                             </td>
@@ -1141,7 +774,7 @@ $showResumeButton = ($status === 'executing' && $isStuckExecuting && $canExecute
 
                 <?php if ($status === 'approved'): ?>
                     <?php if ($showExecuteButton): ?>
-                    <form method="POST" style="display:inline;" onsubmit="return confirm('⚠️ EXECUTE DISBURSEMENT: This will move real funds. Only proceed if you have verified all approvals. Continue?')">
+                    <form method="POST" style="display:inline;" onsubmit="return confirm('⚠️ EXECUTE DISBURSEMENT: This will queue real fund transfers for background processing. Only proceed if you have verified all approvals. Continue?')">
                         <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
                         <input type="hidden" name="action" value="execute">
                         <button type="submit" class="btn btn-execute">🚀 EXECUTE DISBURSEMENT</button>
@@ -1161,15 +794,16 @@ $showResumeButton = ($status === 'executing' && $isStuckExecuting && $canExecute
                     <?php endif; ?>
                 <?php endif; ?>
 
-                <?php if ($showResumeButton): ?>
-                <form method="POST" style="display:inline;" onsubmit="return confirm('Resume execution? Destinations already paid on the earlier attempt will be skipped automatically — only unpaid ones will be attempted.')">
+                <?php if ($status === 'executing'): ?>
+                <a href="review_batch.php?batch_id=<?php echo $batchId; ?>" class="btn btn-outline">🔄 Refresh Progress</a>
+                <?php endif; ?>
+
+                <?php if ($showRetryFailedButton): ?>
+                <form method="POST" style="display:inline;" onsubmit="return confirm('Requeue every permanently-failed destination in this batch for another attempt? Fix whatever caused the failure (e.g. a bad phone number) before retrying if you can.')">
                     <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
-                    <input type="hidden" name="action" value="execute">
-                    <button type="submit" class="btn btn-resume">▶️ RESUME EXECUTION</button>
+                    <input type="hidden" name="action" value="retry_failed_jobs">
+                    <button type="submit" class="btn btn-resume">🔁 RETRY FAILED DESTINATIONS</button>
                 </form>
-                <?php elseif ($status === 'executing' && !$isStuckExecuting): ?>
-                <button class="btn-approver-locked" disabled style="cursor:not-allowed;">⏳ EXECUTING…</button>
-                <a href="review_batch.php?batch_id=<?php echo $batchId; ?>" class="btn btn-outline">🔄 Refresh Status</a>
                 <?php endif; ?>
 
                 <?php if ($status === 'draft' && $canEdit && !$isReadOnly): ?>
@@ -1180,35 +814,6 @@ $showResumeButton = ($status === 'executing' && $isStuckExecuting && $canExecute
                 <a href="../index.php" class="btn btn-outline">🏠 Dashboard</a>
             </div>
         </div>
-
-        <?php if ($error && strpos($error, 'Execution failed') !== false): ?>
-        <div class="card" style="border-left: 3px solid #f59e0b; background: #fffbeb; margin-top: 20px;">
-            <div class="card-header">
-                <span class="card-title">🔍 Debug Information</span>
-                <span class="readonly-badge" style="background:var(--danger); color:#fff; border-color:var(--danger);">ERROR</span>
-            </div>
-            <div class="debug-panel">
-                <strong style="color: #fbbf24;">Error:</strong> <?php echo htmlspecialchars($error); ?><br><br>
-                <strong style="color: #fbbf24;">Batch ID:</strong> <?php echo $batchId; ?><br>
-                <strong style="color: #fbbf24;">Batch Reference:</strong> <?php echo htmlspecialchars($batch['batch_reference']); ?><br>
-                <strong style="color: #fbbf24;">Source Institution:</strong> <?php echo htmlspecialchars($batch['source_institution']); ?><br>
-                <strong style="color: #fbbf24;">Total Amount:</strong> <?php echo number_format($batch['total_amount'] ?? 0, 2); ?><br>
-                <strong style="color: #fbbf24;">Destinations:</strong> <?php echo count($destinations); ?><br><br>
-                <strong style="color: #60a5fa;">Destination Details:</strong><br>
-                <?php foreach ($destinations as $idx => $dest): ?>
-                <span style="color: #94a3b8;">Destination <?php echo $idx + 1; ?>:</span><br>
-                &nbsp;&nbsp;Institution: <span style="color: #4ade80;"><?php echo htmlspecialchars($dest['institution'] ?? 'NULL'); ?></span><br>
-                &nbsp;&nbsp;Identifier: <span style="color: #4ade80;"><?php echo htmlspecialchars($dest['identifier'] ?? 'NULL'); ?></span><br>
-                &nbsp;&nbsp;Amount: <span style="color: #4ade80;"><?php echo htmlspecialchars($dest['amount'] ?? 'NULL'); ?></span><br>
-                &nbsp;&nbsp;Currency: <span style="color: #4ade80;"><?php echo htmlspecialchars($dest['currency'] ?? 'NULL'); ?></span><br>
-                &nbsp;&nbsp;Status: <span style="color: #4ade80;"><?php echo htmlspecialchars($dest['status'] ?? 'PENDING'); ?></span><br>
-                <?php endforeach; ?>
-            </div>
-            <div style="margin-top: 14px;">
-                <p style="color: var(--ink-500); font-size: 13px;">💡 Check the server logs for the full payload dump.</p>
-            </div>
-        </div>
-        <?php endif; ?>
     </div>
 
     <script>
