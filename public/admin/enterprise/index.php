@@ -1391,7 +1391,7 @@ if (($metrics['rejected_batches'] ?? 0) > 0 && ($canCreate || $isSupervisor)) {
         <a href="reports.php" class="nav-item">📈 Reports</a>
         
         <?php if ($canManageUsers): ?>
-        <a href="settings/users.php" class="nav-item">👤 Manage Users</a>
+        <a href="/admin/enterprise/settings/users.php" class="nav-item">👤 Manage Users</a>
         <?php endif; ?>
         
         <a href="settings.php" class="nav-item">⚙️ Settings</a>
@@ -1573,7 +1573,7 @@ if (($metrics['rejected_batches'] ?? 0) > 0 && ($canCreate || $isSupervisor)) {
             </a>
             
             <?php if ($canManageUsers): ?>
-            <a href="settings/users.php" class="quick-action">
+            <a href="/admin/enterprise/settings/users.php" class="quick-action">
                 <span class="icon">👥</span>
                 <div>
                     <div class="label">Manage Users</div>
