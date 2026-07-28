@@ -360,7 +360,7 @@ function renderOrganogram(string $orgName, array $hqStaff, array $tree, array $s
     if ($sourceAccountSummary['pending'] > 0) {
         $html .= '<div class="role-line" style="color:var(--amber);">⏳ ' . (int)$sourceAccountSummary['pending'] . ' awaiting confirmation</div>';
     }
-    $html .= '<a href="imports/add_source.php" class="org-node-cta">+ Add Source Account →</a>';
+    $html .= '<a href="/../imports/add_source.php" class="org-node-cta">+ Add Source Account →</a>';
     $html .= '</div></div></div>';
 
     $html .= '</div>';
