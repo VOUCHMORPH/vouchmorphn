@@ -185,6 +185,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $accessToken = encryptSecret($accessTokenRaw);
                         $refreshToken = encryptSecret($refreshTokenRaw);
 
+                        // ============================================================
+                        // FIX: source_accounts.source_reference is NOT NULL, but this
+                        // INSERT never populated it — every submission failed with a
+                        // raw constraint violation. Generating one here the same way
+                        // SwapService generates user_source_accounts.source_reference
+                        // (a prefixed, random, effectively-unique string), since
+                        // nothing about this value needs to be predictable or
+                        // sequential, only unique.
+                        // ============================================================
+                        $sourceReference = 'ORGSRC_' . $orgId . '_' . bin2hex(random_bytes(6));
+
                         $stmt = $db->prepare("
                             INSERT INTO source_accounts (
                                 organization_id, institution, asset_type,
@@ -192,6 +203,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 account_name, currency, balance,
                                 is_hooked, access_token, refresh_token,
                                 token_expires_at, is_active, status,
+                                source_reference,
                                 proposed_by, proposed_at, created_by,
                                 created_at, updated_at
                             ) VALUES (
@@ -200,6 +212,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 :account_name, :currency, :balance,
                                 :is_hooked, :access_token, :refresh_token,
                                 :token_expiry, false, 'pending_confirmation',
+                                :source_reference,
                                 :user_id, NOW(), :user_id,
                                 NOW(), NOW()
                             ) RETURNING id
@@ -217,6 +230,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             ':access_token' => $accessToken,
                             ':refresh_token' => $refreshToken,
                             ':token_expiry' => $tokenExpiry,
+                            ':source_reference' => $sourceReference,
                             ':user_id' => $userId
                         ]);
 
