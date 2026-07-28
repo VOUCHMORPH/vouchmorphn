@@ -117,10 +117,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             (organization_id, user_id, action, entity_type, entity_id, old_values, new_values, ip_address, user_agent, created_at)
                             VALUES (:org_id, :user_id, 'LOGIN', 'user', :entity_id, NULL, :new_values, :ip, :ua, NOW())
                         ");
+                        // ============================================================
+                        // FIX: organization_audit_logs.user_id has a foreign key to
+                        // organization_users(id) — the membership row's PK — not the
+                        // global users.user_id. This was passing the global id
+                        // ($user['user_id']), which violated that FK on every login
+                        // (confirmed by the exact constraint-violation error seen in
+                        // production logs) and was silently swallowed by the catch
+                        // below, meaning no login was ever actually being recorded.
+                        // ============================================================
                         $logStmt->execute([
                             ':org_id' => $user['organization_id'],
-                            ':user_id' => $user['user_id'],
-                            ':entity_id' => $user['user_id'],
+                            ':user_id' => $user['org_user_id'],
+                            ':entity_id' => $user['org_user_id'],
                             ':new_values' => json_encode([
                                 'role' => $user['role'],
                                 'role_label' => $roleInfo['label'],
@@ -178,13 +187,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
-    /* ============================================================
-       VOUCHMORPH — SIGN IN
-       Full-bleed 60/40 split. Left: white, functional, form.
-       Right: ink-black, magazine-set brand statement inside a
-       museum-mat frame with the wordmark run around its border.
-       Frame moved outward by 50%, VOUCHMORPH™ on lateral side.
-       ============================================================ */
     :root {
       --paper:        #EEF1EF;
       --panel:        #FFFFFF;
@@ -209,8 +211,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       --sp-5: 20px; --sp-6: 24px; --sp-7: 32px; --sp-8: 40px;
       --sp-9: 48px; --sp-10: 64px;
       
-      /* Frame position: moved outward by 50% (closer to edges) */
-      --frame-inset: calc(var(--sp-6) * 0.5);  /* 12px instead of 24px (50% of sp-6) */
+      --frame-inset: calc(var(--sp-6) * 0.5);
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -226,21 +227,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     :focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
 
-    /* ============================================================
-       SPLIT — LEFT 60% | RIGHT 40%
-       ============================================================ */
-    .split {
-      display: flex;
-      min-height: 100vh;
-      width: 100%;
-    }
-    .col {
-      min-width: 0;
-      display: flex;
-      flex-direction: column;
-    }
+    .split { display: flex; min-height: 100vh; width: 100%; }
+    .col { min-width: 0; display: flex; flex-direction: column; }
 
-    /* LEFT — 60% */
     .col-form {
       flex: 0 0 60%;
       background: var(--panel);
@@ -248,12 +237,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       justify-content: center;
       padding: var(--sp-8) var(--sp-6);
     }
-    .form-wrap {
-      width: 100%;
-      max-width: 440px;
-    }
+    .form-wrap { width: 100%; max-width: 440px; }
 
-    /* RIGHT — 40% */
     .col-brand {
       flex: 0 0 40%;
       background:
@@ -265,9 +250,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       overflow: hidden;
     }
 
-    .brand {
-      margin-bottom: var(--sp-8);
-    }
+    .brand { margin-bottom: var(--sp-8); }
     .brand .mark {
       font-family: var(--f-display);
       font-weight: 600;
@@ -289,18 +272,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       display: inline-block;
     }
 
-    .form-wrap h2 {
-      font-family: var(--f-display);
-      font-size: 24px;
-      font-weight: 600;
-      color: var(--ink-900);
-    }
-    .form-wrap .subtitle {
-      color: var(--ink-500);
-      font-size: 14px;
-      margin-top: var(--sp-1);
-      margin-bottom: var(--sp-7);
-    }
+    .form-wrap h2 { font-family: var(--f-display); font-size: 24px; font-weight: 600; color: var(--ink-900); }
+    .form-wrap .subtitle { color: var(--ink-500); font-size: 14px; margin-top: var(--sp-1); margin-bottom: var(--sp-7); }
 
     .field { margin-bottom: var(--sp-5); }
     .field label {
@@ -335,11 +308,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       color: var(--ink-900);
       border-radius: 0;
     }
-    .field input:focus {
-      outline: none;
-      border-color: var(--brass);
-      background: #fff;
-    }
+    .field input:focus { outline: none; border-color: var(--brass); background: #fff; }
     .field input::placeholder { color: var(--ink-300); opacity: 0.8; }
 
     .btn {
@@ -408,24 +377,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     .legal .line2 { color: var(--line-strong); font-size: 9px; }
 
-    /* ============================================================
-       RIGHT — black, magazine statement inside a mat frame
-       Frame moved outward by 50% (closer to edges)
-       VOUCHMORPH™ on lateral side between frame and outer edge
-       ============================================================ */
-    .frame-mat {
-      position: relative;
-      flex: 1;
-      margin: var(--frame-inset);  /* ← 50% smaller margin = frame moves outward */
-    }
-    .frame-line {
-      position: absolute;
-      inset: var(--frame-inset);   /* ← 50% smaller inset = frame moves outward */
-      border: 1px solid rgba(255,255,255,0.16);
-      pointer-events: none;
-    }
+    .frame-mat { position: relative; flex: 1; margin: var(--frame-inset); }
+    .frame-line { position: absolute; inset: var(--frame-inset); border: 1px solid rgba(255,255,255,0.16); pointer-events: none; }
 
-    /* Frame strips on top and bottom — inset matches frame */
     .frame-strip {
       position: absolute;
       color: rgba(255,255,255,0.3);
@@ -459,13 +413,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       padding: 0 12px;
     }
 
-    /* ============================================================
-       VOUCHMORPH™ — LATERAL SIDE (between frame and outer edge)
-       Positioned on the right side, between the frame line
-       and the outer edge of the column
-       ============================================================ */
     .frame-strip.lateral {
-      right: calc(var(--frame-inset) - 22px);  /* ← Outside the frame, on the edge */
+      right: calc(var(--frame-inset) - 22px);
       top: 50%;
       transform: translateY(-50%) rotate(180deg);
       transform-origin: center;
@@ -482,14 +431,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       background: transparent;
       padding: 0;
       z-index: 3;
-      /* Remove any default background that might hide the edge */
-      background: none;
     }
-    .frame-strip.lateral span {
-      display: inline-block;
-      padding: 8px 0;
-      background: transparent;
-    }
+    .frame-strip.lateral span { display: inline-block; padding: 8px 0; background: transparent; }
 
     .magazine {
       position: absolute;
@@ -548,20 +491,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       text-justify: inter-word;
       hyphens: auto;
     }
-    .magazine p.secondary strong {
-      color: rgba(255,255,255,0.85);
-      font-weight: 600;
-    }
-    .magazine .mark {
-      margin-top: var(--sp-5);
-      width: 40px;
-      height: 1px;
-      background: var(--brass);
-    }
+    .magazine p.secondary strong { color: rgba(255,255,255,0.85); font-weight: 600; }
+    .magazine .mark { margin-top: var(--sp-5); width: 40px; height: 1px; background: var(--brass); }
 
-    /* ============================================================
-       RESPONSIVE — stack on narrow screens
-       ============================================================ */
     @media (max-width: 900px) {
       .split { flex-direction: column; }
       .col-form { flex: 1 1 auto; }
@@ -602,7 +534,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <body>
 <div class="split">
 
-  <!-- LEFT — white, functional (60%) -->
   <div class="col col-form">
     <div class="form-wrap">
       <div class="brand">
@@ -654,20 +585,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </div>
   </div>
 
-  <!-- RIGHT — black, magazine statement (40%) -->
   <div class="col col-brand">
     <div class="frame-mat">
-      <!-- Outer frame line — moved outward by 50% -->
       <div class="frame-line"></div>
-
-      <!-- Top and bottom frame strips -->
       <div class="frame-strip top"><span>VOUCHMORPH ENTERPRISE</span></div>
       <div class="frame-strip bottom"><span>VOUCHMORPH ENTERPRISE</span></div>
-
-      <!-- VOUCHMORPH™ on lateral side (between frame and outer edge) -->
       <div class="frame-strip lateral"><span>VOUCHMORPH™</span></div>
 
-      <!-- Magazine content -->
       <div class="magazine">
         <div class="eyebrow">What is VouchMorph</div>
         <p>VouchMorph moves money between banks, wallets, and vouchers that were never built to talk to each other. An organization sends funds from an account, a card, or a mobile wallet — and the person on the other end can collect it however suits them: a bank deposit, an ATM withdrawal, or a printed voucher redeemed by an agent. One instruction in. Any form of money out.</p>
@@ -680,4 +604,3 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 </div>
 </body>
 </html>
-```
