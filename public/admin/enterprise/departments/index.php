@@ -95,7 +95,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $staffRole = $_POST['staff_role'] ?? '';
                 // Only the three roles this quick-add panel is for. Anything
                 // else (finance_officer, auditor, etc.) belongs in the full
-                // HR screen (settings/users.php), not this shortcut.
+                // HR screen (settings/), not this shortcut.
                 if (!in_array($staffRole, ['program_officer', 'approver', 'owner'], true)) {
                     throw new RuntimeException('Invalid role for quick-add — use Manage Users for other roles.');
                 }
@@ -342,7 +342,7 @@ function renderOrganogram(string $orgName, array $hqStaff, array $tree, array $s
             $html .= '<div class="role-line">' . safeHtml($s['full_name']) . ' <span style="color:var(--ink-300);">— ' . safeHtml($label) . '</span></div>';
         }
     }
-    $html .= '<a href="settings/users.php" class="org-node-cta">+ Add / Manage Team →</a>';
+    $html .= '<a href="/../settings/users.php" class="org-node-cta">+ Add / Manage Team →</a>';
     $html .= '</div></div></div>';
 
     $html .= '<div class="org-branch"><div class="org-node-stub"></div><div class="org-node source">';
