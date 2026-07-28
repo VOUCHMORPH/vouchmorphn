@@ -3,7 +3,7 @@
  * batches/index.php - List all disbursement batches
  * Enterprise batch management dashboard
  */
-require_once __DIR__ . '/../../auth.php';
+require_once __DIR__ . '/../auth.php';
 $user = requireEnterpriseAuth();
 require_once __DIR__ . '/../../../../src/Core/Database/DBConnection.php';
 use Core\Database\DBConnection;
