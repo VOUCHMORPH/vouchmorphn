@@ -3,7 +3,7 @@
  * settings.php - Organization Settings
  * Placeholder - Will be implemented later
  */
-require_once __DIR__ . '/../auth.php';
+require_once __DIR__ . '/auth.php';
 $user = requireEnterpriseAuth();
 $orgName = htmlspecialchars($user['organization_name'] ?? 'Organization');
 
