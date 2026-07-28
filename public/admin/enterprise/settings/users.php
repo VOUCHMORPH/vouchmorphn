@@ -268,10 +268,6 @@ $roleCatalogJson = json_encode(UserManagementService::ROLE_CATALOG, JSON_HEX_APO
                         <label>Email</label>
                         <input type="email" name="email" required placeholder="name@organization.gov">
                     </div>
-                    <div class="form-group">
-                        <label>Phone</label>
-                        <input type="text" name="phone" required placeholder="+244...">
-                    </div>
                 </div>
                 <div class="form-group">
                     <label>Password (optional)</label>
