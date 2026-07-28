@@ -12,7 +12,7 @@
  * that no in-org role can ever spin up a rival organization from inside
  * its own dashboard.
  */
-require_once __DIR__ . '/../../auth.php';
+require_once __DIR__ . '/../auth.php';
 $user = requireEnterpriseAuth();
 require_once __DIR__ . '/../../../../src/Core/Database/DBConnection.php';
 require_once __DIR__ . '/../../../../src/Domain/Services/DepartmentService.php';
