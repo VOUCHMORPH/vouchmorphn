@@ -17,10 +17,12 @@ require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
 require_once PROJECT_ROOT . '/src/Application/Utils/SessionManager.php';
 require_once PROJECT_ROOT . '/src/Application/Admin/Auth/AdminAuth.php';
 require_once PROJECT_ROOT . '/vendor/autoload.php';
+require_once PROJECT_ROOT . '/src/Core/Config/LoadCountry.php';
 
 use Core\Database\DBConnection;
 use Application\Utils\SessionManager;
 use Application\Admin\Auth\AdminAuth;
+use Core\Config\LoadCountry;
 use Dompdf\Dompdf;
 use Dompdf\Options;
 
@@ -40,12 +42,12 @@ $adminRoleId = SessionManager::getAdminRoleId();
 $adminCountry = SessionManager::getAdminCountry();
 
 $roleDefinitions = [
-    999 => ['name' => 'Super Admin', 'label' => 'SUPER ADMIN', 'view' => ['dashboard', 'live_transactions', 'audit', 'invoices', 'regulatory', 'all_tables', 'recent_swaps', 'multi_destination', 'alerts', 'institution_health', 'client_lookup', 'agent_approvals', 'reports']],
-    3 => ['name' => 'Central Bank Regulator', 'label' => 'REGULATOR', 'view' => ['dashboard', 'regulatory', 'audit', 'recent_swaps', 'multi_destination', 'alerts', 'institution_health', 'reports']],
+    999 => ['name' => 'Super Admin', 'label' => 'SUPER ADMIN', 'view' => ['dashboard', 'live_transactions', 'audit', 'invoices', 'regulatory', 'all_tables', 'recent_swaps', 'multi_destination', 'alerts', 'institution_health', 'client_lookup', 'agent_approvals', 'reports', 'participants']],
+    3 => ['name' => 'Central Bank Regulator', 'label' => 'REGULATOR', 'view' => ['dashboard', 'regulatory', 'audit', 'recent_swaps', 'multi_destination', 'alerts', 'institution_health', 'reports', 'participants']],
     4 => ['name' => 'Compliance Officer', 'label' => 'COMPLIANCE', 'view' => ['dashboard', 'audit', 'recent_swaps', 'alerts', 'client_lookup', 'agent_approvals', 'reports']],
-    5 => ['name' => 'Auditor', 'label' => 'AUDITOR', 'view' => ['dashboard', 'audit', 'recent_swaps', 'institution_health', 'reports']],
+    5 => ['name' => 'Auditor', 'label' => 'AUDITOR', 'view' => ['dashboard', 'audit', 'recent_swaps', 'institution_health', 'reports', 'participants']],
     10 => ['name' => 'Finance Manager', 'label' => 'FINANCE', 'view' => ['dashboard', 'invoices', 'recent_swaps', 'alerts', 'institution_health', 'reports']],
-    11 => ['name' => 'Settlement Officer', 'label' => 'SETTLEMENT', 'view' => ['dashboard', 'recent_swaps', 'alerts', 'institution_health']],
+    11 => ['name' => 'Settlement Officer', 'label' => 'SETTLEMENT', 'view' => ['dashboard', 'recent_swaps', 'alerts', 'institution_health', 'participants']],
     20 => ['name' => 'Customer Support', 'label' => 'SUPPORT', 'view' => ['dashboard', 'client_lookup', 'agent_approvals']]
 ];
 
@@ -514,6 +516,87 @@ if (canView('agent_approvals')) {
 $agentApprovalCount = count($pendingAgents);
 
 // ============================================================
+// PARTICIPANTS — read-only view of every configured institution's
+// onboarding status, plus an inline validator (same checks as the
+// standalone onboarding_validator.php CLI script) runnable with one
+// click. Deliberately does NOT write to participants.yaml from this
+// page: promoting an institution's status controls literal money
+// routing (see resolveSettlementRoute() in switch_settlement_architecture.md),
+// so that stays a reviewed config change, not a button in a web UI.
+// ============================================================
+$participantsList = [];
+$participantsCountry = $adminCountry ?: 'Botswana';
+$validateInstitution = trim($_GET['validate'] ?? '');
+$validationResult = null;
+
+if (canView('participants')) {
+    try {
+        $countryConfigForParticipants = LoadCountry::getConfig($participantsCountry);
+        $participantsList = $countryConfigForParticipants['participants'] ?? $countryConfigForParticipants ?? [];
+    } catch (Throwable $e) {
+        error_log("[ADMIN DASHBOARD] participants load error: " . $e->getMessage());
+    }
+
+    if ($view === 'participants' && $validateInstitution !== '' && isset($participantsList[$validateInstitution])) {
+        $validationResult = validateParticipantConfig($validateInstitution, $participantsList[$validateInstitution], $participantsCountry);
+    }
+}
+
+/**
+ * Same checks as onboarding_validator.php, ported inline so ops/
+ * compliance can run them from the dashboard without a terminal.
+ * Read-only: inspects config + env vars only, never writes anything.
+ */
+function validateParticipantConfig(string $code, array $participant, string $country): array
+{
+    $errors = [];
+    $warnings = [];
+    $passed = [];
+
+    $add = function (bool $ok, string $label) use (&$errors, &$passed) {
+        if ($ok) { $passed[] = $label; } else { $errors[] = $label; }
+    };
+
+    $add(!empty($participant['name'] ?? ''), "'name' present");
+    $add(in_array($participant['type'] ?? null, ['BANK', 'MNO', 'SWITCH'], true), "'type' is BANK/MNO/SWITCH");
+    $add(in_array($participant['status'] ?? null, ['sandbox', 'staging', 'live'], true), "'status' is sandbox/staging/live");
+    $add(!empty($participant['asset_types'] ?? []), "'asset_types' non-empty");
+    $add(!empty($participant['adapter'] ?? ''), "'adapter' specified");
+    $add(!empty($participant['credentials_env_prefix'] ?? ''), "'credentials_env_prefix' specified");
+
+    if (($participant['type'] ?? null) === 'SWITCH') {
+        $add(($participant['adapter'] ?? '') !== 'generic_bank', "SWITCH type does not use the plain generic_bank adapter");
+    }
+
+    $prefix = $participant['credentials_env_prefix'] ?? null;
+    if ($prefix) {
+        $foundAny = false;
+        $checked = [];
+        foreach (['API_KEY', 'SUBSCRIPTION_KEY', 'API_USER'] as $suffix) {
+            $envName = "{$prefix}_{$suffix}";
+            $checked[] = $envName;
+            if (getenv($envName) !== false) $foundAny = true;
+        }
+        $add($foundAny, "At least one credential env var is set");
+        if (!$foundAny) {
+            $warnings[] = "Checked: " . implode(', ', $checked) . " — none found. Confirm the real auth scheme's env var names if different.";
+        }
+    } else {
+        $errors[] = "Cannot check credentials — credentials_env_prefix missing";
+    }
+
+    return [
+        'institution' => $code,
+        'country' => $country,
+        'current_status' => $participant['status'] ?? 'sandbox',
+        'passed' => $passed,
+        'warnings' => $warnings,
+        'errors' => $errors,
+        'ready' => empty($errors),
+    ];
+}
+
+// ============================================================
 // REPORTS — each report is self-contained: it fetches only what
 // it needs, fails gracefully to an empty state, and (aside from
 // the executive summary, which reuses $metrics/$institutionHealth
@@ -582,11 +665,6 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
             $certData['cashout'] = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
         } catch (Throwable $e) { $certData['cashout'] = null; }
         try {
-            $stmt = $db->prepare("SELECT * FROM identity_swap_holds WHERE swap_reference = :ref");
-            $stmt->execute([':ref' => $certRef]);
-            $certData['identity'] = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
-        } catch (Throwable $e) { $certData['identity'] = null; }
-        try {
             $stmt = $db->prepare("
                 SELECT st.* FROM swap_transactions st
                 JOIN swap_requests sr ON st.swap_id = sr.swap_id
@@ -611,68 +689,6 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
             $certData['settlement'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
         } catch (Throwable $e) { $certData['settlement'] = []; }
 
-        // ============================================================
-        // FEE & BALANCE BREAKDOWN — every fee charged across the life of
-        // this transaction (hold, cashout, settlement invoice), plus
-        // opening/closing balance if the ledger tracks it. Balance
-        // columns (balance_before/balance_after) are not guaranteed to
-        // exist on hold_transactions in every deployment, so this
-        // degrades gracefully to "Not tracked" rather than guessing.
-        // ============================================================
-        $certData['fee_breakdown'] = [];
-        $certData['total_fees'] = 0.0;
-        foreach ($certData['holds'] as $h) {
-            if (isset($h['fee_amount']) && (float)$h['fee_amount'] > 0) {
-                $certData['fee_breakdown'][] = [
-                    'stage' => 'Hold — ' . ($h['source_institution'] ?? $h['participant_name'] ?? 'N/A'),
-                    'reference' => $h['hold_reference'] ?? $h['hold_id'] ?? '',
-                    'fee' => (float)$h['fee_amount'],
-                ];
-                $certData['total_fees'] += (float)$h['fee_amount'];
-            }
-        }
-        if (!empty($certData['cashout']) && (float)($certData['cashout']['fee_amount'] ?? 0) > 0) {
-            $certData['fee_breakdown'][] = [
-                'stage' => 'Cashout — ' . ($certData['cashout']['cashout_provider'] ?? 'N/A'),
-                'reference' => $certData['cashout']['swap_reference'] ?? '',
-                'fee' => (float)$certData['cashout']['fee_amount'],
-            ];
-            $certData['total_fees'] += (float)$certData['cashout']['fee_amount'];
-        }
-        foreach ($certData['settlement'] as $s) {
-            $payload = json_decode($s['message_payload'] ?? '{}', true) ?: [];
-            if (!empty($payload['fee_amount'])) {
-                $certData['fee_breakdown'][] = [
-                    'stage' => 'Settlement Invoice — ' . ($s['message_type'] ?? 'N/A'),
-                    'reference' => $s['message_id'] ?? '',
-                    'fee' => (float)$payload['fee_amount'],
-                ];
-                $certData['total_fees'] += (float)$payload['fee_amount'];
-            }
-        }
-
-        $certData['balance_tracked'] = false;
-        $certData['balance_before'] = null;
-        $certData['balance_after'] = null;
-        try {
-            $balStmt = $db->prepare("
-                SELECT balance_before, balance_after
-                FROM hold_transactions
-                WHERE swap_reference = :ref
-                ORDER BY placed_at ASC LIMIT 1
-            ");
-            $balStmt->execute([':ref' => $certRef]);
-            $balRow = $balStmt->fetch(PDO::FETCH_ASSOC);
-            if ($balRow && ($balRow['balance_before'] !== null || $balRow['balance_after'] !== null)) {
-                $certData['balance_tracked'] = true;
-                $certData['balance_before'] = $balRow['balance_before'];
-                $certData['balance_after'] = $balRow['balance_after'];
-            }
-        } catch (Throwable $e) {
-            // balance_before / balance_after columns don't exist on hold_transactions in
-            // this deployment yet — opening/closing balance isn't tracked in the schema.
-        }
-
         if ($reportFormat === 'csv') {
             header('Content-Type: text/csv; charset=utf-8');
             header('Content-Disposition: attachment; filename="vouchmorph_certificate_' . preg_replace('/[^A-Za-z0-9_\-]/', '', $certRef) . '.csv"');
@@ -687,17 +703,10 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
             $flatten('swap_request', $certData['swap_request']);
             foreach ($certData['holds'] as $i => $h) { $flatten("hold_{$i}", $h); }
             $flatten('cashout', $certData['cashout']);
-            $flatten('identity_verification', $certData['identity']);
             foreach ($certData['swap_transactions'] as $i => $t) { $flatten("ledger_entry_{$i}", $t); }
             foreach ($certData['audit'] as $i => $a) { $flatten("audit_{$i}", $a); }
             foreach ($certData['messages'] as $i => $m) { $flatten("notification_{$i}", $m); }
             foreach ($certData['settlement'] as $i => $s) { $flatten("settlement_{$i}", $s); }
-            fputcsv($out, ['fee_breakdown', 'total_fees', $certData['total_fees']]);
-            foreach ($certData['fee_breakdown'] as $i => $fb) {
-                fputcsv($out, ["fee_breakdown_{$i}", $fb['stage'] . ' (' . $fb['reference'] . ')', $fb['fee']]);
-            }
-            fputcsv($out, ['balance', 'opening_balance', $certData['balance_tracked'] ? $certData['balance_before'] : 'NOT TRACKED IN SCHEMA']);
-            fputcsv($out, ['balance', 'closing_balance', $certData['balance_tracked'] ? $certData['balance_after'] : 'NOT TRACKED IN SCHEMA']);
             fclose($out);
             exit;
         }
@@ -1020,15 +1029,10 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
             ]);
             $body .= pdf_table_section('1 · Hold Placed', ['Hold ID', 'Hold Reference', 'Institution', 'Amount', 'Status', 'Placed At', 'Debited At'],
                 array_map(fn($h) => [$h['hold_id'], $h['hold_reference'], $h['source_institution'] ?? $h['participant_name'] ?? 'N/A', number_format((float)$h['amount'], 2), $h['status'], $h['placed_at'] ?? '', $h['debited_at'] ?? '—'], $certData['holds']));
-            if (!empty($certData['identity'])) {
-                $id = $certData['identity'];
-                $body .= pdf_table_section('1b · Identity Verification', ['Identity Type', 'Identity Value', 'Institution', 'Amount', 'Hold Expires', 'Status'],
-                    [[$id['identity_type'] ?? 'N/A', $id['identity_value'] ?? 'N/A', $id['source_institution'] ?? 'N/A', number_format((float)($id['amount'] ?? 0), 2), $id['hold_expires_at'] ?? '', $id['status'] ?? '']]);
-            }
             if (!empty($certData['cashout'])) {
                 $co = $certData['cashout'];
-                $body .= pdf_table_section('2 · Destination Code Generated', ['Provider', 'Client Phone', 'Amount', 'Fee', 'Code Expiry', 'Status'],
-                    [[$co['cashout_provider'] ?? 'N/A', $co['client_phone'] ?? 'N/A', number_format((float)$co['amount'], 2), number_format((float)($co['fee_amount'] ?? 0), 2), $co['code_expiry'] ?? '', $co['status']]]);
+                $body .= pdf_table_section('2 · Destination Code Generated', ['Provider', 'Amount', 'Fee', 'Code Expiry', 'Status'],
+                    [[$co['cashout_provider'] ?? 'N/A', number_format((float)$co['amount'], 2), number_format((float)($co['fee_amount'] ?? 0), 2), $co['code_expiry'] ?? '', $co['status']]]);
             }
             $body .= pdf_table_section('3 · Ledger Entries', ['From', 'To', 'Amount', 'Status', 'Transaction Ref', 'Created'],
                 array_map(function ($t) {
@@ -1036,16 +1040,6 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
                     $to = json_decode($t['to_account_details'] ?? '{}', true) ?: [];
                     return [$from['institution'] ?? 'N/A', $to['institution'] ?? 'N/A', number_format((float)$t['amount'], 2), $t['status'], $t['transaction_id'] ?? '—', $t['created_at'] ?? ''];
                 }, $certData['swap_transactions']));
-            $body .= pdf_metrics_section('Fee & Balance Breakdown', [
-                'Total Fees Charged' => number_format($certData['total_fees'], 2),
-                'Opening Balance' => $certData['balance_tracked'] ? number_format((float)$certData['balance_before'], 2) : 'Not tracked',
-                'Closing Balance' => $certData['balance_tracked'] ? number_format((float)$certData['balance_after'], 2) : 'Not tracked',
-            ]);
-            if (!empty($certData['fee_breakdown'])) {
-                $body .= pdf_table_section('Fee Detail', ['Stage', 'Reference', 'Fee Amount'],
-                    array_map(fn($fb) => [$fb['stage'], $fb['reference'], number_format($fb['fee'], 2)], $certData['fee_breakdown']),
-                    !$certData['balance_tracked'] ? 'Opening/closing balance not tracked in current schema — add balance_before/balance_after to hold_transactions.' : null);
-            }
             $body .= pdf_table_section('4 · Audit Trail', ['Action', 'Category', 'Performed By', 'At'],
                 array_map(fn($a) => [$a['action'] ?? '', $a['category'] ?? '', $a['performed_by'] ?? $a['performed_by_id'] ?? 'SYSTEM', $a['performed_at'] ?? ''], $certData['audit']),
                 'Cryptographic signatures for each step are recorded in application logs, not yet in a queryable table — see engineering note on the on-screen certificate.');
@@ -1176,6 +1170,7 @@ $viewMeta = [
     'multi_destination' => ['side' => 'left', 'eyebrow' => 'Batch Settlement', 'blurb' => "One instruction, many destinations. A single batch can reach bank accounts, wallets, and identity-linked beneficiaries at once."],
     'recent_swaps' => ['side' => 'right', 'eyebrow' => 'Transaction Ledger', 'blurb' => "The complete transaction ledger, searchable by reference, institution, or status. Nothing here is paginated away."],
     'institution_health' => ['side' => 'left', 'eyebrow' => 'Institution Health', 'blurb' => "Volume, success rate, and average time-to-debit, broken down per institution. The bar tells you at a glance who's having a bad day."],
+    'participants' => ['side' => 'right', 'eyebrow' => 'Institution Onboarding', 'blurb' => "Every configured bank, MNO, and switch, its onboarding status, and a one-click config validation — before it ever touches a real swap."],
     'regulatory' => ['side' => 'left', 'eyebrow' => 'Regulatory Oversight', 'blurb' => "Net positions between institutions and pending settlements — the numbers a regulator needs, not the raw transaction feed."],
     'audit' => ['side' => 'right', 'eyebrow' => 'Audit Trail', 'blurb' => "Every recorded action, most recent first. This is the trail — who did what, and when."],
     'invoices' => ['side' => 'right', 'eyebrow' => 'Invoicing', 'blurb' => "Fee invoices generated automatically through settlement — the paper trail for what's owed to whom."],
@@ -1842,6 +1837,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         <?php if (canView('multi_destination')): ?><a href="?view=multi_destination" class="nav-item <?php echo $view === 'multi_destination' ? 'active' : ''; ?>">Multi-Dest</a><?php endif; ?>
         <?php if (canView('recent_swaps')): ?><a href="?view=recent_swaps" class="nav-item <?php echo $view === 'recent_swaps' ? 'active' : ''; ?>">Swaps</a><?php endif; ?>
         <?php if (canView('institution_health')): ?><a href="?view=institution_health" class="nav-item <?php echo $view === 'institution_health' ? 'active' : ''; ?>">Institutions</a><?php endif; ?>
+        <?php if (canView('participants')): ?><a href="?view=participants" class="nav-item <?php echo $view === 'participants' ? 'active' : ''; ?>">Participants</a><?php endif; ?>
         <?php if (canView('regulatory')): ?><a href="?view=regulatory" class="nav-item <?php echo $view === 'regulatory' ? 'active' : ''; ?>">Regulatory</a><?php endif; ?>
         <?php if (canView('reports')): ?><a href="?view=reports" class="nav-item <?php echo $view === 'reports' ? 'active' : ''; ?>">Reports</a><?php endif; ?>
         <?php if (canView('audit')): ?><a href="?view=audit" class="nav-item <?php echo $view === 'audit' ? 'active' : ''; ?>">Audit</a><?php endif; ?>
@@ -1907,6 +1903,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <?php if (canView('alerts')): ?><a href="?view=alerts" class="btn">Alerts</a><?php endif; ?>
                     <?php if (canView('agent_approvals')): ?><a href="?view=agent_approvals" class="btn">Agents</a><?php endif; ?>
                     <?php if (canView('institution_health')): ?><a href="?view=institution_health" class="btn">Institution Health</a><?php endif; ?>
+                    <?php if (canView('participants')): ?><a href="?view=participants" class="btn">Participants</a><?php endif; ?>
                     <?php if (canView('client_lookup')): ?><a href="?view=client_lookup" class="btn">Client Lookup</a><?php endif; ?>
                 </div>
             </div>
@@ -2094,6 +2091,74 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             <?php endforeach; endif; ?>
             <?php endif; ?>
 
+            <!-- PARTICIPANTS -->
+            <?php if ($view === 'participants' && canView('participants')): ?>
+            <div class="content-header">
+                <h1>Participants</h1>
+                <span class="timestamp"><?php echo safeHtml($participantsCountry); ?> · <?php echo count($participantsList); ?> configured</span>
+                <a href="?view=dashboard" class="back-link">← Back</a>
+            </div>
+
+            <?php if ($validationResult): ?>
+            <div class="card" style="border-left: 3px solid <?php echo $validationResult['ready'] ? 'var(--good)' : 'var(--bad)'; ?>;">
+                <div class="card-header">
+                    <span class="card-title"><?php echo $validationResult['ready'] ? '✅' : '🚫'; ?> Validation: <?php echo safeHtml($validationResult['institution']); ?></span>
+                    <span class="card-badge <?php echo $validationResult['ready'] ? '' : 'brass'; ?>">Currently: <?php echo strtoupper($validationResult['current_status']); ?></span>
+                </div>
+                <?php if (!empty($validationResult['passed'])): ?>
+                <div style="margin-bottom:var(--sp-3);">
+                    <?php foreach ($validationResult['passed'] as $p): ?>
+                    <div style="font-size:13.5px; color:var(--good);">✓ <?php echo safeHtml($p); ?></div>
+                    <?php endforeach; ?>
+                </div>
+                <?php endif; ?>
+                <?php if (!empty($validationResult['warnings'])): ?>
+                <div style="margin-bottom:var(--sp-3);">
+                    <?php foreach ($validationResult['warnings'] as $w): ?>
+                    <div style="font-size:13.5px; color:var(--brass-deep);">⚠️ <?php echo safeHtml($w); ?></div>
+                    <?php endforeach; ?>
+                </div>
+                <?php endif; ?>
+                <?php if (!empty($validationResult['errors'])): ?>
+                <div>
+                    <?php foreach ($validationResult['errors'] as $e): ?>
+                    <div style="font-size:13.5px; color:var(--bad); font-weight:600;">✗ <?php echo safeHtml($e); ?></div>
+                    <?php endforeach; ?>
+                </div>
+                <p style="font-size:12px; color:var(--ink-300); margin-top:var(--sp-3);">Not ready for promotion beyond <code>sandbox</code>. Fix the above, then re-run the standalone test harness for this institution before promoting status in <code>participants.yaml</code> directly.</p>
+                <?php else: ?>
+                <p style="font-size:12px; color:var(--ink-300); margin-top:var(--sp-3);">Config shape is complete. This does not confirm the institution's real API responds correctly — run the per-institution test harness against their sandbox before promoting status.</p>
+                <?php endif; ?>
+            </div>
+            <?php endif; ?>
+
+            <?php if (empty($participantsList)): ?>
+            <div class="card"><div class="empty-state"><span class="icon">📭</span><p>No participants configured for <?php echo safeHtml($participantsCountry); ?>. Add entries to <code>participants.yaml</code> — see the Onboarding Playbook.</p></div></div>
+            <?php else: ?>
+            <div class="card">
+                <div class="card-header"><span class="card-title">Configured Institutions</span><span class="card-badge"><?php echo count($participantsList); ?></span></div>
+                <div class="table-responsive"><table><thead><tr><th>Code</th><th>Name</th><th>Type</th><th>Status</th><th>Adapter</th><th>Switches</th><th></th></tr></thead><tbody>
+                <?php foreach ($participantsList as $code => $p): $status = strtolower($p['status'] ?? 'sandbox'); $statusClass = match($status) { 'live' => 'success', 'staging' => 'pending', default => 'info' }; $switches = $p['settlement']['switches'] ?? []; ?>
+                <tr>
+                    <td><strong><?php echo safeHtml($code); ?></strong></td>
+                    <td><?php echo safeHtml($p['name'] ?? 'N/A'); ?></td>
+                    <td><span class="status status-identity"><?php echo safeHtml($p['type'] ?? 'N/A'); ?></span></td>
+                    <td><span class="status status-<?php echo $statusClass; ?>"><?php echo strtoupper($status); ?></span></td>
+                    <td><?php echo safeHtml($p['adapter'] ?? 'N/A'); ?></td>
+                    <td><?php echo empty($switches) ? '<span style="color:var(--ink-300);">direct only</span>' : safeHtml(implode(', ', $switches)); ?></td>
+                    <td><a href="?view=participants&validate=<?php echo urlencode($code); ?>" class="btn btn-sm">Validate</a></td>
+                </tr>
+                <?php endforeach; ?>
+                </tbody></table></div>
+            </div>
+            <p style="font-size:12px; color:var(--ink-300); text-align:center;">
+                Status changes are made directly in <code>participants.yaml</code> as a reviewed config change, not from this page —
+                routing config controls literal money movement, so promotion stays out of a web-clickable action.
+                See the Onboarding Playbook for the full checklist.
+            </p>
+            <?php endif; ?>
+            <?php endif; ?>
+
             <!-- LIVE TRANSACTIONS -->
             <?php if ($view === 'live_transactions' && canView('live_transactions')): ?>
             <div class="content-header">
@@ -2278,20 +2343,6 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <div class="empty-state"><span class="icon">🔍</span><p>No transaction found for reference "<?php echo safeHtml($certRef); ?>".</p></div>
                     <?php else: $sr = $certData['swap_request']; ?>
 
-                    <!-- Prominent download bar at the TOP of the certificate — this is the
-                         artifact meant to leave the building (central bank, software vendor,
-                         auditor), so the export options shouldn't require scrolling to find. -->
-                    <div class="card" style="border-left:3px solid var(--brass); background:var(--brass-tint);">
-                        <div style="display:flex; justify-content:center; align-items:center; gap:var(--sp-4); flex-wrap:wrap;">
-                            <span style="font-family:var(--f-cond); font-size:13px; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:var(--brass-deep);">📄 Full Transaction Log</span>
-                            <a href="?view=reports&report=transaction_certificate&ref=<?php echo urlencode($certRef); ?>&format=csv" class="btn btn-primary btn-sm">⬇ Download CSV (every field)</a>
-                            <a href="?view=reports&report=transaction_certificate&ref=<?php echo urlencode($certRef); ?>&format=pdf" class="btn btn-sm">⬇ Download PDF Certificate</a>
-                        </div>
-                        <div style="text-align:center; font-size:12.5px; color:var(--ink-500); margin-top:var(--sp-2);">
-                            The CSV includes every stored field for this reference — hold, identity, cashout, ledger, audit, notification, settlement, fee, and balance rows — suitable for handing to a regulator or a software vendor for reconciliation.
-                        </div>
-                    </div>
-
                     <div class="report-section-title">Summary</div>
                     <div class="metrics-grid" style="grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));">
                         <div class="metric-card"><span class="metric-label">Amount</span><span class="metric-value"><?php echo number_format((float)($sr['amount'] ?? 0), 2); ?></span><span class="metric-sub"><?php echo safeHtml($sr['from_currency'] ?? ''); ?></span></div>
@@ -2308,40 +2359,10 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     </tbody></table></div>
                     <?php endif; ?>
 
-                    <?php if (!empty($certData['identity'])): $id = $certData['identity']; ?>
-                    <div class="report-section-title">1b · Identity Verification</div>
-                    <div class="table-responsive"><table><thead><tr><th>Identity Type</th><th>Identity Value</th><th>Institution</th><th>Amount</th><th>Hold Expires</th><th>Status</th></tr></thead><tbody>
-                    <tr>
-                        <td><?php echo safeHtml($id['identity_type'] ?? 'N/A'); ?></td>
-                        <td><?php echo safeHtml($id['identity_value'] ?? 'N/A'); ?></td>
-                        <td><?php echo safeHtml($id['source_institution'] ?? 'N/A'); ?></td>
-                        <td><?php echo number_format((float)($id['amount'] ?? 0), 2); ?></td>
-                        <td><?php echo safeHtml($id['hold_expires_at'] ?? ''); ?></td>
-                        <td><span class="status status-identity"><?php echo safeHtml($id['status'] ?? ''); ?></span></td>
-                    </tr>
-                    </tbody></table></div>
-                    <?php elseif (!empty($sr['identity_type']) || !empty($sr['identity_value'])): ?>
-                    <div class="report-section-title">1b · Identity Verification</div>
-                    <div class="table-responsive"><table><thead><tr><th>Identity Type</th><th>Identity Value</th></tr></thead><tbody>
-                    <tr><td><?php echo safeHtml($sr['identity_type'] ?? 'N/A'); ?></td><td><?php echo safeHtml($sr['identity_value'] ?? 'N/A'); ?></td></tr>
-                    </tbody></table></div>
-                    <?php else: ?>
-                    <div class="report-section-title">1b · Identity Verification</div>
-                    <p style="font-size:14px;color:var(--ink-300);">No identity-linked hold for this transaction — this was a direct bank/wallet transfer, not an identity swap.</p>
-                    <?php endif; ?>
-
                     <?php if (!empty($certData['cashout'])): $co = $certData['cashout']; ?>
                     <div class="report-section-title">2 · Destination Code Generated</div>
-                    <div class="table-responsive"><table><thead><tr><th>Provider</th><th>Client Phone</th><th>Wallet / Destination Ref</th><th>Amount</th><th>Fee</th><th>Code Expiry</th><th>Status</th></tr></thead><tbody>
-                    <tr>
-                        <td><?php echo safeHtml($co['cashout_provider'] ?? 'N/A'); ?></td>
-                        <td><?php echo safeHtml($co['client_phone'] ?? 'N/A'); ?></td>
-                        <td><?php echo safeHtml($co['wallet_number'] ?? $co['destination_identifier'] ?? $co['account_number'] ?? 'N/A'); ?></td>
-                        <td><?php echo number_format((float)$co['amount'], 2); ?></td>
-                        <td><?php echo number_format((float)($co['fee_amount'] ?? 0), 2); ?></td>
-                        <td><?php echo safeHtml($co['code_expiry'] ?? ''); ?></td>
-                        <td><span class="status status-<?php echo $co['status'] === 'COMPLETED' ? 'success' : 'pending'; ?>"><?php echo safeHtml($co['status']); ?></span></td>
-                    </tr>
+                    <div class="table-responsive"><table><thead><tr><th>Provider</th><th>Amount</th><th>Fee</th><th>Code Expiry</th><th>Status</th></tr></thead><tbody>
+                    <tr><td><?php echo safeHtml($co['cashout_provider'] ?? 'N/A'); ?></td><td><?php echo number_format((float)$co['amount'], 2); ?></td><td><?php echo number_format((float)($co['fee_amount'] ?? 0), 2); ?></td><td><?php echo safeHtml($co['code_expiry'] ?? ''); ?></td><td><span class="status status-<?php echo $co['status'] === 'COMPLETED' ? 'success' : 'pending'; ?>"><?php echo safeHtml($co['status']); ?></span></td></tr>
                     </tbody></table></div>
                     <?php endif; ?>
 
@@ -2352,25 +2373,6 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <tr><td><?php echo safeHtml($from['institution'] ?? 'N/A'); ?></td><td><?php echo safeHtml($to['institution'] ?? 'N/A'); ?></td><td><?php echo number_format((float)$t['amount'], 2); ?></td><td><?php echo safeHtml($t['status']); ?></td><td><?php echo safeHtml($t['transaction_id'] ?? '—'); ?></td><td><?php echo safeHtml($t['created_at'] ?? ''); ?></td></tr>
                     <?php endforeach; ?>
                     </tbody></table></div>
-                    <?php endif; ?>
-
-                    <div class="report-section-title">3b · Fee &amp; Balance Breakdown</div>
-                    <div class="metrics-grid" style="grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));">
-                        <div class="metric-card"><span class="metric-label">Total Fees Charged</span><span class="metric-value"><?php echo number_format($certData['total_fees'], 2); ?></span></div>
-                        <div class="metric-card"><span class="metric-label">Opening Balance</span><span class="metric-value" style="font-size:16px;"><?php echo $certData['balance_tracked'] ? number_format((float)$certData['balance_before'], 2) : 'Not tracked'; ?></span></div>
-                        <div class="metric-card"><span class="metric-label">Closing Balance</span><span class="metric-value" style="font-size:16px;"><?php echo $certData['balance_tracked'] ? number_format((float)$certData['balance_after'], 2) : 'Not tracked'; ?></span></div>
-                    </div>
-                    <?php if (!empty($certData['fee_breakdown'])): ?>
-                    <div class="table-responsive"><table><thead><tr><th>Stage</th><th>Reference</th><th>Fee Amount</th></tr></thead><tbody>
-                    <?php foreach ($certData['fee_breakdown'] as $fb): ?>
-                    <tr><td><?php echo safeHtml($fb['stage']); ?></td><td><?php echo safeHtml($fb['reference']); ?></td><td><?php echo number_format($fb['fee'], 2); ?></td></tr>
-                    <?php endforeach; ?>
-                    </tbody></table></div>
-                    <?php else: ?>
-                    <p style="font-size:14px;color:var(--ink-300);">No fees recorded at any stage of this transaction.</p>
-                    <?php endif; ?>
-                    <?php if (!$certData['balance_tracked']): ?>
-                    <p style="font-size:12px; color:var(--ink-300); margin-top:var(--sp-2);"><strong>Note:</strong> opening/closing account balance isn't tracked in the current schema. Add <code>balance_before</code> / <code>balance_after</code> columns to <code>hold_transactions</code> (populated at hold-placement time) to enable this for future transactions — flag this to engineering alongside the signature-persistence note below.</p>
                     <?php endif; ?>
 
                     <div class="report-section-title">4 · Audit Trail</div>
@@ -2865,7 +2867,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
 
             <!-- ACCESS DENIED -->
             <?php
-            $knownViews = ['dashboard', 'client_lookup', 'alerts', 'live_transactions', 'multi_destination', 'recent_swaps', 'institution_health', 'regulatory', 'audit', 'invoices', 'all_tables', 'agent_approvals', 'reports'];
+            $knownViews = ['dashboard', 'client_lookup', 'alerts', 'live_transactions', 'multi_destination', 'recent_swaps', 'institution_health', 'regulatory', 'audit', 'invoices', 'all_tables', 'agent_approvals', 'reports', 'participants'];
             if (!canView($view) && !in_array($view, $knownViews)):
             ?>
             <div class="card"><div class="empty-state"><span class="icon">🚫</span><h2 style="font-family:var(--f-cond);text-transform:uppercase;font-size:20px;margin-bottom:var(--sp-2);">Access Denied</h2><p>You do not have permission to view this page.</p><a href="?view=dashboard" class="btn btn-primary" style="margin-top:var(--sp-4);">Return to Dashboard</a></div></div>
