@@ -1,6 +1,6 @@
 <?php
 // enterprise/imports/source_input.php - Select source account
-require_once __DIR__ . '/../../auth.php';
+require_once __DIR__ . '/../auth.php';
 $user = requireEnterpriseAuth();
 require_once __DIR__ . '/../../../../src/Core/Database/DBConnection.php';
 require_once __DIR__ . '/../../../../src/Domain/Services/DepartmentService.php';
