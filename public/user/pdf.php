@@ -321,6 +321,42 @@ function getMemoHTML(): string
             margin-top: 2px;
         }
 
+        /* ----- SOLUTIONS GRID ----- */
+        .solutions-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin: 16px 0;
+        }
+
+        .solution-card {
+            background: var(--paper);
+            border: 1px solid var(--line);
+            padding: 18px 20px;
+            border-top: 3px solid var(--brass);
+        }
+
+        .solution-card .icon { font-size: 28px; display: block; margin-bottom: 6px; }
+        .solution-card .label {
+            font-family: var(--f-cond);
+            font-weight: 700;
+            font-size: 16px;
+            color: var(--ink-900);
+        }
+        .solution-card .desc {
+            font-size: 13px;
+            color: var(--ink-500);
+            margin-top: 4px;
+        }
+        .solution-card .example {
+            font-size: 12px;
+            color: var(--ink-300);
+            margin-top: 6px;
+            font-style: italic;
+            padding-top: 6px;
+            border-top: 1px dashed var(--line);
+        }
+
         /* ----- PARTNER LOGOS ----- */
         .partners {
             display: flex;
@@ -379,6 +415,7 @@ function getMemoHTML(): string
             .cover .meta { gap: 16px; flex-direction: column; align-items: center; }
             .metrics-grid { grid-template-columns: repeat(2, 1fr); }
             .feature-grid { grid-template-columns: 1fr; }
+            .solutions-grid { grid-template-columns: 1fr; }
             .timeline-item { flex-direction: column; gap: 2px; }
             .timeline-item .phase { min-width: auto; }
             .timeline-item .date { min-width: auto; }
@@ -394,6 +431,8 @@ function getMemoHTML(): string
             .table-highlight td { background: #F4EFE3 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
             th { background: #EEF1EF !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
             .partners { background: #EEF1EF !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+            .solution-card { background: #EEF1EF !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+            .solution-card .example { border-top-color: #D3DAD6 !important; }
         }
 
         .download-bar {
@@ -458,7 +497,7 @@ function getMemoHTML(): string
         <!-- ============================================================ -->
         <div class="cover">
             <div class="logo">VOUCHMORPH <span>·</span></div>
-            <div class="tagline">Building Africa\'s Identity-Based Financial Access Network</div>
+            <div class="tagline">The Bridge Between Any Source of Money and Any Identity</div>
 
             <div class="title">Investment Memorandum</div>
             <div class="subtitle">Confidential · For Strategic Investors</div>
@@ -511,8 +550,8 @@ function getMemoHTML(): string
                 <div class="label">Informal Economy</div>
             </div>
             <div class="metric-card">
-                <div class="number">BWP 7.5M</div>
-                <div class="label">Pre-Money Valuation</div>
+                <div class="number">Patent</div>
+                <div class="label">Granted · Identity Routing</div>
             </div>
             <div class="metric-card">
                 <div class="number">20%</div>
@@ -543,9 +582,81 @@ function getMemoHTML(): string
         </div>
 
         <!-- ============================================================ -->
-        <!-- 04 · WHY ANGOLA? -->
+        <!-- 04 · THE VOUCHMORPH SOLUTIONS -->
         <!-- ============================================================ -->
-        <h1>04 · Why Angola?</h1>
+        <h1>04 · The VouchMorph Solutions</h1>
+
+        <p>VouchMorph provides a comprehensive suite of financial access solutions that bridge any source of money to any identity.</p>
+
+        <div class="solutions-grid">
+            <div class="solution-card">
+                <span class="icon">🔄</span>
+                <div class="label">Standard Swap</div>
+                <div class="desc">Send value from any account to any account — bank to bank, wallet to wallet, or bank to wallet. Simple, fast, and non-custodial.</div>
+                <div class="example">Use case: A bank customer sends money to a mobile money user instantly.</div>
+            </div>
+
+            <div class="solution-card">
+                <span class="icon">💰</span>
+                <div class="label">Cashout Swap</div>
+                <div class="desc">Convert digital value into cash at any ATM, agent, or teller. Generate secure codes for instant redemption anywhere in the country.</div>
+                <div class="example">Use case: A beneficiary receives a digital payment and withdraws cash at their nearest agent.</div>
+            </div>
+
+            <div class="solution-card">
+                <span class="icon">🏦</span>
+                <div class="label">Deposit Swap</div>
+                <div class="desc">Credit funds into any bank account, mobile wallet, or card — even if the sender does not have an account at that institution.</div>
+                <div class="example">Use case: A government disbursement reaches a citizen\'s bank account, even if the citizen has no account.</div>
+            </div>
+
+            <div class="solution-card">
+                <span class="icon">🆔</span>
+                <div class="label">Swap to Identity</div>
+                <div class="desc">Send money to a phone number, email, or national ID — no account required at either end. Recipient claims via SMS PIN or dashboard.</div>
+                <div class="example">Use case: A relative sends money to a family member using only their phone number.</div>
+            </div>
+
+            <div class="solution-card">
+                <span class="icon">📦</span>
+                <div class="label">Multi-Source Swap</div>
+                <div class="desc">Combine funds from multiple accounts, wallets, or cards into a single transaction. Split a payment across up to 10 different sources.</div>
+                <div class="example">Use case: A business pays a supplier using funds from multiple bank accounts and mobile wallets.</div>
+            </div>
+
+            <div class="solution-card">
+                <span class="icon">🎯</span>
+                <div class="label">Multi-Destination Swap</div>
+                <div class="desc">Send a single payment to multiple recipients simultaneously — each receiving their share in their preferred form (cash, wallet, bank, or identity).</div>
+                <div class="example">Use case: A government payroll disbursement reaches 1,000 employees in 1,000 different accounts instantly.</div>
+            </div>
+        </div>
+
+        <div class="highlight-box">
+            <strong>All swaps are:</strong> Non-custodial (funds never leave source), atomic (all-or-nothing execution), and fully traceable (end-to-end audit trail).
+        </div>
+
+        <!-- ============================================================ -->
+        <!-- 05 · HOW IT WORKS -->
+        <!-- ============================================================ -->
+        <h1>05 · How It Works</h1>
+
+        <p>Every transaction follows a secure five-stage lifecycle:</p>
+
+        <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:8px; margin:12px 0 16px;">
+            <div style="background:var(--ink-900); color:#fff; padding:12px 16px; text-align:center; font-family:var(--f-cond); font-weight:600; font-size:13px; text-transform:uppercase; letter-spacing:0.04em;">1 · Initiate</div>
+            <div style="background:var(--ink-900); color:#fff; padding:12px 16px; text-align:center; font-family:var(--f-cond); font-weight:600; font-size:13px; text-transform:uppercase; letter-spacing:0.04em;">2 · Hold</div>
+            <div style="background:var(--ink-900); color:#fff; padding:12px 16px; text-align:center; font-family:var(--f-cond); font-weight:600; font-size:13px; text-transform:uppercase; letter-spacing:0.04em;">3 · Process</div>
+            <div style="background:var(--ink-900); color:#fff; padding:12px 16px; text-align:center; font-family:var(--f-cond); font-weight:600; font-size:13px; text-transform:uppercase; letter-spacing:0.04em;">4 · Execute</div>
+            <div style="background:var(--ink-900); color:#fff; padding:12px 16px; text-align:center; font-family:var(--f-cond); font-weight:600; font-size:13px; text-transform:uppercase; letter-spacing:0.04em;">5 · Settle</div>
+        </div>
+
+        <p style="font-size:13px; color:var(--ink-300);">Value is locked at source before authorisation, eliminating the need for custodial transfers.</p>
+
+        <!-- ============================================================ -->
+        <!-- 06 · WHY ANGOLA? -->
+        <!-- ============================================================ -->
+        <h1>06 · Why Angola?</h1>
 
         <p>Angola is not a random choice. It is a <strong>strategically selected first market</strong> based on regulatory readiness, infrastructure availability, and addressable population.</p>
 
@@ -569,39 +680,9 @@ function getMemoHTML(): string
         </div>
 
         <!-- ============================================================ -->
-        <!-- 05 · WHAT VOUCHMORPH DOES -->
+        <!-- 07 · THE PROBLEM WE SOLVE -->
         <!-- ============================================================ -->
-        <h1>05 · What VouchMorph Does</h1>
-
-        <p><strong>Simple explanation:</strong> VouchMorph lets anyone with a phone number, email, or national ID send and receive money across any bank or mobile money network — <strong>without needing an account at either end</strong>.</p>
-
-        <div class="feature-grid">
-            <div class="feature-card">
-                <span class="icon">📤</span>
-                <div class="label">Send to Identity</div>
-                <div class="desc">Send money to a phone number, email, or national ID</div>
-            </div>
-            <div class="feature-card">
-                <span class="icon">🏦</span>
-                <div class="label">Any Institution</div>
-                <div class="desc">Works across banks, mobile money, and teller services</div>
-            </div>
-            <div class="feature-card">
-                <span class="icon">💳</span>
-                <div class="label">Cash Out Anywhere</div>
-                <div class="desc">Recipients can claim at ATMs, agents, or mobile wallets</div>
-            </div>
-            <div class="feature-card">
-                <span class="icon">🔒</span>
-                <div class="label">Non-Custodial</div>
-                <div class="desc">VouchMorph never holds client funds — no balance-sheet risk</div>
-            </div>
-        </div>
-
-        <!-- ============================================================ -->
-        <!-- 06 · THE PROBLEM WE SOLVE -->
-        <!-- ============================================================ -->
-        <h1>06 · The Problem We Solve</h1>
+        <h1>07 · The Problem We Solve</h1>
 
         <p>Today, sending money across institutions in Africa is fragmented, slow, and requires accounts on both ends.</p>
 
@@ -624,9 +705,9 @@ function getMemoHTML(): string
         </div>
 
         <!-- ============================================================ -->
-        <!-- 07 · BUSINESS MODEL -->
+        <!-- 08 · BUSINESS MODEL -->
         <!-- ============================================================ -->
-        <h1>07 · Business Model</h1>
+        <h1>08 · Business Model</h1>
 
         <div class="table-wrap">
             <table>
@@ -645,9 +726,9 @@ function getMemoHTML(): string
         </div>
 
         <!-- ============================================================ -->
-        <!-- 08 · WHY VOUCHMORPH WINS -->
+        <!-- 09 · WHY VOUCHMORPH WINS -->
         <!-- ============================================================ -->
-        <h1>08 · Why VouchMorph Wins</h1>
+        <h1>09 · Why VouchMorph Wins</h1>
 
         <div class="feature-grid">
             <div class="feature-card">
@@ -677,15 +758,15 @@ function getMemoHTML(): string
             </div>
             <div class="feature-card">
                 <span class="icon">🛡️</span>
-                <div class="label">Patent Pending</div>
-                <div class="desc">Unique identity-routing technology</div>
+                <div class="label">Patent Granted</div>
+                <div class="desc">Unique identity-routing and swap architecture</div>
             </div>
         </div>
 
         <!-- ============================================================ -->
-        <!-- 09 · COMPETITIVE MOAT -->
+        <!-- 10 · COMPETITIVE MOAT -->
         <!-- ============================================================ -->
-        <h1>09 · Competitive Moat</h1>
+        <h1>10 · Competitive Moat</h1>
 
         <div class="table-wrap">
             <table>
@@ -693,8 +774,8 @@ function getMemoHTML(): string
                     <tr><th>Moat Element</th><th>Why It Matters</th></tr>
                 </thead>
                 <tbody>
-                    <tr><td><strong>Patent Pending</strong></td><td>Identity-based routing, settlement architecture</td></tr>
-                    <tr><td><strong>First Mover Angola</strong></td><td>Established relationships with BNA, ABCCI</td></tr>
+                    <tr><td><strong>Patent Granted</strong></td><td>Identity-based routing, swap architecture, settlement method</td></tr>
+                    <tr><td><strong>First Mover Angola</strong></td><td>Established relationships with BNA, ABCCI, commercial banks</td></tr>
                     <tr><td><strong>Botswana Sandbox</strong></td><td>Regulatory validation and reference</td></tr>
                     <tr><td><strong>Institution Adapters</strong></td><td>Working integrations with multiple rails</td></tr>
                     <tr><td><strong>Non-Custodial Model</strong></td><td>No balance-sheet risk — easier compliance</td></tr>
@@ -704,9 +785,9 @@ function getMemoHTML(): string
         </div>
 
         <!-- ============================================================ -->
-        <!-- 10 · MARKET ENTRY TIMELINE -->
+        <!-- 11 · MARKET ENTRY TIMELINE -->
         <!-- ============================================================ -->
-        <h1>10 · Market Entry Timeline</h1>
+        <h1>11 · Market Entry Timeline</h1>
 
         <div class="timeline">
             <div class="timeline-item">
@@ -752,9 +833,9 @@ function getMemoHTML(): string
         </div>
 
         <!-- ============================================================ -->
-        <!-- 11 · TEAM -->
+        <!-- 12 · TEAM -->
         <!-- ============================================================ -->
-        <h1>11 · Leadership Team</h1>
+        <h1>12 · Leadership Team</h1>
 
         <div class="table-wrap">
             <table>
@@ -771,9 +852,9 @@ function getMemoHTML(): string
         </div>
 
         <!-- ============================================================ -->
-        <!-- 12 · STRATEGIC PARTNERS DETAILED -->
+        <!-- 13 · STRATEGIC PARTNERS DETAILED -->
         <!-- ============================================================ -->
-        <h1>12 · Strategic Partners</h1>
+        <h1>13 · Strategic Partners</h1>
 
         <div class="table-wrap">
             <table>
@@ -789,9 +870,9 @@ function getMemoHTML(): string
         </div>
 
         <!-- ============================================================ -->
-        <!-- 13 · USE OF FUNDS -->
+        <!-- 14 · USE OF FUNDS -->
         <!-- ============================================================ -->
-        <h1>13 · Use of Funds</h1>
+        <h1>14 · Use of Funds</h1>
 
         <p>The investment will be allocated to accelerate VouchMorph\'s commercialisation and regional expansion.</p>
 
@@ -813,9 +894,9 @@ function getMemoHTML(): string
         <p style="font-size:12px;color:var(--ink-300);">Detailed budget breakdown available upon request.</p>
 
         <!-- ============================================================ -->
-        <!-- 14 · INVESTMENT PROPOSAL -->
+        <!-- 15 · INVESTMENT PROPOSAL -->
         <!-- ============================================================ -->
-        <h1>14 · Investment Proposal</h1>
+        <h1>15 · Investment Proposal</h1>
 
         <div class="table-wrap">
             <table>
@@ -837,9 +918,9 @@ function getMemoHTML(): string
         </div>
 
         <!-- ============================================================ -->
-        <!-- 15 · CONCLUSION -->
+        <!-- 16 · CONCLUSION -->
         <!-- ============================================================ -->
-        <h1>15 · Conclusion</h1>
+        <h1>16 · Conclusion</h1>
 
         <p><strong>Africa has already invested billions building payment rails.</strong></p>
 
