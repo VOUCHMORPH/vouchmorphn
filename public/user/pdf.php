@@ -1,7 +1,7 @@
 <?php
 /**
  * VouchMorph Investment Memorandum
- * Clean HTML version — download via download.php
+ * Direct PDF Download — No Print Dialog
  */
 
 header('Content-Type: text/html; charset=utf-8');
@@ -14,16 +14,16 @@ header('Content-Type: text/html; charset=utf-8');
     <title>VouchMorph · Investment Memorandum</title>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
     <style>
-        /* Add to the top of the style block */
-@page {
-    size: A4;
-    margin: 0;
-}
+        @page {
+            size: A4;
+            margin: 0;
+        }
 
-html {
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-}
+        html {
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+        }
+        
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
         body {
@@ -33,6 +33,7 @@ html {
             padding: 20px;
         }
 
+        /* Download bar with only PDF download */
         .download-bar {
             max-width: 210mm;
             margin: 0 auto 16px;
@@ -294,20 +295,20 @@ html {
 <body>
 
 <!-- ============================================================ -->
-<!-- DOWNLOAD BAR — FIXED: Uses correct path to download.php      -->
+<!-- ONLY PDF DOWNLOAD — NO PRINT BUTTON                        -->
 <!-- ============================================================ -->
 <div class="download-bar no-print">
-    <a href="/user/download.php" class="btn btn-success">
+    <a href="/user/download.php" class="btn btn-success" id="downloadBtn">
         ⬇ Download Investment Memorandum (PDF)
     </a>
+    <div id="downloadStatus" style="display:none;color:#24513A;font-weight:600;font-size:14px;align-self:center;">
+        ⏳ Generating PDF...
+    </div>
 </div>
 
 <!-- ============================================================ -->
-<!-- If download.php is in the same directory as pdf.php, use:     -->
-<!-- <a href="download.php" class="btn btn-success">              -->
+<!-- PAGE 1 — COVER -->
 <!-- ============================================================ -->
-
-<!-- ===== PAGE 1 — COVER ===== -->
 <div class="page" style="display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;">
     <div style="width:100%;text-align:left;margin-bottom:40px;">
         <div class="brand">VOUCHMORPH <span>·</span></div>
@@ -772,6 +773,47 @@ html {
         <div style="font-size:9px;color:#8A96A3;margin-top:2px;">Page 12</div>
     </div>
 </div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const btn = document.getElementById('downloadBtn');
+    const status = document.getElementById('downloadStatus');
+    
+    btn.addEventListener('click', function(e) {
+        // Show loading state
+        btn.style.display = 'none';
+        status.style.display = 'block';
+        
+        // Fetch the PDF
+        fetch('/user/download.php')
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('PDF generation failed');
+                }
+                return response.blob();
+            })
+            .then(blob => {
+                // Create download link
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'VouchMorph_Investment_Memorandum.pdf';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                
+                // Reset button
+                btn.style.display = 'inline-block';
+                status.style.display = 'none';
+            })
+            .catch(error => {
+                // If fetch fails, fallback to direct link
+                window.location.href = '/user/download.php';
+            });
+    });
+});
+</script>
 
 </body>
 </html>
