@@ -1,74 +1,120 @@
-FROM php:8.2-fpm
+FROM php:8.4-fpm
+
+# ============================================================
+# Install system packages
+# ============================================================
 
 RUN apt-get update && apt-get install -y \
-    libpq-dev \
-    libpng-dev \
-    libjpeg-dev \
-    libfreetype6-dev \
-    libzip-dev \
-    unzip \
+    nginx \
     git \
     curl \
-    nginx \
-    # ============================================================
-    # Chromium for PDF generation — FIXED package name
-    # In Debian Trixie, it's just "chromium"
-    # ============================================================
+    unzip \
+    libpq-dev \
+    libzip-dev \
+    libpng-dev \
+    libjpeg62-turbo-dev \
+    libfreetype6-dev \
     chromium \
-    libgbm-dev \
-    && docker-php-ext-configure gd --with-freetype --with-jpeg \
+    fonts-liberation \
+    libgbm1 \
+    libnss3 \
+    libx11-6 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxrandr2 \
+    libgtk-3-0 \
+    libasound2 \
+    xdg-utils \
+    && docker-php-ext-configure gd \
+        --with-freetype \
+        --with-jpeg \
     && docker-php-ext-install -j$(nproc) \
-        gd \
         pdo \
         pdo_pgsql \
         pgsql \
+        gd \
         zip \
         bcmath \
-    && docker-php-ext-enable pdo_pgsql \
+        opcache \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # ============================================================
-# Verify Chromium installation
+# Configure PHP
 # ============================================================
-RUN which chromium || (echo "ERROR: chromium not found" && exit 1)
+
+RUN echo "clear_env = no" >> /usr/local/etc/php-fpm.d/www.conf
+
+RUN { \
+    echo "memory_limit=512M"; \
+    echo "upload_max_filesize=100M"; \
+    echo "post_max_size=100M"; \
+    echo "max_execution_time=300"; \
+    echo "opcache.enable=1"; \
+    echo "opcache.validate_timestamps=0"; \
+    echo "opcache.memory_consumption=128"; \
+} > /usr/local/etc/php/conf.d/custom.ini
 
 # ============================================================
 # Set Chrome path for PDF generation
 # ============================================================
+
 ENV CHROME_PATH=/usr/bin/chromium
 
-RUN php -m | grep -q pdo_pgsql || (echo "ERROR: pdo_pgsql extension not installed" && exit 1)
-RUN php -m | grep -q pgsql || (echo "ERROR: pgsql extension not installed" && exit 1)
+# ============================================================
+# Verify installations
+# ============================================================
 
-RUN echo "extension=pdo_pgsql.so" > /usr/local/etc/php/conf.d/20-pdo_pgsql.ini \
-    && echo "extension=pgsql.so" > /usr/local/etc/php/conf.d/20-pgsql.ini
+RUN php -m | grep pgsql || (echo "ERROR: pgsql extension not installed" && exit 1)
+RUN php -m | grep pdo_pgsql || (echo "ERROR: pdo_pgsql extension not installed" && exit 1)
+RUN test -f /usr/bin/chromium || (echo "ERROR: chromium not found" && exit 1)
 
-RUN echo "clear_env = no" >> /usr/local/etc/php-fpm.d/www.conf
+# ============================================================
+# Composer
+# ============================================================
 
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
+# ============================================================
+# Working directory
+# ============================================================
+
 WORKDIR /var/www/html
 
-# -------------------------------
-# Composer install
-# -------------------------------
-COPY composer.json composer.lock ./
-RUN composer update phpoffice/phpspreadsheet --no-dev --optimize-autoloader --no-interaction --prefer-dist
-RUN composer install --no-dev --optimize-autoloader --no-interaction --prefer-dist
+# ============================================================
+# Composer install (DO NOT RUN composer update)
+# ============================================================
 
-# -------------------------------
-# App code
-# -------------------------------
+COPY composer.json composer.lock ./
+
+RUN composer install \
+    --no-dev \
+    --prefer-dist \
+    --optimize-autoloader \
+    --no-interaction
+
+# ============================================================
+# Copy application files
+# ============================================================
+
 COPY src/ src/
 COPY public/ public/
 COPY docker/nginx.conf /etc/nginx/sites-enabled/default
 
-# -------------------------------
-# Autoload optimization
-# -------------------------------
+# ============================================================
+# Optimize autoloader
+# ============================================================
+
 RUN composer dump-autoload --optimize --no-interaction
+
+# ============================================================
+# Expose port
+# ============================================================
 
 EXPOSE 9000
 
-CMD sh -c "php-fpm -D && nginx -g 'daemon off;'"
+# ============================================================
+# Start PHP-FPM and Nginx
+# ============================================================
+
+CMD ["sh", "-c", "php-fpm -D && nginx -g 'daemon off;'"]
