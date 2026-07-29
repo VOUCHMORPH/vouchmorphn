@@ -1,9 +1,7 @@
 <?php
 /**
  * VouchMorph Company Profile PDF Generator
- * 
- * Usage: Place this file in your web root and access via browser
- * It will generate a styled HTML page that you can "Print to PDF"
+ * Professional version with Mermaid.js diagrams
  */
 
 // ============================================================
@@ -12,7 +10,6 @@
 $useDompdf = false;
 $dompdfAvailable = false;
 
-// Try to load dompdf if it exists (silent check - no errors if missing)
 if (file_exists(__DIR__ . '/../../vendor/autoload.php')) {
     try {
         require_once __DIR__ . '/../../vendor/autoload.php';
@@ -21,7 +18,6 @@ if (file_exists(__DIR__ . '/../../vendor/autoload.php')) {
             $useDompdf = true;
         }
     } catch (Exception $e) {
-        // dompdf not available - continue without it
         $dompdfAvailable = false;
         $useDompdf = false;
     }
@@ -40,7 +36,6 @@ if (isset($_GET['download']) && $useDompdf && $dompdfAvailable) {
         $dompdf->stream('VouchMorph_Profile.pdf', ['Attachment' => true]);
         exit;
     } catch (Exception $e) {
-        // If dompdf fails, fall back to HTML view with error
         $useDompdf = false;
         $dompdfAvailable = false;
     }
@@ -63,12 +58,18 @@ function getProfileHTML(): string
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>VOUCHMORPH · Company Profile</title>
+    
+    <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Mermaid.js for diagrams -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    
     <style>
         /* ============================================================
            VOUCHMORPH PROFILE STYLES
-           Matches the Enterprise Dashboard aesthetic
+           Professional · Clean · Brand-Consistent
            ============================================================ */
         :root {
             --paper:        #EEF1EF;
@@ -82,13 +83,9 @@ function getProfileHTML(): string
             --brass:        #8A6D3B;
             --brass-tint:   #F4EFE3;
             --seal-red:     #7A2118;
-            --amber:        #8A5A0B;
-            --amber-bg:     #FEF3C7;
             --ledger-green: #24513A;
             --green-tint:   #E5EEE7;
             --blue-tint:    #E7EEF4;
-            --danger:       #b3261e;
-            --danger-bg:    #fbeceb;
             
             --max-width:    1100px;
             --f-body:       "IBM Plex Sans", sans-serif;
@@ -135,7 +132,6 @@ function getProfileHTML(): string
             letter-spacing: 0.08em;
             text-transform: uppercase;
         }
-
         .logo span { color: var(--brass); }
 
         .logo-sub {
@@ -175,10 +171,11 @@ function getProfileHTML(): string
         /* ----- TYPOGRAPHY ----- */
         h1 {
             font-family: var(--f-cond);
-            font-size: 36px;
+            font-size: 32px;
             font-weight: 700;
             letter-spacing: 0.02em;
             margin-bottom: 4px;
+            color: var(--ink-900);
         }
 
         h2 {
@@ -186,7 +183,7 @@ function getProfileHTML(): string
             font-size: 22px;
             font-weight: 700;
             letter-spacing: 0.02em;
-            margin-top: 32px;
+            margin-top: 36px;
             margin-bottom: 16px;
             padding-bottom: 8px;
             border-bottom: 2px solid var(--line);
@@ -232,6 +229,30 @@ function getProfileHTML(): string
             color: var(--ink-900);
         }
 
+        /* ----- DIAGRAM CONTAINERS ----- */
+        .diagram-container {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            padding: 24px;
+            margin: 16px 0 24px;
+            text-align: center;
+            overflow-x: auto;
+        }
+
+        .diagram-container .mermaid {
+            display: inline-block;
+            max-width: 100%;
+        }
+
+        .diagram-caption {
+            font-size: 11px;
+            color: var(--ink-300);
+            text-align: center;
+            margin-top: 8px;
+            font-family: var(--f-mono);
+            letter-spacing: 0.04em;
+        }
+
         /* ----- TABLES ----- */
         .table-wrap {
             overflow-x: auto;
@@ -273,7 +294,7 @@ function getProfileHTML(): string
             color: var(--ink-900);
         }
 
-        /* ----- CARDS / FEATURE GRID ----- */
+        /* ----- FEATURE GRID ----- */
         .feature-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -285,6 +306,11 @@ function getProfileHTML(): string
             background: var(--paper);
             border: 1px solid var(--line);
             padding: 16px 18px;
+            transition: border-color 0.2s;
+        }
+
+        .feature-card:hover {
+            border-color: var(--brass);
         }
 
         .feature-card .icon { font-size: 24px; display: block; margin-bottom: 6px; }
@@ -300,54 +326,35 @@ function getProfileHTML(): string
             margin-top: 4px;
         }
 
-        /* ----- FLOW DIAGRAM ----- */
-        .flow-diagram {
+        /* ----- FLOW STEPS ----- */
+        .flow-steps {
             display: flex;
             align-items: center;
             justify-content: center;
-            gap: 8px;
+            gap: 6px;
             flex-wrap: wrap;
-            padding: 20px;
-            background: var(--paper);
-            border: 1px solid var(--line);
+            padding: 16px 20px;
+            background: var(--ink-900);
             margin: 12px 0 16px;
-            font-family: var(--f-cond);
-            font-weight: 700;
-            font-size: 13px;
         }
 
         .flow-step {
-            background: var(--ink-900);
+            background: transparent;
             color: #fff;
             padding: 8px 16px;
-            border-radius: 0;
+            border: 1px solid rgba(255,255,255,0.15);
+            font-family: var(--f-cond);
+            font-weight: 600;
+            font-size: 12px;
             text-transform: uppercase;
-            letter-spacing: 0.04em;
-            font-size: 11px;
+            letter-spacing: 0.06em;
         }
 
         .flow-arrow {
             color: var(--brass);
-            font-size: 18px;
+            font-size: 16px;
             font-weight: 300;
         }
-
-        /* ----- ARCHITECTURE DIAGRAM ----- */
-        .arch-diagram {
-            background: var(--ink-900);
-            color: #fff;
-            padding: 20px 24px;
-            margin: 12px 0 16px;
-            font-family: var(--f-mono);
-            font-size: 12px;
-            line-height: 2;
-            white-space: pre-wrap;
-            overflow-x: auto;
-        }
-
-        .arch-diagram .brass { color: var(--brass); }
-        .arch-diagram .muted { color: var(--ink-300); }
-        .arch-diagram .line { color: var(--line-strong); }
 
         /* ----- FOOTER ----- */
         .profile-footer {
@@ -379,15 +386,15 @@ function getProfileHTML(): string
             h2 { font-size: 19px; }
             .profile-header { flex-direction: column; }
             .header-tag { text-align: left; width: 100%; }
-            .flow-diagram { flex-direction: column; gap: 4px; }
-            .flow-arrow { transform: rotate(90deg); }
             .feature-grid { grid-template-columns: 1fr; }
+            .flow-steps { flex-direction: column; gap: 4px; padding: 12px; }
+            .flow-arrow { transform: rotate(90deg); }
+            .diagram-container { padding: 12px; }
         }
 
         @media (max-width: 480px) {
             body { padding: 12px; }
             .profile-container { padding: 16px 14px; }
-            .arch-diagram { font-size: 10px; padding: 12px; }
         }
 
         /* ----- PRINT STYLES ----- */
@@ -396,13 +403,14 @@ function getProfileHTML(): string
             .profile-container { box-shadow: none; border: none; padding: 40px 50px; }
             .no-print { display: none !important; }
             tr:hover { background: transparent; }
-            .arch-diagram { background: #0F2138 !important; color: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-            .flow-step { background: #0F2138 !important; color: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+            .flow-steps { background: #0F2138 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+            .flow-step { border-color: rgba(255,255,255,0.2) !important; }
             .feature-card { background: #EEF1EF !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
             .highlight-box { background: #F4EFE3 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
             .table-highlight td { background: #F4EFE3 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
             th { background: #EEF1EF !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
             .header-tag .badge { background: #8A6D3B !important; color: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+            .diagram-container { border: 1px solid #D3DAD6 !important; }
         }
 
         /* ----- DOWNLOAD BUTTON ----- */
@@ -461,11 +469,17 @@ function getProfileHTML(): string
 </head>
 <body>
 
+    <!-- ============================================================ -->
+    <!-- DOWNLOAD BAR -->
+    <!-- ============================================================ -->
     <div class="download-bar no-print">
         <button class="btn btn-primary" onclick="window.print()">📄 Print / PDF</button>
         <a href="?download=1" class="btn btn-primary" style="background:var(--ledger-green);border-color:var(--ledger-green);">⬇ Download PDF</a>
     </div>
 
+    <!-- ============================================================ -->
+    <!-- PROFILE CONTENT -->
+    <!-- ============================================================ -->
     <div class="profile-container">
 
         <!-- ============================================================ -->
@@ -487,9 +501,9 @@ function getProfileHTML(): string
         <!-- ============================================================ -->
         <h1>01 · Executive Summary</h1>
 
-        <p><strong>VouchMorph is a non-custodial financial interoperability layer</strong> that transforms fragmented banking, mobile money, and teller infrastructures into a unified global access network for money.</p>
+        <p><strong>VouchMorph is a non-custodial financial interoperability layer</strong> that transforms fragmented banking, mobile money, and teller infrastructures into a unified access network for money.</p>
 
-        <p>Unlike traditional systems that move funds, VouchMorph enables <strong>value access through pre-authorised holds and identity-bound messaging</strong>, allowing seamless transactions across institutions and borders.</p>
+        <p>Unlike traditional systems that move funds, VouchMorph enables <strong>value access through pre-authorised holds and identity-bound messaging</strong>, allowing seamless transactions across institutions.</p>
 
         <div class="feature-grid">
             <div class="feature-card">
@@ -503,14 +517,9 @@ function getProfileHTML(): string
                 <div class="desc">Connects banks, wallets, and teller services</div>
             </div>
             <div class="feature-card">
-                <span class="icon">🌍</span>
-                <div class="label">Cross-Border Native</div>
-                <div class="desc">Multi-country by design, not by integration</div>
-            </div>
-            <div class="feature-card">
                 <span class="icon">📈</span>
                 <div class="label">Network-Driven</div>
-                <div class="desc">Each country added increases total system value</div>
+                <div class="desc">Each institution added increases total system value</div>
             </div>
         </div>
 
@@ -526,10 +535,7 @@ function getProfileHTML(): string
         <div class="table-wrap">
             <table>
                 <thead>
-                    <tr>
-                        <th>Attribute</th>
-                        <th>Detail</th>
-                    </tr>
+                    <tr><th>Attribute</th><th>Detail</th></tr>
                 </thead>
                 <tbody>
                     <tr><td><strong>Legal Name</strong></td><td>VouchMorph Proprietary Limited</td></tr>
@@ -560,7 +566,6 @@ function getProfileHTML(): string
                     <tr><td>Fragmented banking systems</td><td>Limited interoperability between institutions</td></tr>
                     <tr><td>Mobile money silos</td><td>Restricted cross-network transfers</td></tr>
                     <tr><td>Teller service dependency</td><td>Frequent access failures and downtime</td></tr>
-                    <tr><td>Cross-border inefficiency</td><td>High cost and slow settlement times</td></tr>
                 </tbody>
             </table>
         </div>
@@ -583,13 +588,12 @@ function getProfileHTML(): string
         <ul style="padding-left:20px;margin-bottom:16px;color:var(--ink-500);">
             <li><strong>Any-to-any value access</strong> across institutions</li>
             <li><strong>Cross-institution transactions</strong> without custody</li>
-            <li><strong>Cross-border interoperability</strong> by design</li>
             <li><strong>Real-time execution</strong> with delayed net settlement</li>
         </ul>
 
         <h4>The Core Flow</h4>
 
-        <div class="flow-diagram">
+        <div class="flow-steps">
             <span class="flow-step">1 · Initiate</span>
             <span class="flow-arrow">→</span>
             <span class="flow-step">2 · Hold</span>
@@ -610,24 +614,34 @@ function getProfileHTML(): string
 
         <h3>5.1 System Architecture</h3>
 
-        <p>Users and institutions interact through a <strong>unified orchestration layer</strong> that abstracts the underlying rails.</p>
+        <div class="diagram-container">
+            <div class="mermaid">
+flowchart TB
+    subgraph Orchestration["VOUCHMORPH ORCHESTRATION LAYER"]
+        direction LR
+        SWAP["SWAP ENGINE"]
+        HOLD["HOLD ENGINE"]
+        DEBIT["DEBIT ENGINE"]
+        CREDIT["CREDIT ENGINE"]
+        SWAP --- HOLD --- DEBIT --- CREDIT
+    end
 
-        <div class="arch-diagram">
-┌─────────────────────────────────────────────────────────────┐
-│                    <span class="brass">VOUCHMORPH ORCHESTRATION LAYER</span>           │
-├─────────────────────────────────────────────────────────────┤
-│  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐       │
-│  │  SWAP   │  │   HOLD  │  │  DEBIT  │  │ CREDIT  │       │
-│  │ ENGINE  │  │  ENGINE │  │  ENGINE │  │ ENGINE  │       │
-│  └─────────┘  └─────────┘  └─────────┘  └─────────┘       │
-├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │         <span class="brass">INSTITUTION ADAPTER FACTORY</span>                 │    │
-│  │  ┌─────┐  ┌─────┐  ┌─────┐  ┌─────┐  ┌─────┐     │    │
-│  │  │BANK │  │MOMO │  │ATM  │  │CARD │  │VOUCH│     │    │
-│  │  └─────┘  └─────┘  └─────┘  └─────┘  └─────┘     │    │
-│  └─────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────┘
+    subgraph Adapters["INSTITUTION ADAPTER FACTORY"]
+        direction LR
+        BANK["BANK"]
+        MOMO["MOBILE MONEY"]
+        ATM["ATM"]
+        CARD["CARD"]
+        VOUCH["VOUCHER"]
+        BANK --- MOMO --- ATM --- CARD --- VOUCH
+    end
+
+    Orchestration --> Adapters
+    Adapters --> INST1["Institution A"]
+    Adapters --> INST2["Institution B"]
+    Adapters --> INST3["Institution C"]
+            </div>
+            <div class="diagram-caption">Figure 1 — VouchMorph System Architecture</div>
         </div>
 
         <h3>5.2 Key Technical Components</h3>
@@ -643,24 +657,32 @@ function getProfileHTML(): string
                     <tr><td><strong>Identity System</strong></td><td>Enables phone/ID-bound value claims</td></tr>
                     <tr><td><strong>Settlement Engine</strong></td><td>Double-entry net settlement</td></tr>
                     <tr><td><strong>Multi-Source Orchestrator</strong></td><td>Splits single transaction across sources</td></tr>
-                    <tr><td><strong>Message Outbox</strong></td><td>Asynchronous SMS/notification delivery</td></tr>
                 </tbody>
             </table>
         </div>
 
         <h3>5.3 Non-Custodial Settlement</h3>
 
-        <div class="arch-diagram">
-┌──────────────┐                    ┌──────────────┐
-│  Source      │                    │  Destination │
-│  Institution │                    │  Institution │
-│              │                    │              │
-│  ┌────────┐  │                    │  ┌────────┐  │
-│  │ HOLD   │  │                    │  │ CREDIT │  │
-│  │ DEBIT  │  │    <span class="brass">VOUCHMORPH</span>      │  │  (net) │  │
-│  └────────┘  │    SETTLEMENT      │  └────────┘  │
-│              │                    │              │
-└──────────────┘                    └──────────────┘
+        <div class="diagram-container">
+            <div class="mermaid">
+flowchart LR
+    subgraph Source["Source Institution"]
+        HOLD["HOLD / DEBIT"]
+    end
+
+    subgraph VM["VOUCHMORPH SETTLEMENT"]
+        LEDGER["LEDGER"]
+        NET["NET POSITION"]
+    end
+
+    subgraph Dest["Destination Institution"]
+        CREDIT["CREDIT (net)"]
+    end
+
+    Source -->|"Instruction"| VM
+    VM -->|"Settlement"| Dest
+            </div>
+            <div class="diagram-caption">Figure 2 — Non-Custodial Settlement Architecture</div>
         </div>
 
         <p style="font-size:13px;color:var(--ink-300);"><strong>Key Principle:</strong> Funds move directly between institutions — VouchMorph only orchestrates and records.</p>
@@ -683,14 +705,13 @@ function getProfileHTML(): string
             <li>Converts value messages into card payments</li>
             <li>Compatible with POS, online, and teller services</li>
             <li>Enables any source (bank, wallet, voucher) to fund card transactions</li>
-            <li>Bridges digital value to physical payment rails</li>
         </ul>
 
         <h3>03 · Settlement Engine</h3>
         <ul style="padding-left:20px;margin-bottom:12px;color:var(--ink-500);">
             <li>Double-entry ledger with real-time posting</li>
             <li>Net settlement optimisation between institutions</li>
-            <li>Supports BWP, ZAR, USD, and multi-currency transactions</li>
+            <li>Supports multi-currency transactions</li>
             <li>Automated reconciliation and dispute management</li>
         </ul>
 
@@ -718,7 +739,6 @@ function getProfileHTML(): string
                     <tr><td><strong>Per-Transaction Fees</strong></td><td>Orchestrated flow fees (≈0.5–2% depending on volume)</td></tr>
                     <tr><td><strong>Interchange Participation</strong></td><td>Card-rail conversion revenue sharing</td></tr>
                     <tr><td><strong>Integration Fees</strong></td><td>Institutional onboarding and platform access</td></tr>
-                    <tr><td><strong>Cross-Border Premium</strong></td><td>Additional margin on international flows</td></tr>
                 </tbody>
             </table>
         </div>
@@ -740,13 +760,36 @@ function getProfileHTML(): string
         </div>
 
         <!-- ============================================================ -->
-        <!-- 08 · MULTI-COUNTRY NETWORK EFFECT -->
+        <!-- 08 · NETWORK EFFECT -->
         <!-- ============================================================ -->
-        <h2>08 · Multi-Country Network Effect</h2>
+        <h2>08 · Network Effect</h2>
 
         <h3>Network Architecture</h3>
 
-        <p>Traditional cross-border systems require <strong>pairwise integrations</strong> between every two participants, scaling at <strong>n(n−1)/2</strong>. VouchMorph collapses this to a <strong>single integration per participant</strong> — a hub model where every new country adds linear cost but compounding network value.</p>
+        <p>Traditional systems require <strong>pairwise integrations</strong> between every two participants, scaling at <strong>n(n−1)/2</strong>. VouchMorph collapses this to a <strong>single integration per participant</strong> — a hub model where every new institution adds linear cost but compounding network value.</p>
+
+        <div class="diagram-container">
+            <div class="mermaid">
+flowchart LR
+    subgraph Traditional["Traditional Bilateral Model"]
+        A1["A"] --- B1["B"]
+        A1 --- C1["C"]
+        A1 --- D1["D"]
+        B1 --- C1
+        B1 --- D1
+        C1 --- D1
+    end
+
+    subgraph VMModel["VouchMorph Hub Model"]
+        A2["A"] --> HUB["VOUCHMORPH"]
+        B2["B"] --> HUB
+        C2["C"] --> HUB
+        D2["D"] --> HUB
+        E2["E"] --> HUB
+    end
+            </div>
+            <div class="diagram-caption">Figure 3 — Integration Topology Comparison</div>
+        </div>
 
         <h3>Scaling Principle</h3>
 
@@ -767,38 +810,30 @@ function getProfileHTML(): string
         </div>
 
         <!-- ============================================================ -->
-        <!-- 09 · CROSS-BORDER VALUE FLOW -->
+        <!-- 09 · TRANSACTION FLOW -->
         <!-- ============================================================ -->
-        <h2>09 · Cross-Border Value Flow</h2>
+        <h2>09 · Transaction Flow</h2>
 
-        <p>Cross-border transactions execute in <strong>real time at the access layer</strong> while settlement between institutions occurs on a <strong>delayed net basis</strong>. This decouples user experience from interbank settlement constraints.</p>
+        <div class="diagram-container">
+            <div class="mermaid">
+sequenceDiagram
+    participant User
+    participant Source as Source Institution
+    participant VM as VouchMorph
+    participant Dest as Destination Institution
 
-        <div class="arch-diagram">
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         <span class="brass">REAL-TIME ACCESS LAYER</span>                        │
-│                                                                         │
-│   Botswana (BWP)        ────────────────►       South Africa (ZAR)    │
-│   ┌─────────────┐                          ┌─────────────────────────┐ │
-│   │  Initiate   │                          │  ₿ Hold placed,          │ │
-│   │  BWP 1,000  │                          │  awaiting confirmation  │ │
-│   └─────────────┘                          └─────────────────────────┘ │
-│          │                                            │                │
-│          └───────────── <span class="brass">VOUCHMORPH</span> ──────────────────┘                │
-│                         ORCHESTRATION                                  │
-│                                                                         │
-├─────────────────────────────────────────────────────────────────────────┤
-│                         <span class="muted">NET SETTLEMENT LAYER</span>                           │
-│                                                                         │
-│   ┌─────────────────────────────────────────────────────────────────┐  │
-│   │  ┌─────────────┐    ┌─────────────┐    ┌─────────────────────┐ │  │
-│   │  │ Bank of     │    │ South       │    │ Net Position:       │ │  │
-│   │  │ Botswana    │◄───│ African     │    │ BWP -950 / ZAR +750 │ │  │
-│   │  │ ────────────│    │ Reserve     │    └─────────────────────┘ │  │
-│   │  │ Settle:     │    └─────────────┘                            │  │
-│   │  │ ₿ 950 BWP   │                                               │  │
-│   │  └─────────────┘                                               │  │
-│   └─────────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────┘
+    User->>VM: 1. Initiate Swap
+    VM->>Source: 2. Place Hold
+    Source-->>VM: Hold Confirmed
+    VM->>Dest: 3. Process Transaction
+    Dest-->>VM: Transaction Confirmed
+    VM->>Source: 4. Execute Debit
+    Source-->>VM: Debit Confirmed
+    VM->>Dest: 5. Credit Settlement
+    Dest-->>VM: Settlement Confirmed
+    VM-->>User: Swap Complete
+            </div>
+            <div class="diagram-caption">Figure 4 — End-to-End Transaction Flow</div>
         </div>
 
         <!-- ============================================================ -->
@@ -815,21 +850,11 @@ function getProfileHTML(): string
                     <tr><td>Global payments flows</td><td>USD 200T+ annually</td></tr>
                     <tr><td>Global remittances</td><td>USD 800B+ annually</td></tr>
                     <tr><td>African digital payments</td><td>USD 150B+ (growing at 20% CAGR)</td></tr>
-                    <tr><td>Emerging markets payments</td><td>Highest growth segment</td></tr>
                 </tbody>
             </table>
         </div>
 
-        <p><strong>Target Market:</strong> VouchMorph targets the <strong>underserved interoperability gap</strong> within emerging markets first, before extending its rails into established financial corridors.</p>
-
-        <h3>Key Market Drivers</h3>
-
-        <ul style="padding-left:20px;margin-bottom:12px;color:var(--ink-500);">
-            <li>✅ Mobile money penetration in Sub-Saharan Africa (&gt;45%)</li>
-            <li>✅ Growing cross-border trade within Africa (AfCFTA)</li>
-            <li>✅ Regulatory push for financial inclusion</li>
-            <li>✅ Increasing demand for real-time payments</li>
-        </ul>
+        <p><strong>Target Market:</strong> VouchMorph targets the <strong>underserved interoperability gap</strong> within emerging markets first.</p>
 
         <!-- ============================================================ -->
         <!-- 11 · COMPETITIVE POSITIONING -->
@@ -844,11 +869,10 @@ function getProfileHTML(): string
                     <tr><th>Player</th><th>Limitation</th></tr>
                 </thead>
                 <tbody>
-                    <tr><td><strong>SWIFT</strong></td><td>Slow settlement, message-only rails, legacy infrastructure</td></tr>
-                    <tr><td><strong>Visa / Mastercard</strong></td><td>Card rails only, custodial, high fees</td></tr>
-                    <tr><td><strong>Mobile Network Operators</strong></td><td>Siloed within single networks, no cross-network capability</td></tr>
+                    <tr><td><strong>SWIFT</strong></td><td>Slow settlement, message-only rails</td></tr>
+                    <tr><td><strong>Visa / Mastercard</strong></td><td>Card rails only, custodial</td></tr>
+                    <tr><td><strong>Mobile Network Operators</strong></td><td>Siloed within single networks</td></tr>
                     <tr><td><strong>Commercial Banks</strong></td><td>Fragmented, bilateral integrations only</td></tr>
-                    <tr><td><strong>M-Pesa / Airtel Money</strong></td><td>Limited to single-country, single-network</td></tr>
                 </tbody>
             </table>
         </div>
@@ -860,11 +884,6 @@ function getProfileHTML(): string
                 <span class="icon">🔗</span>
                 <div class="label">Cross-Institution</div>
                 <div class="desc">Works across banks, mobile money, and teller services</div>
-            </div>
-            <div class="feature-card">
-                <span class="icon">🌍</span>
-                <div class="label">Cross-Border</div>
-                <div class="desc">Native multi-country by design</div>
             </div>
             <div class="feature-card">
                 <span class="icon">🔒</span>
@@ -897,9 +916,9 @@ function getProfileHTML(): string
                 </thead>
                 <tbody>
                     <tr><td><strong>Codebase</strong></td><td>Production-ready with 519+ files, 80+ controllers/services</td></tr>
-                    <tr><td><strong>Institution Adapters</strong></td><td>ZuruBank, Bank of Botswana, and generic bank adapters</td></tr>
+                    <tr><td><strong>Institution Adapters</strong></td><td>Multiple banking and mobile money adapters</td></tr>
                     <tr><td><strong>Authentication</strong></td><td>Role-based enterprise access (Owner, Approver, Loader, Viewer, etc.)</td></tr>
-                    <tr><td><strong>Core Features</strong></td><td>Batches, beneficiaries, rations, source accounts, traceability</td></tr>
+                    <tr><td><strong>Core Features</strong></td><td>Batches, beneficiaries, source accounts, traceability</td></tr>
                 </tbody>
             </table>
         </div>
@@ -912,21 +931,12 @@ function getProfileHTML(): string
                     <tr><th>Phase</th><th>Focus</th><th>Timeline</th></tr>
                 </thead>
                 <tbody>
-                    <tr><td><strong>Sandbox</strong></td><td>Bank of Botswana regulatory sandbox execution</td><td>0 – 6 months</td></tr>
+                    <tr><td><strong>Sandbox</strong></td><td>Regulatory sandbox execution</td><td>0 – 6 months</td></tr>
                     <tr><td><strong>Launch</strong></td><td>Commercial launch, first integrations live</td><td>6 – 12 months</td></tr>
-                    <tr><td><strong>Expansion</strong></td><td>Multi-country rollout, partner network</td><td>12 – 24 months</td></tr>
+                    <tr><td><strong>Expansion</strong></td><td>Multi-institution rollout, partner network</td><td>12 – 24 months</td></tr>
                 </tbody>
             </table>
         </div>
-
-        <h3>Key Partnerships (Targeted)</h3>
-
-        <ul style="padding-left:20px;margin-bottom:12px;color:var(--ink-500);">
-            <li>Bank of Botswana (regulatory sandbox)</li>
-            <li>ZuruBank (Zimbabwe pilot)</li>
-            <li>Multiple SADC region banks</li>
-            <li>Mobile network operators</li>
-        </ul>
 
         <!-- ============================================================ -->
         <!-- 13 · TEAM -->
@@ -960,7 +970,7 @@ function getProfileHTML(): string
                 <tbody>
                     <tr><td><strong>Raise</strong></td><td>[To be confirmed]</td></tr>
                     <tr><td><strong>Valuation</strong></td><td>[To be confirmed]</td></tr>
-                    <tr><td><strong>Use of Funds</strong></td><td>Product development, multi-country expansion, institutional partnerships</td></tr>
+                    <tr><td><strong>Use of Funds</strong></td><td>Product development, institutional partnerships</td></tr>
                     <tr><td><strong>Current Stage</strong></td><td>Pre-revenue, regulatory sandbox applicant</td></tr>
                     <tr><td><strong>Capital Required</strong></td><td>USD 500K – 1.5M (Series Seed)</td></tr>
                 </tbody>
@@ -984,7 +994,6 @@ function getProfileHTML(): string
                     <tr><td><strong>Integration complexity</strong></td><td>Standardised API layer across all rails</td></tr>
                     <tr><td><strong>Fraud and abuse</strong></td><td>Bank-level controls inherited from source institution</td></tr>
                     <tr><td><strong>Adoption risk</strong></td><td>Network effect driven — incentive alignment</td></tr>
-                    <tr><td><strong>Currency volatility</strong></td><td>Multi-currency settlement with real-time forex</td></tr>
                 </tbody>
             </table>
         </div>
@@ -994,14 +1003,13 @@ function getProfileHTML(): string
         <!-- ============================================================ -->
         <h2>16 · Conclusion</h2>
 
-        <p><strong>VouchMorph does not replace financial systems. It connects them.</strong><br>
-        <strong>It does not move money. It enables access to money.</strong></p>
+        <p><strong>VouchMorph does not replace financial systems. It connects them.</strong></p>
 
-        <p>As VouchMorph expands across institutions and borders, it becomes a <strong>global financial access network</strong> — the universal layer through which value flows on top of existing infrastructure.</p>
+        <p>As VouchMorph expands across institutions, it becomes a <strong>financial access network</strong> — the universal layer through which value flows on top of existing infrastructure.</p>
 
         <div class="highlight-box" style="font-size:16px;text-align:center;border-left-color:var(--ledger-green);">
             <strong>VouchMorph is building the financial equivalent of the internet —<br>
-            a universal access layer where value flows freely across systems and borders.</strong>
+            a universal access layer where value flows freely across systems.</strong>
         </div>
 
         <!-- ============================================================ -->
@@ -1020,6 +1028,38 @@ function getProfileHTML(): string
         </div>
 
     </div>
+
+    <!-- ============================================================ -->
+    <!-- INITIALIZE MERMAID -->
+    <!-- ============================================================ -->
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            mermaid.initialize({
+                theme: "base",
+                themeVariables: {
+                    primaryColor: "#0F2138",
+                    primaryTextColor: "#FFFFFF",
+                    primaryBorderColor: "#8A6D3B",
+                    lineColor: "#8A6D3B",
+                    secondaryColor: "#EEF1EF",
+                    tertiaryColor: "#FFFFFF",
+                    clusterBkg: "#F4EFE3",
+                    clusterBorder: "#8A6D3B",
+                    fontFamily: "IBM Plex Sans, sans-serif",
+                    fontSize: "14px"
+                },
+                flowchart: {
+                    useMaxWidth: true,
+                    htmlLabels: true,
+                    curve: "basis"
+                },
+                sequence: {
+                    useMaxWidth: true,
+                    showSequenceNumbers: false
+                }
+            });
+        });
+    </script>
 
 </body>
 </html>';
