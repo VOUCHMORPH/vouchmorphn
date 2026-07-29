@@ -4,48 +4,57 @@
  * 
  * Usage: Place this file in your web root and access via browser
  * It will generate a styled HTML page that you can "Print to PDF"
- * or use with dompdf for automatic PDF download
  */
 
-// Enable error reporting for debugging
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
+// ============================================================
+// 1. CHECK IF DOMPDF IS AVAILABLE (optional - for auto-download)
+// ============================================================
+$useDompdf = false;
+$dompdfAvailable = false;
 
-// Check if dompdf is available (optional - for automatic PDF generation)
-$useDompdf = class_exists('Dompdf\Dompdf');
-
-// If PDF download requested, generate and output PDF
-if (isset($_GET['download']) && $useDompdf) {
-    require_once 'vendor/autoload.php';
-    use Dompdf\Dompdf;
-    
-    $html = getProfileHTML();
-    $dompdf = new Dompdf();
-    $dompdf->loadHtml($html);
-    $dompdf->setPaper('A4', 'portrait');
-    $dompdf->render();
-    $dompdf->stream('VouchMorph_Profile.pdf', ['Attachment' => true]);
-    exit;
+// Try to load dompdf if it exists (silent check - no errors if missing)
+if (file_exists(__DIR__ . '/../../vendor/autoload.php')) {
+    try {
+        require_once __DIR__ . '/../../vendor/autoload.php';
+        if (class_exists('Dompdf\Dompdf')) {
+            $dompdfAvailable = true;
+            $useDompdf = true;
+        }
+    } catch (Exception $e) {
+        // dompdf not available - continue without it
+        $dompdfAvailable = false;
+        $useDompdf = false;
+    }
 }
 
-// If PDF download requested but dompdf not available, show instructions
-if (isset($_GET['download']) && !$useDompdf) {
-    echo '<div style="background:#fbeceb;color:#b3261e;padding:20px;border-radius:8px;max-width:600px;margin:40px auto;font-family:Arial,sans-serif;">';
-    echo '<h2>⚠️ dompdf Not Installed</h2>';
-    echo '<p>To enable automatic PDF download, install dompdf:</p>';
-    echo '<code style="background:#1B2733;color:#ECEFF2;padding:10px;display:block;border-radius:4px;">composer require dompdf/dompdf</code>';
-    echo '<p style="margin-top:16px;">Or use your browser\'s <strong>"Print to PDF"</strong> function (Ctrl+P / Cmd+P) to save this page as PDF.</p>';
-    echo '<a href="?" style="display:inline-block;margin-top:12px;padding:10px 24px;background:#0F2138;color:#fff;text-decoration:none;border-radius:4px;">View Profile</a>';
-    echo '</div>';
-    exit;
+// ============================================================
+// 2. HANDLE DOWNLOAD REQUEST
+// ============================================================
+if (isset($_GET['download']) && $useDompdf && $dompdfAvailable) {
+    try {
+        $html = getProfileHTML();
+        $dompdf = new Dompdf\Dompdf();
+        $dompdf->loadHtml($html);
+        $dompdf->setPaper('A4', 'portrait');
+        $dompdf->render();
+        $dompdf->stream('VouchMorph_Profile.pdf', ['Attachment' => true]);
+        exit;
+    } catch (Exception $e) {
+        // If dompdf fails, fall back to HTML view with error
+        $useDompdf = false;
+        $dompdfAvailable = false;
+    }
 }
 
-// Display the profile page
+// ============================================================
+// 3. SHOW PROFILE PAGE
+// ============================================================
 echo getProfileHTML();
 
-/**
- * Generate the full profile HTML with embedded styles
- */
+
+// ============================================================
+// 4. THE PROFILE HTML GENERATOR FUNCTION
+// ============================================================
 function getProfileHTML(): string
 {
     return '<!DOCTYPE html>
@@ -291,7 +300,7 @@ function getProfileHTML(): string
             margin-top: 4px;
         }
 
-        /* ----- ASYNC FLOW DIAGRAM ----- */
+        /* ----- FLOW DIAGRAM ----- */
         .flow-diagram {
             display: flex;
             align-items: center;
@@ -724,7 +733,7 @@ function getProfileHTML(): string
                 <tbody>
                     <tr><td>Average Revenue per Transaction</td><td>≈ USD 0.25</td></tr>
                     <tr><td>Average Cost per Transaction</td><td>≈ USD 0.03</td></tr>
-                    <tr><td class="table-highlight">Gross Margin</td><td class="table-highlight">≈ 88%</td></tr>
+                    <tr class="table-highlight"><td><strong>Gross Margin</strong></td><td><strong>≈ 88%</strong></td></tr>
                     <tr><td>Break-even Volume</td><td>≈ 2.5M transactions/year</td></tr>
                 </tbody>
             </table>
