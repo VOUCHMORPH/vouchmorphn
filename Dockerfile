@@ -11,9 +11,10 @@ RUN apt-get update && apt-get install -y \
     curl \
     nginx \
     # ============================================================
-    # Chromium for PDF generation (headless)
+    # Chromium for PDF generation — FIXED package name
+    # In Debian Trixie, it's just "chromium"
     # ============================================================
-    chromium-browser \
+    chromium \
     libgbm-dev \
     && docker-php-ext-configure gd --with-freetype --with-jpeg \
     && docker-php-ext-install -j$(nproc) \
@@ -30,12 +31,12 @@ RUN apt-get update && apt-get install -y \
 # ============================================================
 # Verify Chromium installation
 # ============================================================
-RUN which chromium-browser || (echo "ERROR: chromium-browser not found" && exit 1)
+RUN which chromium || (echo "ERROR: chromium not found" && exit 1)
 
 # ============================================================
 # Set Chrome path for PDF generation
 # ============================================================
-ENV CHROME_PATH=/usr/bin/chromium-browser
+ENV CHROME_PATH=/usr/bin/chromium
 
 RUN php -m | grep -q pdo_pgsql || (echo "ERROR: pdo_pgsql extension not installed" && exit 1)
 RUN php -m | grep -q pgsql || (echo "ERROR: pgsql extension not installed" && exit 1)
@@ -50,12 +51,10 @@ COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 WORKDIR /var/www/html
 
 # -------------------------------
-# Composer install (FIXED: update phpspreadsheet specifically, then install)
+# Composer install
 # -------------------------------
 COPY composer.json composer.lock ./
-# First, update phpspreadsheet to fix the lock file mismatch
 RUN composer update phpoffice/phpspreadsheet --no-dev --optimize-autoloader --no-interaction --prefer-dist
-# Then run a regular install to ensure everything is consistent
 RUN composer install --no-dev --optimize-autoloader --no-interaction --prefer-dist
 
 # -------------------------------
@@ -66,13 +65,10 @@ COPY public/ public/
 COPY docker/nginx.conf /etc/nginx/sites-enabled/default
 
 # -------------------------------
-# Autoload optimization (FIXED)
+# Autoload optimization
 # -------------------------------
 RUN composer dump-autoload --optimize --no-interaction
 
 EXPOSE 9000
 
-# ============================================================
-# Start PHP-FPM and Nginx
-# ============================================================
 CMD sh -c "php-fpm -D && nginx -g 'daemon off;'"
