@@ -1,14 +1,12 @@
 <?php
 /**
- * Simple Investment Memorandum
- * Just view in browser → Ctrl+P → Save as PDF
+ * VouchMorph Investment Memorandum
+ * Professional · Clean · No DOMPDF
+ * View in Chrome → Ctrl+P → Save as PDF
  */
 
-// If you want to force download, just show the page
+// Just output the HTML directly
 header('Content-Type: text/html; charset=utf-8');
-
-// Load the HTML file (if you save it separately)
-// Or just echo the HTML directly
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -18,9 +16,6 @@ header('Content-Type: text/html; charset=utf-8');
     <title>VouchMorph · Investment Memorandum</title>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
     <style>
-        /* ============================================================
-           SIMPLE CLEAN STYLES — Minimal, works everywhere
-           ============================================================ */
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
         body {
@@ -30,24 +25,34 @@ header('Content-Type: text/html; charset=utf-8');
             padding: 20px;
         }
 
-        /* Print button - only visible on screen */
-        .print-btn {
-            position: fixed;
-            top: 20px;
-            right: 20px;
+        /* Download button - only visible on screen */
+        .download-bar {
+            max-width: 210mm;
+            margin: 0 auto 16px;
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+            position: sticky;
+            top: 10px;
             z-index: 999;
+        }
+
+        .btn {
+            padding: 10px 24px;
+            font-size: 13px;
+            font-weight: 600;
+            font-family: "IBM Plex Sans Condensed", sans-serif;
+            border: none;
+            cursor: pointer;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
             background: #0F2138;
             color: #fff;
-            border: none;
-            padding: 12px 24px;
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-            font-family: "IBM Plex Sans Condensed", sans-serif;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
+            border-radius: 0;
         }
-        .print-btn:hover { background: #8A6D3B; }
+        .btn:hover { background: #8A6D3B; }
+        .btn-success { background: #24513A; }
+        .btn-success:hover { background: #1a3d2c; }
 
         .page {
             width: 210mm;
@@ -55,7 +60,7 @@ header('Content-Type: text/html; charset=utf-8');
             background: #FFFFFF;
             padding: 20mm 18mm;
             margin: 0 auto 20px;
-            box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+            box-shadow: 0 2px 12px rgba(0,0,0,0.06);
             position: relative;
             page-break-after: always;
         }
@@ -68,7 +73,6 @@ header('Content-Type: text/html; charset=utf-8');
             letter-spacing: 0.12em;
             text-transform: uppercase;
             color: #0F2138;
-            margin-bottom: 4px;
         }
         .brand span { color: #8A6D3B; }
 
@@ -77,7 +81,8 @@ header('Content-Type: text/html; charset=utf-8');
             font-size: 30px;
             font-weight: 700;
             color: #0F2138;
-            margin-bottom: 8px;
+            margin-bottom: 10px;
+            letter-spacing: -0.5px;
         }
 
         h2 {
@@ -97,7 +102,7 @@ header('Content-Type: text/html; charset=utf-8');
             max-width: 600px;
         }
 
-        .highlight {
+        .highlight-box {
             background: #F4EFE3;
             border-left: 4px solid #8A6D3B;
             padding: 12px 16px;
@@ -106,7 +111,7 @@ header('Content-Type: text/html; charset=utf-8');
             color: #1D3557;
             max-width: 600px;
         }
-        .highlight strong { color: #0F2138; }
+        .highlight-box strong { color: #0F2138; }
 
         /* ===== METRICS ===== */
         .metrics {
@@ -165,39 +170,40 @@ header('Content-Type: text/html; charset=utf-8');
         /* ===== PARTNERS ===== */
         .partners {
             display: flex;
-            gap: 20px;
+            gap: 24px;
             flex-wrap: wrap;
-            padding: 10px 14px;
+            padding: 12px 16px;
             background: #EEF1EF;
             border: 1px solid #D3DAD6;
-            margin: 8px 0;
+            margin: 10px 0;
         }
         .partner { text-align: center; }
-        .partner .name { font-weight: 700; font-size: 13px; color: #0F2138; }
-        .partner .role { font-size: 9px; color: #8A96A3; }
+        .partner .name { font-weight: 700; font-size: 14px; color: #0F2138; }
+        .partner .role { font-size: 10px; color: #8A96A3; }
 
         /* ===== FEATURES ===== */
         .features {
             display: grid;
             grid-template-columns: repeat(3, 1fr);
-            gap: 6px;
-            margin: 8px 0;
+            gap: 8px;
+            margin: 10px 0;
         }
         .feature {
             background: #EEF1EF;
             border: 1px solid #D3DAD6;
-            padding: 8px 10px;
+            padding: 10px 12px;
             text-align: center;
         }
-        .feature .icon { font-size: 18px; display: block; }
-        .feature .label { font-weight: 600; font-size: 11px; color: #0F2138; }
+        .feature .icon { font-size: 20px; display: block; }
+        .feature .label { font-weight: 600; font-size: 12px; color: #0F2138; }
+        .feature .desc { font-size: 10px; color: #4A5A6E; }
 
         /* ===== SOLUTIONS ===== */
         .solutions {
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 10px;
-            margin: 8px 0;
+            margin: 10px 0;
         }
         .solution {
             background: #EEF1EF;
@@ -208,6 +214,35 @@ header('Content-Type: text/html; charset=utf-8');
         .solution .icon { font-size: 22px; display: block; }
         .solution .label { font-weight: 700; font-size: 13px; color: #0F2138; }
         .solution .desc { font-size: 11px; color: #4A5A6E; }
+        .solution .example {
+            font-size: 10px;
+            color: #8A96A3;
+            margin-top: 4px;
+            padding-top: 4px;
+            border-top: 1px dashed #D3DAD6;
+            font-style: italic;
+        }
+
+        /* ===== TIMELINE ===== */
+        .timeline {
+            padding-left: 14px;
+            border-left: 3px solid #8A6D3B;
+            margin: 10px 0;
+        }
+        .tl-item {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 4px;
+            align-items: baseline;
+        }
+        .tl-item .phase {
+            font-weight: 700;
+            font-size: 12px;
+            color: #0F2138;
+            min-width: 70px;
+        }
+        .tl-item .date { font-size: 10px; color: #8A96A3; min-width: 55px; }
+        .tl-item .desc { font-size: 12px; color: #4A5A6E; }
 
         /* ===== FOOTER ===== */
         .footer-text {
@@ -222,6 +257,13 @@ header('Content-Type: text/html; charset=utf-8');
             font-size: 9px;
             color: #8A96A3;
         }
+        .footer-text .conf {
+            color: #7A2118;
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            font-size: 8px;
+        }
 
         /* ===== PRINT ===== */
         @media print {
@@ -234,7 +276,7 @@ header('Content-Type: text/html; charset=utf-8');
                 min-height: 100vh;
                 width: 100%;
             }
-            .print-btn { display: none !important; }
+            .download-bar { display: none !important; }
             .no-print { display: none !important; }
         }
 
@@ -243,15 +285,22 @@ header('Content-Type: text/html; charset=utf-8');
             .solutions { grid-template-columns: 1fr; }
             .features { grid-template-columns: 1fr 1fr; }
             .metrics { flex-direction: column; }
+            .tl-item { flex-wrap: wrap; }
         }
     </style>
 </head>
 <body>
 
-<button class="print-btn" onclick="window.print()">📄 Save as PDF</button>
+<!-- ============================================================ -->
+<!-- DOWNLOAD BAR (only visible on screen) -->
+<!-- ============================================================ -->
+<div class="download-bar no-print">
+    <button class="btn" onclick="window.print()">📄 Download PDF</button>
+    <button class="btn btn-success" onclick="document.querySelectorAll('.page').forEach(p=>p.style.boxShadow='none');setTimeout(window.print, 300);">⬇ Save as PDF</button>
+</div>
 
 <!-- ============================================================ -->
-<!-- PAGE 1 — COVER -->
+<!-- PAGE 1 — COVER (No investment amount shown) -->
 <!-- ============================================================ -->
 <div class="page" style="display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;">
     <div style="width:100%;text-align:left;margin-bottom:40px;">
@@ -265,14 +314,13 @@ header('Content-Type: text/html; charset=utf-8');
             The Bridge Between Any Source of Money and Any Identity
         </div>
 
-        <div style="border:2px solid #8A6D3B;padding:16px 40px;background:#F4EFE3;margin:16px 0;">
-            <div style="font-family:'IBM Plex Sans Condensed',sans-serif;font-size:30px;font-weight:700;color:#0F2138;">BWP 1,500,000</div>
-            <div style="font-size:13px;color:#4A5A6E;">for 20% Equity</div>
+        <div style="font-size:16px;color:#4A5A6E;max-width:450px;margin:8px 0 16px;line-height:1.6;">
+            A non-custodial financial interoperability layer connecting banks, mobile money networks, and teller services into a unified access network for money.
         </div>
 
         <div style="display:flex;gap:24px;font-size:12px;color:#4A5A6E;flex-wrap:wrap;justify-content:center;margin-top:8px;">
             <span><strong style="color:#0F2138;">Company:</strong> VouchMorph (Pty) Ltd</span>
-            <span><strong style="color:#0F2138;">Country:</strong> Botswana</span>
+            <span><strong style="color:#0F2138;">Headquarters:</strong> Gaborone, Botswana</span>
             <span><strong style="color:#0F2138;">First Market:</strong> Angola</span>
             <span><strong style="color:#0F2138;">Stage:</strong> Regulatory Sandbox</span>
         </div>
@@ -300,9 +348,9 @@ header('Content-Type: text/html; charset=utf-8');
 
     <p>Unlike traditional systems that move funds between accounts, VouchMorph enables <strong>value access through identity-bound messaging</strong> — allowing seamless transactions across institutions without requiring accounts at either end.</p>
 
-    <p>The company has completed its MVP, secured a regulatory sandbox position in Botswana, and is now executing its entry into Angola — a market of <strong>40 million people</strong> with <strong>26 million unbanked adults</strong>.</p>
+    <p>The company has completed its MVP, secured a regulatory sandbox position in Botswana, and is now executing its entry into Angola — a market of <strong>40 million people</strong> with <strong>26 million unbanked adults</strong> and a government actively pursuing digital financial inclusion.</p>
 
-    <div class="highlight">
+    <div class="highlight-box">
         <strong>VouchMorph is raising growth capital</strong> to commercialise in Angola, expand across SADC, and establish Africa's first identity-based financial access network.
     </div>
 
@@ -325,32 +373,33 @@ header('Content-Type: text/html; charset=utf-8');
 
     <div class="footer-text">
         <span>VouchMorph (Pty) Ltd · Gaborone, Botswana</span>
+        <span class="conf">Proprietary &amp; Confidential</span>
         <span>Page 2</span>
     </div>
 </div>
 
 <!-- ============================================================ -->
-<!-- PAGE 3 — STRATEGIC PARTNERS -->
+<!-- PAGE 3 — STRATEGIC PARTNERS & HIGHLIGHTS -->
 <!-- ============================================================ -->
 <div class="page">
     <div class="brand" style="margin-bottom:12px;">VOUCHMORPH <span>·</span></div>
 
     <h1>Strategic Partners &amp; Highlights</h1>
 
-    <p>VouchMorph has established strategic partnerships with leading technology and infrastructure firms.</p>
+    <p>VouchMorph has established strategic partnerships with leading technology and infrastructure firms to ensure world-class delivery.</p>
 
     <div class="partners">
         <div class="partner">
             <div class="name">Intellegere Holdings</div>
-            <div class="role">Cybersecurity &amp; Engineering</div>
+            <div class="role">Cybersecurity &amp; Software Engineering</div>
         </div>
         <div class="partner">
             <div class="name">Malakana Enterprises</div>
-            <div class="role">Networking &amp; Cloud</div>
+            <div class="role">Networking &amp; Cloud Infrastructure</div>
         </div>
         <div class="partner">
             <div class="name">ABCCI</div>
-            <div class="role">Angola Market Entry</div>
+            <div class="role">Angola Market Entry &amp; Partnership</div>
         </div>
     </div>
 
@@ -358,18 +407,19 @@ header('Content-Type: text/html; charset=utf-8');
 
     <div class="metrics">
         <div class="metric"><div class="num">40M</div><div class="lbl">Population</div></div>
-        <div class="metric"><div class="num">26M</div><div class="lbl">Unbanked</div></div>
+        <div class="metric"><div class="num">26M</div><div class="lbl">Unbanked Adults</div></div>
         <div class="metric"><div class="num">30M+</div><div class="lbl">Mobile Users</div></div>
         <div class="metric"><div class="num">Patent</div><div class="lbl">Granted</div></div>
-        <div class="metric"><div class="num">20%</div><div class="lbl">Equity</div></div>
+        <div class="metric"><div class="num">20%</div><div class="lbl">Equity Offered</div></div>
     </div>
 
-    <div class="highlight" style="max-width:100%;">
-        <strong>The Angola-Botswana bilateral relationship is at an all-time high.</strong> VouchMorph is the financial infrastructure that delivers on that commitment.
+    <div class="highlight-box" style="max-width:100%;">
+        <strong>The Angola-Botswana bilateral relationship is at an all-time high.</strong> The Presidents have committed to deepening economic cooperation — VouchMorph is the financial infrastructure that delivers on that commitment.
     </div>
 
     <div class="footer-text">
         <span>VouchMorph (Pty) Ltd · Gaborone, Botswana</span>
+        <span class="conf">Proprietary &amp; Confidential</span>
         <span>Page 3</span>
     </div>
 </div>
@@ -388,40 +438,47 @@ header('Content-Type: text/html; charset=utf-8');
             <span class="icon">🔄</span>
             <div class="label">Standard Swap</div>
             <div class="desc">Bank to bank, wallet to wallet, or bank to wallet. Simple, fast, non-custodial.</div>
+            <div class="example">Bank customer → mobile money user</div>
         </div>
         <div class="solution">
             <span class="icon">💰</span>
             <div class="label">Cashout Swap</div>
-            <div class="desc">Convert digital value to cash at any ATM, agent, or teller.</div>
+            <div class="desc">Convert digital value to cash at any ATM, agent, or teller. Secure codes for instant redemption.</div>
+            <div class="example">Digital payment → cash withdrawal</div>
         </div>
         <div class="solution">
             <span class="icon">🏦</span>
             <div class="label">Deposit Swap</div>
             <div class="desc">Credit funds into any bank account, mobile wallet, or card — sender needs no account.</div>
+            <div class="example">Government disbursement → citizen's account</div>
         </div>
         <div class="solution">
             <span class="icon">🆔</span>
             <div class="label">Swap to Identity</div>
             <div class="desc">Send to a phone number, email, or national ID — no account required at either end.</div>
+            <div class="example">Family member → relative's phone number</div>
         </div>
         <div class="solution">
             <span class="icon">📦</span>
             <div class="label">Multi-Source Swap</div>
             <div class="desc">Combine funds from multiple accounts, wallets, or cards into a single transaction.</div>
+            <div class="example">Business → supplier using multiple accounts</div>
         </div>
         <div class="solution">
             <span class="icon">🎯</span>
             <div class="label">Multi-Destination Swap</div>
             <div class="desc">Send one payment to multiple recipients simultaneously in their preferred form.</div>
+            <div class="example">Payroll → 1,000 employees, 1,000 accounts</div>
         </div>
     </div>
 
-    <div class="highlight" style="max-width:100%;">
+    <div class="highlight-box" style="max-width:100%;">
         <strong>All swaps are:</strong> Non-custodial · Atomic execution · Fully traceable · Patent-protected
     </div>
 
     <div class="footer-text">
         <span>VouchMorph (Pty) Ltd · Gaborone, Botswana</span>
+        <span class="conf">Proprietary &amp; Confidential</span>
         <span>Page 4</span>
     </div>
 </div>
@@ -437,32 +494,33 @@ header('Content-Type: text/html; charset=utf-8');
     <p style="font-size:14px;font-weight:500;color:#0F2138;">Five-stage transaction lifecycle — secure, atomic, and non-custodial.</p>
 
     <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:4px;margin:10px 0;">
-        <div style="background:#0F2138;color:#fff;padding:8px 4px;text-align:center;font-family:'IBM Plex Sans Condensed',sans-serif;font-weight:600;font-size:10px;text-transform:uppercase;">1. Initiate</div>
-        <div style="background:#0F2138;color:#fff;padding:8px 4px;text-align:center;font-family:'IBM Plex Sans Condensed',sans-serif;font-weight:600;font-size:10px;text-transform:uppercase;">2. Hold</div>
-        <div style="background:#0F2138;color:#fff;padding:8px 4px;text-align:center;font-family:'IBM Plex Sans Condensed',sans-serif;font-weight:600;font-size:10px;text-transform:uppercase;">3. Process</div>
-        <div style="background:#0F2138;color:#fff;padding:8px 4px;text-align:center;font-family:'IBM Plex Sans Condensed',sans-serif;font-weight:600;font-size:10px;text-transform:uppercase;">4. Execute</div>
-        <div style="background:#0F2138;color:#fff;padding:8px 4px;text-align:center;font-family:'IBM Plex Sans Condensed',sans-serif;font-weight:600;font-size:10px;text-transform:uppercase;">5. Settle</div>
+        <div style="background:#0F2138;color:#fff;padding:8px 4px;text-align:center;font-family:'IBM Plex Sans Condensed',sans-serif;font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:0.04em;">1. Initiate</div>
+        <div style="background:#0F2138;color:#fff;padding:8px 4px;text-align:center;font-family:'IBM Plex Sans Condensed',sans-serif;font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:0.04em;">2. Hold</div>
+        <div style="background:#0F2138;color:#fff;padding:8px 4px;text-align:center;font-family:'IBM Plex Sans Condensed',sans-serif;font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:0.04em;">3. Process</div>
+        <div style="background:#0F2138;color:#fff;padding:8px 4px;text-align:center;font-family:'IBM Plex Sans Condensed',sans-serif;font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:0.04em;">4. Execute</div>
+        <div style="background:#0F2138;color:#fff;padding:8px 4px;text-align:center;font-family:'IBM Plex Sans Condensed',sans-serif;font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:0.04em;">5. Settle</div>
     </div>
 
     <p style="font-size:11px;color:#8A96A3;">Value is locked at source before authorisation, eliminating the need for custodial transfers.</p>
 
     <h2>Why Angola?</h2>
 
-    <p>Angola is a <strong>strategically selected first market</strong> based on regulatory readiness and infrastructure availability.</p>
+    <p>Angola is a <strong>strategically selected first market</strong> based on regulatory readiness, infrastructure availability, and addressable population.</p>
 
     <table>
-        <thead><tr><th>Indicator</th><th>Value</th></tr></thead>
+        <thead><tr><th>Indicator</th><th>Value</th><th>Implication</th></tr></thead>
         <tbody>
-            <tr><td><strong>Population</strong></td><td>40.2 million</td></tr>
-            <tr><td><strong>Unbanked adults</strong></td><td>26 million</td></tr>
-            <tr><td><strong>Mobile users</strong></td><td>30.6 million</td></tr>
-            <tr><td><strong>Banking penetration</strong></td><td>28%</td></tr>
-            <tr><td><strong>Government beneficiaries</strong></td><td>1.7M households</td></tr>
+            <tr><td><strong>Population</strong></td><td>40.2 million</td><td>Large addressable market</td></tr>
+            <tr><td><strong>Unbanked adults</strong></td><td>26 million</td><td>Target users for identity payments</td></tr>
+            <tr><td><strong>Mobile users</strong></td><td>30.6 million</td><td>Digital access exists</td></tr>
+            <tr><td><strong>Banking penetration</strong></td><td>28%</td><td>Vast underserved population</td></tr>
+            <tr><td><strong>Government beneficiaries</strong></td><td>1.7M households</td><td>Immediate use case</td></tr>
         </tbody>
     </table>
 
     <div class="footer-text">
         <span>VouchMorph (Pty) Ltd · Gaborone, Botswana</span>
+        <span class="conf">Proprietary &amp; Confidential</span>
         <span>Page 5</span>
     </div>
 </div>
@@ -492,16 +550,17 @@ header('Content-Type: text/html; charset=utf-8');
     <h2>Why VouchMorph Wins</h2>
 
     <div class="features">
-        <div class="feature"><span class="icon">🔗</span><div class="label">Identity-Based</div></div>
-        <div class="feature"><span class="icon">🏛️</span><div class="label">Institution Agnostic</div></div>
-        <div class="feature"><span class="icon">📈</span><div class="label">Network Effect</div></div>
-        <div class="feature"><span class="icon">🔒</span><div class="label">Non-Custodial</div></div>
-        <div class="feature"><span class="icon">⚡</span><div class="label">Real-Time</div></div>
-        <div class="feature"><span class="icon">🛡️</span><div class="label">Patent Granted</div></div>
+        <div class="feature"><span class="icon">🔗</span><div class="label">Identity-Based</div><div class="desc">Send to phone number, not account</div></div>
+        <div class="feature"><span class="icon">🏛️</span><div class="label">Institution Agnostic</div><div class="desc">Works across any bank, MNO, or service</div></div>
+        <div class="feature"><span class="icon">📈</span><div class="label">Network Effect</div><div class="desc">Each institution added increases value</div></div>
+        <div class="feature"><span class="icon">🔒</span><div class="label">Non-Custodial</div><div class="desc">No client funds held — lower burden</div></div>
+        <div class="feature"><span class="icon">⚡</span><div class="label">Real-Time</div><div class="desc">Instant execution, delayed settlement</div></div>
+        <div class="feature"><span class="icon">🛡️</span><div class="label">Patent Granted</div><div class="desc">Unique identity-routing architecture</div></div>
     </div>
 
     <div class="footer-text">
         <span>VouchMorph (Pty) Ltd · Gaborone, Botswana</span>
+        <span class="conf">Proprietary &amp; Confidential</span>
         <span>Page 6</span>
     </div>
 </div>
@@ -519,21 +578,22 @@ header('Content-Type: text/html; charset=utf-8');
     <table>
         <thead><tr><th>Moat Element</th><th>Why It Matters</th></tr></thead>
         <tbody>
-            <tr><td><strong>Patent Granted</strong></td><td>Identity-based routing — legally protected</td></tr>
-            <tr><td><strong>First Mover Angola</strong></td><td>Relationships with BNA, ABCCI, commercial banks</td></tr>
-            <tr><td><strong>Botswana Sandbox</strong></td><td>Regulatory validation and reference</td></tr>
-            <tr><td><strong>Institution Adapters</strong></td><td>Working integrations with multiple rails</td></tr>
-            <tr><td><strong>Non-Custodial Model</strong></td><td>No balance-sheet risk — easier compliance</td></tr>
+            <tr><td><strong>Patent Granted</strong></td><td>Identity-based routing, swap architecture — legally protected</td></tr>
+            <tr><td><strong>First Mover Angola</strong></td><td>Established relationships with BNA, ABCCI, commercial banks</td></tr>
+            <tr><td><strong>Botswana Sandbox</strong></td><td>Regulatory validation and reference — proven model</td></tr>
+            <tr><td><strong>Institution Adapters</strong></td><td>Working integrations with multiple banking and mobile rails</td></tr>
+            <tr><td><strong>Non-Custodial Model</strong></td><td>No balance-sheet risk — significantly easier compliance</td></tr>
             <tr><td><strong>Strategic Partners</strong></td><td>Intellegere (security) and Malakana (infrastructure)</td></tr>
         </tbody>
     </table>
 
-    <div class="highlight" style="max-width:100%;">
+    <div class="highlight-box" style="max-width:100%;">
         <strong>VouchMorph is identity-based, non-custodial, and institution-agnostic.</strong> No other player combines all three.
     </div>
 
     <div class="footer-text">
         <span>VouchMorph (Pty) Ltd · Gaborone, Botswana</span>
+        <span class="conf">Proprietary &amp; Confidential</span>
         <span>Page 7</span>
     </div>
 </div>
@@ -548,24 +608,25 @@ header('Content-Type: text/html; charset=utf-8');
 
     <p style="font-size:14px;font-weight:500;color:#0F2138;">A clear, phased path to commercial launch and regional expansion.</p>
 
-    <div style="padding-left:14px;border-left:3px solid #8A6D3B;margin:10px 0;">
-        <div style="display:flex;gap:12px;margin-bottom:4px;"><span style="font-weight:700;font-size:12px;min-width:70px;color:#0F2138;">Phase 1</span><span style="font-size:10px;color:#8A96A3;min-width:50px;">Q3 2026</span><span style="font-size:12px;color:#4A5A6E;">Botswana Sandbox — Regulatory validation</span></div>
-        <div style="display:flex;gap:12px;margin-bottom:4px;"><span style="font-weight:700;font-size:12px;min-width:70px;color:#0F2138;">Phase 2</span><span style="font-size:10px;color:#8A96A3;min-width:50px;">Q3 2026</span><span style="font-size:12px;color:#4A5A6E;">ABCCI Membership — Business ecosystem entry</span></div>
-        <div style="display:flex;gap:12px;margin-bottom:4px;"><span style="font-weight:700;font-size:12px;min-width:70px;color:#0F2138;">Phase 3</span><span style="font-size:10px;color:#8A96A3;min-width:50px;">Q3–Q4 2026</span><span style="font-size:12px;color:#4A5A6E;">Angola Market Mission — Stakeholder meetings</span></div>
-        <div style="display:flex;gap:12px;margin-bottom:4px;"><span style="font-weight:700;font-size:12px;min-width:70px;color:#0F2138;">Phase 4</span><span style="font-size:10px;color:#8A96A3;min-width:50px;">Q4 2026</span><span style="font-size:12px;color:#4A5A6E;">BNA Sandbox Application — Formal submission</span></div>
-        <div style="display:flex;gap:12px;margin-bottom:4px;"><span style="font-weight:700;font-size:12px;min-width:70px;color:#0F2138;">Phase 5</span><span style="font-size:10px;color:#8A96A3;min-width:50px;">Q1 2027</span><span style="font-size:12px;color:#4A5A6E;">Pilot Implementation — First institutions live</span></div>
-        <div style="display:flex;gap:12px;margin-bottom:4px;"><span style="font-weight:700;font-size:12px;min-width:70px;color:#0F2138;">Phase 6</span><span style="font-size:10px;color:#8A96A3;min-width:50px;">Q2 2027</span><span style="font-size:12px;color:#4A5A6E;">Commercial Launch — Full operations commence</span></div>
-        <div style="display:flex;gap:12px;margin-bottom:4px;"><span style="font-weight:700;font-size:12px;min-width:70px;color:#0F2138;">Phase 7</span><span style="font-size:10px;color:#8A96A3;min-width:50px;">Q3 2027</span><span style="font-size:12px;color:#4A5A6E;">Government Programs — Beneficiary disbursements</span></div>
-        <div style="display:flex;gap:12px;"><span style="font-weight:700;font-size:12px;min-width:70px;color:#0F2138;">Phase 8</span><span style="font-size:10px;color:#8A96A3;min-width:50px;">2028</span><span style="font-size:12px;color:#4A5A6E;">SADC Expansion — Botswana, Namibia, Zambia</span></div>
+    <div class="timeline">
+        <div class="tl-item"><span class="phase">Phase 1</span><span class="date">Q3 2026</span><span class="desc"><strong>Botswana Sandbox</strong> — Regulatory validation</span></div>
+        <div class="tl-item"><span class="phase">Phase 2</span><span class="date">Q3 2026</span><span class="desc"><strong>ABCCI Membership</strong> — Business ecosystem entry</span></div>
+        <div class="tl-item"><span class="phase">Phase 3</span><span class="date">Q3–Q4 2026</span><span class="desc"><strong>Angola Market Mission</strong> — Stakeholder meetings, bank workshops</span></div>
+        <div class="tl-item"><span class="phase">Phase 4</span><span class="date">Q4 2026</span><span class="desc"><strong>BNA Sandbox Application</strong> — Formal regulatory submission</span></div>
+        <div class="tl-item"><span class="phase">Phase 5</span><span class="date">Q1 2027</span><span class="desc"><strong>Pilot Implementation</strong> — First institutions live</span></div>
+        <div class="tl-item"><span class="phase">Phase 6</span><span class="date">Q2 2027</span><span class="desc"><strong>Commercial Launch</strong> — Full operations commence</span></div>
+        <div class="tl-item"><span class="phase">Phase 7</span><span class="date">Q3 2027</span><span class="desc"><strong>Government Programs</strong> — Beneficiary disbursements</span></div>
+        <div class="tl-item"><span class="phase">Phase 8</span><span class="date">2028</span><span class="desc"><strong>SADC Expansion</strong> — Botswana, Namibia, Zambia, and beyond</span></div>
     </div>
 
-    <div class="highlight" style="max-width:100%;">
+    <div class="highlight-box" style="max-width:100%;">
         <strong>With investment:</strong> 18 months to commercial launch<br>
         <strong>Without investment:</strong> 3–5 years organic growth
     </div>
 
     <div class="footer-text">
         <span>VouchMorph (Pty) Ltd · Gaborone, Botswana</span>
+        <span class="conf">Proprietary &amp; Confidential</span>
         <span>Page 8</span>
     </div>
 </div>
@@ -583,19 +644,19 @@ header('Content-Type: text/html; charset=utf-8');
     <table>
         <thead><tr><th>Category</th><th>Focus Area</th><th>Weight</th></tr></thead>
         <tbody>
-            <tr><td><strong>Product Development</strong></td><td>Platform enhancement, feature expansion</td><td>~30%</td></tr>
+            <tr><td><strong>Product Development</strong></td><td>Platform enhancement, feature expansion, security</td><td>~30%</td></tr>
             <tr><td><strong>Market Entry</strong></td><td>Angola commercialisation, regulatory engagement</td><td>~25%</td></tr>
-            <tr><td><strong>Team Expansion</strong></td><td>Engineering, operations, compliance</td><td>~20%</td></tr>
-            <tr><td><strong>Infrastructure</strong></td><td>Cloud hosting, disaster recovery</td><td>~15%</td></tr>
-            <tr><td><strong>Working Capital</strong></td><td>Operational runway and reserves</td><td>~10%</td></tr>
+            <tr><td><strong>Team Expansion</strong></td><td>Engineering, operations, compliance, business</td><td>~20%</td></tr>
+            <tr><td><strong>Infrastructure</strong></td><td>Cloud hosting, disaster recovery, security</td><td>~15%</td></tr>
+            <tr><td><strong>Working Capital</strong></td><td>Operational runway and strategic reserves</td><td>~10%</td></tr>
         </tbody>
     </table>
 
-    <p style="font-size:11px;color:#8A96A3;">Detailed budget available upon request. ABCCI covers Angola local costs.</p>
+    <p style="font-size:11px;color:#8A96A3;">Detailed budget breakdown available upon request. ABCCI covers Angola local costs.</p>
 
     <div style="background:#F4EFE3;border:1px solid #D3DAD6;padding:12px 16px;margin:10px 0;">
         <div style="font-weight:700;font-size:13px;color:#0F2138;">Investment Summary</div>
-        <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:4px;font-size:12px;">
+        <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:4px;font-size:12px;color:#4A5A6E;">
             <span><strong>Amount:</strong> Growth capital</span>
             <span><strong>Equity:</strong> 20%</span>
             <span><strong>Valuation:</strong> BWP 7.5M pre-money</span>
@@ -605,6 +666,7 @@ header('Content-Type: text/html; charset=utf-8');
 
     <div class="footer-text">
         <span>VouchMorph (Pty) Ltd · Gaborone, Botswana</span>
+        <span class="conf">Proprietary &amp; Confidential</span>
         <span>Page 9</span>
     </div>
 </div>
@@ -632,16 +694,17 @@ header('Content-Type: text/html; charset=utf-8');
     <h2>Strategic Partners</h2>
 
     <table>
-        <thead><tr><th>Partner</th><th>Role</th></tr></thead>
+        <thead><tr><th>Partner</th><th>Role</th><th>Capability</th></tr></thead>
         <tbody>
-            <tr><td><strong>Intellegere Holdings</strong></td><td>Cybersecurity &amp; Engineering — CEH-certified, 18 years</td></tr>
-            <tr><td><strong>Malakana Enterprises</strong></td><td>Infrastructure — 99.99% SLA, disaster recovery</td></tr>
-            <tr><td><strong>ABCCI</strong></td><td>Angola Market Entry — Local partnerships, regulatory access</td></tr>
+            <tr><td><strong>Intellegere Holdings</strong></td><td>Cybersecurity &amp; Engineering</td><td>CEH-certified, 18 years experience</td></tr>
+            <tr><td><strong>Malakana Enterprises</strong></td><td>Infrastructure</td><td>99.99% SLA, disaster recovery</td></tr>
+            <tr><td><strong>ABCCI</strong></td><td>Angola Market Entry</td><td>Local partnerships, regulatory access</td></tr>
         </tbody>
     </table>
 
     <div class="footer-text">
         <span>VouchMorph (Pty) Ltd · Gaborone, Botswana</span>
+        <span class="conf">Proprietary &amp; Confidential</span>
         <span>Page 10</span>
     </div>
 </div>
@@ -657,7 +720,7 @@ header('Content-Type: text/html; charset=utf-8');
     <p style="font-size:14px;font-weight:500;color:#0F2138;">A strategic opportunity to participate in Africa's next-generation financial infrastructure.</p>
 
     <div style="border:2px solid #8A6D3B;padding:16px 20px;background:#F4EFE3;margin:12px 0;text-align:center;">
-        <div style="font-family:'IBM Plex Sans Condensed',sans-serif;font-size:28px;font-weight:700;color:#0F2138;">BWP 1,500,000</div>
+        <div style="font-family:'IBM Plex Sans Condensed',sans-serif;font-size:24px;font-weight:700;color:#0F2138;">Growth Capital</div>
         <div style="font-size:13px;color:#4A5A6E;">for 20% Equity</div>
         <div style="font-size:11px;color:#8A96A3;">Pre-money valuation: BWP 7.5 million</div>
     </div>
@@ -673,7 +736,7 @@ header('Content-Type: text/html; charset=utf-8');
         </tbody>
     </table>
 
-    <div class="highlight" style="max-width:100%;border-left-color:#24513A;">
+    <div class="highlight-box" style="max-width:100%;border-left-color:#24513A;">
         <strong>Investor Benefits:</strong><br>
         Board representation · Information rights · Pre-emptive rights<br>
         Tag-along and drag-along rights · Anti-dilution protection
@@ -681,6 +744,7 @@ header('Content-Type: text/html; charset=utf-8');
 
     <div class="footer-text">
         <span>VouchMorph (Pty) Ltd · Gaborone, Botswana</span>
+        <span class="conf">Proprietary &amp; Confidential</span>
         <span>Page 11</span>
     </div>
 </div>
