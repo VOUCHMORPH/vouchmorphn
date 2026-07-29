@@ -2,108 +2,19 @@
 /**
  * VouchMorph Investment Memorandum
  * Professional A4 Document · 12 Pages
- * Designed for Chrome PDF generation
+ * Uses browser Print-to-PDF for perfect rendering
  */
 
 // ============================================================
-// 1. CHECK IF DOMPDF IS AVAILABLE (fallback only)
+// 1. SHOW THE DOCUMENT
 // ============================================================
-$useDompdf = false;
-$dompdfAvailable = false;
-
-if (file_exists(__DIR__ . '/../../vendor/autoload.php')) {
-    try {
-        require_once __DIR__ . '/../../vendor/autoload.php';
-        if (class_exists('Dompdf\Dompdf')) {
-            $dompdfAvailable = true;
-            $useDompdf = true;
-        }
-    } catch (Exception $e) {
-        $dompdfAvailable = false;
-        $useDompdf = false;
-    }
-}
-
-// ============================================================
-// 2. IF DOWNLOAD REQUESTED
-// ============================================================
-if (isset($_GET['download'])) {
-    if ($useDompdf && $dompdfAvailable) {
-        try {
-            $html = getMemoHTML(true);
-            $dompdf = new Dompdf\Dompdf();
-            $dompdf->loadHtml($html);
-            $dompdf->setPaper('A4', 'portrait');
-            $dompdf->render();
-            $dompdf->stream('VouchMorph_Investment_Memorandum.pdf', ['Attachment' => true]);
-            exit;
-        } catch (Exception $e) {
-            // Fall through to browser print
-        }
-    }
-    
-    // If dompdf fails or isn't available, show print instructions
-    echo '<!DOCTYPE html>
-    <html>
-    <head><title>PDF Generation</title></head>
-    <body style="font-family: Arial, sans-serif; text-align: center; padding: 60px 20px; max-width: 600px; margin: 0 auto;">
-        <h1 style="color: #0F2138;">📄 PDF Generation</h1>
-        <p style="color: #4A5A6E; font-size: 16px; line-height: 1.6;">
-            For best results, use your browser\'s <strong>"Print to PDF"</strong> function.
-        </p>
-        <div style="background: #F4EFE3; border-left: 4px solid #8A6D3B; padding: 16px 20px; margin: 20px 0; text-align: left;">
-            <p style="margin: 0; font-size: 14px; color: #1D3557;">
-                <strong>💡 Steps:</strong><br>
-                1. Click <strong>"View Document"</strong> below<br>
-                2. Press <strong>Ctrl+P</strong> (or Cmd+P)<br>
-                3. Select <strong>"Save as PDF"</strong><br>
-                4. Choose <strong>"A4"</strong> paper size
-            </p>
-        </div>
-        <a href="?view=1" class="btn" style="display: inline-block; padding: 14px 40px; background: #0F2138; color: #fff; text-decoration: none; font-weight: 600; margin-top: 12px;">View Document</a>
-        <p style="color: #8A96A3; font-size: 12px; margin-top: 24px;">The document is 12 pages · Professionally designed · Investment-grade quality</p>
-    </body>
-    </html>';
-    exit;
-}
-
-// ============================================================
-// 3. SHOW DOCUMENT
-// ============================================================
-if (isset($_GET['view'])) {
-    echo getMemoHTML(false);
-    exit;
-}
-
-// ============================================================
-// 4. LANDING PAGE
-// ============================================================
-echo '<!DOCTYPE html>
-<html>
-<head><title>VouchMorph · Investment Memorandum</title></head>
-<body style="font-family: Arial, sans-serif; text-align: center; padding: 60px 20px; max-width: 600px; margin: 0 auto;">
-    <h1 style="color: #0F2138;">VOUCHMORPH</h1>
-    <p style="color: #8A6D3B; font-size: 18px; font-weight: 600; margin-top: -8px;">Investment Memorandum</p>
-    <div style="border: 2px solid #8A6D3B; padding: 24px; margin: 24px 0; background: #F4EFE3;">
-        <div style="font-size: 28px; font-weight: 700; color: #0F2138;">BWP 1,500,000</div>
-        <div style="font-size: 14px; color: #4A5A6E;">for 20% Equity</div>
-    </div>
-    <p style="color: #4A5A6E; font-size: 16px; line-height: 1.6;">
-        A professionally designed, 12-page investment memorandum.
-    </p>
-    <div style="display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 24px;">
-        <a href="?view=1" class="btn" style="display: inline-block; padding: 14px 32px; background: #0F2138; color: #fff; text-decoration: none; font-weight: 600;">📄 View Document</a>
-        <a href="?download=1" class="btn" style="display: inline-block; padding: 14px 32px; background: #24513A; color: #fff; text-decoration: none; font-weight: 600;">⬇ Download PDF</a>
-    </div>
-    <p style="color: #8A96A3; font-size: 12px; margin-top: 20px;">12 pages · A4 · Investment-grade quality</p>
-</body>
-</html>';
+echo getMemoHTML();
 
 
 // ============================================================
-// 5. THE FULL MEMORANDUM HTML
+// 2. THE FULL MEMORANDUM HTML
 // ============================================================
-function getMemoHTML(bool $isPdf = false): string
+function getMemoHTML(): string
 {
     return '<!DOCTYPE html>
 <html lang="en">
@@ -123,18 +34,60 @@ function getMemoHTML(bool $isPdf = false): string
             font-family: "IBM Plex Sans", sans-serif;
             background: #EEF1EF;
             color: #0F2138;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
             padding: 24px;
         }
+
+        /* ============================================================
+           DOWNLOAD BAR — Only visible on screen
+           ============================================================ */
+        .download-bar {
+            max-width: 210mm;
+            margin: 0 auto 16px;
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+            padding: 8px 0;
+        }
+
+        .btn {
+            height: 40px;
+            padding: 0 24px;
+            font-size: 13px;
+            font-weight: 600;
+            font-family: "IBM Plex Sans Condensed", sans-serif;
+            border: 1px solid transparent;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            box-sizing: border-box;
+            border-radius: 0;
+        }
+
+        .btn-primary {
+            background: #0F2138;
+            color: #fff;
+            border-color: #0F2138;
+        }
+        .btn-primary:hover { background: #8A6D3B; border-color: #8A6D3B; color: #0F2138; }
+
+        .btn-success {
+            background: #24513A;
+            color: #fff;
+            border-color: #24513A;
+        }
+        .btn-success:hover { background: #1a3d2c; }
 
         .page {
             width: 210mm;
             min-height: 297mm;
             background: #FFFFFF;
             padding: 18mm 16mm;
-            margin-bottom: 24px;
+            margin: 0 auto 24px;
             box-shadow: 0 4px 24px rgba(15,33,56,0.08);
             position: relative;
             page-break-after: always;
@@ -157,6 +110,7 @@ function getMemoHTML(bool $isPdf = false): string
             }
             .page:last-child { page-break-after: avoid; }
             .no-print { display: none !important; }
+            .download-bar { display: none !important; }
         }
 
         /* ============================================================
@@ -410,6 +364,15 @@ function getMemoHTML(bool $isPdf = false): string
 <body>';
 
     // ============================================================
+    // DOWNLOAD BAR (only visible on screen)
+    // ============================================================
+    $html .= '
+    <div class="download-bar no-print">
+        <button class="btn btn-primary" onclick="window.print()">📄 Print / Save as PDF</button>
+        <button class="btn btn-success" onclick="document.querySelectorAll(\'.page\').forEach(p=>p.style.boxShadow=\'none\');window.print();">⬇ Download PDF</button>
+    </div>';
+
+    // ============================================================
     // PAGE 1 — COVER
     // ============================================================
     $html .= '
@@ -421,12 +384,12 @@ function getMemoHTML(bool $isPdf = false): string
         <div style="flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;">
             <div style="font-family:\'IBM Plex Sans Condensed\',sans-serif;font-weight:500;font-size:18px;color:#8A96A3;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:8px;">Investment Memorandum</div>
             
-            <div style="font-family:\'IBM Plex Sans Condensed\',sans-serif;font-weight:700;font-size:52px;color:#0F2138;line-height:1.1;letter-spacing:-1px;max-width:500px;margin:12px 0;">
+            <div style="font-family:\'IBM Plex Sans Condensed\',sans-serif;font-weight:700;font-size:48px;color:#0F2138;line-height:1.1;letter-spacing:-1px;max-width:500px;margin:12px 0;">
                 The Bridge Between Any Source of Money and Any Identity
             </div>
             
             <div style="border:2px solid #8A6D3B;padding:20px 48px;background:#F4EFE3;margin:24px 0;">
-                <div style="font-family:\'IBM Plex Sans Condensed\',sans-serif;font-size:36px;font-weight:700;color:#0F2138;">BWP 1,500,000</div>
+                <div style="font-family:\'IBM Plex Sans Condensed\',sans-serif;font-size:32px;font-weight:700;color:#0F2138;">BWP 1,500,000</div>
                 <div style="font-size:14px;color:#4A5A6E;font-weight:500;">for 20% Equity</div>
             </div>
             
