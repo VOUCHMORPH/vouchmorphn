@@ -1,11 +1,9 @@
 <?php
 /**
  * VouchMorph Investment Memorandum
- * Professional · Clean · No DOMPDF
- * View in Chrome → Ctrl+P → Save as PDF
+ * Clean HTML version — download via download.php
  */
 
-// Just output the HTML directly
 header('Content-Type: text/html; charset=utf-8');
 ?>
 <!DOCTYPE html>
@@ -25,21 +23,22 @@ header('Content-Type: text/html; charset=utf-8');
             padding: 20px;
         }
 
-        /* Download button - only visible on screen */
         .download-bar {
             max-width: 210mm;
             margin: 0 auto 16px;
             display: flex;
-            justify-content: flex-end;
+            justify-content: center;
             gap: 12px;
             position: sticky;
             top: 10px;
             z-index: 999;
+            background: #EEF1EF;
+            padding: 12px 0;
         }
 
         .btn {
-            padding: 10px 24px;
-            font-size: 13px;
+            padding: 12px 32px;
+            font-size: 14px;
             font-weight: 600;
             font-family: "IBM Plex Sans Condensed", sans-serif;
             border: none;
@@ -49,6 +48,8 @@ header('Content-Type: text/html; charset=utf-8');
             background: #0F2138;
             color: #fff;
             border-radius: 0;
+            text-decoration: none;
+            display: inline-block;
         }
         .btn:hover { background: #8A6D3B; }
         .btn-success { background: #24513A; }
@@ -65,7 +66,6 @@ header('Content-Type: text/html; charset=utf-8');
             page-break-after: always;
         }
 
-        /* ===== TYPOGRAPHY ===== */
         .brand {
             font-family: "IBM Plex Sans Condensed", sans-serif;
             font-weight: 700;
@@ -113,7 +113,6 @@ header('Content-Type: text/html; charset=utf-8');
         }
         .highlight-box strong { color: #0F2138; }
 
-        /* ===== METRICS ===== */
         .metrics {
             display: flex;
             gap: 8px;
@@ -142,7 +141,6 @@ header('Content-Type: text/html; charset=utf-8');
             font-weight: 600;
         }
 
-        /* ===== TABLES ===== */
         table {
             width: 100%;
             border-collapse: collapse;
@@ -167,7 +165,6 @@ header('Content-Type: text/html; charset=utf-8');
             font-size: 12px;
         }
 
-        /* ===== PARTNERS ===== */
         .partners {
             display: flex;
             gap: 24px;
@@ -181,7 +178,6 @@ header('Content-Type: text/html; charset=utf-8');
         .partner .name { font-weight: 700; font-size: 14px; color: #0F2138; }
         .partner .role { font-size: 10px; color: #8A96A3; }
 
-        /* ===== FEATURES ===== */
         .features {
             display: grid;
             grid-template-columns: repeat(3, 1fr);
@@ -198,7 +194,6 @@ header('Content-Type: text/html; charset=utf-8');
         .feature .label { font-weight: 600; font-size: 12px; color: #0F2138; }
         .feature .desc { font-size: 10px; color: #4A5A6E; }
 
-        /* ===== SOLUTIONS ===== */
         .solutions {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -223,7 +218,6 @@ header('Content-Type: text/html; charset=utf-8');
             font-style: italic;
         }
 
-        /* ===== TIMELINE ===== */
         .timeline {
             padding-left: 14px;
             border-left: 3px solid #8A6D3B;
@@ -244,7 +238,6 @@ header('Content-Type: text/html; charset=utf-8');
         .tl-item .date { font-size: 10px; color: #8A96A3; min-width: 55px; }
         .tl-item .desc { font-size: 12px; color: #4A5A6E; }
 
-        /* ===== FOOTER ===== */
         .footer-text {
             position: absolute;
             bottom: 16mm;
@@ -265,7 +258,6 @@ header('Content-Type: text/html; charset=utf-8');
             font-size: 8px;
         }
 
-        /* ===== PRINT ===== */
         @media print {
             body { background: #fff; padding: 0; margin: 0; }
             .page {
@@ -291,17 +283,13 @@ header('Content-Type: text/html; charset=utf-8');
 </head>
 <body>
 
-<!-- ============================================================ -->
-<!-- DOWNLOAD BAR (only visible on screen) -->
-<!-- ============================================================ -->
 <div class="download-bar no-print">
-    <button class="btn" onclick="window.print()">📄 Download PDF</button>
-    <button class="btn btn-success" onclick="document.querySelectorAll('.page').forEach(p=>p.style.boxShadow='none');setTimeout(window.print, 300);">⬇ Save as PDF</button>
+    <a href="download.php" class="btn btn-success">
+        ⬇ Download Investment Memorandum (PDF)
+    </a>
 </div>
 
-<!-- ============================================================ -->
-<!-- PAGE 1 — COVER (No investment amount shown) -->
-<!-- ============================================================ -->
+<!-- ===== PAGE 1 — COVER ===== -->
 <div class="page" style="display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;">
     <div style="width:100%;text-align:left;margin-bottom:40px;">
         <div class="brand">VOUCHMORPH <span>·</span></div>
@@ -334,9 +322,7 @@ header('Content-Type: text/html; charset=utf-8');
     </div>
 </div>
 
-<!-- ============================================================ -->
-<!-- PAGE 2 — EXECUTIVE SUMMARY -->
-<!-- ============================================================ -->
+<!-- ===== PAGE 2 — EXECUTIVE SUMMARY ===== -->
 <div class="page">
     <div class="brand" style="margin-bottom:12px;">VOUCHMORPH <span>·</span></div>
 
@@ -378,9 +364,7 @@ header('Content-Type: text/html; charset=utf-8');
     </div>
 </div>
 
-<!-- ============================================================ -->
-<!-- PAGE 3 — STRATEGIC PARTNERS & HIGHLIGHTS -->
-<!-- ============================================================ -->
+<!-- ===== PAGE 3 — STRATEGIC PARTNERS ===== -->
 <div class="page">
     <div class="brand" style="margin-bottom:12px;">VOUCHMORPH <span>·</span></div>
 
@@ -424,9 +408,7 @@ header('Content-Type: text/html; charset=utf-8');
     </div>
 </div>
 
-<!-- ============================================================ -->
-<!-- PAGE 4 — SOLUTIONS -->
-<!-- ============================================================ -->
+<!-- ===== PAGE 4 — SOLUTIONS ===== -->
 <div class="page">
     <div class="brand" style="margin-bottom:12px;">VOUCHMORPH <span>·</span></div>
 
@@ -443,7 +425,7 @@ header('Content-Type: text/html; charset=utf-8');
         <div class="solution">
             <span class="icon">💰</span>
             <div class="label">Cashout Swap</div>
-            <div class="desc">Convert digital value to cash at any ATM, agent, or teller. Secure codes for instant redemption.</div>
+            <div class="desc">Convert digital value to cash at any ATM, agent, or teller.</div>
             <div class="example">Digital payment → cash withdrawal</div>
         </div>
         <div class="solution">
@@ -455,13 +437,13 @@ header('Content-Type: text/html; charset=utf-8');
         <div class="solution">
             <span class="icon">🆔</span>
             <div class="label">Swap to Identity</div>
-            <div class="desc">Send to a phone number, email, or national ID — no account required at either end.</div>
+            <div class="desc">Send to a phone number, email, or national ID — no account required.</div>
             <div class="example">Family member → relative's phone number</div>
         </div>
         <div class="solution">
             <span class="icon">📦</span>
             <div class="label">Multi-Source Swap</div>
-            <div class="desc">Combine funds from multiple accounts, wallets, or cards into a single transaction.</div>
+            <div class="desc">Combine funds from multiple accounts, wallets, or cards into one transaction.</div>
             <div class="example">Business → supplier using multiple accounts</div>
         </div>
         <div class="solution">
@@ -483,9 +465,7 @@ header('Content-Type: text/html; charset=utf-8');
     </div>
 </div>
 
-<!-- ============================================================ -->
-<!-- PAGE 5 — HOW IT WORKS + WHY ANGOLA -->
-<!-- ============================================================ -->
+<!-- ===== PAGE 5 — HOW IT WORKS + WHY ANGOLA ===== -->
 <div class="page">
     <div class="brand" style="margin-bottom:12px;">VOUCHMORPH <span>·</span></div>
 
@@ -494,11 +474,11 @@ header('Content-Type: text/html; charset=utf-8');
     <p style="font-size:14px;font-weight:500;color:#0F2138;">Five-stage transaction lifecycle — secure, atomic, and non-custodial.</p>
 
     <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:4px;margin:10px 0;">
-        <div style="background:#0F2138;color:#fff;padding:8px 4px;text-align:center;font-family:'IBM Plex Sans Condensed',sans-serif;font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:0.04em;">1. Initiate</div>
-        <div style="background:#0F2138;color:#fff;padding:8px 4px;text-align:center;font-family:'IBM Plex Sans Condensed',sans-serif;font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:0.04em;">2. Hold</div>
-        <div style="background:#0F2138;color:#fff;padding:8px 4px;text-align:center;font-family:'IBM Plex Sans Condensed',sans-serif;font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:0.04em;">3. Process</div>
-        <div style="background:#0F2138;color:#fff;padding:8px 4px;text-align:center;font-family:'IBM Plex Sans Condensed',sans-serif;font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:0.04em;">4. Execute</div>
-        <div style="background:#0F2138;color:#fff;padding:8px 4px;text-align:center;font-family:'IBM Plex Sans Condensed',sans-serif;font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:0.04em;">5. Settle</div>
+        <div style="background:#0F2138;color:#fff;padding:8px 4px;text-align:center;font-family:'IBM Plex Sans Condensed',sans-serif;font-weight:600;font-size:10px;text-transform:uppercase;">1. Initiate</div>
+        <div style="background:#0F2138;color:#fff;padding:8px 4px;text-align:center;font-family:'IBM Plex Sans Condensed',sans-serif;font-weight:600;font-size:10px;text-transform:uppercase;">2. Hold</div>
+        <div style="background:#0F2138;color:#fff;padding:8px 4px;text-align:center;font-family:'IBM Plex Sans Condensed',sans-serif;font-weight:600;font-size:10px;text-transform:uppercase;">3. Process</div>
+        <div style="background:#0F2138;color:#fff;padding:8px 4px;text-align:center;font-family:'IBM Plex Sans Condensed',sans-serif;font-weight:600;font-size:10px;text-transform:uppercase;">4. Execute</div>
+        <div style="background:#0F2138;color:#fff;padding:8px 4px;text-align:center;font-family:'IBM Plex Sans Condensed',sans-serif;font-weight:600;font-size:10px;text-transform:uppercase;">5. Settle</div>
     </div>
 
     <p style="font-size:11px;color:#8A96A3;">Value is locked at source before authorisation, eliminating the need for custodial transfers.</p>
@@ -525,9 +505,7 @@ header('Content-Type: text/html; charset=utf-8');
     </div>
 </div>
 
-<!-- ============================================================ -->
-<!-- PAGE 6 — BUSINESS MODEL -->
-<!-- ============================================================ -->
+<!-- ===== PAGE 6 — BUSINESS MODEL ===== -->
 <div class="page">
     <div class="brand" style="margin-bottom:12px;">VOUCHMORPH <span>·</span></div>
 
@@ -550,12 +528,12 @@ header('Content-Type: text/html; charset=utf-8');
     <h2>Why VouchMorph Wins</h2>
 
     <div class="features">
-        <div class="feature"><span class="icon">🔗</span><div class="label">Identity-Based</div><div class="desc">Send to phone number, not account</div></div>
-        <div class="feature"><span class="icon">🏛️</span><div class="label">Institution Agnostic</div><div class="desc">Works across any bank, MNO, or service</div></div>
-        <div class="feature"><span class="icon">📈</span><div class="label">Network Effect</div><div class="desc">Each institution added increases value</div></div>
-        <div class="feature"><span class="icon">🔒</span><div class="label">Non-Custodial</div><div class="desc">No client funds held — lower burden</div></div>
-        <div class="feature"><span class="icon">⚡</span><div class="label">Real-Time</div><div class="desc">Instant execution, delayed settlement</div></div>
-        <div class="feature"><span class="icon">🛡️</span><div class="label">Patent Granted</div><div class="desc">Unique identity-routing architecture</div></div>
+        <div class="feature"><span class="icon">🔗</span><div class="label">Identity-Based</div><div class="desc">Send to phone number</div></div>
+        <div class="feature"><span class="icon">🏛️</span><div class="label">Institution Agnostic</div><div class="desc">Works across any bank</div></div>
+        <div class="feature"><span class="icon">📈</span><div class="label">Network Effect</div><div class="desc">Each addition increases value</div></div>
+        <div class="feature"><span class="icon">🔒</span><div class="label">Non-Custodial</div><div class="desc">No client funds held</div></div>
+        <div class="feature"><span class="icon">⚡</span><div class="label">Real-Time</div><div class="desc">Instant execution</div></div>
+        <div class="feature"><span class="icon">🛡️</span><div class="label">Patent Granted</div><div class="desc">Identity-routing protected</div></div>
     </div>
 
     <div class="footer-text">
@@ -565,9 +543,7 @@ header('Content-Type: text/html; charset=utf-8');
     </div>
 </div>
 
-<!-- ============================================================ -->
-<!-- PAGE 7 — COMPETITIVE MOAT -->
-<!-- ============================================================ -->
+<!-- ===== PAGE 7 — COMPETITIVE MOAT ===== -->
 <div class="page">
     <div class="brand" style="margin-bottom:12px;">VOUCHMORPH <span>·</span></div>
 
@@ -578,12 +554,12 @@ header('Content-Type: text/html; charset=utf-8');
     <table>
         <thead><tr><th>Moat Element</th><th>Why It Matters</th></tr></thead>
         <tbody>
-            <tr><td><strong>Patent Granted</strong></td><td>Identity-based routing, swap architecture — legally protected</td></tr>
-            <tr><td><strong>First Mover Angola</strong></td><td>Established relationships with BNA, ABCCI, commercial banks</td></tr>
-            <tr><td><strong>Botswana Sandbox</strong></td><td>Regulatory validation and reference — proven model</td></tr>
-            <tr><td><strong>Institution Adapters</strong></td><td>Working integrations with multiple banking and mobile rails</td></tr>
-            <tr><td><strong>Non-Custodial Model</strong></td><td>No balance-sheet risk — significantly easier compliance</td></tr>
-            <tr><td><strong>Strategic Partners</strong></td><td>Intellegere (security) and Malakana (infrastructure)</td></tr>
+            <tr><td><strong>Patent Granted</strong></td><td>Identity-based routing — legally protected</td></tr>
+            <tr><td><strong>First Mover Angola</strong></td><td>Relationships with BNA, ABCCI, commercial banks</td></tr>
+            <tr><td><strong>Botswana Sandbox</strong></td><td>Regulatory validation and reference</td></tr>
+            <tr><td><strong>Institution Adapters</strong></td><td>Working integrations with multiple rails</td></tr>
+            <tr><td><strong>Non-Custodial Model</strong></td><td>No balance-sheet risk — easier compliance</td></tr>
+            <tr><td><strong>Strategic Partners</strong></td><td>Intellegere (security), Malakana (infrastructure)</td></tr>
         </tbody>
     </table>
 
@@ -598,9 +574,7 @@ header('Content-Type: text/html; charset=utf-8');
     </div>
 </div>
 
-<!-- ============================================================ -->
-<!-- PAGE 8 — TIMELINE -->
-<!-- ============================================================ -->
+<!-- ===== PAGE 8 — TIMELINE ===== -->
 <div class="page">
     <div class="brand" style="margin-bottom:12px;">VOUCHMORPH <span>·</span></div>
 
@@ -611,12 +585,12 @@ header('Content-Type: text/html; charset=utf-8');
     <div class="timeline">
         <div class="tl-item"><span class="phase">Phase 1</span><span class="date">Q3 2026</span><span class="desc"><strong>Botswana Sandbox</strong> — Regulatory validation</span></div>
         <div class="tl-item"><span class="phase">Phase 2</span><span class="date">Q3 2026</span><span class="desc"><strong>ABCCI Membership</strong> — Business ecosystem entry</span></div>
-        <div class="tl-item"><span class="phase">Phase 3</span><span class="date">Q3–Q4 2026</span><span class="desc"><strong>Angola Market Mission</strong> — Stakeholder meetings, bank workshops</span></div>
-        <div class="tl-item"><span class="phase">Phase 4</span><span class="date">Q4 2026</span><span class="desc"><strong>BNA Sandbox Application</strong> — Formal regulatory submission</span></div>
+        <div class="tl-item"><span class="phase">Phase 3</span><span class="date">Q3–Q4 2026</span><span class="desc"><strong>Angola Market Mission</strong> — Stakeholder meetings</span></div>
+        <div class="tl-item"><span class="phase">Phase 4</span><span class="date">Q4 2026</span><span class="desc"><strong>BNA Sandbox Application</strong> — Formal submission</span></div>
         <div class="tl-item"><span class="phase">Phase 5</span><span class="date">Q1 2027</span><span class="desc"><strong>Pilot Implementation</strong> — First institutions live</span></div>
         <div class="tl-item"><span class="phase">Phase 6</span><span class="date">Q2 2027</span><span class="desc"><strong>Commercial Launch</strong> — Full operations commence</span></div>
         <div class="tl-item"><span class="phase">Phase 7</span><span class="date">Q3 2027</span><span class="desc"><strong>Government Programs</strong> — Beneficiary disbursements</span></div>
-        <div class="tl-item"><span class="phase">Phase 8</span><span class="date">2028</span><span class="desc"><strong>SADC Expansion</strong> — Botswana, Namibia, Zambia, and beyond</span></div>
+        <div class="tl-item"><span class="phase">Phase 8</span><span class="date">2028</span><span class="desc"><strong>SADC Expansion</strong> — Botswana, Namibia, Zambia</span></div>
     </div>
 
     <div class="highlight-box" style="max-width:100%;">
@@ -631,9 +605,7 @@ header('Content-Type: text/html; charset=utf-8');
     </div>
 </div>
 
-<!-- ============================================================ -->
-<!-- PAGE 9 — USE OF FUNDS -->
-<!-- ============================================================ -->
+<!-- ===== PAGE 9 — USE OF FUNDS ===== -->
 <div class="page">
     <div class="brand" style="margin-bottom:12px;">VOUCHMORPH <span>·</span></div>
 
@@ -644,11 +616,11 @@ header('Content-Type: text/html; charset=utf-8');
     <table>
         <thead><tr><th>Category</th><th>Focus Area</th><th>Weight</th></tr></thead>
         <tbody>
-            <tr><td><strong>Product Development</strong></td><td>Platform enhancement, feature expansion, security</td><td>~30%</td></tr>
-            <tr><td><strong>Market Entry</strong></td><td>Angola commercialisation, regulatory engagement</td><td>~25%</td></tr>
-            <tr><td><strong>Team Expansion</strong></td><td>Engineering, operations, compliance, business</td><td>~20%</td></tr>
-            <tr><td><strong>Infrastructure</strong></td><td>Cloud hosting, disaster recovery, security</td><td>~15%</td></tr>
-            <tr><td><strong>Working Capital</strong></td><td>Operational runway and strategic reserves</td><td>~10%</td></tr>
+            <tr><td><strong>Product Development</strong></td><td>Platform enhancement, security</td><td>~30%</td></tr>
+            <tr><td><strong>Market Entry</strong></td><td>Angola commercialisation, regulatory</td><td>~25%</td></tr>
+            <tr><td><strong>Team Expansion</strong></td><td>Engineering, operations, compliance</td><td>~20%</td></tr>
+            <tr><td><strong>Infrastructure</strong></td><td>Cloud hosting, disaster recovery</td><td>~15%</td></tr>
+            <tr><td><strong>Working Capital</strong></td><td>Operational runway and reserves</td><td>~10%</td></tr>
         </tbody>
     </table>
 
@@ -671,9 +643,7 @@ header('Content-Type: text/html; charset=utf-8');
     </div>
 </div>
 
-<!-- ============================================================ -->
-<!-- PAGE 10 — TEAM -->
-<!-- ============================================================ -->
+<!-- ===== PAGE 10 — TEAM ===== -->
 <div class="page">
     <div class="brand" style="margin-bottom:12px;">VOUCHMORPH <span>·</span></div>
 
@@ -709,9 +679,7 @@ header('Content-Type: text/html; charset=utf-8');
     </div>
 </div>
 
-<!-- ============================================================ -->
-<!-- PAGE 11 — INVESTMENT PROPOSAL -->
-<!-- ============================================================ -->
+<!-- ===== PAGE 11 — INVESTMENT PROPOSAL ===== -->
 <div class="page">
     <div class="brand" style="margin-bottom:12px;">VOUCHMORPH <span>·</span></div>
 
@@ -749,9 +717,7 @@ header('Content-Type: text/html; charset=utf-8');
     </div>
 </div>
 
-<!-- ============================================================ -->
-<!-- PAGE 12 — CONCLUSION -->
-<!-- ============================================================ -->
+<!-- ===== PAGE 12 — CONCLUSION ===== -->
 <div class="page" style="display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;">
     <div style="width:100%;text-align:left;margin-bottom:20px;">
         <div class="brand">VOUCHMORPH <span>·</span></div>
