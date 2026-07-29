@@ -283,11 +283,19 @@ header('Content-Type: text/html; charset=utf-8');
 </head>
 <body>
 
+<!-- ============================================================ -->
+<!-- DOWNLOAD BAR — FIXED: Uses correct path to download.php      -->
+<!-- ============================================================ -->
 <div class="download-bar no-print">
-    <a href="download.php" class="btn btn-success">
+    <a href="/user/download.php" class="btn btn-success">
         ⬇ Download Investment Memorandum (PDF)
     </a>
 </div>
+
+<!-- ============================================================ -->
+<!-- If download.php is in the same directory as pdf.php, use:     -->
+<!-- <a href="download.php" class="btn btn-success">              -->
+<!-- ============================================================ -->
 
 <!-- ===== PAGE 1 — COVER ===== -->
 <div class="page" style="display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;">
