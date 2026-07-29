@@ -455,8 +455,8 @@ function getMemoHTML(): string
     <!-- DOWNLOAD BAR -->
     <!-- ============================================================ -->
     <div class="download-bar no-print">
-        <button class="btn btn-primary" onclick="window.print()">📄 Print / PDF</button>
-        <a href="?download=1" class="btn btn-primary" style="background:var(--ledger-green);border-color:var(--ledger-green);">⬇ Download PDF</a>
+        <button class="btn btn-primary" onclick="window.print()">Print / PDF</button>
+        <a href="?download=1" class="btn btn-primary" style="background:var(--ledger-green);border-color:var(--ledger-green);">Download PDF</a>
     </div>
 
     <!-- ============================================================ -->
@@ -469,7 +469,7 @@ function getMemoHTML(): string
         <!-- ============================================================ -->
         <div class="cover">
             <div class="logo">VOUCHMORPH <span>·</span></div>
-            <div class="tagline">Building Africa's Identity-Based Financial Access Network</div>
+            <div class="tagline">Building Africa\'s Identity-Based Financial Access Network</div>
 
             <div class="title">Investment Memorandum</div>
             <div class="subtitle">Series Seed · Strategic Investment Opportunity</div>
@@ -501,7 +501,7 @@ function getMemoHTML(): string
         <p>The company has completed its MVP, secured a regulatory sandbox position in Botswana, and is now executing its entry into Angola — a market of <strong>40 million people</strong> with <strong>26 million unbanked adults</strong> and a government actively pursuing digital financial inclusion.</p>
 
         <div class="highlight-box">
-            <strong>VouchMorph is raising BWP 1,500,000 for 20% equity</strong> to commercialise in Angola, expand across SADC, and establish Africa's first identity-based financial access network.
+            <strong>VouchMorph is raising BWP 1,500,000 for 20% equity</strong> to commercialise in Angola, expand across SADC, and establish Africa\'s first identity-based financial access network.
         </div>
 
         <!-- ============================================================ -->
@@ -547,7 +547,7 @@ function getMemoHTML(): string
             <div class="feature-card">
                 <span class="icon">🏦</span>
                 <div class="label">KWiK Instant Payment</div>
-                <div class="desc">BNA's real-time payment rail already deployed</div>
+                <div class="desc">BNA\'s real-time payment rail already deployed</div>
             </div>
             <div class="feature-card">
                 <span class="icon">💳</span>
@@ -695,7 +695,7 @@ function getMemoHTML(): string
                 </thead>
                 <tbody>
                     <tr><td>Bank-to-bank transfers</td><td>Require accounts at both banks</td></tr>
-                    <tr><td>Mobile money silos</td><td>Can't send from Airtel to Movicel</td></tr>
+                    <tr><td>Mobile money silos</td><td>Can\'t send from Airtel to Movicel</td></tr>
                     <tr><td>Bank-to-mobile money</td><td>Limited or non-existent</td></tr>
                     <tr><td>Government disbursements</td><td>Millions of beneficiaries without accounts</td></tr>
                     <tr><td>Remittances</td><td>High fees, slow settlement</td></tr>
@@ -720,7 +720,7 @@ function getMemoHTML(): string
                 <tbody>
                     <tr><td><strong>Institution Integration</strong></td><td>One-time onboarding fee per institution</td></tr>
                     <tr><td><strong>API Subscription</strong></td><td>Monthly/annual access to the interoperability layer</td></tr>
-                    <tr><td><strong>Transaction Fee</strong></td><td>Per orchestrated swap (≈BWP 2–5 per transaction)</td></tr>
+                    <tr><td><strong>Transaction Fee</strong></td><td>Per orchestrated swap (approx BWP 2–5 per transaction)</td></tr>
                     <tr><td><strong>Government Contracts</strong></td><td>Disbursement and social payment programs</td></tr>
                     <tr><td><strong>Enterprise White-label</strong></td><td>Licensed deployments for corporates</td></tr>
                     <tr><td><strong>Cross-border Premium</strong></td><td>Additional margin on international flows</td></tr>
@@ -739,7 +739,7 @@ function getMemoHTML(): string
                     <tr><td>Pilot Phase</td><td>5,000</td><td>BWP 2.50</td><td>BWP 150,000</td></tr>
                     <tr><td>Commercial Launch</td><td>50,000</td><td>BWP 2.50</td><td>BWP 1,500,000</td></tr>
                     <tr><td>Angola Scale</td><td>500,000</td><td>BWP 2.50</td><td>BWP 15,000,000</td></tr>
-                    <tr><td class="table-highlight">SADC Region</td><td class="table-highlight">5,000,000+</td><td class="table-highlight">BWP 2.50</td><td class="table-highlight">BWP 150,000,000+</td></tr>
+                    <tr class="table-highlight"><td><strong>SADC Region</strong></td><td><strong>5,000,000+</strong></td><td><strong>BWP 2.50</strong></td><td><strong>BWP 150,000,000+</strong></td></tr>
                 </tbody>
             </table>
         </div>
@@ -825,7 +825,7 @@ function getMemoHTML(): string
                     <tr><td><strong>Working Capital</strong></td><td>220,000</td><td>15%</td></tr>
                     <tr><td><strong>Sales & Partnerships</strong></td><td>80,000</td><td>5%</td></tr>
                     <tr><td><strong>Travel (8-person delegation)</strong></td><td>60,000</td><td>4%</td></tr>
-                    <tr><td class="table-highlight"><strong>TOTAL</strong></td><td class="table-highlight"><strong>1,500,000</strong></td><td class="table-highlight"><strong>100%</strong></td></tr>
+                    <tr class="table-highlight"><td><strong>TOTAL</strong></td><td><strong>1,500,000</strong></td><td><strong>100%</strong></td></tr>
                 </tbody>
             </table>
         </div>
@@ -873,7 +873,7 @@ function getMemoHTML(): string
             </table>
         </div>
 
-        <p style="font-size:12px;color:var(--ink-300);">Full terms to be set out in the Shareholders' Agreement and Investment Agreement.</p>
+        <p style="font-size:12px;color:var(--ink-300);">Full terms to be set out in the Shareholders\' Agreement and Investment Agreement.</p>
 
         <!-- ============================================================ -->
         <!-- 14 · EXIT SCENARIOS -->
