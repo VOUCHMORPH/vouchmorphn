@@ -10,6 +10,11 @@ RUN apt-get update && apt-get install -y \
     git \
     curl \
     nginx \
+    # ============================================================
+    # Chromium for PDF generation (headless)
+    # ============================================================
+    chromium-browser \
+    libgbm-dev \
     && docker-php-ext-configure gd --with-freetype --with-jpeg \
     && docker-php-ext-install -j$(nproc) \
         gd \
@@ -21,6 +26,16 @@ RUN apt-get update && apt-get install -y \
     && docker-php-ext-enable pdo_pgsql \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# ============================================================
+# Verify Chromium installation
+# ============================================================
+RUN which chromium-browser || (echo "ERROR: chromium-browser not found" && exit 1)
+
+# ============================================================
+# Set Chrome path for PDF generation
+# ============================================================
+ENV CHROME_PATH=/usr/bin/chromium-browser
 
 RUN php -m | grep -q pdo_pgsql || (echo "ERROR: pdo_pgsql extension not installed" && exit 1)
 RUN php -m | grep -q pgsql || (echo "ERROR: pgsql extension not installed" && exit 1)
@@ -57,4 +72,7 @@ RUN composer dump-autoload --optimize --no-interaction
 
 EXPOSE 9000
 
+# ============================================================
+# Start PHP-FPM and Nginx
+# ============================================================
 CMD sh -c "php-fpm -D && nginx -g 'daemon off;'"
