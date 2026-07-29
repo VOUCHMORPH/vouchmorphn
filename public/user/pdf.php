@@ -4,7 +4,9 @@
  * Confidential · Prepared for Strategic Investors
  */
 
-// Check if dompdf is available
+// ============================================================
+// 1. CHECK IF DOMPDF IS AVAILABLE
+// ============================================================
 $useDompdf = false;
 $dompdfAvailable = false;
 
@@ -21,9 +23,12 @@ if (file_exists(__DIR__ . '/../../vendor/autoload.php')) {
     }
 }
 
+// ============================================================
+// 2. IF DOWNLOAD REQUESTED, GENERATE PDF
+// ============================================================
 if (isset($_GET['download']) && $useDompdf && $dompdfAvailable) {
     try {
-        $html = getMemoHTML();
+        $html = getMemoHTML(true); // true = PDF mode (no buttons)
         $dompdf = new Dompdf\Dompdf();
         $dompdf->loadHtml($html);
         $dompdf->setPaper('A4', 'portrait');
@@ -36,12 +41,18 @@ if (isset($_GET['download']) && $useDompdf && $dompdfAvailable) {
     }
 }
 
-echo getMemoHTML();
+// ============================================================
+// 3. SHOW HTML PAGE WITH PRINT BUTTONS
+// ============================================================
+echo getMemoHTML(false); // false = web mode (show buttons)
 
 
-function getMemoHTML(): string
+function getMemoHTML(bool $isPdf = false): string
 {
-    return '<!DOCTYPE html>
+    // ============================================================
+    // Build the HTML content
+    // ============================================================
+    $html = '<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -407,34 +418,7 @@ function getMemoHTML(): string
             font-size: 10px;
         }
 
-        /* ----- RESPONSIVE ----- */
-        @media (max-width: 768px) {
-            .memo-container { padding: 24px 20px; }
-            .cover { padding: 30px 20px; }
-            .cover .title { font-size: 28px; }
-            .cover .meta { gap: 16px; flex-direction: column; align-items: center; }
-            .metrics-grid { grid-template-columns: repeat(2, 1fr); }
-            .feature-grid { grid-template-columns: 1fr; }
-            .solutions-grid { grid-template-columns: 1fr; }
-            .timeline-item { flex-direction: column; gap: 2px; }
-            .timeline-item .phase { min-width: auto; }
-            .timeline-item .date { min-width: auto; }
-            .partners { gap: 20px; }
-        }
-
-        @media print {
-            body { background: #fff; padding: 0; }
-            .memo-container { box-shadow: none; border: none; padding: 40px 50px; }
-            .no-print { display: none !important; }
-            .metric-card { background: #EEF1EF !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-            .highlight-box { background: #F4EFE3 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-            .table-highlight td { background: #F4EFE3 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-            th { background: #EEF1EF !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-            .partners { background: #EEF1EF !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-            .solution-card { background: #EEF1EF !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-            .solution-card .example { border-top-color: #D3DAD6 !important; }
-        }
-
+        /* ----- DOWNLOAD BAR (only visible in web mode) ----- */
         .download-bar {
             max-width: var(--max-width);
             margin: 0 auto 16px;
@@ -475,21 +459,108 @@ function getMemoHTML(): string
             color: var(--ink-500);
         }
         .btn-outline:hover { border-color: var(--brass); color: var(--ink-900); background: var(--brass-tint); }
+
+        /* ----- RESPONSIVE ----- */
+        @media (max-width: 768px) {
+            .memo-container { padding: 24px 20px; }
+            .cover { padding: 30px 20px; }
+            .cover .title { font-size: 28px; }
+            .cover .meta { gap: 16px; flex-direction: column; align-items: center; }
+            .metrics-grid { grid-template-columns: repeat(2, 1fr); }
+            .feature-grid { grid-template-columns: 1fr; }
+            .solutions-grid { grid-template-columns: 1fr; }
+            .timeline-item { flex-direction: column; gap: 2px; }
+            .timeline-item .phase { min-width: auto; }
+            .timeline-item .date { min-width: auto; }
+            .partners { gap: 20px; }
+        }
+
+        /* ============================================================ */
+        /* PRINT STYLES - Clean PDF output */
+        /* ============================================================ */
+        @media print {
+            /* Hide the download bar in PDF */
+            .download-bar { display: none !important; }
+            
+            body { 
+                background: #fff; 
+                padding: 0; 
+                margin: 0;
+            }
+            
+            .memo-container { 
+                box-shadow: none; 
+                border: none; 
+                padding: 40px 50px;
+                max-width: 100%;
+            }
+            
+            /* Ensure colors print correctly */
+            .metric-card { 
+                background: #EEF1EF !important; 
+                -webkit-print-color-adjust: exact; 
+                print-color-adjust: exact; 
+            }
+            
+            .highlight-box { 
+                background: #F4EFE3 !important; 
+                -webkit-print-color-adjust: exact; 
+                print-color-adjust: exact; 
+            }
+            
+            .table-highlight td { 
+                background: #F4EFE3 !important; 
+                -webkit-print-color-adjust: exact; 
+                print-color-adjust: exact; 
+            }
+            
+            th { 
+                background: #EEF1EF !important; 
+                -webkit-print-color-adjust: exact; 
+                print-color-adjust: exact; 
+            }
+            
+            .partners { 
+                background: #EEF1EF !important; 
+                -webkit-print-color-adjust: exact; 
+                print-color-adjust: exact; 
+            }
+            
+            .solution-card { 
+                background: #EEF1EF !important; 
+                -webkit-print-color-adjust: exact; 
+                print-color-adjust: exact; 
+            }
+            
+            .solution-card .example { 
+                border-top-color: #D3DAD6 !important; 
+            }
+            
+            /* Page break controls */
+            h1 { page-break-after: avoid; }
+            .cover { page-break-after: avoid; }
+            .solutions-grid { page-break-after: avoid; }
+            .table-wrap { page-break-inside: avoid; }
+        }
     </style>
 </head>
-<body>
+<body>';
 
-    <!-- ============================================================ -->
-    <!-- DOWNLOAD BAR -->
-    <!-- ============================================================ -->
-    <div class="download-bar no-print">
-        <button class="btn btn-primary" onclick="window.print()">Print / PDF</button>
-        <a href="?download=1" class="btn btn-primary" style="background:var(--ledger-green);border-color:var(--ledger-green);">Download PDF</a>
-    </div>
+    // ============================================================
+    // DOWNLOAD BAR — ONLY SHOW IN WEB MODE (not in PDF)
+    // ============================================================
+    if (!$isPdf) {
+        $html .= '
+    <div class="download-bar">
+        <button class="btn btn-primary" onclick="window.print()">📄 Print / PDF</button>
+        <a href="?download=1" class="btn btn-primary" style="background:var(--ledger-green);border-color:var(--ledger-green);">⬇ Download PDF</a>
+    </div>';
+    }
 
-    <!-- ============================================================ -->
-    <!-- MEMORANDUM CONTENT -->
-    <!-- ============================================================ -->
+    // ============================================================
+    // MAIN CONTENT
+    // ============================================================
+    $html .= '
     <div class="memo-container">
 
         <!-- ============================================================ -->
@@ -952,5 +1023,7 @@ function getMemoHTML(): string
 
 </body>
 </html>';
+
+    return $html;
 }
 ?>
