@@ -14,6 +14,16 @@ header('Content-Type: text/html; charset=utf-8');
     <title>VouchMorph · Investment Memorandum</title>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
     <style>
+        /* Add to the top of the style block */
+@page {
+    size: A4;
+    margin: 0;
+}
+
+html {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+}
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
         body {
