@@ -24,18 +24,17 @@ class AggregateSigner
 
     public function signAggregate(FundingPool $pool, array $holds, array $verifications): array
     {
-        // Verify all source signatures
+        // Verify all source signatures before aggregating
         $this->verifySourceSignatures($holds, $verifications);
 
-        // Build aggregate payload
+        // Build aggregate payload (no timestamp here - createSignedRequest adds its own)
         $payload = [
             'pool_id' => $pool->getPoolId(),
             'swap_reference' => $pool->getSwapReference(),
             'total_amount' => $pool->getFundedAmount(),
             'currency' => $pool->getCurrency(),
             'destination_institution' => $pool->getDestinationInstitution(),
-            'timestamp' => time(),
-            'contributors' => array_map(function($hold) {
+            'contributors' => array_map(function ($hold) {
                 return [
                     'institution' => $hold['source']['institution'],
                     'amount' => $hold['amount'],
@@ -45,18 +44,27 @@ class AggregateSigner
                 ];
             }, $holds)
         ];
-
         ksort($payload);
 
-        $signature = $this->certManager->signPayload($payload, $this->systemId);
-        $certificate = $this->certManager->getCertificate($this->systemId);
+        // Hash of the pre-signed payload, for audit/dispute trail purposes
+        $payloadHash = hash('sha256', json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+
+        // CertificateManager::createSignedRequest() signs the payload, attaches a
+        // timestamp, the requester id, and the certificate - matching how
+        // MessageSigner::createSignedRequest() and verifySignedRequest() expect
+        // signed payloads to look elsewhere in the codebase.
+        $signedRequest = $this->certManager->createSignedRequest($payload, $this->systemId);
+
+        if (!isset($signedRequest['signature'])) {
+            throw new RuntimeException('AggregateSigner: failed to sign aggregate payload - check that CertificateManager has a private key and certificate configured');
+        }
 
         return [
-            'signature' => $signature,
-            'certificate' => $certificate,
-            'payload' => $payload,
-            'payload_hash' => hash('sha256', json_encode($payload)),
-            'timestamp' => time()
+            'signature' => $signedRequest['signature'],
+            'certificate' => $signedRequest['certificate'] ?? $this->certManager->getMyCertificate(),
+            'payload' => $signedRequest,
+            'payload_hash' => $payloadHash,
+            'timestamp' => $signedRequest['timestamp'] ?? time()
         ];
     }
 
@@ -68,13 +76,17 @@ class AggregateSigner
                 throw new RuntimeException("Missing verification for source: {$hold['source']['institution']}");
             }
 
-            $isValid = $this->signatureVerifier->verifySignature(
-                $verification['payload'] ?? [],
-                $hold['signature'] ?? '',
-                $hold['certificate'] ?? ''
-            );
+            // verifyWithCertificate() expects a single request array containing
+            // the payload fields plus 'signature' and 'certificate' keys - it
+            // does not take them as separate arguments.
+            $request = array_merge($verification['payload'] ?? [], [
+                'signature' => $hold['signature'] ?? '',
+                'certificate' => $hold['certificate'] ?? ''
+            ]);
 
-            if (!$isValid) {
+            $result = $this->signatureVerifier->verifyWithCertificate($request);
+
+            if (!$result['verified']) {
                 throw new RuntimeException("Invalid signature from: {$hold['source']['institution']}");
             }
         }
