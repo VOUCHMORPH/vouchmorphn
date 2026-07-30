@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Product Labels</title>
+    <title>Product Labels — Landscape</title>
     <link href="https://fonts.googleapis.com/css2?family=Great+Vibes&family=IBM+Plex+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -21,11 +21,11 @@
         }
 
         .label {
-            width: 300px;
-            height: 400px;
+            width: 540px;
+            height: 220px;
             background: #ffffff;
             border: 2px solid #111;
-            padding: 20px 24px;
+            padding: 14px 20px;
             display: flex;
             flex-direction: column;
             justify-content: space-between;
@@ -37,141 +37,199 @@
             transform: translateY(-4px);
         }
 
-        .label-header {
-            text-align: center;
+        /* Top row: brand */
+        .label-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
             border-bottom: 1px solid #ddd;
-            padding-bottom: 6px;
+            padding-bottom: 4px;
         }
 
-        .label-header .brand {
+        .label-top .brand {
             font-family: 'IBM Plex Sans', sans-serif;
             font-weight: 700;
-            font-size: 10px;
+            font-size: 9px;
             letter-spacing: 0.15em;
             text-transform: uppercase;
             color: #111;
         }
 
-        .label-header .brand span {
+        .label-top .brand span {
             color: #8A6D3B;
         }
 
-        .label-body {
+        .label-top .ornament {
+            font-size: 9px;
+            color: #8A6D3B;
+            letter-spacing: 0.1em;
+        }
+
+        /* Middle: three columns */
+        .label-middle {
             flex: 1;
             display: flex;
-            flex-direction: column;
-            justify-content: center;
             align-items: center;
-            text-align: center;
+            justify-content: space-between;
+            gap: 12px;
             padding: 4px 0;
         }
 
-        .label-body .icon {
-            font-size: 28px;
-            margin-bottom: 4px;
+        /* Left column: Product name + icon */
+        .label-left {
+            text-align: center;
+            min-width: 130px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .label-left .icon {
+            font-size: 18px;
             color: #8A6D3B;
         }
 
-        .label-body .product-name {
+        .label-left .product-name {
             font-family: 'Great Vibes', cursive;
-            font-size: 28px;
+            font-size: 26px;
             font-weight: 400;
             color: #111;
             line-height: 1.1;
-            margin-bottom: 2px;
         }
 
-        .label-body .product-sub {
+        .label-left .product-sub {
             font-family: 'IBM Plex Sans', sans-serif;
             font-style: italic;
-            font-size: 11px;
+            font-size: 10px;
             font-weight: 300;
             color: #555;
             letter-spacing: 0.04em;
-            margin-bottom: 8px;
         }
 
-        .label-body .divider {
-            width: 60px;
+        /* Center column: Poem */
+        .label-center {
+            flex: 1;
+            text-align: center;
+            padding: 0 8px;
+            border-left: 1px solid #eee;
+            border-right: 1px solid #eee;
+        }
+
+        .label-center .divider {
+            width: 40px;
             height: 1px;
             background: #ccc;
-            margin: 6px auto;
+            margin: 3px auto;
         }
 
-        .label-body .poem {
+        .label-center .poem {
             font-family: 'IBM Plex Sans', sans-serif;
-            font-size: 10.5px;
-            line-height: 1.7;
+            font-size: 9.5px;
+            line-height: 1.6;
             color: #333;
             font-weight: 300;
-            max-width: 220px;
-            margin: 4px auto;
             letter-spacing: 0.02em;
         }
 
-        .label-body .ingredients {
+        /* Right column: Ingredients */
+        .label-right {
+            text-align: center;
+            min-width: 120px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .label-right .ingredients {
             font-family: 'IBM Plex Sans', sans-serif;
             font-size: 8px;
             font-weight: 600;
             letter-spacing: 0.08em;
             text-transform: uppercase;
             color: #555;
-            margin-top: 6px;
-            border-top: 1px solid #eee;
-            padding-top: 6px;
+            line-height: 1.7;
         }
 
-        .label-footer {
-            text-align: center;
+        .label-right .ingredients span {
+            display: block;
+        }
+
+        /* Bottom row: size + company */
+        .label-bottom {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
             border-top: 1px solid #ddd;
-            padding-top: 6px;
+            padding-top: 4px;
         }
 
-        .label-footer .size {
+        .label-bottom .size {
             font-family: 'IBM Plex Sans', sans-serif;
             font-weight: 700;
-            font-size: 14px;
+            font-size: 13px;
             letter-spacing: 0.06em;
             color: #111;
         }
 
-        .label-footer .size span {
+        .label-bottom .size span {
             font-weight: 300;
-            font-size: 11px;
+            font-size: 10px;
             color: #777;
         }
 
-        .label-footer .company {
+        .label-bottom .company {
             font-family: 'IBM Plex Sans', sans-serif;
             font-size: 8px;
             font-weight: 400;
             letter-spacing: 0.12em;
             text-transform: uppercase;
             color: #888;
-            margin-top: 2px;
         }
 
-        .label-footer .company .pavel {
+        .label-bottom .company .pavel {
             font-family: 'Great Vibes', cursive;
             font-size: 13px;
             color: #8A6D3B;
             letter-spacing: 0.02em;
         }
 
-        .label-footer .year {
-            font-family: 'IBM Plex Sans', sans-serif;
-            font-size: 7px;
-            color: #aaa;
-            letter-spacing: 0.06em;
-            margin-top: 1px;
+        .label-bottom .ornament {
+            font-size: 8px;
+            color: #8A6D3B;
+            letter-spacing: 0.1em;
         }
 
         /* Responsive */
-        @media (max-width: 700px) {
-            body { flex-direction: column; align-items: center; }
-            .label { width: 260px; height: 370px; padding: 16px 18px; }
-            .label-body .product-name { font-size: 24px; }
-            .label-body .poem { font-size: 9.5px; }
+        @media (max-width: 600px) {
+            .label {
+                width: 100%;
+                height: auto;
+                min-height: 200px;
+                padding: 12px 14px;
+            }
+            .label-middle {
+                flex-direction: column;
+                gap: 4px;
+                padding: 6px 0;
+            }
+            .label-left,
+            .label-right {
+                min-width: auto;
+                width: 100%;
+            }
+            .label-center {
+                border-left: none;
+                border-right: none;
+                border-top: 1px solid #eee;
+                border-bottom: 1px solid #eee;
+                padding: 6px 0;
+            }
+            .label-left .product-name { font-size: 22px; }
+            .label-center .poem { font-size: 9px; }
+            .label-right .ingredients { font-size: 7.5px; }
+            .label-bottom { flex-direction: column; gap: 2px; }
         }
 
         @media print {
@@ -183,70 +241,94 @@
 <body>
 
     <!-- ============================================================ -->
-    <!-- LABEL 1 — Face Oil "Liquid Gold"                             -->
+    <!-- LABEL 1 — Face Oil "Liquid Gold" (Landscape)                 -->
     <!-- ============================================================ -->
     <div class="label">
-        <div class="label-header">
+        <div class="label-top">
             <div class="brand">NATURE <span>+</span> ESSENTIALS</div>
+            <div class="ornament">✦ ✦ ✦</div>
         </div>
 
-        <div class="label-body">
-            <div class="icon">✦</div>
-            <div class="product-name">Liquid Gold</div>
-            <div class="product-sub">a face oil, drop by drop</div>
-
-            <div class="divider"></div>
-
-            <div class="poem">
-                Some things cannot be explained,<br>
-                only felt. This is one of them.<br>
-                Like a poem written on your skin,<br>
-                it lingers long after the last drop.
+        <div class="label-middle">
+            <!-- Left: Product name -->
+            <div class="label-left">
+                <div class="icon">✦</div>
+                <div class="product-name">Liquid Gold</div>
+                <div class="product-sub">a face oil, drop by drop</div>
             </div>
 
-            <div class="divider"></div>
+            <!-- Center: Poem -->
+            <div class="label-center">
+                <div class="divider"></div>
+                <div class="poem">
+                    Some things cannot be explained,<br>
+                    only felt. This is one of them.<br>
+                    Like a poem written on your skin,<br>
+                    it lingers long after the last drop.
+                </div>
+                <div class="divider"></div>
+            </div>
 
-            <div class="ingredients">Coconut Oil · Vitamin E · Jasmine</div>
+            <!-- Right: Ingredients -->
+            <div class="label-right">
+                <div class="ingredients">
+                    <span>Coconut Oil</span>
+                    <span>Vitamin E</span>
+                    <span>Jasmine</span>
+                </div>
+            </div>
         </div>
 
-        <div class="label-footer">
-            <div class="size">30ml <span>/ 1.0 fl.oz.</span></div>
+        <div class="label-bottom">
+            <div class="ornament">✦ ✦ ✦</div>
             <div class="company">HOME &amp; BODY CO. · <span class="pavel">2011pavel.inc</span></div>
-            <div class="year">✦ ✦ ✦</div>
+            <div class="size">30ml <span>/ 1.0 fl.oz.</span></div>
         </div>
     </div>
 
     <!-- ============================================================ -->
-    <!-- LABEL 2 — Natural Hair Boost "The Velvet Touch"              -->
+    <!-- LABEL 2 — Natural Hair Boost "The Velvet Touch" (Landscape)  -->
     <!-- ============================================================ -->
     <div class="label">
-        <div class="label-header">
+        <div class="label-top">
             <div class="brand">NATURE <span>+</span> ESSENTIALS</div>
+            <div class="ornament">✦ ✦ ✦</div>
         </div>
 
-        <div class="label-body">
-            <div class="icon">✦</div>
-            <div class="product-name">The Velvet Touch</div>
-            <div class="product-sub">a hair oil, strand by strand</div>
-
-            <div class="divider"></div>
-
-            <div class="poem">
-                Some things cannot be explained,<br>
-                only felt. This is one of them.<br>
-                Like a crown woven from light,<br>
-                it settles in your hair and stays.
+        <div class="label-middle">
+            <!-- Left: Product name -->
+            <div class="label-left">
+                <div class="icon">✦</div>
+                <div class="product-name">The Velvet Touch</div>
+                <div class="product-sub">a hair oil, strand by strand</div>
             </div>
 
-            <div class="divider"></div>
+            <!-- Center: Poem -->
+            <div class="label-center">
+                <div class="divider"></div>
+                <div class="poem">
+                    Some things cannot be explained,<br>
+                    only felt. This is one of them.<br>
+                    Like a crown woven from light,<br>
+                    it settles in your hair and stays.
+                </div>
+                <div class="divider"></div>
+            </div>
 
-            <div class="ingredients">Coconut Oil · Argan Oil · Rosemary</div>
+            <!-- Right: Ingredients -->
+            <div class="label-right">
+                <div class="ingredients">
+                    <span>Coconut Oil</span>
+                    <span>Argan Oil</span>
+                    <span>Rosemary</span>
+                </div>
+            </div>
         </div>
 
-        <div class="label-footer">
-            <div class="size">30ml <span>/ 1.0 fl.oz.</span></div>
+        <div class="label-bottom">
+            <div class="ornament">✦ ✦ ✦</div>
             <div class="company">HOME &amp; BODY CO. · <span class="pavel">2011pavel.inc</span></div>
-            <div class="year">✦ ✦ ✦</div>
+            <div class="size">30ml <span>/ 1.0 fl.oz.</span></div>
         </div>
     </div>
 
