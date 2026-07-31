@@ -726,6 +726,55 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
             }
         }
 
+        // ------------------------------------------------------------
+        // BATCH-CHILD FALLBACK — a reference like MIXED_SWAP_1784534859_ID_1
+        // will never match swap_requests.swap_uuid, because multi-destination
+        // batches parent their children in multi_destination_swaps instead
+        // (see destinations_payload/results_payload there, and the
+        // Double-Spend & Duplicate-Debit Check's "Debited Holds With No
+        // Matching Swap Record" list). Rather than showing a blank
+        // 0.00/UNKNOWN/N/A summary for every batch-child certificate,
+        // reconstruct a synthetic summary from the parent batch + the
+        // specific destination this reference points to, whenever the
+        // direct swap_requests lookup came back empty but a hold exists.
+        // ------------------------------------------------------------
+        $certData['batch_context'] = null;
+        if (empty($certData['swap_request']) && !empty($certData['holds'])
+            && preg_match('/^(.+)_(DEST|ID)_(\d+)$/', $certRef, $m)) {
+            $batchRef = $m[1];
+            $destIndex = (int)$m[3];
+            try {
+                $stmt = $db->prepare("SELECT * FROM multi_destination_swaps WHERE reference = :ref");
+                $stmt->execute([':ref' => $batchRef]);
+                $batch = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+            } catch (Throwable $e) { $batch = null; }
+
+            if ($batch) {
+                $destinations = json_decode($batch['destinations_payload'] ?? '[]', true) ?: [];
+                $results = json_decode($batch['results_payload'] ?? '[]', true) ?: [];
+                $dest = $destinations[$destIndex] ?? null;
+                $result = $results[$destIndex] ?? [];
+
+                if ($dest) {
+                    $certData['batch_context'] = [
+                        'batch_reference' => $batchRef,
+                        'destination_index' => $destIndex,
+                        'destination_count' => count($destinations),
+                    ];
+                    // Populate a swap_request-shaped array so the existing
+                    // Summary rendering below works unmodified.
+                    $certData['swap_request'] = [
+                        'amount' => $dest['amount'] ?? 0,
+                        'from_currency' => $batch['currency'] ?? 'BWP',
+                        'status' => $result['status'] ?? 'pending',
+                        'created_at' => $batch['created_at'] ?? null,
+                        'completed_at' => null, // batch children don't currently record a per-destination completion timestamp
+                        'swap_type' => isset($dest['identity_type']) || isset($dest['identity_value']) ? 'IDENTITY' : 'DEPOSIT',
+                    ];
+                }
+            }
+        }
+
         if ($reportFormat === 'csv') {
             header('Content-Type: text/csv; charset=utf-8');
             header('Content-Disposition: attachment; filename="vouchmorph_certificate_' . preg_replace('/[^A-Za-z0-9_\-]/', '', $certRef) . '.csv"');
@@ -2459,8 +2508,14 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <div><strong>📦</strong> <?php echo $swap['total_destinations']; ?></div>
                 </div>
                 <?php if (!empty($destinations)): ?>
-                <div class="table-responsive"><table><thead><tr><th>#</th><th>Type</th><th>Institution</th><th>Identifier</th><th>Amount</th><th>Status</th></tr></thead><tbody>
-                <?php foreach ($destinations as $idx => $dest): $result = $results[$idx] ?? []; $status = $result['status'] ?? 'pending'; $isIdentity = isset($dest['identity_type']) || isset($dest['identity_value']); $isCashout = isset($dest['delivery_method']) && $dest['delivery_method'] === 'ATM'; ?>
+                <div class="table-responsive"><table><thead><tr><th>#</th><th>Type</th><th>Institution</th><th>Identifier</th><th>Amount</th><th>Status</th><th></th></tr></thead><tbody>
+                <?php foreach ($destinations as $idx => $dest): $result = $results[$idx] ?? []; $status = $result['status'] ?? 'pending'; $isIdentity = isset($dest['identity_type']) || isset($dest['identity_value']); $isCashout = isset($dest['delivery_method']) && $dest['delivery_method'] === 'ATM';
+                    // Child hold references follow {batch_reference}_{DEST|ID}_{index}, confirmed
+                    // against the Double-Spend & Duplicate-Debit Check output (e.g. MIXED_SWAP_1784534859_ID_1
+                    // for the identity-type destination at index 1). This lets each row link straight to
+                    // its own Transaction Certificate rather than sitting inert.
+                    $destRef = ($swap['reference'] ?? '') . '_' . ($isIdentity ? 'ID' : 'DEST') . '_' . $idx;
+                ?>
                 <tr>
                     <td><?php echo $idx + 1; ?></td>
                     <td><?php if ($isIdentity): ?><span class="status status-identity">IDENTITY</span><?php elseif ($isCashout): ?><span class="status status-pending">CASHOUT</span><?php else: ?><span class="status status-info">DEPOSIT</span><?php endif; ?></td>
@@ -2471,6 +2526,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                         <?php $statusClass = match($status) { 'success', 'completed' => 'success', 'failed' => 'failed', 'pending' => 'pending', default => 'info' }; ?>
                         <span class="status status-<?php echo $statusClass; ?>"><?php echo safeHtml(strtoupper($status ?: 'PENDING')); ?></span>
                     </td>
+                    <td><a href="?view=reports&report=transaction_certificate&ref=<?php echo urlencode($destRef); ?>" class="btn btn-sm">View</a></td>
                 </tr>
                 <?php endforeach; ?>
                 </tbody></table></div>
@@ -2539,6 +2595,19 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <?php elseif (empty($certData['swap_request']) && empty($certData['holds'])): ?>
                     <div class="empty-state"><span class="icon">🔍</span><p>No transaction found for reference "<?php echo safeHtml($certRef); ?>".</p></div>
                     <?php else: $sr = $certData['swap_request']; ?>
+
+                    <?php if (!empty($certData['batch_context'])): $bc = $certData['batch_context']; ?>
+                    <div class="card" style="border-left: 3px solid var(--brass); margin-bottom: var(--sp-5);">
+                        <div style="font-size:14px; color:var(--ink-700);">
+                            📦 This reference is destination <strong>#<?php echo $bc['destination_index'] + 1; ?> of <?php echo $bc['destination_count']; ?></strong>
+                            in multi-destination batch <a href="?view=multi_destination"><strong><?php echo safeHtml($bc['batch_reference']); ?></strong></a>.
+                            Amount, status, and creation time below are reconstructed from the batch record and
+                            <code>hold_transactions</code> — there is no <code>swap_requests</code> row for individual batch
+                            destinations, so ledger entries, audit trail, and notifications for this specific destination
+                            are not separately tracked yet (see the note on batch reconciliation gaps at the bottom of this page).
+                        </div>
+                    </div>
+                    <?php endif; ?>
 
                     <div class="report-section-title">Summary</div>
                     <div class="metrics-grid" style="grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));">
