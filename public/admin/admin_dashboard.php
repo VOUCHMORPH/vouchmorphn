@@ -614,6 +614,8 @@ $reportCatalog = [
     'fee_revenue'         => ['group' => 'Finance',    'title' => 'Fee Revenue Summary',           'blurb' => 'Fee income by institution, sourced from settlement invoicing.'],
     'audit_export'        => ['group' => 'Audit',      'title' => 'Audit Trail Export',            'blurb' => 'Full audit log, exportable to CSV for external review.'],
     'suspicious_activity' => ['group' => 'Compliance', 'title' => 'Suspicious Activity (AML/KYC)', 'blurb' => 'Flagged transactions, high-risk users, and stale holds — restricted to compliance-facing roles.'],
+    'flow_type_breakdown'    => ['group' => 'Reconciliation', 'title' => 'Flow Type Breakdown',    'blurb' => 'Count, success rate, and average duration per swap type — account/wallet/e-wallet/card/voucher origins to account/wallet/e-wallet/card/cashout destinations.'],
+    'institution_settlement_summary' => ['group' => 'Reconciliation', 'title' => 'Institution Settlement Summary', 'blurb' => 'Per institution, per period: amount issued, amount received, net owed, and fees earned — the end-of-day/week/month settlement picture.'],
     'daily_reconciliation'   => ['group' => 'Reconciliation', 'title' => 'Daily Reconciliation',   'blurb' => 'Transaction totals by day for the last 30 days — volume, fees, and outcome counts.'],
     'weekly_reconciliation'  => ['group' => 'Reconciliation', 'title' => 'Weekly Reconciliation',  'blurb' => 'Transaction totals by week for the last 12 weeks.'],
     'monthly_reconciliation' => ['group' => 'Reconciliation', 'title' => 'Monthly Reconciliation', 'blurb' => 'Transaction totals by month for the last 12 months.'],
@@ -623,6 +625,9 @@ $reportNetPositions = [];
 $reportFeeRevenue = [];
 $reportAuditRows = [];
 $reportReconciliation = [];
+$reportFlowBreakdown = [];
+$reportInstitutionSettlement = [];
+$settlementPeriod = $_GET['period'] ?? 'daily'; // daily | weekly | monthly
 $certData = null;
 $certRef = trim($_GET['ref'] ?? '');
 $integrityIssues = [];
@@ -636,6 +641,14 @@ $reconciliationConfig = [
     'daily_reconciliation'   => ['unit' => 'day',   'window' => '30 days',  'label' => 'Day'],
     'weekly_reconciliation'  => ['unit' => 'week',  'window' => '12 weeks', 'label' => 'Week'],
     'monthly_reconciliation' => ['unit' => 'month', 'window' => '12 months', 'label' => 'Month'],
+];
+
+// Same time buckets, reused by the Institution Settlement Summary report
+// (which needs a period switcher rather than three separate report keys).
+$settlementPeriodConfig = [
+    'daily'   => ['unit' => 'day',   'window' => '30 days',  'label' => 'Day'],
+    'weekly'  => ['unit' => 'week',  'window' => '12 weeks', 'label' => 'Week'],
+    'monthly' => ['unit' => 'month', 'window' => '12 months', 'label' => 'Month'],
 ];
 
 if ($view === 'reports' && canView('reports') && $reportKey !== '') {
@@ -689,6 +702,30 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
             $certData['settlement'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
         } catch (Throwable $e) { $certData['settlement'] = []; }
 
+        // Duration check against H1 (90s cross-bank cashout) / Experiment 2
+        // (60s deposit) per the KPI doc's measurement method:
+        // swap_requests.created_at to swap_requests.completed_at.
+        // If your schema names this column differently (or doesn't have
+        // it yet), this quietly falls back to null rather than erroring —
+        // the on-screen/PDF views below show "N/A" in that case.
+        $certData['duration'] = null;
+        if (!empty($certData['swap_request'])) {
+            $sr = $certData['swap_request'];
+            $createdAt = $sr['created_at'] ?? null;
+            $completedAt = $sr['completed_at'] ?? null;
+            if ($createdAt && $completedAt) {
+                $seconds = strtotime($completedAt) - strtotime($createdAt);
+                $swapType = strtolower($sr['swap_type'] ?? '');
+                $isDeposit = str_contains($swapType, 'deposit');
+                $threshold = $isDeposit ? 60 : 90; // Experiment 2 vs Experiment 1 / H1
+                $certData['duration'] = [
+                    'seconds' => $seconds,
+                    'threshold' => $threshold,
+                    'pass' => $seconds !== false && $seconds >= 0 && $seconds <= $threshold,
+                ];
+            }
+        }
+
         if ($reportFormat === 'csv') {
             header('Content-Type: text/csv; charset=utf-8');
             header('Content-Disposition: attachment; filename="vouchmorph_certificate_' . preg_replace('/[^A-Za-z0-9_\-]/', '', $certRef) . '.csv"');
@@ -707,6 +744,11 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
             foreach ($certData['audit'] as $i => $a) { $flatten("audit_{$i}", $a); }
             foreach ($certData['messages'] as $i => $m) { $flatten("notification_{$i}", $m); }
             foreach ($certData['settlement'] as $i => $s) { $flatten("settlement_{$i}", $s); }
+            if ($certData['duration']) {
+                fputcsv($out, ['duration', 'seconds', $certData['duration']['seconds']]);
+                fputcsv($out, ['duration', 'threshold_seconds', $certData['duration']['threshold']]);
+                fputcsv($out, ['duration', 'pass', $certData['duration']['pass'] ? 'PASS' : 'FAIL']);
+            }
             fclose($out);
             exit;
         }
@@ -1011,6 +1053,136 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
     }
 
     // ============================================================
+    // FLOW TYPE BREAKDOWN — per swap_type: count, success rate,
+    // and average duration (swap_requests.created_at to completed_at),
+    // measured against the same H1 (90s) / Experiment 2 (60s deposit)
+    // thresholds used by the Transaction Certificate above.
+    // ============================================================
+    if ($reportKey === 'flow_type_breakdown') {
+        try {
+            $stmt = $db->query("
+                SELECT swap_type,
+                       COUNT(*) AS total,
+                       COUNT(*) FILTER (WHERE status ILIKE '%completed%' OR status ILIKE '%success%') AS successful,
+                       COUNT(*) FILTER (WHERE status ILIKE '%fail%' OR status ILIKE '%error%') AS failed,
+                       ROUND(AVG(EXTRACT(EPOCH FROM (completed_at - created_at))) FILTER (WHERE completed_at IS NOT NULL)::numeric, 1) AS avg_duration_seconds
+                FROM swap_requests
+                GROUP BY swap_type
+                ORDER BY total DESC
+            ");
+            $reportFlowBreakdown = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($reportFlowBreakdown as &$fbRow) {
+                $fbRow['total'] = (int)($fbRow['total'] ?? 0);
+                $fbRow['successful'] = (int)($fbRow['successful'] ?? 0);
+                $fbRow['failed'] = (int)($fbRow['failed'] ?? 0);
+                $fbRow['success_rate'] = $fbRow['total'] > 0 ? round(($fbRow['successful'] / $fbRow['total']) * 100, 1) : 0.0;
+                $fbRow['avg_duration_seconds'] = $fbRow['avg_duration_seconds'] !== null ? (float)$fbRow['avg_duration_seconds'] : null;
+            }
+            unset($fbRow);
+        } catch (Throwable $e) {
+            $reportFlowBreakdown = [];
+            error_log("[ADMIN DASHBOARD] flow_type_breakdown error: " . $e->getMessage());
+        }
+
+        if ($reportFormat === 'csv') {
+            header('Content-Type: text/csv; charset=utf-8');
+            header('Content-Disposition: attachment; filename="vouchmorph_flow_type_breakdown_' . date('Ymd_His') . '.csv"');
+            $out = fopen('php://output', 'w');
+            fputcsv($out, ['Swap Type', 'Total', 'Successful', 'Failed', 'Success Rate %', 'Avg Duration (s)']);
+            foreach ($reportFlowBreakdown as $row) {
+                fputcsv($out, [$row['swap_type'], $row['total'], $row['successful'], $row['failed'], $row['success_rate'], $row['avg_duration_seconds'] ?? 'N/A']);
+            }
+            fclose($out);
+            exit;
+        }
+    }
+
+    // ============================================================
+    // INSTITUTION SETTLEMENT SUMMARY — end-of-day/week/month view of
+    // what each institution issued, received, its net position, and
+    // fees charged to it. Net position here is computed independently
+    // from raw swap_requests volume, as a deliberate cross-check
+    // against the net_positions table used elsewhere — if the two
+    // disagree, that's worth investigating before either goes to a
+    // partner bank or BoB.
+    // ============================================================
+    if ($reportKey === 'institution_settlement_summary') {
+        $spCfg = $settlementPeriodConfig[$settlementPeriod] ?? $settlementPeriodConfig['daily'];
+        try {
+            $stmt = $db->prepare("
+                WITH sent AS (
+                    SELECT source_institution AS institution,
+                           date_trunc(:unit1, created_at) AS period,
+                           COALESCE(SUM(amount), 0) AS issued,
+                           COUNT(*) AS issued_count
+                    FROM swap_requests
+                    WHERE created_at >= NOW() - :window1::interval
+                    GROUP BY source_institution, period
+                ),
+                received AS (
+                    SELECT destination_institution AS institution,
+                           date_trunc(:unit2, created_at) AS period,
+                           COALESCE(SUM(amount), 0) AS received,
+                           COUNT(*) AS received_count
+                    FROM swap_requests
+                    WHERE created_at >= NOW() - :window2::interval
+                    GROUP BY destination_institution, period
+                ),
+                fees AS (
+                    SELECT source_institution AS institution,
+                           date_trunc(:unit3, created_at) AS period,
+                           COALESCE(SUM((message_payload->>'fee_amount')::numeric), 0) AS fees_charged
+                    FROM settlement_outbox
+                    WHERE message_type = 'FEE_INVOICE' AND created_at >= NOW() - :window3::interval
+                    GROUP BY source_institution, period
+                )
+                SELECT
+                    COALESCE(sent.institution, received.institution, fees.institution) AS institution,
+                    COALESCE(sent.period, received.period, fees.period) AS period,
+                    COALESCE(sent.issued, 0) AS issued,
+                    COALESCE(sent.issued_count, 0) AS issued_count,
+                    COALESCE(received.received, 0) AS received,
+                    COALESCE(received.received_count, 0) AS received_count,
+                    COALESCE(received.received, 0) - COALESCE(sent.issued, 0) AS net_position,
+                    COALESCE(fees.fees_charged, 0) AS fees_charged
+                FROM sent
+                FULL OUTER JOIN received ON sent.institution = received.institution AND sent.period = received.period
+                FULL OUTER JOIN fees ON COALESCE(sent.institution, received.institution) = fees.institution
+                                      AND COALESCE(sent.period, received.period) = fees.period
+                ORDER BY period DESC, institution ASC
+            ");
+            $stmt->execute([
+                ':unit1' => $spCfg['unit'], ':window1' => $spCfg['window'],
+                ':unit2' => $spCfg['unit'], ':window2' => $spCfg['window'],
+                ':unit3' => $spCfg['unit'], ':window3' => $spCfg['window'],
+            ]);
+            $reportInstitutionSettlement = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($reportInstitutionSettlement as &$isRow) {
+                $isRow['issued'] = (float)$isRow['issued'];
+                $isRow['received'] = (float)$isRow['received'];
+                $isRow['net_position'] = (float)$isRow['net_position'];
+                $isRow['fees_charged'] = (float)$isRow['fees_charged'];
+            }
+            unset($isRow);
+        } catch (Throwable $e) {
+            $reportInstitutionSettlement = [];
+            error_log("[ADMIN DASHBOARD] institution_settlement_summary error: " . $e->getMessage());
+        }
+
+        if ($reportFormat === 'csv') {
+            header('Content-Type: text/csv; charset=utf-8');
+            header('Content-Disposition: attachment; filename="vouchmorph_institution_settlement_' . $settlementPeriod . '_' . date('Ymd_His') . '.csv"');
+            $out = fopen('php://output', 'w');
+            fputcsv($out, [$spCfg['label'], 'Institution', 'Issued', 'Issued Count', 'Received', 'Received Count', 'Net Position (Owed To Them If +)', 'Fees Charged To Them']);
+            foreach ($reportInstitutionSettlement as $row) {
+                fputcsv($out, [$row['period'], $row['institution'], $row['issued'], $row['issued_count'], $row['received'], $row['received_count'], $row['net_position'], $row['fees_charged']]);
+            }
+            fclose($out);
+            exit;
+        }
+    }
+
+    // ============================================================
     // PDF EXPORT — one dispatcher covering every report, so nothing
     // in the catalog is CSV/print-only. Uses the same data already
     // fetched above for the on-screen view and CSV export, just
@@ -1026,6 +1198,9 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
                 'Amount' => number_format((float)($sr['amount'] ?? 0), 2) . ' ' . ($sr['from_currency'] ?? ''),
                 'Status' => strtoupper($sr['status'] ?? 'unknown'),
                 'Created' => $sr['created_at'] ?? 'N/A',
+                'Duration' => !empty($certData['duration'])
+                    ? $certData['duration']['seconds'] . 's (' . ($certData['duration']['pass'] ? 'PASS' : 'FAIL') . ' — threshold ' . $certData['duration']['threshold'] . 's)'
+                    : 'N/A',
             ]);
             $body .= pdf_table_section('1 · Hold Placed', ['Hold ID', 'Hold Reference', 'Institution', 'Amount', 'Status', 'Placed At', 'Debited At'],
                 array_map(fn($h) => [$h['hold_id'], $h['hold_reference'], $h['source_institution'] ?? $h['participant_name'] ?? 'N/A', number_format((float)$h['amount'], 2), $h['status'], $h['placed_at'] ?? '', $h['debited_at'] ?? '—'], $certData['holds']));
@@ -1141,6 +1316,28 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
                 array_map(fn($s) => [$s['swap_id'] ?? '', $s['user_id'] ?? '', number_format((float)($s['amount'] ?? 0), 2), $s['currency'] ?? 'BWP', strtoupper($s['status'] ?? ''), $s['source_institution'] ?? 'N/A', $s['destination_institution'] ?? 'N/A', $s['created_at'] ?? ''], $suspiciousData),
                 'Status/amount-based flags only — does not yet include AML risk scoring or KYC status.');
             pdf_stream(pdf_page_shell('Suspicious Activity (AML/KYC)', 'Flagged transactions and stale holds requiring review', $preparedBy, $body), 'vouchmorph_suspicious_activity_' . date('Ymd_His') . '.pdf');
+        }
+
+        if ($reportKey === 'flow_type_breakdown') {
+            $body .= pdf_table_section('Flow Type Breakdown', ['Swap Type', 'Total', 'Successful', 'Failed', 'Success Rate', 'Avg Duration'],
+                array_map(fn($r) => [$r['swap_type'], $r['total'], $r['successful'], $r['failed'], $r['success_rate'] . '%', $r['avg_duration_seconds'] !== null ? $r['avg_duration_seconds'] . 's' : 'N/A'], $reportFlowBreakdown),
+                'Duration measured swap_requests.created_at to swap_requests.completed_at, per KPI H1/Experiment methodology.');
+            pdf_stream(pdf_page_shell('Flow Type Breakdown', 'Per swap-type count, success rate, and duration', $preparedBy, $body), 'vouchmorph_flow_type_breakdown_' . date('Ymd_His') . '.pdf');
+        }
+
+        if ($reportKey === 'institution_settlement_summary') {
+            $spCfg = $settlementPeriodConfig[$settlementPeriod] ?? $settlementPeriodConfig['daily'];
+            $body .= pdf_table_section('Institution Settlement Summary (' . $spCfg['label'] . ')', ['Period', 'Institution', 'Issued', 'Received', 'Net Position', 'Fees Charged'],
+                array_map(fn($r) => [
+                    date($spCfg['unit'] === 'month' ? 'Y-m' : 'Y-m-d', strtotime($r['period'])),
+                    $r['institution'] ?? 'UNKNOWN',
+                    number_format($r['issued'], 2) . ' (' . $r['issued_count'] . ')',
+                    number_format($r['received'], 2) . ' (' . $r['received_count'] . ')',
+                    ($r['net_position'] >= 0 ? '+' : '') . number_format($r['net_position'], 2),
+                    number_format($r['fees_charged'], 2),
+                ], $reportInstitutionSettlement),
+                'Net position is computed independently from swap_requests volume, as a cross-check against the net_positions table.');
+            pdf_stream(pdf_page_shell('Institution Settlement Summary', 'Issued, received, net position, and fees — by ' . $spCfg['label'], $preparedBy, $body), 'vouchmorph_institution_settlement_' . $settlementPeriod . '_' . date('Ymd_His') . '.pdf');
         }
 
         if (isset($reconciliationConfig[$reportKey])) {
@@ -2348,6 +2545,15 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                         <div class="metric-card"><span class="metric-label">Amount</span><span class="metric-value"><?php echo number_format((float)($sr['amount'] ?? 0), 2); ?></span><span class="metric-sub"><?php echo safeHtml($sr['from_currency'] ?? ''); ?></span></div>
                         <div class="metric-card"><span class="metric-label">Status</span><span class="metric-value" style="font-size:18px;"><?php echo safeHtml(strtoupper($sr['status'] ?? 'unknown')); ?></span></div>
                         <div class="metric-card"><span class="metric-label">Created</span><span class="metric-value" style="font-size:16px;"><?php echo safeHtml($sr['created_at'] ?? 'N/A'); ?></span></div>
+                        <?php if (!empty($certData['duration'])): $d = $certData['duration']; ?>
+                        <div class="metric-card" style="border-top-color: <?php echo $d['pass'] ? 'var(--good)' : 'var(--bad)'; ?>;">
+                            <span class="metric-label">Duration</span>
+                            <span class="metric-value" style="font-size:18px;"><?php echo $d['seconds']; ?>s</span>
+                            <span class="metric-sub" style="color: <?php echo $d['pass'] ? 'var(--good)' : 'var(--bad)'; ?>; font-weight:600;">
+                                <?php echo $d['pass'] ? '✓ PASS' : '✗ FAIL'; ?> (≤<?php echo $d['threshold']; ?>s)
+                            </span>
+                        </div>
+                        <?php endif; ?>
                     </div>
 
                     <div class="report-section-title">1 · Hold Placed — Source Institution Reserves Funds</div>
@@ -2715,6 +2921,70 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                 </div>
                 <div style="text-align:center; margin-top:var(--sp-4); display:flex; justify-content:center; gap:var(--sp-3);">
                     <?php if ($canViewSuspicious): ?><a href="?view=reports&report=suspicious_activity&format=pdf" class="btn btn-primary">Download PDF</a><a href="?view=reports&report=suspicious_activity&format=csv" class="btn">Download CSV</a><?php endif; ?>
+                </div>
+                <?php endif; ?>
+
+                <?php if ($reportKey === 'flow_type_breakdown'): ?>
+                <div class="report-page">
+                    <div class="report-page-header">
+                        <div><div class="report-title">Flow Type Breakdown</div><div style="color:var(--ink-500); font-size:13px;">Per swap-type count, success rate, and average duration</div></div>
+                        <div class="report-meta"><?php echo date('Y-m-d H:i:s'); ?></div>
+                    </div>
+                    <?php if (empty($reportFlowBreakdown)): ?>
+                    <div class="empty-state"><span class="icon">📭</span><p>No swap data available.</p></div>
+                    <?php else: ?>
+                    <div class="table-responsive"><table><thead><tr><th>Swap Type</th><th>Total</th><th>Successful</th><th>Failed</th><th>Success Rate</th><th>Avg Duration</th></tr></thead><tbody>
+                    <?php foreach ($reportFlowBreakdown as $row): $dur = $row['avg_duration_seconds']; $isDeposit = str_contains(strtolower($row['swap_type'] ?? ''), 'deposit'); $threshold = $isDeposit ? 60 : 90; $durOk = $dur !== null && $dur <= $threshold; ?>
+                    <tr>
+                        <td><strong><?php echo safeHtml($row['swap_type']); ?></strong></td>
+                        <td><?php echo number_format($row['total']); ?></td>
+                        <td><span class="status status-success"><?php echo number_format($row['successful']); ?></span></td>
+                        <td><span class="status status-failed"><?php echo number_format($row['failed']); ?></span></td>
+                        <td><?php echo $row['success_rate']; ?>%</td>
+                        <td><?php if ($dur !== null): ?><span class="status status-<?php echo $durOk ? 'success' : 'failed'; ?>"><?php echo $dur; ?>s</span><?php else: ?>—<?php endif; ?></td>
+                    </tr>
+                    <?php endforeach; ?>
+                    </tbody></table></div>
+                    <p style="font-size:12px; color:var(--ink-300); margin-top:var(--sp-3);">Duration thresholds: 90s for standard swaps (H1), 60s for deposit-type swaps (Experiment 2). Rows with no completed transactions show "—" for duration.</p>
+                    <?php endif; ?>
+                </div>
+                <div style="text-align:center; margin-top:var(--sp-4); display:flex; justify-content:center; gap:var(--sp-3);">
+                    <a href="?view=reports&report=flow_type_breakdown&format=pdf" class="btn btn-primary">Download PDF</a>
+                    <a href="?view=reports&report=flow_type_breakdown&format=csv" class="btn">Download CSV</a>
+                </div>
+                <?php endif; ?>
+
+                <?php if ($reportKey === 'institution_settlement_summary'): $spCfg = $settlementPeriodConfig[$settlementPeriod] ?? $settlementPeriodConfig['daily']; ?>
+                <div class="report-page">
+                    <div class="report-page-header">
+                        <div><div class="report-title">Institution Settlement Summary</div><div style="color:var(--ink-500); font-size:13px;">Issued, received, net position, and fees — by <?php echo safeHtml($spCfg['label']); ?></div></div>
+                        <div class="report-meta"><?php echo date('Y-m-d H:i:s'); ?></div>
+                    </div>
+                    <div style="display:flex; justify-content:center; gap:var(--sp-2); margin-bottom:var(--sp-5);">
+                        <a href="?view=reports&report=institution_settlement_summary&period=daily" class="btn btn-sm <?php echo $settlementPeriod === 'daily' ? 'btn-primary' : ''; ?>">Daily</a>
+                        <a href="?view=reports&report=institution_settlement_summary&period=weekly" class="btn btn-sm <?php echo $settlementPeriod === 'weekly' ? 'btn-primary' : ''; ?>">Weekly</a>
+                        <a href="?view=reports&report=institution_settlement_summary&period=monthly" class="btn btn-sm <?php echo $settlementPeriod === 'monthly' ? 'btn-primary' : ''; ?>">Monthly</a>
+                    </div>
+                    <?php if (empty($reportInstitutionSettlement)): ?>
+                    <div class="empty-state"><span class="icon">📭</span><p>No settlement data available for this period.</p></div>
+                    <?php else: ?>
+                    <div class="table-responsive"><table><thead><tr><th><?php echo safeHtml($spCfg['label']); ?></th><th>Institution</th><th>Issued</th><th>Received</th><th>Net Position</th><th>Fees Charged</th></tr></thead><tbody>
+                    <?php foreach ($reportInstitutionSettlement as $row): $net = $row['net_position']; ?>
+                    <tr>
+                        <td><?php echo safeHtml(date($spCfg['unit'] === 'month' ? 'Y-m' : 'Y-m-d', strtotime($row['period']))); ?></td>
+                        <td><strong><?php echo safeHtml($row['institution'] ?? 'UNKNOWN'); ?></strong></td>
+                        <td><?php echo number_format($row['issued'], 2); ?> <span style="color:var(--ink-300);font-size:11px;">(<?php echo $row['issued_count']; ?>)</span></td>
+                        <td><?php echo number_format($row['received'], 2); ?> <span style="color:var(--ink-300);font-size:11px;">(<?php echo $row['received_count']; ?>)</span></td>
+                        <td><span class="status status-<?php echo $net >= 0 ? 'success' : 'failed'; ?>"><?php echo ($net >= 0 ? '+' : '') . number_format($net, 2); ?></span></td>
+                        <td><?php echo number_format($row['fees_charged'], 2); ?></td>
+                    </tr>
+                    <?php endforeach; ?>
+                    </tbody></table></div>
+                    <p style="font-size:12px; color:var(--ink-300); margin-top:var(--sp-3);">Net position: positive = this institution received more than it issued (owed to them by the network); negative = owed by them. Cross-check against your existing <code>net_positions</code> table and BISS settlement instructions before treating this as authoritative — this report derives net position independently from transaction volume, as a second, reconcilable source.</p>
+                    <?php endif; ?>
+                </div>
+                <div style="text-align:center; margin-top:var(--sp-4); display:flex; justify-content:center; gap:var(--sp-3);">
+                    <a href="?view=reports&report=institution_settlement_summary&period=<?php echo $settlementPeriod; ?>&format=csv" class="btn">Download CSV</a>
                 </div>
                 <?php endif; ?>
 
