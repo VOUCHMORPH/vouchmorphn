@@ -1638,65 +1638,74 @@ private function writeAuditFallback(string $swapRef, string $swapType, string $r
         $forexFeeAmount = $this->feeCalculationDetails['forex_fee_amount'] ?? null;
         $totalForexFee = $this->feeCalculationDetails['total_forex_fee'] ?? null;
         
-        $sql = "
-            INSERT INTO swap_requests (
-                swap_uuid,
-                from_currency,
-                to_currency,
-                amount,
-                source_details,
-                destination_details,
-                status,
-                created_at,
-                source_country,
-                destination_country,
-                fee_breakdown,
-                metadata,
-                retry_count,
-                forex_rate,
-                forex_fee_percent,
-                forex_fee_amount,
-                total_forex_fee,
-                trade_metadata,
-                original_swap_ref,
-                user_id
-            ) VALUES (
-                :swap_uuid,
-                :from_currency,
-                :to_currency,
-                :amount,
-                :source_details::jsonb,
-                :destination_details::jsonb,
-                :status,
-                :created_at,
-                :source_country,
-                :destination_country,
-                :fee_breakdown::jsonb,
-                :metadata::jsonb,
-                0,
-                :forex_rate,
-                :forex_fee_percent,
-                :forex_fee_amount,
-                :total_forex_fee,
-                :trade_metadata::jsonb,
-                :original_swap_ref,
-                :user_id
-            ) ON CONFLICT (swap_uuid) DO UPDATE SET
-                status = EXCLUDED.status,
-                forex_rate = EXCLUDED.forex_rate,
-                forex_fee_percent = EXCLUDED.forex_fee_percent,
-                forex_fee_amount = EXCLUDED.forex_fee_amount,
-                total_forex_fee = EXCLUDED.total_forex_fee,
-                trade_metadata = EXCLUDED.trade_metadata,
-                fee_breakdown = EXCLUDED.fee_breakdown,
-                user_id = EXCLUDED.user_id
-            RETURNING swap_id
-        ";
-        
-        $status = $swapData['status'] ?? 'pending';
-        if (isset($details['status'])) {
-            $status = $details['status'];
-        }
+       $sql = "
+    INSERT INTO swap_requests (
+        swap_uuid,
+        from_currency,
+        to_currency,
+        amount,
+        source_details,
+        destination_details,
+        status,
+        created_at,
+        completed_at,
+        source_country,
+        destination_country,
+        fee_breakdown,
+        metadata,
+        retry_count,
+        forex_rate,
+        forex_fee_percent,
+        forex_fee_amount,
+        total_forex_fee,
+        trade_metadata,
+        original_swap_ref,
+        user_id
+    ) VALUES (
+        :swap_uuid,
+        :from_currency,
+        :to_currency,
+        :amount,
+        :source_details::jsonb,
+        :destination_details::jsonb,
+        :status,
+        :created_at,
+        :completed_at,
+        :source_country,
+        :destination_country,
+        :fee_breakdown::jsonb,
+        :metadata::jsonb,
+        0,
+        :forex_rate,
+        :forex_fee_percent,
+        :forex_fee_amount,
+        :total_forex_fee,
+        :trade_metadata::jsonb,
+        :original_swap_ref,
+        :user_id
+    ) ON CONFLICT (swap_uuid) DO UPDATE SET
+        status = EXCLUDED.status,
+        completed_at = COALESCE(swap_requests.completed_at, EXCLUDED.completed_at),
+        forex_rate = EXCLUDED.forex_rate,
+        forex_fee_percent = EXCLUDED.forex_fee_percent,
+        forex_fee_amount = EXCLUDED.forex_fee_amount,
+        total_forex_fee = EXCLUDED.total_forex_fee,
+        trade_metadata = EXCLUDED.trade_metadata,
+        fee_breakdown = EXCLUDED.fee_breakdown,
+        user_id = EXCLUDED.user_id
+    RETURNING swap_id
+";
+
+$status = $swapData['status'] ?? 'pending';
+if (isset($details['status'])) {
+    $status = $details['status'];
+}
+
+// Only stamp completed_at on the write that actually reports completion.
+// COALESCE in the ON CONFLICT clause above means this never gets
+// overwritten once set, and never gets set on a later non-completed update.
+$completedAt = (strtolower($status) === 'completed') ? date('Y-m-d H:i:s') : null;
+       
         
         try {
             $stmt = $this->swapDB->prepare($sql);
