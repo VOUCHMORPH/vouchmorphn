@@ -1709,39 +1709,40 @@ $completedAt = (strtolower($status) === 'completed') ? date('Y-m-d H:i:s') : nul
         
         try {
             $stmt = $this->swapDB->prepare($sql);
-            $stmt->execute([
-                ':swap_uuid' => $swapRef,
-                ':from_currency' => $details['currency'] ?? $swapData['currency'] ?? 'BWP',
-                ':to_currency' => $details['destination_currency'] ?? $swapData['destination_currency'] ?? $details['currency'] ?? 'BWP',
-                ':amount' => $swapData['amount'] ?? $details['amount'] ?? 0,
-                ':source_details' => json_encode($details),
-                ':destination_details' => json_encode([
-                    'institution' => $details['destination_institution'] ?? $swapData['to_institution'] ?? null,
-                    'identifier' => $details['destination_identifier'] ?? null,
-                    'asset_type' => $details['destination_asset_type'] ?? null
-                ]),
-                ':status' => strtolower($status),
-                ':created_at' => date('Y-m-d H:i:s'),
-                ':source_country' => $details['source_country'] ?? 'BW',
-                ':destination_country' => $details['destination_country'] ?? 'BW',
-                ':fee_breakdown' => json_encode($details['fee_breakdown'] ?? $this->feeCalculationDetails ?? []),
-                ':metadata' => json_encode([
-                    'hold_id' => $this->currentHoldId,
-                    'swap_type' => $swapData['swap_type'] ?? 'STANDARD',
-                    'source_institution' => $details['source_institution'] ?? $swapData['from_institution'] ?? null
-                ]),
-                ':forex_rate' => $forexRate,
-                ':forex_fee_percent' => $forexFeePercent,
-                ':forex_fee_amount' => $forexFeeAmount,
-                ':total_forex_fee' => $totalForexFee,
-                ':trade_metadata' => json_encode([
-                    'user_id' => $userId,
-                    'request_ip' => $_SERVER['REMOTE_ADDR'] ?? null,
-                    'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? null
-                ]),
-                ':original_swap_ref' => $swapData['original_swap_ref'] ?? null,
-                ':user_id' => $userId
-            ]);
+           $stmt->execute([
+    ':swap_uuid' => $swapRef,
+    ':from_currency' => $details['currency'] ?? $swapData['currency'] ?? 'BWP',
+    ':to_currency' => $details['destination_currency'] ?? $swapData['destination_currency'] ?? $details['currency'] ?? 'BWP',
+    ':amount' => $swapData['amount'] ?? $details['amount'] ?? 0,
+    ':source_details' => json_encode($details),
+    ':destination_details' => json_encode([
+        'institution' => $details['destination_institution'] ?? $swapData['to_institution'] ?? null,
+        'identifier' => $details['destination_identifier'] ?? null,
+        'asset_type' => $details['destination_asset_type'] ?? null
+    ]),
+    ':status' => strtolower($status),
+    ':created_at' => date('Y-m-d H:i:s'),
+    ':completed_at' => $completedAt,
+    ':source_country' => $details['source_country'] ?? 'BW',
+    ':destination_country' => $details['destination_country'] ?? 'BW',
+    ':fee_breakdown' => json_encode($details['fee_breakdown'] ?? $this->feeCalculationDetails ?? []),
+    ':metadata' => json_encode([
+        'hold_id' => $this->currentHoldId,
+        'swap_type' => $swapData['swap_type'] ?? 'STANDARD',
+        'source_institution' => $details['source_institution'] ?? $swapData['from_institution'] ?? null
+    ]),
+    ':forex_rate' => $forexRate,
+    ':forex_fee_percent' => $forexFeePercent,
+    ':forex_fee_amount' => $forexFeeAmount,
+    ':total_forex_fee' => $totalForexFee,
+    ':trade_metadata' => json_encode([
+        'user_id' => $userId,
+        'request_ip' => $_SERVER['REMOTE_ADDR'] ?? null,
+        'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? null
+    ]),
+    ':original_swap_ref' => $swapData['original_swap_ref'] ?? null,
+    ':user_id' => $userId
+]);
         
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         $swapId = $row ? (int)($row['swap_id'] ?? 0) : 0;
