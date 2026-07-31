@@ -2508,6 +2508,39 @@ private function populateMessageOutbox(string $swapRef, array $swapData, array $
                 }
                 
                 $this->updateHoldStatus($destHoldId, 'DEBITED');
+
+             // Persist a swap_requests row for this specific batch destination.
+// Previously nothing in this loop ever wrote here - only the single
+// aggregate multi_destination_swaps row was stored at the end of the
+// whole batch - which is exactly why every _DEST_N / _ID_N reference
+// showed up as "Debited Holds With No Matching Swap Record" in the
+// integrity check. Note: for CASHOUT-type destinations, populateMessageOutbox()
+// expects $destResponse['cashout_code'], but processMultiDestinationCashout()
+// returns 'voucher_code'/'atm_pin' instead - so message_outbox population
+// will silently no-op here for cashouts (SMS delivery itself is unaffected,
+// it's already handled separately inside processMultiDestinationCashout).
+$childSwapType = in_array($deliveryMethod, ['CASHOUT', 'AGENT', 'ATM'], true) ? 'CASHOUT' : 'DEPOSIT';
+$this->populateTrackingTables(
+    [
+        'swap_type' => $childSwapType,
+        'reference' => $subRef,
+        'amount' => $destAmount,
+        'currency' => $dest['currency'] ?? $currency,
+        'status' => 'completed',
+        'from_institution' => $sourceInstitution,
+        'to_institution' => $destInstitution,
+        'user_id' => $payload['user_id'] ?? null,
+    ],
+    array_merge($payload, $dest, [
+        'source_institution' => $sourceInstitution,
+        'destination_institution' => $destInstitution,
+        'destination_identifier' => $destIdentifier['identifier'] ?? null,
+        'destination_identifier_type' => $destIdentifier['type'] ?? null,
+        'fee_amount' => $feeAmount,
+        'status' => 'completed',
+    ]),
+    $destResult
+);
                 
                 $successResult = [
                     'index' => $idx,
@@ -2557,6 +2590,32 @@ private function populateMessageOutbox(string $swapRef, array $swapData, array $
                         error_log("[SwapService] Failed to release hold: " . $releaseError->getMessage());
                     }
                 }
+
+             // Trace the failure too - a debited-then-nothing hold is dangerous,
+// but a failed attempt with zero trace in swap_requests is also a
+// reconciliation blind spot. This gives the regulator visibility into
+// attempts that didn't complete, not just the ones that did.
+if (isset($subRef)) {
+    $this->populateTrackingTables(
+        [
+            'swap_type' => 'DEPOSIT',
+            'reference' => $subRef,
+            'amount' => $destAmount ?? 0,
+            'currency' => $dest['currency'] ?? $currency,
+            'status' => 'failed',
+            'from_institution' => $sourceInstitution,
+            'to_institution' => $destInstitution ?? null,
+            'user_id' => $payload['user_id'] ?? null,
+        ],
+        array_merge($payload, $dest ?? [], [
+            'source_institution' => $sourceInstitution,
+            'destination_institution' => $destInstitution ?? null,
+            'error_message' => $e->getMessage(),
+            'status' => 'failed',
+        ]),
+        null
+    );
+}
                 
                 $failedResult = [
                     'index' => $idx,
@@ -2690,6 +2749,33 @@ private function populateMessageOutbox(string $swapRef, array $swapData, array $
                 }
                 
                 $this->updateHoldStatus($destHoldId, 'DEBITED');
+
+             // Same fix for identity-destination children. Note this reference
+// (MULTI_DESTINATION_ID_N pattern) is separate from whatever reference
+// the eventual claim/finalization flow uses later (confirmAndFinalizeIdentitySwap
+// creates its own tracking under identitySwap['swap_reference']) - this
+// row specifically documents that the SOURCE side was debited now,
+// regardless of whether/when the recipient claims it.
+$this->populateTrackingTables(
+    [
+        'swap_type' => 'IDENTITY',
+        'reference' => $subRef,
+        'amount' => $amount,
+        'currency' => $identityDest['currency'] ?? $currency,
+        'status' => 'pending_identity_confirmation',
+        'from_institution' => $sourceInstitution,
+        'to_institution' => null,
+        'user_id' => $payload['user_id'] ?? null,
+    ],
+    array_merge($payload, $identityDest['original'] ?? [], [
+        'source_institution' => $sourceInstitution,
+        'identity_type' => $identityType,
+        'identity_value' => $identityValue,
+        'fee_amount' => $feeAmount,
+        'status' => 'pending_identity_confirmation',
+    ]),
+    $identityResult
+);
                 
                 $successResult = [
                     'index' => $idx,
@@ -2737,7 +2823,30 @@ private function populateMessageOutbox(string $swapRef, array $swapData, array $
                         error_log("[SwapService] Failed to release hold: " . $releaseError->getMessage());
                     }
                 }
-                
+
+              if (isset($subRef)) {
+    $this->populateTrackingTables(
+        [
+            'swap_type' => 'IDENTITY',
+            'reference' => $subRef,
+            'amount' => $amount ?? 0,
+            'currency' => $identityDest['currency'] ?? $currency,
+            'status' => 'failed',
+            'from_institution' => $sourceInstitution,
+            'to_institution' => null,
+            'user_id' => $payload['user_id'] ?? null,
+        ],
+        array_merge($payload, $identityDest['original'] ?? [], [
+            'source_institution' => $sourceInstitution,
+            'identity_type' => $identityType ?? null,
+            'identity_value' => $identityValue ?? null,
+            'error_message' => $e->getMessage(),
+            'status' => 'failed',
+        ]),
+        null
+    );
+}
+             
                 $failedResult = [
                     'index' => $idx,
                     'type' => 'identity',
@@ -8553,13 +8662,24 @@ private function updateCashoutAuthorizationStatus(int $authId, string $status, ?
     /**
      * Update swap request status
      */
-    private function updateSwapRequestStatus(string $swapRef, string $status): void
-    {
-        $sql = "UPDATE swap_requests SET status = :status WHERE swap_uuid = :swap_ref";
-        $stmt = $this->swapDB->prepare($sql);
-        $stmt->execute([':status' => $status, ':swap_ref' => $swapRef]);
-    }
-
+   private function updateSwapRequestStatus(string $swapRef, string $status): void
+{
+    $sql = "
+        UPDATE swap_requests
+        SET status = :status,
+            completed_at = CASE
+                WHEN LOWER(:status_check) = 'completed' AND completed_at IS NULL THEN NOW()
+                ELSE completed_at
+            END
+        WHERE swap_uuid = :swap_ref
+    ";
+    $stmt = $this->swapDB->prepare($sql);
+    $stmt->execute([
+        ':status' => $status,
+        ':status_check' => $status,
+        ':swap_ref' => $swapRef
+    ]);
+}
     
 /**
  * beginAtomicSwap() - Hardened so $this->inAtomicSwap is only set to true AFTER the PDO
