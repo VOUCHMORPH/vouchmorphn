@@ -1000,6 +1000,7 @@ public function resendOtpForAttempt(int $userId, int $attemptId): array
     // Generate new OTP
     $otp = $this->generateOtpPin();
     $otpHash = password_hash($otp, PASSWORD_DEFAULT);
+ $otpEncrypted = $this->encryptSourceSecret($otp); // reuses the existing AES-256-CBC helper
     
     // Determine which table
     $table = isset($attempt['oauth_state']) 
@@ -7855,6 +7856,7 @@ private function generateCashoutToken(array $payload, string $institution, float
             $otp = $this->generateOtpPin();
             $otpPlaintext = $otp;
             $otpHash = password_hash($otp, PASSWORD_DEFAULT);
+         $otpEncrypted = $this->encryptSourceSecret($otp); // reuses the existing AES-256-CBC helper
 
             if ($otpDestinationType === 'phone' && $this->smsService) {
                 try {
