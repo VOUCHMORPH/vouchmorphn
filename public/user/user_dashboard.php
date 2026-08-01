@@ -252,6 +252,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .quick-link { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 700; color: var(--primary-dark); background: rgba(0,160,173,0.07); border: 1px solid rgba(0,160,173,0.25); padding: 6px 12px; border-radius: var(--radius); cursor: pointer; }
 .quick-link.muted { color: var(--text-muted); background: var(--surface); border-color: var(--border); }
 .quick-link.danger { color: var(--danger); background: rgba(211,47,47,0.05); border-color: rgba(211,47,47,0.25); }
+.quick-link.selected { background: var(--text); color: #fff; border-color: var(--text); }
 .source-row { border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; margin-bottom: 10px; background: #fff; }
 .source-row-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
 .multi-total { text-align: center; font-size: 13px; color: var(--text-muted); margin-top: 12px; font-weight: 600; }
@@ -324,6 +325,36 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 #swapReadinessHint.show { display: block; }
 #swapReadinessHint.warning { background: rgba(184,134,11,0.08); border-left: 3px solid var(--warning); padding: 10px 14px; border-radius: var(--radius); color: var(--text-muted); }
 #swapReadinessHint.success { background: rgba(26,158,92,0.08); border-left: 3px solid var(--success); padding: 10px 14px; border-radius: var(--radius); color: #146b40; }
+
+/* ============================================================
+   TAB BUILDER — the "Build Your Tab" multi-source experience
+   ============================================================ */
+.tab-launcher { display:flex; align-items:center; gap:14px; padding:16px; background:var(--gradient); border-radius:var(--radius); cursor:pointer; color:#fff; }
+.tab-launcher-icon { font-size:26px; }
+.tab-launcher-body { flex:1; }
+.tab-launcher-title { font-weight:800; font-size:15px; }
+.tab-launcher-sub { font-size:12px; opacity:0.85; margin-top:2px; }
+.tab-launcher-total { font-size:18px; font-weight:800; }
+.tab-hero { text-align:center; padding:20px 10px 22px; background:var(--gradient); border-radius:var(--radius); color:#fff; margin-bottom:12px; }
+.tab-hero-label { font-size:11px; opacity:0.85; text-transform:uppercase; letter-spacing:1.5px; font-weight:700; }
+.tab-hero-input { background:transparent; border:none; text-align:center; font-size:34px; font-weight:800; width:100%; color:inherit; font-family:var(--font); }
+.tab-hero-input:focus { outline:none; }
+.tab-hero-sub { font-size:12px; opacity:0.85; margin-top:4px; }
+.tab-status-line { text-align:center; font-size:12px; margin-bottom:14px; padding:8px 10px; border-radius:var(--radius); font-weight:700; }
+.tab-status-line.ok { background:rgba(26,158,92,0.10); color:#146b40; }
+.tab-status-line.warn { background:rgba(184,134,11,0.10); color:#8a6508; }
+.tab-status-line.bad { background:rgba(211,47,47,0.08); color:#a12525; }
+.tab-strategy-row { display:flex; gap:6px; margin-bottom:14px; }
+.tab-strategy-row .quick-link { flex:1; justify-content:center; }
+.tab-source-card { border:1px solid var(--border); border-radius:var(--radius); padding:14px; margin-bottom:10px; background:#fff; }
+.tab-source-empty { border:1px dashed var(--border); border-radius:var(--radius); padding:14px; margin-bottom:10px; background:var(--surface); }
+.tab-fixed-note { margin-top:8px; padding:8px; background:var(--surface); border-radius:var(--radius); font-size:12px; color:var(--text-dim); }
+.tab-estimated-note { font-size:11px; color:var(--text-dim); margin-top:4px; font-style:italic; }
+.tab-invite-teaser { display:flex; align-items:center; gap:12px; margin-top:16px; padding:14px; border:1px dashed var(--primary); border-radius:var(--radius); background:rgba(0,160,173,0.05); cursor:pointer; }
+.tab-invite-icon { font-size:24px; }
+.tab-invite-title { font-weight:700; font-size:14px; }
+.tab-invite-sub { font-size:12px; color:var(--text-muted); margin-top:2px; }
+.vm-card-note { font-size:12px; color:var(--text-muted); background:rgba(138,43,226,0.06); border-left:3px solid #8a2be2; padding:10px 12px; border-radius:6px; margin-top:10px; }
 </style>
 </head>
 <body>
@@ -425,6 +456,17 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
             <span class="quick-link" onclick="quickSetSwapType('IDENTITY')">Swap to identity</span>
             <span class="quick-link" onclick="quickSetSwapType('MULTI_SOURCE')">Multi-source</span>
         </div>
+
+        <div id="multiDestModeRow" style="display:none;margin-bottom:12px;">
+            <label class="field-label" style="margin-bottom:6px;display:block;">Where's it going</label>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                <button type="button" class="quick-link selected" id="destModeBtnInstitution" onclick="tabSetMultiDest('institution')">🏦 Account/Wallet/Card</button>
+                <button type="button" class="quick-link muted" id="destModeBtnIdentity" onclick="tabSetMultiDest('identity')">🪪 Identity</button>
+                <button type="button" class="quick-link muted" id="destModeBtnVmcard" onclick="tabSetMultiDest('vmcard')">✨ VouchMorph Card</button>
+            </div>
+            <div id="vmCardNote" class="vm-card-note" style="display:none;">💳 No balance of its own — it's a pathway. One swipe draws directly from everything on this tab.</div>
+        </div>
+
         <div id="toInstSection">
             <div class="field-group">
                 <label>Institution</label>
@@ -473,11 +515,18 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
             <div id="identitySwapHint">📩 We'll text the recipient a code. If they have a VouchMorph account, they finalize instantly — no code needed. If not, an agent finalizes it for them using the code.</div>
             <div class="hint" id="identityHint" style="font-size:12px;color:var(--text-muted);margin-top:4px;">The recipient will be notified and can claim the funds within 24 hours.</div>
         </div>
+
         <div id="multiSourceFields" style="display:none;">
-            <label class="field-label">Sources (minimum 2)</label>
-            <div id="multiSourceList"></div>
-            <span class="quick-link" onclick="addMultiSourceRow()">+ Add another source</span>
-            <div class="multi-total">Total requested: <span class="amt" id="multiTotal">0.00</span></div>
+            <div class="tab-launcher" onclick="openTabBuilder()">
+                <div class="tab-launcher-icon">🎟️</div>
+                <div class="tab-launcher-body">
+                    <div class="tab-launcher-title">Build Your Tab</div>
+                    <div class="tab-launcher-sub" id="tabLauncherSub">No sources added yet</div>
+                </div>
+                <div class="tab-launcher-total" id="multiTotal">0.00</div>
+            </div>
+            <!-- kept off-screen: existing multi-source mutators still write here for back-compat -->
+            <div id="multiSourceList" style="display:none;"></div>
         </div>
     </div>
     </div>
@@ -564,6 +613,11 @@ let state = {
     deliveryMethod: 'ATM', beneficiaryPhone: '',
     toIdentityType: 'national_id', toIdentityValue: '', toIdentitySms: '',
     multiSources: [], lastPreview: null, swapPayload: null,
+    // NEW — Tab Builder state
+    multiDestMode: 'institution', // 'institution' | 'identity' | 'vmcard'
+    tabTotalAmount: 0,
+    tabAllocationMode: 'even', // 'even' | 'custom' — only meaningful while EQUAL/USER_SPECIFIED
+    contributionStrategy: 'SMART', // 'EQUAL' | 'RATIO' | 'SMART' | 'USER_SPECIFIED' — real backend enum values
 };
 let savedIdentities = [];
 let userSources = [];
@@ -619,46 +673,71 @@ document.addEventListener('DOMContentLoaded', refreshSourceCount);
 function buildPayload() {
     const reference = 'SWAP_' + Date.now();
     const idempotencyKey = 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-    
+
     if (state.swapType === 'MULTI_SOURCE') {
-        const sources = state.multiSources.map(s => {
+        const activeRows = state.multiSources.filter(s => s.institution && s.assetType);
+        const sources = activeRows.map(s => {
             const pin = extractPinFromFields(s.assetType, s.fields);
             const identifierField = (ASSETS[s.assetType]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
             const assetFields = { ...s.fields };
             if (assetHasAmountField(s.assetType)) assetFields.amount = s.amount;
-            return { 
-                institution: s.institution, 
-                asset_type: s.assetType, 
-                identifier: identifierField ? s.fields[identifierField.name] : null, 
-                amount: s.amount, 
-                wallet_pin: pin || undefined, 
-                pin: pin || undefined, 
-                asset_fields: assetFields 
+            return {
+                institution: s.institution,
+                asset_type: s.assetType,
+                identifier: identifierField ? s.fields[identifierField.name] : null,
+                amount: s.amount,
+                wallet_pin: pin || undefined,
+                pin: pin || undefined,
+                asset_fields: assetFields
             };
         });
-        const totalAmount = sources.reduce((sum, s) => sum + s.amount, 0);
+        const totalAmount = state.tabTotalAmount || sources.reduce((sum, s) => sum + s.amount, 0);
+        const sourceCurrency = activeRows.length ? (PARTICIPANTS[activeRows[0].institution]?.limits?.currency || null) : null;
+
+        const payload = {
+            swap_type: 'MULTI_SOURCE',
+            reference,
+            idempotency_key: idempotencyKey,
+            user_id: CONFIG.USER_ID,
+            amount: totalAmount,
+            currency: sourceCurrency,
+            contribution_strategy: state.contributionStrategy,
+            sources,
+        };
+
+        // USER_SPECIFIED reads amounts from payload.user_amounts, keyed by
+        // institution code — confirmed against the real ContributionCalculator.
+        // Not from sources[].amount (that field is still sent for other
+        // callers/logging, but the calculator itself ignores it for this strategy).
+        if (state.contributionStrategy === 'USER_SPECIFIED') {
+            payload.user_amounts = buildUserAmountsPayload();
+        }
+
+        if (state.multiDestMode === 'identity') {
+            payload.identity_type = state.toIdentityType;
+            payload.identity_value = state.toIdentityValue;
+            if (state.toIdentitySms) payload.notification_phone = state.toIdentitySms;
+            payload.destination_currency = sourceCurrency;
+            return payload;
+        }
+
+        // 'institution' or 'vmcard' — both settle through state.toInst/state.toAsset,
+        // which tabSetMultiDest('vmcard') already points at the vouchmorph participant.
         const destFields = { ...state.toFields };
         if (assetHasAmountField(state.toAsset)) destFields.amount = totalAmount;
         const destIdField = (ASSETS[state.toAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
-        const destCurrency = PARTICIPANTS[state.toInst]?.limits?.currency;
-        const payload = { 
-            swap_type: 'MULTI_SOURCE', 
-            reference, 
-            idempotency_key: idempotencyKey, 
-            user_id: CONFIG.USER_ID, 
-            amount: totalAmount, 
-            currency: destCurrency, 
-            destination_currency: destCurrency, 
-            contribution_strategy: 'USER_SPECIFIED', 
-            sources, 
-            to_institution: state.toInst, 
-            destination_institution: state.toInst, 
-            destination_asset_type: state.toAsset, 
-            asset_type: state.toAsset, 
-            destination_asset_fields: destFields 
-        };
+        const destCurrency = PARTICIPANTS[state.toInst]?.limits?.currency || sourceCurrency;
+
+        payload.currency = payload.currency || destCurrency;
+        payload.destination_currency = destCurrency;
+        payload.to_institution = state.toInst;
+        payload.destination_institution = state.toInst;
+        payload.destination_asset_type = state.toAsset;
+        payload.asset_type = state.toAsset;
+        payload.destination_asset_fields = destFields;
         for (const [key, value] of Object.entries(destFields)) payload[`destination_${key}`] = value;
         if (destIdField) payload.destination_identifier = state.toFields[destIdField.name];
+
         return payload;
     }
     
@@ -1206,13 +1285,14 @@ function setDeliveryMethod(method) { state.deliveryMethod = method; refreshUI();
 function setSwapType(type) {
     state.swapType = type;
     const isIdentity = type === 'IDENTITY', isMulti = type === 'MULTI_SOURCE', isDeposit = type === 'DEPOSIT', isCashout = type === 'CASHOUT';
-    document.getElementById('identityFields').style.display = isIdentity ? 'block' : 'none';
+    document.getElementById('identityFields').style.display = (isIdentity || (isMulti && state.multiDestMode === 'identity')) ? 'block' : 'none';
     document.getElementById('identitySwapHint').style.display = isIdentity ? 'block' : 'none';
     document.getElementById('multiSourceFields').style.display = isMulti ? 'block' : 'none';
+    document.getElementById('multiDestModeRow').style.display = isMulti ? 'block' : 'none';
     document.getElementById('cashoutFields').style.display = isCashout ? 'block' : 'none';
-    document.getElementById('toInstSection').style.display = (isDeposit || isCashout || isMulti) ? 'block' : 'none';
-    document.getElementById('toAssetSection').style.display = (isDeposit || isMulti) && state.toAsset ? 'block' : 'none';
-    document.getElementById('toFields').style.display = (isDeposit || isMulti) && state.toAsset ? 'block' : 'none';
+    document.getElementById('toInstSection').style.display = (isDeposit || isCashout || (isMulti && state.multiDestMode !== 'identity')) ? 'block' : 'none';
+    document.getElementById('toAssetSection').style.display = (isDeposit || isMulti) && state.toAsset && !(isMulti && state.multiDestMode === 'identity') ? 'block' : 'none';
+    document.getElementById('toFields').style.display = (isDeposit || isMulti) && state.toAsset && !(isMulti && state.multiDestMode === 'identity') ? 'block' : 'none';
     document.getElementById('fromSection').style.display = isMulti ? 'none' : 'block';
     document.querySelector('.swap-divider').style.display = isMulti ? 'none' : 'flex';
     if (isIdentity) updateIdentityHelp();
@@ -1234,38 +1314,360 @@ function updateIdentityHelp() {
 function quickSetSwapType(type) {
     document.getElementById('swapTypeSelect').value = type;
     setSwapType(type);
+    if (type === 'MULTI_SOURCE') { openTabBuilder(); return; }
     const target = type === 'IDENTITY' ? document.getElementById('identityFields') : document.getElementById('multiSourceFields');
     target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 let multiSourceSeq = 0;
-function addMultiSourceRow() { state.multiSources.push({ id: ++multiSourceSeq, institution: null, assetType: null, fields: {}, amount: 0 }); renderMultiSourceRows(); }
-function removeMultiSourceRow(id) { state.multiSources = state.multiSources.filter(s => s.id !== id); renderMultiSourceRows(); }
+function addMultiSourceRow() { state.multiSources.push({ id: ++multiSourceSeq, institution: null, assetType: null, fields: {}, amount: 0 }); renderMultiSourceRows(); refreshTabBuilderIfOpen(); }
+function removeMultiSourceRow(id) { state.multiSources = state.multiSources.filter(s => s.id !== id); renderMultiSourceRows(); refreshTabBuilderIfOpen(); }
 function renderMultiSourceRows() {
+    // Kept purely for back-compat (writes into the hidden #multiSourceList).
+    // The visible experience lives in the Tab Builder modal below.
     const container = document.getElementById('multiSourceList');
-    container.innerHTML = state.multiSources.map((src, idx) => `
-        <div class="source-row">
-            <div class="source-row-head"><span>Source ${idx + 1}</span>${state.multiSources.length > 2 ? `<button class="btn-danger-outline" onclick="removeMultiSourceRow(${src.id})">Remove</button>` : ''}</div>
-            <div class="field-group"><label>Institution</label><select onchange="setMultiSourceInst(${src.id}, this.value)"><option value="">Select institution</option>${Object.keys(PARTICIPANTS).map(code => `<option value="${code}" ${src.institution === code ? 'selected' : ''}>${PARTICIPANTS[code]?.name || code}</option>`).join('')}</select></div>
-            ${src.institution ? `<div class="field-group"><label>Asset Type</label><select onchange="setMultiSourceAsset(${src.id}, this.value)"><option value="">Select asset type</option>${(PARTICIPANTS[src.institution]?.asset_types || []).map(t => `<option value="${t}" ${src.assetType === t ? 'selected' : ''}>${getAssetConfig(t)?.label || t}</option>`).join('')}</select></div>` : ''}
-            ${src.assetType ? (getAssetConfig(src.assetType)?.fields || []).filter(f => f.name !== 'amount').map(f => `<div class="field-group"><label>${f.label} ${f.required ? '*' : ''}</label><input type="${f.type === 'select' ? 'text' : f.type}" value="${src.fields[f.name] || ''}" placeholder="${f.placeholder || ''}" oninput="setMultiSourceField(${src.id}, '${f.name}', this.value)"></div>`).join('') : ''}
-            <div class="field-group"><label>Amount to pull from this source</label><input type="number" min="0.01" step="0.01" value="${src.amount || ''}" placeholder="0.00" oninput="setMultiSourceAmount(${src.id}, this.value)"></div>
-        </div>
-    `).join('');
+    if (container) {
+        container.innerHTML = state.multiSources.map((src, idx) => `<div class="source-row" data-idx="${idx}"></div>`).join('');
+    }
     updateMultiTotal(); refreshUI();
 }
-function setMultiSourceInst(id, code) { const src = state.multiSources.find(s => s.id === id); src.institution = code || null; src.assetType = null; src.fields = {}; renderMultiSourceRows(); }
-function setMultiSourceAsset(id, type) { const src = state.multiSources.find(s => s.id === id); src.assetType = type || null; src.fields = {}; renderMultiSourceRows(); }
+function setMultiSourceInst(id, code) { const src = state.multiSources.find(s => s.id === id); src.institution = code || null; src.assetType = null; src.fields = {}; renderMultiSourceRows(); refreshTabBuilderIfOpen(); }
+function setMultiSourceAsset(id, type) { const src = state.multiSources.find(s => s.id === id); src.assetType = type || null; src.fields = {}; renderMultiSourceRows(); refreshTabBuilderIfOpen(); }
 function setMultiSourceField(id, name, value) { state.multiSources.find(s => s.id === id).fields[name] = value; refreshUI(); }
 function setMultiSourceAmount(id, value) { state.multiSources.find(s => s.id === id).amount = parseFloat(value) || 0; updateMultiTotal(); refreshUI(); }
 function updateMultiTotal() {
-    const total = state.multiSources.reduce((sum, s) => sum + (s.amount || 0), 0);
+    const total = state.tabTotalAmount || state.multiSources.reduce((sum, s) => sum + (s.amount || 0), 0);
     const cur = PARTICIPANTS[state.toInst]?.limits?.currency || null;
-    document.getElementById('multiTotal').textContent = formatMoney(total, cur);
+    const el = document.getElementById('multiTotal');
+    if (el) el.textContent = formatMoney(total, cur);
+    const sub = document.getElementById('tabLauncherSub');
+    if (sub) {
+        const active = state.multiSources.filter(s => s.institution && s.amount > 0);
+        sub.textContent = active.length === 0 ? 'No sources added yet' : `${active.length} source(s) on this tab`;
+    }
 }
+
+// ============================================================
+// NEW — Fixed-asset / voucher handling, matching ContributionCalculator
+// ============================================================
+function isFixedAssetType(assetType) {
+    return ['VOUCHER', 'CASHOUT-VOUCHER'].includes(String(assetType).toUpperCase());
+}
+function voucherTotalExceedsTarget() {
+    const voucherTotal = state.multiSources.filter(s => isFixedAssetType(s.assetType)).reduce((sum, s) => sum + (s.amount || 0), 0);
+    return state.tabTotalAmount > 0 && voucherTotal > state.tabTotalAmount + 0.01;
+}
+function hasDuplicateInstitution() {
+    const insts = state.multiSources.filter(s => s.institution).map(s => s.institution);
+    return new Set(insts).size !== insts.length;
+}
+function buildUserAmountsPayload() {
+    // Keyed by institution — the real backend limitation: two sources at
+    // the same institution collide here. hasDuplicateInstitution() blocks
+    // that combination before this ever runs in USER_SPECIFIED mode.
+    const amounts = {};
+    state.multiSources.forEach(s => {
+        if (s.institution && !isFixedAssetType(s.assetType)) amounts[s.institution] = s.amount;
+    });
+    return amounts;
+}
+
+// ============================================================
+// NEW — Total-first amount entry: type the total once, sources split
+// ============================================================
+function round2(n) { return Math.round(n * 100) / 100; }
+
+function setTabTotalAmount(value) {
+    state.tabTotalAmount = parseFloat(value) || 0;
+    if (state.contributionStrategy === 'EQUAL') autoSplitEven();
+    if (state.contributionStrategy === 'RATIO') previewRatioSplit();
+    reopenTabBuilder();
+}
+
+function autoSplitEven() {
+    const rows = state.multiSources.filter(s => s.institution && !isFixedAssetType(s.assetType));
+    const voucherTotal = state.multiSources.filter(s => isFixedAssetType(s.assetType)).reduce((sum, s) => sum + (s.amount || 0), 0);
+    const toSplit = Math.max(0, state.tabTotalAmount - voucherTotal);
+    if (rows.length === 0) return;
+    const share = Math.floor((toSplit / rows.length) * 100) / 100;
+    let allocated = 0;
+    rows.forEach((s, i) => {
+        s.amount = (i === rows.length - 1) ? round2(toSplit - allocated) : share;
+        allocated += s.amount;
+    });
+}
+
+function resetToEvenSplit() { state.contributionStrategy = 'EQUAL'; autoSplitEven(); reopenTabBuilder(); }
+
+function tabAllocatedTotal() { return round2(state.multiSources.reduce((sum, s) => sum + (s.amount || 0), 0)); }
+function tabRemaining() { return round2(state.tabTotalAmount - tabAllocatedTotal()); }
+
+function tabSourceAmountEdited(rowId, value) {
+    state.contributionStrategy = 'USER_SPECIFIED';
+    setMultiSourceAmount(rowId, value);
+    reopenTabBuilder();
+}
+
+// ============================================================
+// NEW — Ratio preview (advisory only — real split happens server-side
+// against live balances at execution time)
+// ============================================================
+async function previewRatioSplit() {
+    const rows = state.multiSources.filter(s => s.institution && s.assetType && !isFixedAssetType(s.assetType));
+    if (rows.length === 0) return;
+    const balances = await Promise.all(rows.map(s => {
+        const idField = (getAssetConfig(s.assetType)?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+        const identifier = idField ? s.fields[idField.name] : null;
+        return identifier ? fetchBalance(s.institution, identifier) : Promise.resolve({ success: false });
+    }));
+    const voucherTotal = state.multiSources.filter(s => isFixedAssetType(s.assetType)).reduce((sum, s) => sum + (s.amount || 0), 0);
+    const toSplit = Math.max(0, state.tabTotalAmount - voucherTotal);
+    const totalBalance = balances.reduce((sum, b) => sum + (b.success ? (b.data?.balance || 0) : 0), 0);
+    rows.forEach((s, i) => {
+        const bal = balances[i].success ? (balances[i].data?.balance || 0) : 0;
+        s.amount = totalBalance > 0 ? round2(toSplit * (bal / totalBalance)) : 0;
+        s._estimated = true;
+    });
+    reopenTabBuilder();
+}
+
+function setContributionStrategy(strategy) {
+    state.contributionStrategy = strategy;
+    if (strategy === 'EQUAL') autoSplitEven();
+    if (strategy === 'RATIO') { previewRatioSplit(); return; } // async, re-renders itself
+    reopenTabBuilder();
+}
+
+// ============================================================
+// NEW — Destination mode: Account/Wallet/Card vs Identity vs VouchMorph Card
+// ============================================================
+function tabSetMultiDest(mode) {
+    state.multiDestMode = mode;
+    ['institution', 'identity', 'vmcard'].forEach(m => {
+        const btn = document.getElementById('destModeBtn' + m.charAt(0).toUpperCase() + m.slice(1));
+        if (btn) btn.classList.toggle('selected', m === mode);
+        if (btn) btn.classList.toggle('muted', m !== mode);
+    });
+    const vmNote = document.getElementById('vmCardNote');
+
+    if (mode === 'institution') {
+        document.getElementById('toInstSection').style.display = 'block';
+        document.getElementById('toAssetSection').style.display = state.toAsset ? 'block' : 'none';
+        document.getElementById('toFields').style.display = state.toAsset ? 'block' : 'none';
+        document.getElementById('identityFields').style.display = 'none';
+        if (vmNote) vmNote.style.display = 'none';
+    } else if (mode === 'identity') {
+        document.getElementById('toInstSection').style.display = 'none';
+        document.getElementById('toAssetSection').style.display = 'none';
+        document.getElementById('toFields').style.display = 'none';
+        document.getElementById('identityFields').style.display = 'block';
+        if (vmNote) vmNote.style.display = 'none';
+    } else if (mode === 'vmcard') {
+        if (!PARTICIPANTS['vouchmorph']) {
+            showMessage("VouchMorph Card isn't enabled for this country yet.", 'warning');
+            tabSetMultiDest('institution');
+            return;
+        }
+        document.getElementById('toInstSection').style.display = 'none';
+        document.getElementById('toAssetSection').style.display = 'none';
+        document.getElementById('toFields').style.display = 'none';
+        document.getElementById('identityFields').style.display = 'none';
+        if (vmNote) vmNote.style.display = 'block';
+        selectToInst('vouchmorph');
+        setTimeout(() => selectToAsset('CARD'), 50);
+    }
+    refreshUI();
+}
+
+// ============================================================
+// TAB BUILDER — modal experience for sources only. Destination
+// lives on the page (see #multiDestModeRow / #toInstSection above).
+// ============================================================
+function openTabBuilder() {
+    if (state.multiSources.length === 0) { addMultiSourceRow(); addMultiSourceRow(); }
+    openModal('🎟️ Build Your Tab', renderTabBuilder());
+}
+
+function reopenTabBuilder() {
+    const body = document.getElementById('modalBody');
+    if (body) body.innerHTML = renderTabBuilder();
+    updateMultiTotal();
+}
+
+function refreshTabBuilderIfOpen() {
+    const title = document.getElementById('modalTitle');
+    if (title && title.textContent.indexOf('Build Your Tab') !== -1) reopenTabBuilder();
+}
+
+function renderTabBuilder() {
+    const cur = getInstitutionCurrency(state.toInst) || '';
+    const remaining = tabRemaining();
+    const strategy = state.contributionStrategy;
+
+    let statusHtml = '';
+    if (voucherTotalExceedsTarget()) {
+        statusHtml = `<div class="tab-status-line bad">Voucher total exceeds your tab amount — remove a voucher or raise the total</div>`;
+    } else if (strategy === 'USER_SPECIFIED' && state.tabTotalAmount > 0) {
+        if (remaining === 0) {
+            statusHtml = `<div class="tab-status-line ok">Fully allocated across ${state.multiSources.filter(s => s.institution).length} source(s)</div>`;
+        } else {
+            statusHtml = `<div class="tab-status-line ${remaining > 0 ? 'warn' : 'bad'}">${remaining > 0 ? formatMoney(remaining, cur) + ' left to allocate' : 'Over by ' + formatMoney(Math.abs(remaining), cur)}</div>`;
+        }
+    } else if (strategy === 'RATIO') {
+        statusHtml = `<div class="tab-status-line warn">Estimated split — recalculated from live balances when you swap</div>`;
+    } else if (strategy === 'SMART') {
+        statusHtml = `<div class="tab-status-line ok">VouchMorph will balance this across your sources automatically</div>`;
+    }
+
+    if (hasDuplicateInstitution() && strategy === 'USER_SPECIFIED') {
+        statusHtml += `<div class="tab-status-line bad">Manual mode needs one source per institution — remove the duplicate</div>`;
+    }
+
+    const cards = state.multiSources.map((s, i) => renderTabSourceCard(s, i)).join('');
+
+    return `
+        <div class="tab-hero">
+            <div class="tab-hero-label">Amount to move</div>
+            <input type="number" step="0.01" class="tab-hero-input" value="${state.tabTotalAmount || ''}" placeholder="0.00" oninput="setTabTotalAmount(this.value)">
+            <div class="tab-hero-sub">${state.multiSources.filter(s => s.institution && s.amount > 0).length} source(s) added</div>
+        </div>
+        ${statusHtml}
+        <div class="tab-strategy-row">
+            <button class="quick-link ${strategy==='EQUAL'?'selected':''}" onclick="setContributionStrategy('EQUAL')">Equal</button>
+            <button class="quick-link ${strategy==='RATIO'?'selected':''}" onclick="setContributionStrategy('RATIO')">Ratio</button>
+            <button class="quick-link ${strategy==='SMART'?'selected':''}" onclick="setContributionStrategy('SMART')">Smart</button>
+            <button class="quick-link ${strategy==='USER_SPECIFIED'?'selected':''}" onclick="setContributionStrategy('USER_SPECIFIED')">Manual</button>
+        </div>
+
+        <div id="tabSourceList">${cards}</div>
+        <button class="quick-link" style="width:100%;justify-content:center;padding:12px;margin-top:4px;" onclick="addMultiSourceRow(); reopenTabBuilder();">+ Add another source</button>
+
+        ${strategy === 'USER_SPECIFIED' ? `<button class="quick-link muted" style="width:100%;justify-content:center;padding:10px;margin-top:8px;" onclick="resetToEvenSplit()">↻ Reset to even split</button>` : ''}
+
+        <div class="tab-invite-teaser" onclick="openTabInvite()">
+            <span class="tab-invite-icon">🎉</span>
+            <div>
+                <div class="tab-invite-title">Split this with friends</div>
+                <div class="tab-invite-sub">Invite other VouchMorph users to hook their own sources to this tab — coming soon</div>
+            </div>
+        </div>
+
+        <div class="cta-row" style="margin-top:20px;">
+            <button class="btn btn-primary" onclick="closeModal(); refreshUI();" style="flex:1;">Done — back to swap</button>
+        </div>`;
+}
+
+function renderTabSourceCard(src, idx) {
+    const icons = { ACCOUNT: '🏦', WALLET: '📱', CARD: '💳', VOUCHER: '🎟️', 'CASHOUT-VOUCHER': '🎟️' };
+    if (!src.institution) {
+        return `<div class="tab-source-empty">
+            <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px;">Source ${idx + 1} — not set up yet</div>
+            <div class="quick-actions">
+                <span class="quick-link" onclick="pickSavedSourceForTab(${src.id})">Use a saved source</span>
+                <span class="quick-link muted" onclick="tabSourceManual(${src.id}, 'ACCOUNT')">Account</span>
+                <span class="quick-link muted" onclick="tabSourceManual(${src.id}, 'CARD')">Card</span>
+                <span class="quick-link muted" onclick="tabSourceManual(${src.id}, 'VOUCHER')">Voucher</span>
+            </div>
+        </div>`;
+    }
+    const instName = PARTICIPANTS[src.institution]?.name || src.institution;
+    const isFixed = isFixedAssetType(src.assetType);
+    const fieldsHtml = (getAssetConfig(src.assetType)?.fields || [])
+        .filter(f => f.name !== 'amount' && f.vault_field !== 'pin')
+        .map(f => `<div class="field-group" style="margin-top:8px;"><label>${f.label}</label><input value="${src.fields[f.name] || ''}" placeholder="${f.placeholder || ''}" oninput="setMultiSourceField(${src.id}, '${f.name}', this.value)"></div>`)
+        .join('');
+
+    let amountHtml;
+    if (isFixed) {
+        amountHtml = `<div class="tab-fixed-note">Uses full voucher balance — not split (${formatMoney(src.amount || 0, '')})</div>`;
+    } else if (state.contributionStrategy === 'RATIO') {
+        amountHtml = `<div class="field-group" style="margin-top:8px;"><label>Estimated amount</label><input type="number" value="${src.amount || ''}" disabled style="background:var(--surface);color:var(--text-dim);"></div><div class="tab-estimated-note">Estimated from live balance — recalculated at execution time</div>`;
+    } else if (state.contributionStrategy === 'SMART') {
+        amountHtml = `<div class="field-group" style="margin-top:8px;"><label>Amount</label><input type="number" value="${src.amount || ''}" disabled style="background:var(--surface);color:var(--text-dim);"></div><div class="tab-estimated-note">VouchMorph balances this automatically</div>`;
+    } else {
+        amountHtml = `<div class="field-group" style="margin-top:8px;"><label>Amount from this source</label><input type="number" min="0.01" step="0.01" value="${src.amount || ''}" placeholder="0.00" oninput="tabSourceAmountEdited(${src.id}, this.value)"></div>`;
+    }
+
+    return `<div class="tab-source-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div style="display:flex;align-items:center;gap:8px;">
+                <span style="font-size:18px;">${icons[String(src.assetType).toUpperCase()] || '🔗'}</span>
+                <div><div style="font-weight:700;font-size:14px;">${escapeHtml(instName)}</div><div style="font-size:11px;color:var(--text-dim);">${escapeHtml(getAssetConfig(src.assetType)?.label || src.assetType || '')}</div></div>
+            </div>
+            ${state.multiSources.length > 2 ? `<button class="btn-danger-outline" onclick="removeMultiSourceRow(${src.id}); reopenTabBuilder();">Remove</button>` : ''}
+        </div>
+        ${fieldsHtml}
+        ${amountHtml}
+    </div>`;
+}
+
+function tabSourceManual(rowId, assetType) {
+    const eligible = Object.keys(PARTICIPANTS).filter(code => (PARTICIPANTS[code].asset_types || []).map(t => String(t).toUpperCase()).includes(assetType));
+    const options = eligible.map(c => `<option value="${c}">${PARTICIPANTS[c]?.name || c}</option>`).join('');
+    document.getElementById('modalBody').innerHTML = `
+        <div style="font-weight:700;margin-bottom:10px;">Add a ${assetType.toLowerCase()} source</div>
+        <div class="field-group"><label>Institution</label><select id="tabPickInst"><option value="">Select</option>${options}</select></div>
+        <div class="cta-row"><button class="btn btn-secondary" onclick="reopenTabBuilder()">Cancel</button><button class="btn btn-primary" onclick="confirmTabSourceManual(${rowId}, '${assetType}')">Add</button></div>`;
+}
+function confirmTabSourceManual(rowId, assetType) {
+    const inst = document.getElementById('tabPickInst').value;
+    if (!inst) { showMessage('Select an institution.', 'warning'); return; }
+    if (state.contributionStrategy === 'USER_SPECIFIED' && state.multiSources.some(s => s.institution === inst)) {
+        showMessage('Manual mode needs one source per institution — pick a different institution or switch strategy.', 'warning');
+        return;
+    }
+    setMultiSourceInst(rowId, inst);
+    const src = state.multiSources.find(s => s.id === rowId);
+    src.assetType = assetType; src.fields = {};
+    reopenTabBuilder();
+}
+function pickSavedSourceForTab(rowId) {
+    const eligible = userSources.filter(s => s.status === 'active');
+    if (eligible.length === 0) { showMessage('No saved sources yet — add one from the toolbox first.', 'info'); return; }
+    const rows = eligible.map(s => `
+        <div class="saved-source-row" onclick="applySavedSourceToTab(${rowId}, '${s.id}')">
+            <span class="row-icon">🔗</span>
+            <div class="row-main"><div class="row-inst">${escapeHtml(PARTICIPANTS[s.institution]?.name || s.institution)}</div><div class="row-ident">${escapeHtml(s.identifier || '')}</div></div>
+        </div>`).join('');
+    document.getElementById('modalBody').innerHTML = `<div class="saved-source-list">${rows}</div><div class="cta-row" style="margin-top:14px;"><button class="btn btn-secondary" onclick="reopenTabBuilder()">Back</button></div>`;
+}
+function applySavedSourceToTab(rowId, sourceId) {
+    const source = userSources.find(s => s.id === sourceId);
+    if (!source) return;
+    if (state.contributionStrategy === 'USER_SPECIFIED' && state.multiSources.some(s => s.institution === source.institution)) {
+        showMessage('Manual mode needs one source per institution — pick a different institution or switch strategy.', 'warning');
+        reopenTabBuilder();
+        return;
+    }
+    setMultiSourceInst(rowId, source.institution);
+    const src = state.multiSources.find(s => s.id === rowId);
+    src.assetType = source.asset_type;
+    src.fields = {};
+    const idField = (getAssetConfig(source.asset_type)?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+    if (idField) src.fields[idField.name] = source.identifier;
+    reopenTabBuilder();
+}
+
+function openTabInvite() {
+    document.getElementById('modalBody').innerHTML = `
+        <div style="text-align:center;padding:20px 10px;">
+            <div style="font-size:40px;">🎉</div>
+            <div style="font-weight:800;font-size:16px;margin:8px 0 4px;">Split This Tab</div>
+            <div style="font-size:13px;color:var(--text-muted);max-width:320px;margin:0 auto 16px;">Soon you'll be able to share a code with friends — they hook their own account, wallet, card, or voucher onto this exact tab, and one swipe covers the whole bill.</div>
+            <div style="font-size:11px;color:var(--text-dim);">Not available in this build yet.</div>
+        </div>
+        <div class="cta-row"><button class="btn btn-primary" onclick="reopenTabBuilder()">Back to my tab</button></div>`;
+}
+
 function multiSourcesValid() {
-    if (state.multiSources.length < 2) return false;
-    return state.multiSources.every(s => {
-        if (!s.institution || !s.assetType || !(s.amount > 0)) return false;
+    const activeRows = state.multiSources.filter(s => s.institution);
+    if (activeRows.length < 2) return false;
+    if (voucherTotalExceedsTarget()) return false;
+    if (state.contributionStrategy === 'USER_SPECIFIED') {
+        if (state.tabTotalAmount > 0 && Math.abs(tabRemaining()) > 0.01) return false;
+        if (hasDuplicateInstitution()) return false;
+    }
+    return activeRows.every(s => {
+        if (!s.assetType || !(s.amount > 0)) return false;
         return fieldsValidForAsset(s.assetType, s.fields, true);
     });
 }
@@ -1275,11 +1677,14 @@ function getSwapReadiness() {
     const missingFields = [];
     
     if (state.swapType === 'MULTI_SOURCE') {
+        if (!(state.tabTotalAmount > 0)) {
+            reasons.push('enter the total amount to move');
+        }
         if (!multiSourcesValid()) {
             state.multiSources.forEach((s, idx) => {
                 if (!s.institution) missingFields.push(`Source ${idx + 1}: institution not selected`);
                 if (!s.assetType) missingFields.push(`Source ${idx + 1}: asset type not selected`);
-                if (!(s.amount > 0)) missingFields.push(`Source ${idx + 1}: amount not entered`);
+                if (!(s.amount > 0)) missingFields.push(`Source ${idx + 1}: amount not set`);
                 const config = getAssetConfig(s.assetType);
                 if (config) {
                     const fields = config.fields || [];
@@ -1291,14 +1696,21 @@ function getSwapReadiness() {
                     });
                 }
             });
-            reasons.push('fill in all source rows (institution, asset type, required fields, and amount — at least 2 sources)');
+            if (voucherTotalExceedsTarget()) reasons.push('voucher total exceeds your tab amount');
+            else if (state.contributionStrategy === 'USER_SPECIFIED' && Math.abs(tabRemaining()) > 0.01) reasons.push('manually allocated amounts don\'t add up to the total');
+            else if (hasDuplicateInstitution() && state.contributionStrategy === 'USER_SPECIFIED') reasons.push('manual mode needs one source per institution');
+            else reasons.push('build your tab (at least 2 sources, in the Build Your Tab panel)');
         }
-        if (!state.toInst) reasons.push('select a destination institution');
-        else if (!state.toAsset) reasons.push('select a destination asset type');
-        else if (!fieldsValidForAsset(state.toAsset, state.toFields, false).valid) {
-            const result = fieldsValidForAsset(state.toAsset, state.toFields, false);
-            missingFields.push(`Destination: ${result.field || 'unknown field'} - ${result.reason || 'required'}`);
-            reasons.push('fill in the required destination fields');
+        if (state.multiDestMode === 'identity') {
+            if (!state.toIdentityValue) reasons.push('enter the identity value to send to');
+        } else {
+            if (!state.toInst) reasons.push('select a destination institution');
+            else if (!state.toAsset) reasons.push('select a destination asset type');
+            else if (!fieldsValidForAsset(state.toAsset, state.toFields, false).valid) {
+                const result = fieldsValidForAsset(state.toAsset, state.toFields, false);
+                missingFields.push(`Destination: ${result.field || 'unknown field'} - ${result.reason || 'required'}`);
+                reasons.push('fill in the required destination fields');
+            }
         }
         return { ready: reasons.length === 0, reasons, missingFields };
     }
@@ -1380,6 +1792,7 @@ function refreshUI() {
             hint.style.display = 'block';
         }
     }
+    updateMultiTotal();
     updateToolboxBadge();
 }
 
@@ -2014,7 +2427,7 @@ function renderToolbox() {
         rows.push({ label: 'Agent tools', icon: '🕵️', action: 'openAgentToolsModal()' });
         rows.push({ label: 'Agent destinations', icon: '🏢', action: 'openAgentModal()' });
     }
-    rows.push({ label: 'VouchMorph Card (coming soon)', icon: '💳', action: "alert('VouchMorph Card is coming soon — hook multiple sources to one card and swipe to finalize any swap instantly.')" });
+    rows.push({ label: 'VouchMorph Card', icon: '💳', action: "quickSetSwapType('MULTI_SOURCE'); setTimeout(() => tabSetMultiDest('vmcard'), 100);" });
     rows.push({ label: 'My profile', icon: '👤', action: 'openProfileModal()' });
     rows.push({ label: 'Help', icon: '❓', action: 'openHelpModal()' });
     rows.push({ label: 'Terms & conditions', icon: '📄', action: 'openTermsModal()' });
@@ -2746,6 +3159,12 @@ function openHelpModal() {
                 <li>Choose Wallet/Account, Card, or Voucher as your source.</li>
                 <li>Pick where it should go: Deposit, Cashout, Send to identity, or Multi-source.</li>
                 <li>Enter the amount, review the fee, and confirm.</li>
+            </ol>
+            <p style="font-weight:700;margin-bottom:6px;">Building a multi-source tab</p>
+            <ol style="padding-left:18px;margin-bottom:16px;">
+                <li>Choose Multi-Source, then tap Build Your Tab.</li>
+                <li>Type the total amount — it splits evenly across your sources, or pick Ratio, Smart, or Manual.</li>
+                <li>Pick where it settles: an account/wallet/card, an identity, or a VouchMorph Card.</li>
             </ol>
             <p style="font-weight:700;margin-bottom:6px;">Claiming money sent to you</p>
             <ol style="padding-left:18px;margin-bottom:16px;">
