@@ -2451,16 +2451,28 @@ function renderFinalizeIdentityModal() {
         ? `<div style="font-size:12px;color:var(--text-dim);margin-bottom:16px;">No identity money is currently waiting for you.</div>`
         : `<div style="margin-bottom:16px;">${pendingClaims.map((c, i) => {
             const pinLabel = c.claim_type === 'otp_pin' ? 'the OTP PIN sent by SMS' : 'your transaction PIN';
+            const claimPin = c.claim_pin || null;
+            const code = c.voucher_number || null;
+            const pin = c.atm_pin || null;
+            const hasCode = !!(code || pin || claimPin);
+            const codeInlineHtml = hasCode ? `
+                <div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--border);display:flex;gap:16px;flex-wrap:wrap;">
+                    ${code ? `<div><div style="font-size:10px;color:var(--text-dim);">Code</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--primary-dark);">${escapeHtml(code)}</div></div>` : ''}
+                    ${pin ? `<div><div style="font-size:10px;color:var(--text-dim);">PIN</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--primary-dark);">${escapeHtml(pin)}</div></div>` : ''}
+                    ${claimPin ? `<div><div style="font-size:10px;color:var(--text-dim);">Claim PIN</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--primary-dark);">${escapeHtml(claimPin)}</div></div>` : ''}
+                    ${c.voucher_expiry ? `<div><div style="font-size:10px;color:var(--text-dim);">Expires</div><div style="font-size:12px;color:var(--text-muted);">${new Date(c.voucher_expiry).toLocaleString()}</div></div>` : ''}
+                </div>` : '';
             return `
             <div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px;background:#fff;">
                 <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
-                    <div>
+                    <div style="flex:1;">
                         <div style="font-weight:700;font-size:16px;color:var(--primary-dark);">${formatMoney(c.amount, c.currency)}</div>
                         <div style="font-size:12px;color:var(--text-muted);">From ${escapeHtml(c.source_institution || 'Unknown')}</div>
                         <div style="font-size:11px;color:var(--text-dim);">Needs ${pinLabel} · Expires ${c.hold_expires_at ? new Date(c.hold_expires_at).toLocaleString() : 'soon'}</div>
                     </div>
-                    <button class="btn btn-primary btn-sm" onclick="openClaimForm(${i})">Finalize</button>
+                    <button class="btn btn-primary btn-sm" onclick="openClaimForm(${i})" style="flex-shrink:0;">Finalize</button>
                 </div>
+                ${codeInlineHtml}
             </div>`;
         }).join('')}</div>`;
 
@@ -3019,17 +3031,22 @@ async function openSwapHistory() {
 
 function renderSwapHistory(data) {
     const swaps = data.data || data.swaps || [];
-    if (swaps.length === 0) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:30px;color:var(--text-muted);"><div style="font-weight:700;">No swaps found</div></div>`; return; }
+    if (swaps.length === 0) { 
+        document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:30px;color:var(--text-muted);"><div style="font-weight:700;">No swaps found</div></div>`; 
+        return; 
+    }
     let historyHtml = `<div style="max-height:60vh;overflow-y:auto;"><div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Showing ${swaps.length} swap(s)</div>`;
     swaps.forEach((swap) => {
         const statusColor = swap.status === 'completed' || swap.status === 'success' ? 'var(--success)' : swap.status === 'pending' ? 'var(--warning)' : 'var(--danger)';
         const code = swap.voucher_number || null;
         const pin = swap.atm_pin || null;
-        const hasCode = !!(code || pin);
+        const claimPin = swap.claim_pin || null; // NEW
+        const hasCode = !!(code || pin || claimPin);
         const codeInlineHtml = hasCode ? `
             <div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);display:flex;gap:16px;flex-wrap:wrap;">
                 ${code ? `<div><div style="font-size:10px;color:var(--text-dim);">Code</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--primary-dark);">${escapeHtml(code)}</div></div>` : ''}
                 ${pin ? `<div><div style="font-size:10px;color:var(--text-dim);">PIN</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--primary-dark);">${escapeHtml(pin)}</div></div>` : ''}
+                ${claimPin ? `<div><div style="font-size:10px;color:var(--text-dim);">Claim PIN</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--primary-dark);">${escapeHtml(claimPin)}</div></div>` : ''}
                 ${swap.voucher_expiry ? `<div><div style="font-size:10px;color:var(--text-dim);">Expires</div><div style="font-size:12px;color:var(--text-muted);">${new Date(swap.voucher_expiry).toLocaleString()}</div></div>` : ''}
             </div>` : '';
         historyHtml += `<div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px;background:#fff;cursor:pointer;" onclick="viewSwapDetail('${swap.reference || swap.swap_reference || 'N/A'}')">
@@ -3041,7 +3058,6 @@ function renderSwapHistory(data) {
     historyHtml += `</div>`;
     document.getElementById('modalBody').innerHTML = historyHtml;
 }
-
 async function viewSwapDetail(reference) {
     openModal('Swap Details', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading details...</div>');
     const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/details.php', { reference: reference });
