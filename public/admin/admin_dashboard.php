@@ -43,9 +43,9 @@ $adminCountry = SessionManager::getAdminCountry();
 
 $roleDefinitions = [
     999 => ['name' => 'Super Admin', 'label' => 'SUPER ADMIN', 'view' => ['dashboard', 'live_transactions', 'audit', 'invoices', 'regulatory', 'all_tables', 'recent_swaps', 'multi_destination', 'alerts', 'institution_health', 'client_lookup', 'agent_approvals', 'reports', 'participants']],
-    3 => ['name' => 'Central Bank Regulator', 'label' => 'REGULATOR', 'view' => ['dashboard', 'regulatory', 'audit', 'recent_swaps', 'multi_destination', 'alerts', 'institution_health', 'reports', 'participants']],
-    4 => ['name' => 'Compliance Officer', 'label' => 'COMPLIANCE', 'view' => ['dashboard', 'audit', 'recent_swaps', 'alerts', 'client_lookup', 'agent_approvals', 'reports']],
-    5 => ['name' => 'Auditor', 'label' => 'AUDITOR', 'view' => ['dashboard', 'audit', 'recent_swaps', 'institution_health', 'reports', 'participants']],
+    3 => ['name' => 'Central Bank Regulator', 'label' => 'REGULATOR', 'view' => ['dashboard', 'regulatory', 'audit', 'ledger', 'recent_swaps', 'multi_destination', 'alerts', 'institution_health', 'reports', 'participants']],
+    4 => ['name' => 'Compliance Officer', 'label' => 'COMPLIANCE', 'view' => ['dashboard', 'audit', 'ledger', 'recent_swaps', 'alerts', 'client_lookup', 'agent_approvals', 'reports']],
+    5 => ['name' => 'Auditor', 'label' => 'AUDITOR', 'view' => ['dashboard', 'audit', 'ledger', 'recent_swaps', 'institution_health', 'reports', 'participants']],
     10 => ['name' => 'Finance Manager', 'label' => 'FINANCE', 'view' => ['dashboard', 'invoices', 'recent_swaps', 'alerts', 'institution_health', 'reports']],
     11 => ['name' => 'Settlement Officer', 'label' => 'SETTLEMENT', 'view' => ['dashboard', 'recent_swaps', 'alerts', 'institution_health', 'participants']],
     20 => ['name' => 'Customer Support', 'label' => 'SUPPORT', 'view' => ['dashboard', 'client_lookup', 'agent_approvals']]
@@ -468,6 +468,21 @@ if ($view === 'audit' && canView('audit')) {
     try { $auditRows = $db->query("SELECT * FROM audit_logs ORDER BY audit_id DESC LIMIT 200")->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) {}
 }
 
+// --- AUDIT CHAIN INTEGRITY CHECK ---
+$chainBroken = false;
+if ($view === 'audit' && canView('audit')) {
+    try {
+        $rows = $db->query("SELECT audit_id, entity_type, entity_id, action, performed_at, performed_by_id, prev_hash, entry_hash FROM audit_logs ORDER BY audit_id ASC")->fetchAll(PDO::FETCH_ASSOC);
+        $expectedPrev = null;
+        foreach ($rows as $r) {
+            if ($r['prev_hash'] !== $expectedPrev) { $chainBroken = true; break; }
+            $canonical = json_encode(['entity_type'=>$r['entity_type'],'entity_id'=>$r['entity_id'],'action'=>$r['action'],'performed_at'=>$r['performed_at'],'performed_by_id'=>$r['performed_by_id']]);
+            $expectedPrev = hash('sha256', ($r['prev_hash'] ?? '') . $canonical);
+            if ($expectedPrev !== $r['entry_hash']) { $chainBroken = true; break; }
+        }
+    } catch (Throwable $e) {}
+}
+
 $netPositions = [];
 $pendingSettlements = [];
 if ($view === 'regulatory' && canView('regulatory')) {
@@ -478,6 +493,27 @@ if ($view === 'regulatory' && canView('regulatory')) {
 $invoiceMessages = [];
 if ($view === 'invoices' && canView('invoices')) {
     try { $invoiceMessages = $db->query("SELECT * FROM settlement_outbox WHERE message_type = 'FEE_INVOICE' ORDER BY created_at DESC LIMIT 200")->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) {}
+}
+
+// ============================================================
+// LEDGER RECONCILIATION — fetch only when on the ledger view
+// ============================================================
+$ledgerReconciliation = [];
+if ($view === 'ledger' && canView('ledger')) {
+    try {
+        $ledgerReconciliation = $db->query("
+            SELECT swap_reference,
+                   COALESCE(SUM(amount) FILTER (WHERE leg = 'SOURCE_DEBIT'), 0) AS debited,
+                   COALESCE(SUM(amount) FILTER (WHERE leg = 'DEST_CREDIT'), 0) AS credited,
+                   COALESCE(SUM(amount) FILTER (WHERE leg = 'FEE_RECEIVABLE'), 0) AS fees,
+                   MAX(posted_at) AS last_posted
+            FROM ledger_entries
+            GROUP BY swap_reference
+            HAVING COALESCE(SUM(amount) FILTER (WHERE leg = 'SOURCE_DEBIT'), 0)
+                <> COALESCE(SUM(amount) FILTER (WHERE leg = 'DEST_CREDIT'), 0) + COALESCE(SUM(amount) FILTER (WHERE leg = 'FEE_RECEIVABLE'), 0)
+            ORDER BY last_posted DESC LIMIT 200
+        ")->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {}
 }
 
 // ============================================================
@@ -1419,6 +1455,7 @@ $viewMeta = [
     'participants' => ['side' => 'right', 'eyebrow' => 'Institution Onboarding', 'blurb' => "Every configured bank, MNO, and switch, its onboarding status, and a one-click config validation — before it ever touches a real swap."],
     'regulatory' => ['side' => 'left', 'eyebrow' => 'Regulatory Oversight', 'blurb' => "Net positions between institutions and pending settlements — the numbers a regulator needs, not the raw transaction feed."],
     'audit' => ['side' => 'right', 'eyebrow' => 'Audit Trail', 'blurb' => "Every recorded action, most recent first. This is the trail — who did what, and when."],
+    'ledger' => ['side' => 'left', 'eyebrow' => 'Ledger Reconciliation', 'blurb' => "Variances between debits, credits, and fees across the general ledger — the standing cross-check that shows whether every swap balances perfectly."],
     'invoices' => ['side' => 'right', 'eyebrow' => 'Invoicing', 'blurb' => "Fee invoices generated automatically through settlement — the paper trail for what's owed to whom."],
     'agent_approvals' => ['side' => 'left', 'eyebrow' => 'Agent Onboarding', 'blurb' => "Agents can't touch a client's money until an admin has approved them. Review, approve, or reject every applicant here."],
     'reports' => ['side' => 'right', 'eyebrow' => 'Reporting Suite', 'blurb' => "Executive, regulatory, finance, and audit reports — built for the people who never see the raw tables."],
@@ -2087,6 +2124,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         <?php if (canView('regulatory')): ?><a href="?view=regulatory" class="nav-item <?php echo $view === 'regulatory' ? 'active' : ''; ?>">Regulatory</a><?php endif; ?>
         <?php if (canView('reports')): ?><a href="?view=reports" class="nav-item <?php echo $view === 'reports' ? 'active' : ''; ?>">Reports</a><?php endif; ?>
         <?php if (canView('audit')): ?><a href="?view=audit" class="nav-item <?php echo $view === 'audit' ? 'active' : ''; ?>">Audit</a><?php endif; ?>
+        <?php if (canView('ledger')): ?><a href="?view=ledger" class="nav-item <?php echo $view === 'ledger' ? 'active' : ''; ?>">Ledger</a><?php endif; ?>
         <?php if (canView('invoices')): ?><a href="?view=invoices" class="nav-item <?php echo $view === 'invoices' ? 'active' : ''; ?>">Invoices</a><?php endif; ?>
         <?php if (canView('all_tables') && $isSuperAdmin): ?><a href="?view=all_tables" class="nav-item <?php echo $view === 'all_tables' ? 'active' : ''; ?>">Tables</a><?php endif; ?>
         </div>
@@ -3099,6 +3137,63 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                 <?php endif; ?>
             <?php endif; ?>
 
+            <!-- LEDGER RECONCILIATION -->
+            <?php if ($view === 'ledger' && canView('ledger')): ?>
+            <div class="content-header">
+                <h1>Ledger Reconciliation</h1>
+                <span class="timestamp">Variances between debits, credits, and fees</span>
+                <a href="?view=dashboard" class="back-link">← Back</a>
+            </div>
+
+            <?php if (empty($ledgerReconciliation)): ?>
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">✅ No Variances Found</span>
+                    <span class="card-badge brass">0</span>
+                </div>
+                <div class="empty-state">
+                    <span class="icon">✅</span>
+                    <p style="color:var(--good); font-weight:600;">Every swap balances perfectly — debits = credits + fees across all ledger entries.</p>
+                </div>
+            </div>
+            <?php else: ?>
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title" style="color:var(--bad);">⚠️ <?php echo count($ledgerReconciliation); ?> Variances Found</span>
+                    <span class="card-badge brass"><?php echo count($ledgerReconciliation); ?></span>
+                </div>
+                <div class="table-responsive">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Swap Reference</th>
+                                <th>Debited (Source)</th>
+                                <th>Credited (Dest)</th>
+                                <th>Fees</th>
+                                <th>Variance</th>
+                                <th>Last Posted</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($ledgerReconciliation as $row): 
+                                $variance = (float)($row['debited'] ?? 0) - ((float)($row['credited'] ?? 0) + (float)($row['fees'] ?? 0));
+                            ?>
+                            <tr>
+                                <td><strong><?php echo safeHtml($row['swap_reference']); ?></strong></td>
+                                <td><?php echo number_format((float)$row['debited'], 2); ?></td>
+                                <td><?php echo number_format((float)$row['credited'], 2); ?></td>
+                                <td><?php echo number_format((float)$row['fees'], 2); ?></td>
+                                <td><span class="status status-failed"><?php echo number_format($variance, 2); ?></span></td>
+                                <td><?php echo safeHtml($row['last_posted'] ?? 'N/A'); ?></td>
+                            </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <?php endif; ?>
+            <?php endif; ?>
+
             <!-- AUDIT -->
             <?php if ($view === 'audit' && canView('audit')): ?>
             <div class="content-header">
@@ -3106,6 +3201,28 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                 <span class="timestamp">Most recent 200 entries</span>
                 <a href="?view=dashboard" class="back-link">← Back</a>
             </div>
+
+            <!-- Chain Integrity Status -->
+            <div class="card" style="border-left: 3px solid <?php echo $chainBroken ? 'var(--bad)' : 'var(--good)'; ?>;">
+                <div class="card-header">
+                    <span class="card-title">🔗 Chain Integrity</span>
+                    <span class="card-badge <?php echo $chainBroken ? '' : 'brass'; ?>">
+                        <?php echo $chainBroken ? '⚠️ BROKEN' : '✅ INTACT'; ?>
+                    </span>
+                </div>
+                <div style="text-align:center; font-size:14px; color:<?php echo $chainBroken ? 'var(--bad)' : 'var(--good)'; ?>;">
+                    <?php if ($chainBroken): ?>
+                        <strong>One or more audit entries failed hash validation.</strong> The chain has been tampered with or a record is missing.
+                        <div style="margin-top:var(--sp-3); font-size:12px; color:var(--ink-300);">
+                            Check the full audit_export report for detailed inspection.
+                            <a href="?view=reports&report=audit_export" class="btn btn-sm" style="margin-left:var(--sp-3);">View Audit Export</a>
+                        </div>
+                    <?php else: ?>
+                        All audit entries passed hash validation. The chain is intact.
+                    <?php endif; ?>
+                </div>
+            </div>
+
             <div class="card">
                 <div class="card-header"><span class="card-title">Audit Trail</span><span class="card-badge"><?php echo count($auditRows); ?></span></div>
                 <?php if (empty($auditRows)): ?><div class="empty-state"><span class="icon">📭</span><p>No audit records</p></div>
@@ -3206,7 +3323,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
 
             <!-- ACCESS DENIED -->
             <?php
-            $knownViews = ['dashboard', 'client_lookup', 'alerts', 'live_transactions', 'multi_destination', 'recent_swaps', 'institution_health', 'regulatory', 'audit', 'invoices', 'all_tables', 'agent_approvals', 'reports', 'participants'];
+            $knownViews = ['dashboard', 'client_lookup', 'alerts', 'live_transactions', 'multi_destination', 'recent_swaps', 'institution_health', 'regulatory', 'audit', 'ledger', 'invoices', 'all_tables', 'agent_approvals', 'reports', 'participants'];
             if (!canView($view) && !in_array($view, $knownViews)):
             ?>
             <div class="card"><div class="empty-state"><span class="icon">🚫</span><h2 style="font-family:var(--f-cond);text-transform:uppercase;font-size:20px;margin-bottom:var(--sp-2);">Access Denied</h2><p>You do not have permission to view this page.</p><a href="?view=dashboard" class="btn btn-primary" style="margin-top:var(--sp-4);">Return to Dashboard</a></div></div>
