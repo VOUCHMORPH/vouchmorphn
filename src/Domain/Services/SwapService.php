@@ -1639,8 +1639,8 @@ private function writeAuditFallback(string $swapRef, string $swapType, string $r
      */
     private function getSwapRequestId(string $swapRef): ?int
     {
-        $sql = "SELECT swap_request_id FROM swap_requests WHERE swap_uuid = :swap_uuid";
-        try {
+$sql = "SELECT swap_id FROM swap_requests WHERE swap_uuid = :swap_uuid";
+     try {
             $stmt = $this->swapDB->prepare($sql);
             $stmt->execute([':swap_uuid' => $swapRef]);
             $row = $stmt->fetch(PDO::FETCH_ASSOC);
