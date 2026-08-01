@@ -7831,32 +7831,46 @@ private function generateCashoutToken(array $payload, string $institution, float
     $claimType = null;
     $otpHash = null;
     $otpPlaintext = null;
+    $otpEncrypted = null;
     $otpDestination = null;
     $otpDestinationType = null; // 'phone' or 'email'
     $requiresDual = false;
+    $otpFallbackUsed = false;
  
     if ($owner) {
         // ============================================================
-        // FIX: Registered/verified identities now ALSO get an OTP,
-        // sent to the OWNER'S OWN registered contact (not whatever
-        // notification_phone the sender supplied - that could be
-        // stale or belong to someone else). This lets:
-        //   - the owner finalize with just their account PIN (no OTP
-        //     needed) when self-service and logged in, OR
-        //   - an agent finalize on the owner's behalf, but ONLY with
-        //     the OTP the owner shows them (never the account PIN,
+        // Registered/verified identities get BOTH claim paths:
+        //   - account_pin: owner finalizes self-service, no OTP needed
+        //   - OTP: an agent finalizes on the owner's behalf, using an
+        //     OTP the owner reads out to them (never the account PIN,
         //     which the agent should never see/know).
+        //
+        // OTP delivery preference:
+        //   1. the owner's own registered phone/email (most trustworthy)
+        //   2. FALLBACK: the notification_phone/beneficiary_phone the
+        //      sender supplied, if the owner has no contact on file.
+        //      Without this fallback, agent-assisted finalization was
+        //      silently impossible whenever a verified user's profile
+        //      had no phone/email on file - self-service via account
+        //      PIN still works either way.
         // ============================================================
         $claimType = 'account_pin';
         error_log("[SwapService] Identity {$identityType}={$identityValue} is a VERIFIED registered owner (user_id={$owner['user_id']}) - generating OTP for agent-assisted claims, account PIN available for self-service");
 
         [$otpDestination, $otpDestinationType] = $this->getOwnerContactForOtp($owner['user_id']);
 
+        if (!$otpDestination && $notificationPhone) {
+            error_log("[SwapService] Registered owner user_id={$owner['user_id']} has no phone/email on file - falling back to sender-supplied notification_phone for OTP delivery");
+            $otpDestination = $notificationPhone;
+            $otpDestinationType = 'phone';
+            $otpFallbackUsed = true;
+        }
+
         if ($otpDestination) {
             $otp = $this->generateOtpPin();
             $otpPlaintext = $otp;
             $otpHash = password_hash($otp, PASSWORD_DEFAULT);
-         $otpEncrypted = $this->encryptSourceSecret($otp); // reuses the existing AES-256-CBC helper
+            $otpEncrypted = $this->encryptSourceSecret($otp); // reuses the existing AES-256-CBC helper
 
             if ($otpDestinationType === 'phone' && $this->smsService) {
                 try {
@@ -7869,8 +7883,31 @@ private function generateCashoutToken(array $payload, string $institution, float
             } elseif ($otpDestinationType === 'email') {
                 error_log("[SwapService] Registered owner's contact is email ({$otpDestination}) - email OTP delivery not wired in this method yet, PIN available via account login fallback only");
             }
+
+            if ($otpFallbackUsed) {
+                // Compliance visibility: this OTP went to an address that
+                // isn't on the verified owner's own profile. Not a security
+                // hole (same trust level as the unregistered otp_pin path
+                // below), but worth its own audit trail entry.
+                $this->writeAuditLogEntry(
+                    'identity_swap_holds',
+                    $swapRef,
+                    'IDENTITY_OTP_FALLBACK_USED',
+                    'identity',
+                    $owner['user_id'],
+                    'system',
+                    0,
+                    [
+                        'identity_type' => $identityType,
+                        'identity_value' => $identityValue,
+                        'owner_user_id' => $owner['user_id'],
+                        'otp_sent_to' => $otpDestination,
+                        'reason' => 'owner has no phone/email on file',
+                    ]
+                );
+            }
         } else {
-            error_log("[SwapService] WARNING: Registered owner user_id={$owner['user_id']} has no usable phone/email on file for OTP delivery - agent-assisted claims will not be possible until this is fixed");
+            error_log("[SwapService] WARNING: Registered owner user_id={$owner['user_id']} has no usable phone/email on file, and no notification_phone/beneficiary_phone was supplied - agent-assisted claims will not be possible until one of these is fixed. Self-service via account PIN is still available.");
         }
 
     } elseif ($notificationPhone) {
@@ -7878,6 +7915,7 @@ private function generateCashoutToken(array $payload, string $institution, float
         $otp = $this->generateOtpPin();
         $otpPlaintext = $otp;
         $otpHash = password_hash($otp, PASSWORD_DEFAULT);
+        $otpEncrypted = $this->encryptSourceSecret($otp);
         $otpDestination = $notificationPhone;
         error_log("[SwapService] Identity {$identityType}={$identityValue} is UNREGISTERED - generated one-time claim PIN, sending to {$notificationPhone}");
         if ($this->smsService) {
@@ -7904,14 +7942,14 @@ private function generateCashoutToken(array $payload, string $institution, float
             amount, currency, identity_type, identity_value,
             hold_reference, hold_id, hold_expires_at, status,
             source_payload, metadata, created_by,
-            otp_pin_hash, otp_pin_sent_to, otp_pin_sent_at,
+            otp_pin_hash, otp_pin_encrypted, otp_pin_sent_to, otp_pin_sent_at,
             requires_dual_confirmation, claim_type
         ) VALUES (
             :swap_ref, :source_institution, :source_identifier, :asset_type,
             :amount, :currency, :identity_type, :identity_value,
             :hold_reference, :hold_id, :expires_at, 'pending',
             :source_payload::jsonb, :metadata::jsonb, :created_by,
-            :otp_pin_hash, :otp_pin_sent_to, :otp_pin_sent_at,
+            :otp_pin_hash, :otp_pin_encrypted, :otp_pin_sent_to, :otp_pin_sent_at,
             :requires_dual, :claim_type
         ) RETURNING hold_id
     ";
@@ -7937,6 +7975,7 @@ private function generateCashoutToken(array $payload, string $institution, float
             ]),
             ':created_by' => $payload['user_id'] ?? null,
             ':otp_pin_hash' => $otpHash,
+            ':otp_pin_encrypted' => $otpEncrypted,
             ':otp_pin_sent_to' => $otpHash ? $otpDestination : null,
             ':otp_pin_sent_at' => $otpHash ? date('Y-m-d H:i:s') : null,
             ':requires_dual' => $requiresDual ? 't' : 'f',
