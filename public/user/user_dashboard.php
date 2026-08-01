@@ -457,15 +457,12 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
             <span class="quick-link" onclick="quickSetSwapType('MULTI_SOURCE')">Multi-source</span>
         </div>
 
-        <div id="multiDestModeRow" style="display:none;margin-bottom:12px;">
-            <label class="field-label" style="margin-bottom:6px;display:block;">Where's it going</label>
-            <div style="display:flex;gap:6px;flex-wrap:wrap;">
-                <button type="button" class="quick-link selected" id="destModeBtnInstitution" onclick="tabSetMultiDest('institution')">🏦 Account/Wallet/Card</button>
-                <button type="button" class="quick-link muted" id="destModeBtnIdentity" onclick="tabSetMultiDest('identity')">🪪 Identity</button>
-                <button type="button" class="quick-link muted" id="destModeBtnVmcard" onclick="tabSetMultiDest('vmcard')">✨ VouchMorph Card</button>
-            </div>
-            <div id="vmCardNote" class="vm-card-note" style="display:none;">💳 No balance of its own — it's a pathway. One swipe draws directly from everything on this tab.</div>
+        <div id="multiDestModeRow" class="quick-actions" style="display:none;">
+            <span class="quick-link" onclick="tabSetMultiDest('institution')">Account / Wallet / Card</span>
+            <span class="quick-link" onclick="tabSetMultiDest('identity')">Send to identity</span>
+            <span class="quick-link" onclick="tabSetMultiDest('vmcard')">VouchMorph Card</span>
         </div>
+        <div id="vmCardNote" class="vm-card-note" style="display:none;">💳 No balance of its own — it's a pathway. One swipe draws directly from everything on this tab.</div>
 
         <div id="toInstSection">
             <div class="field-group">
@@ -1442,11 +1439,6 @@ function setContributionStrategy(strategy) {
 // ============================================================
 function tabSetMultiDest(mode) {
     state.multiDestMode = mode;
-    ['institution', 'identity', 'vmcard'].forEach(m => {
-        const btn = document.getElementById('destModeBtn' + m.charAt(0).toUpperCase() + m.slice(1));
-        if (btn) btn.classList.toggle('selected', m === mode);
-        if (btn) btn.classList.toggle('muted', m !== mode);
-    });
     const vmNote = document.getElementById('vmCardNote');
 
     if (mode === 'institution') {
