@@ -33,8 +33,10 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../../../../vendor/autoload.php';
 require_once __DIR__ . '/../../../../src/bootstrap.php';
+require_once __DIR__ . '/../../../../src/Infrastructure/Crypto/SourceSecretCipher.php';
 
 use Core\Database\DBConnection;
+use Infrastructure\Crypto\SourceSecretCipher;
 
 header("Access-Control-Allow-Origin: *");
 header("Content-Type: application/json; charset=UTF-8");
@@ -214,12 +216,21 @@ try {
             dt.completed_at as deposit_completed_at,
             dt.created_at as deposit_created_at,
             dt.updated_at as deposit_updated_at,
-            dt.fee_amount as deposit_fee_amount
+            dt.fee_amount as deposit_fee_amount,
+
+            -- Identity Swap Hold Details
+            ish.identity_type,
+            ish.identity_value,
+            ish.otp_pin_encrypted,
+            ish.status as identity_hold_status,
+            ish.hold_expires_at as identity_expires_at,
+            ish.claim_type
         FROM hold_transactions ht
         LEFT JOIN swap_requests sr ON ht.swap_reference = sr.swap_uuid
         LEFT JOIN cashout_authorizations ca ON ht.swap_reference = ca.swap_reference
         LEFT JOIN swap_transactions st ON sr.swap_id = st.swap_id
         LEFT JOIN deposit_transactions dt ON ht.swap_reference = dt.transaction_reference
+        LEFT JOIN identity_swap_holds ish ON ht.swap_reference = ish.swap_reference
         WHERE ht.swap_reference = :reference
         ORDER BY ht.created_at DESC
         LIMIT 1
@@ -240,6 +251,12 @@ try {
     $fromAccountDetails = json_decode($row['from_account_details'] ?? '{}', true);
     $toAccountDetails = json_decode($row['to_account_details'] ?? '{}', true);
     $tradeMetadata = json_decode($row['trade_metadata'] ?? '{}', true);
+
+    // Decrypt OTP pin if present
+    $claimPin = null;
+    if (!empty($row['identity_type']) && !empty($row['otp_pin_encrypted'])) {
+        $claimPin = SourceSecretCipher::decrypt($row['otp_pin_encrypted']);
+    }
 
     // requester isn't a hold_transactions column and isn't a top-level
     // source_details key — the closest thing available is whatever the
@@ -384,6 +401,18 @@ try {
             'updated_at' => $row['deposit_updated_at'],
             'completed_at' => $row['deposit_completed_at'],
         ] : null,
+
+        // ============================================================
+        // IDENTITY SWAP HOLD DETAILS (if applicable)
+        // ============================================================
+        'identity' => $row['identity_type'] ? [
+            'identity_type' => $row['identity_type'],
+            'identity_value' => $row['identity_value'],
+            'claim_pin' => $claimPin,
+            'status' => $row['identity_hold_status'],
+            'expires_at' => $row['identity_expires_at'],
+            'claim_type' => $row['claim_type'],
+        ] : null,
         
         // ============================================================
         // REVENUE DISTRIBUTION
@@ -402,6 +431,11 @@ try {
         'metadata' => $metadata,
         'trade_metadata' => $tradeMetadata,
         'original_swap_ref' => $row['original_swap_ref'],
+
+        // ============================================================
+        // FLAT COPY FOR DASHBOARD COMPATIBILITY
+        // ============================================================
+        'claim_pin' => $claimPin,
     ];
 
     // Remove null values for cleaner output
