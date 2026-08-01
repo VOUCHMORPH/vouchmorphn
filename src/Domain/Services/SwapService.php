@@ -1107,83 +1107,17 @@ private function getPendingSourceIdColumn(string $type): string
  * @param string|null $plaintext The plain text to encrypt
  * @return string|null Base64-encoded encrypted string or null if invalid
  */
-private function encryptSourceSecret(?string $plaintext): ?string
-{
-    if (empty($plaintext)) {
-        return null;
-    }
-    
-    $key = getenv('VOUCHMORPH_TOKEN_ENC_KEY');
-    if (!$key) {
-        error_log("[SwapService] VOUCHMORPH_TOKEN_ENC_KEY not set - cannot encrypt");
-        return null;
-    }
-    
-    // Generate a random IV
-    $iv = openssl_random_pseudo_bytes(16);
-    
-    $encrypted = openssl_encrypt(
-        $plaintext,
-        'AES-256-CBC',
-        $key,
-        0,
-        $iv
-    );
-    
-    if ($encrypted === false) {
-        error_log("[SwapService] Encryption failed: " . openssl_error_string());
-        return null;
-    }
-    
-    // Combine IV + encrypted data and base64 encode
-    return base64_encode($iv . $encrypted);
-}
-    
-/**
- * Decrypt a source secret (access_token or refresh_token)
- * Matches the encryption used in enterprise add_source.php
- * 
- * @param string|null $encrypted Base64-encoded encrypted string
- * @return string|null Decrypted plain text or null if invalid
- */
-private function decryptSourceSecret(?string $encrypted): ?string
-{
-    if (empty($encrypted)) {
-        return null;
-    }
-    
-    $key = getenv('VOUCHMORPH_TOKEN_ENC_KEY');
-    if (!$key) {
-        error_log("[SwapService] VOUCHMORPH_TOKEN_ENC_KEY not set - cannot decrypt");
-        return null;
-    }
-    
-    $data = base64_decode($encrypted);
-    if ($data === false || strlen($data) < 16) {
-        error_log("[SwapService] Invalid encrypted data format");
-        return null;
-    }
-    
-    // Extract IV (first 16 bytes) and ciphertext (rest)
-    $iv = substr($data, 0, 16);
-    $ciphertext = substr($data, 16);
-    
-    $decrypted = openssl_decrypt(
-        $ciphertext,
-        'AES-256-CBC',
-        $key,
-        0,
-        $iv
-    );
-    
-    if ($decrypted === false) {
-        error_log("[SwapService] Decryption failed: " . openssl_error_string());
-        return null;
-    }
-    
-    return $decrypted;
+// In SwapService.php
+
+private function encryptSourceSecret(?string $plaintext): ?string 
+{ 
+    return \Infrastructure\Crypto\SourceSecretCipher::encrypt($plaintext); 
 }
 
+private function decryptSourceSecret(?string $encrypted): ?string 
+{ 
+    return \Infrastructure\Crypto\SourceSecretCipher::decrypt($encrypted); 
+}
 /**
  * Get a decrypted access token from source_accounts
  * This should be used whenever we need to use the token for API calls
