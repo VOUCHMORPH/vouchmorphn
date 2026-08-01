@@ -21,7 +21,10 @@ declare(strict_types=1);
  */
 require_once __DIR__ . '/../../../../vendor/autoload.php';
 require_once __DIR__ . '/../../../../src/bootstrap.php';
+require_once __DIR__ . '/../../../../src/Infrastructure/Crypto/SourceSecretCipher.php';
+
 use Core\Database\DBConnection;
+use Infrastructure\Crypto\SourceSecretCipher;
 
 header("Access-Control-Allow-Origin: *");
 header("Content-Type: application/json; charset=UTF-8");
@@ -181,17 +184,27 @@ try {
             dt.destination_account,
             dt.status as deposit_status,
             dt.completed_at as deposit_completed_at,
-            dt.user_id as deposit_user_id
+            dt.user_id as deposit_user_id,
+
+            ish.identity_type,
+            ish.identity_value,
+            ish.otp_pin_encrypted,
+            ish.status as identity_hold_status,
+            ish.hold_expires_at as identity_expires_at,
+            ish.claim_type,
+            ish.created_by as identity_created_by
 
         FROM hold_transactions ht
         LEFT JOIN swap_requests sr ON ht.swap_reference = sr.swap_uuid
         LEFT JOIN cashout_authorizations ca ON ht.swap_reference = ca.swap_reference
         LEFT JOIN deposit_transactions dt ON ht.swap_reference = dt.transaction_reference
+        LEFT JOIN identity_swap_holds ish ON ht.swap_reference = ish.swap_reference
         WHERE (
             sr.user_id = :user_id_1
             OR ca.user_id = :user_id_2
             OR dt.user_id = :user_id_3
             OR ht.source_details @> jsonb_build_object('user_id', :user_id_4::int)
+            OR ish.created_by = :user_id_5
         )
     ";
 
@@ -200,6 +213,7 @@ try {
         ':user_id_2' => $userId,
         ':user_id_3' => $userId,
         ':user_id_4' => $userId,
+        ':user_id_5' => $userId,
     ];
 
     if ($swapType) {
@@ -230,11 +244,13 @@ try {
         LEFT JOIN swap_requests sr ON ht.swap_reference = sr.swap_uuid
         LEFT JOIN cashout_authorizations ca ON ht.swap_reference = ca.swap_reference
         LEFT JOIN deposit_transactions dt ON ht.swap_reference = dt.transaction_reference
+        LEFT JOIN identity_swap_holds ish ON ht.swap_reference = ish.swap_reference
         WHERE (
             sr.user_id = :user_id_1
             OR ca.user_id = :user_id_2
             OR dt.user_id = :user_id_3
             OR ht.source_details @> jsonb_build_object('user_id', :user_id_4::int)
+            OR ish.created_by = :user_id_5
         )
     ";
     $countParams = [
@@ -242,6 +258,7 @@ try {
         ':user_id_2' => $userId,
         ':user_id_3' => $userId,
         ':user_id_4' => $userId,
+        ':user_id_5' => $userId,
     ];
     if ($swapType) {
         $countSql .= " AND ht.metadata->>'swap_type' = :swap_type";
@@ -265,6 +282,11 @@ try {
         $sourceDetails = json_decode($row['source_details'] ?? '{}', true);
         $feeBreakdown = json_decode($row['fee_breakdown'] ?? '{}', true);
 
+        $claimPin = null;
+        if (!empty($row['identity_type']) && !empty($row['otp_pin_encrypted'])) {
+            $claimPin = SourceSecretCipher::decrypt($row['otp_pin_encrypted']);
+        }
+
         $rowCurrency = $row['currency'] ?? null;
         if (!$rowCurrency) {
             $rowCurrency = $countryDefaultCurrency ?? 'UNKNOWN';
@@ -279,7 +301,7 @@ try {
             $statusDisplay = 'completed';
         }
 
-        $resolvedUserId = $row['user_id'] ?? $row['cashout_user_id'] ?? $row['deposit_user_id'] ?? $sourceDetails['user_id'] ?? null;
+        $resolvedUserId = $row['user_id'] ?? $row['cashout_user_id'] ?? $row['deposit_user_id'] ?? $sourceDetails['user_id'] ?? $row['identity_created_by'] ?? null;
 
         $swap = [
             'reference' => $row['swap_reference'],
@@ -344,6 +366,11 @@ try {
             'source_details' => $sourceDetails,
 
             'user_id' => $resolvedUserId,
+
+            'identity_type' => $row['identity_type'] ?? null,
+            'identity_value' => $row['identity_value'] ?? null,
+            'claim_pin' => $claimPin,
+            'claim_type' => $row['claim_type'] ?? null,
         ];
 
         $swap = array_filter($swap, function($value) {
