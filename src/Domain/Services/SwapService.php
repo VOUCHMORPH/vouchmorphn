@@ -7957,6 +7957,11 @@ private function generateCashoutToken(array $payload, string $institution, float
     }
 }
 
+ public function getDecryptedClaimPin(array $identitySwapRow): ?string
+{
+    if (empty($identitySwapRow['otp_pin_encrypted'])) return null;
+    return $this->decryptSourceSecret($identitySwapRow['otp_pin_encrypted']);
+}
 /**
  * Looks up a verified owner's own phone/email for OTP delivery,
  * for the case where money is sent to a REGISTERED identity and we
