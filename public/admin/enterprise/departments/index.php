@@ -43,6 +43,27 @@ if (!$isTopRole && !$isDepartmentHead) {
 }
 
 $deptService = new DepartmentService($pdo);
+function logDepartmentAudit(PDO $pdo, int $orgId, ?int $actorId, string $action, ?int $entityId, array $values): void {
+    try {
+        $stmt = $pdo->prepare("
+            INSERT INTO organization_audit_logs (
+                organization_id, user_id, action, entity_type, entity_id,
+                new_values, ip_address, user_agent, created_at
+            ) VALUES (
+                :org_id, :user_id, :action, 'department', :entity_id,
+                :new_values, :ip, :ua, NOW()
+            )
+        ");
+        $stmt->execute([
+            ':org_id' => $orgId, ':user_id' => $actorId, ':action' => $action,
+            ':entity_id' => $entityId, ':new_values' => json_encode($values),
+            ':ip' => $_SERVER['REMOTE_ADDR'] ?? null, ':ua' => $_SERVER['HTTP_USER_AGENT'] ?? null,
+        ]);
+    } catch (PDOException $e) {
+        error_log("[departments] Audit log failed: " . $e->getMessage());
+    }
+}
+
 $userMgmt = new UserManagementService($pdo);
 
 // ============================================================
@@ -153,6 +174,61 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $userRole
                 );
                 $flashMessage = 'Ceiling updated.';
+                break;
+
+            case 'edit_department':
+                if (!$isTopRole) throw new RuntimeException('Not authorized.');
+                $editDeptId = (int)($_POST['department_id'] ?? 0);
+                $stmt = $pdo->prepare("SELECT * FROM departments WHERE id = :id AND organization_id = :org_id");
+                $stmt->execute([':id' => $editDeptId, ':org_id' => $orgId]);
+                $existingDept = $stmt->fetch(PDO::FETCH_ASSOC);
+                if (!$existingDept) throw new RuntimeException('Department not found.');
+
+                $newName = trim($_POST['name'] ?? '');
+                $newCode = trim($_POST['code'] ?? '') ?: null;
+                $newCostCenter = trim($_POST['cost_center'] ?? '') ?: null;
+                if ($newName === '') throw new RuntimeException('Department name is required.');
+
+                $stmt = $pdo->prepare("
+                    UPDATE departments
+                    SET name = :name, code = :code, cost_center = :cost_center, updated_at = NOW()
+                    WHERE id = :id AND organization_id = :org_id
+                ");
+                $stmt->execute([
+                    ':name' => $newName, ':code' => $newCode, ':cost_center' => $newCostCenter,
+                    ':id' => $editDeptId, ':org_id' => $orgId,
+                ]);
+
+                logDepartmentAudit($pdo, $orgId, (int)$userId, 'DEPARTMENT_EDITED', $editDeptId, [
+                    'before' => ['name' => $existingDept['name'], 'code' => $existingDept['code'], 'cost_center' => $existingDept['cost_center']],
+                    'after' => ['name' => $newName, 'code' => $newCode, 'cost_center' => $newCostCenter],
+                ]);
+                $newDepartmentId = $editDeptId; // reopen this department's panel
+                $flashMessage = 'Department updated.';
+                break;
+
+            case 'set_department_status':
+                if (!$isTopRole) throw new RuntimeException('Not authorized.');
+                $statusDeptId = (int)($_POST['department_id'] ?? 0);
+                $newStatus = ($_POST['new_status'] ?? '') === 'active' ? 'active' : 'inactive';
+
+                $stmt = $pdo->prepare("SELECT name, status FROM departments WHERE id = :id AND organization_id = :org_id");
+                $stmt->execute([':id' => $statusDeptId, ':org_id' => $orgId]);
+                $existingDept = $stmt->fetch(PDO::FETCH_ASSOC);
+                if (!$existingDept) throw new RuntimeException('Department not found.');
+
+                // Deactivating a department doesn't delete anything — staff
+                // assignments, ledger history, and past batches all stay
+                // exactly as they are. It just stops appearing as a valid
+                // choice for new batches (source_input.php's department
+                // dropdown already filters on departments.status = 'active').
+                $stmt = $pdo->prepare("UPDATE departments SET status = :status, updated_at = NOW() WHERE id = :id AND organization_id = :org_id");
+                $stmt->execute([':status' => $newStatus, ':id' => $statusDeptId, ':org_id' => $orgId]);
+
+                logDepartmentAudit($pdo, $orgId, (int)$userId, 'DEPARTMENT_' . strtoupper($newStatus), $statusDeptId, [
+                    'name' => $existingDept['name'], 'before_status' => $existingDept['status'], 'after_status' => $newStatus,
+                ]);
+                $flashMessage = 'Department ' . ($newStatus === 'active' ? 'reactivated' : 'deactivated') . '.';
                 break;
 
             case 'request_borrow':
@@ -464,6 +540,27 @@ function renderDepartmentNode(
         $html .= '<details class="staff-panel"' . ($autoOpen ? ' open' : '') . '>';
         $html .= '<summary>👥 Staffing' . (!empty($assigned) ? ' (' . count($assigned) . ')' : ' — none assigned yet') . '</summary>';
         $html .= '<div class="staff-panel-body">';
+        if ($isTopRole) {
+            $html .= '<form method="post" class="staff-add-form" style="margin-bottom:14px;">';
+            $html .= '<input type="hidden" name="csrf_token" value="' . safeHtml($csrfToken) . '">';
+            $html .= '<input type="hidden" name="action" value="edit_department">';
+            $html .= '<input type="hidden" name="department_id" value="' . $deptId . '">';
+            $html .= '<label class="staff-add-label">Edit Department</label>';
+            $html .= '<input type="text" name="name" value="' . safeHtml($node['name']) . '" required>';
+            $html .= '<input type="text" name="code" value="' . safeHtml($node['code'] ?? '') . '" placeholder="Code (optional)">';
+            $html .= '<input type="text" name="cost_center" value="' . safeHtml($node['cost_center'] ?? '') . '" placeholder="Cost center (optional)">';
+            $html .= '<button type="submit" class="btn btn-outline btn-sm">Save Changes</button>';
+            $html .= '</form>';
+
+            $html .= '<form method="post" style="margin-bottom:14px;" onsubmit="return confirm(\'' . ($node['status'] === 'active' ? 'Deactivate' : 'Reactivate') . ' this department?\')">';
+            $html .= '<input type="hidden" name="csrf_token" value="' . safeHtml($csrfToken) . '">';
+            $html .= '<input type="hidden" name="action" value="set_department_status">';
+            $html .= '<input type="hidden" name="department_id" value="' . $deptId . '">';
+            $html .= '<input type="hidden" name="new_status" value="' . ($node['status'] === 'active' ? 'inactive' : 'active') . '">';
+            $html .= '<button type="submit" class="btn ' . ($node['status'] === 'active' ? 'btn-danger' : 'btn-outline') . ' btn-sm">'
+                   . ($node['status'] === 'active' ? 'Deactivate Department' : 'Reactivate Department') . '</button>';
+            $html .= '</form>';
+        }
 
         if (!empty($assigned)) {
             $html .= '<div class="staff-list">';
