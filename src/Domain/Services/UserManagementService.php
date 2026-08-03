@@ -494,7 +494,6 @@ if (!$existing) {
             throw new RuntimeException("You can't change your own role. Ask another Owner to do it.");
         }
         if ($existing['role'] === 'owner' && $newRole !== 'owner') {
-        if ($existing['role'] === 'owner' && $newRole !== 'owner') {
             $this->assertNotLastActiveOwner($organizationId, $targetUserId);
         }
         if ($departmentId !== null) {
