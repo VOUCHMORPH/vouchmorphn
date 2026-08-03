@@ -591,6 +591,11 @@ input[type=number] {
     margin-bottom: 28px;
     padding: 8px 0 4px;
     animation: fadeInUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    min-height: 60vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
 }
 .hero-sentence {
     font-size: clamp(26px, 4.5vw, 38px);
@@ -600,6 +605,7 @@ input[type=number] {
     letter-spacing: -0.02em;
     max-width: 720px;
     margin: 0 auto;
+    text-align: center;
 }
 .hero-sentence .hero-word { display: inline; }
 .hero-amount-wrap {
@@ -1143,17 +1149,17 @@ input[type=number] {
             </span>
         </span>
         <span class="hero-word">from my</span><br>
-        <a class="hero-jump" href="#" onclick="openSourceSelectionModal();return false;">Select Source</a>
+        <a class="hero-jump" href="#" id="sourceLink" onclick="openSourceSelectionModal();return false;">Select Source</a>
         <span class="hero-word"> to </span>
-        <a class="hero-jump" href="#" onclick="openDestinationSelectionModal();return false;">Select Destination</a><span class="hero-word">.</span>
+        <a class="hero-jump" href="#" id="destinationLink" onclick="openDestinationSelectionModal();return false;">Select Destination</a><span class="hero-word">.</span>
     </div>
     <div class="hero-send-note">You'll send <strong id="amountPreview">0.00</strong></div>
+    
+    <div class="balance-card" onclick="viewWalletBalance()" onkeydown="if(event.key==='Enter'||event.key===' '){viewWalletBalance();}" role="button" tabindex="0" aria-label="View total balance">
+        <div class="balance-card-label">Total Balance across all sources</div>
+        <div class="balance-card-hint">Tap to view balances</div>
+    </div>
 </section>
-
-<div class="balance-card" onclick="viewWalletBalance()" onkeydown="if(event.key==='Enter'||event.key===' '){viewWalletBalance();}" role="button" tabindex="0" aria-label="View total balance">
-    <div class="balance-card-label">Total Balance across all sources</div>
-    <div class="balance-card-hint">Tap to view balances</div>
-</div>
 </div>
 
 <div class="card" id="fullFormCard" style="display:none;">
@@ -1395,6 +1401,9 @@ let state = {
     tabTotalAmount: 0,
     tabAllocationMode: 'even', // 'even' | 'custom' — only meaningful while EQUAL/USER_SPECIFIED
     contributionStrategy: 'SMART', // 'EQUAL' | 'RATIO' | 'SMART' | 'USER_SPECIFIED' — real backend enum values
+    // NEW — UI selection state
+    selectedSourceType: null,
+    selectedDestinationType: null,
 };
 let savedIdentities = [];
 let userSources = [];
@@ -2071,8 +2080,9 @@ function setSwapType(type) {
     document.getElementById('toAssetSection').style.display = (isDeposit || isMulti) && state.toAsset && !(isMulti && state.multiDestMode === 'identity') ? 'block' : 'none';
     document.getElementById('toFields').style.display = (isDeposit || isMulti) && state.toAsset && !(isMulti && state.multiDestMode === 'identity') ? 'block' : 'none';
     document.getElementById('fromSection').style.display = isMulti ? 'none' : 'block';
-    const moveHero = document.getElementById('moveMoneyHero');
-    if (moveHero) moveHero.style.display = isMulti ? 'none' : 'block';
+    // Don't hide the hero section - keep Mad Libs sentence visible
+    // const moveHero = document.getElementById('moveMoneyHero');
+    // if (moveHero) moveHero.style.display = isMulti ? 'none' : 'block';
     document.querySelector('.swap-divider').style.display = isMulti ? 'none' : 'flex';
     if (isIdentity) updateIdentityHelp();
     updateCurrencyDisplay();
@@ -4073,16 +4083,41 @@ function openDestinationSelectionModal() {
 
 function selectSourceType(type) {
     closeModal();
-    toggleSourcePanel(type);
+    const typeLabels = {
+        'WALLET': '💳 Wallet / Account',
+        'CARD': '🏦 Card',
+        'VOUCHER': '🎟️ Voucher'
+    };
+    document.getElementById('sourceLink').textContent = typeLabels[type] || type;
+    document.getElementById('sourceLink').style.color = 'var(--primary)';
+    document.getElementById('sourceLink').style.borderBottomColor = 'var(--primary)';
+    // Store the selection and update state
+    state.selectedSourceType = type;
+    state.fromCategory = type;
+    // Show the full form card for entering details
     document.getElementById('fullFormCard').style.display = 'block';
-    document.getElementById('fromSection').scrollIntoView({behavior:'smooth',block:'center'});
+    // Don't auto-expand the panel in the form - let user click if they want to change
+    // Don't scroll - keep it centered
 }
 
 function selectDestinationType(type) {
     closeModal();
-    setSwapType(type);
+    const typeLabels = {
+        'DEPOSIT': '🏦 Deposit to Bank',
+        'CASHOUT': '💵 Cashout',
+        'IDENTITY': '🪪 Send to ID Card',
+        'MULTI_SOURCE': '🎟️ Combine Funds'
+    };
+    document.getElementById('destinationLink').textContent = typeLabels[type] || type;
+    document.getElementById('destinationLink').style.color = 'var(--primary)';
+    document.getElementById('destinationLink').style.borderBottomColor = 'var(--primary)';
+    // Store the selection and update state
+    state.selectedDestinationType = type;
+    state.swapType = type;
+    // Show the full form card for entering details
     document.getElementById('fullFormCard').style.display = 'block';
-    document.getElementById('toSection').scrollIntoView({behavior:'smooth',block:'center'});
+    // Update the destination section but don't scroll
+    setSwapType(type);
 }
 
 function closeModal() { document.getElementById('modal').classList.remove('active'); }
