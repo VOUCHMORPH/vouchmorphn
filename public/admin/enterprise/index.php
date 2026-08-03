@@ -122,6 +122,8 @@ function renderSetupWizard(string $orgName, string $fullName, array $setupStatus
         }
         .btn:hover { background: var(--brass); border-color: var(--brass); color: var(--ink-900); }
         .btn-done { background: var(--ledger-green); border-color: var(--ledger-green); color: #fff; cursor: default; }
+        .btn-outline { background: transparent; border: 1px solid var(--line-strong); color: var(--ink-700); }
+        .btn-outline:hover { border-color: var(--brass); color: var(--brass); }
         .badge-done { font-size: 10px; font-weight: 700; text-transform: uppercase; background: var(--ledger-green); color: #fff; padding: 2px 10px; font-family: var(--f-cond); }
         .footnote { margin-top: 32px; padding: 16px 20px; border-left: 3px solid var(--brass); background: var(--brass-tint); font-size: 13px; color: var(--ink-700); }
     </style>
@@ -133,6 +135,12 @@ function renderSetupWizard(string $orgName, string $fullName, array $setupStatus
             <?php echo safeHtmlSetup($fullName); ?> · Owner
             <a href="logout.php">Sign Out</a>
         </div>
+    </div>
+    <div class="wizard-nav">
+        <a href="departments/index.php">🏢 Departments</a>
+        <a href="/admin/enterprise/settings/users.php">👤 Manage Team</a>
+        <a href="/admin/enterprise/imports/add_source.php">💰 Source Accounts</a>
+        <a href="settings.php">⚙️ Settings</a>
     </div>
     <div class="wrap">
         <div class="eyebrow">Getting Started</div>
@@ -153,8 +161,11 @@ function renderSetupWizard(string $orgName, string $fullName, array $setupStatus
                     <?php if ($step['done']): ?><span class="badge-done">Done</span><?php endif; ?>
                 </div>
                 <div class="step-desc"><?php echo safeHtmlSetup($step['description']); ?></div>
-                <?php if ($step['done']): ?>
+               <?php if ($step['done']): ?>
                     <div class="step-count"><?php echo (int)$step['count']; ?> on record</div>
+                    <a href="<?php echo safeHtmlSetup($step['action_href']); ?>" class="btn btn-outline" style="margin-top:8px;">
+                        Manage <?php echo safeHtmlSetup($step['label']); ?> →
+                    </a>
                 <?php else: ?>
                     <a href="<?php echo safeHtmlSetup($step['action_href']); ?>" class="btn"><?php echo safeHtmlSetup($step['action_label']); ?> →</a>
                 <?php endif; ?>
