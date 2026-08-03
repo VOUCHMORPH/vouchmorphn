@@ -17,12 +17,6 @@ $userName = $userData['full_name'] ?? $userData['username'] ?? 'User';
 $userCountry = $userData['country'] ?? getenv('VOUCHMORPH_COUNTRY') ?: 'Botswana';
 $userRole = $userData['role'] ?? 'user';
 $userId = $userData['id'] ?? $userData['user_id'] ?? 0;
-$nameParts = preg_split('/\s+/', trim($userName));
-$userInitials = strtoupper(
-    count($nameParts) >= 2
-        ? mb_substr($nameParts[0], 0, 1) . mb_substr($nameParts[count($nameParts) - 1], 0, 1)
-        : mb_substr($userName, 0, 2)
-);
 
 if (empty($userId)) {
     error_log("[DASHBOARD] WARNING: Session user data has no 'id' field.");
@@ -177,853 +171,140 @@ foreach ($assets as $assetKey => $assetConfig) {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>VouchMorph – Swap</title>
-<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
-<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet" />
-<script id="tailwind-config">
-tailwind.config = {
-    darkMode: "class",
-    theme: {
-        extend: {
-            colors: {
-                "surface-tint": "#476459",
-                "inverse-on-surface": "#f3f0ef",
-                "outline-variant": "#c1c8c3",
-                "outline": "#727975",
-                "on-tertiary-container": "#5a9c56",
-                "surface-container-high": "#eae7e7",
-                "inverse-primary": "#adcec0",
-                "on-error-container": "#93000a",
-                "secondary-container": "#e1dfdb",
-                "background": "#fcf9f8",
-                "on-secondary-container": "#63635f",
-                "surface-dim": "#dcd9d9",
-                "on-background": "#1c1b1b",
-                "on-tertiary": "#ffffff",
-                "error": "#ba1a1a",
-                "secondary-fixed-dim": "#c8c6c2",
-                "primary-fixed-dim": "#adcec0",
-                "on-secondary": "#ffffff",
-                "on-error": "#ffffff",
-                "error-container": "#ffdad6",
-                "primary": "#00150e",
-                "surface-container-highest": "#e5e2e1",
-                "on-secondary-fixed-variant": "#474744",
-                "surface-container-lowest": "#ffffff",
-                "on-primary-container": "#759487",
-                "secondary-fixed": "#e4e2dd",
-                "on-primary-fixed-variant": "#2f4c42",
-                "tertiary": "#001602",
-                "on-surface": "#1c1b1b",
-                "surface-container": "#f0eded",
-                "inverse-surface": "#313030",
-                "surface-variant": "#e5e2e1",
-                "tertiary-container": "#002e06",
-                "primary-fixed": "#c9eadc",
-                "tertiary-fixed-dim": "#91d78a",
-                "primary-container": "#0d2b22",
-                "on-tertiary-fixed": "#002203",
-                "surface": "#fcf9f8",
-                "on-primary": "#ffffff",
-                "tertiary-fixed": "#acf4a4",
-                "secondary": "#5e5e5b",
-                "on-secondary-fixed": "#1b1c19",
-                "on-tertiary-fixed-variant": "#0c5216",
-                "surface-bright": "#fcf9f8",
-                "on-surface-variant": "#414845",
-                "on-primary-fixed": "#022018",
-                "surface-container-low": "#f6f3f2"
-            },
-            borderRadius: {
-                DEFAULT: "0.125rem",
-                lg: "0.25rem",
-                xl: "0.5rem",
-                full: "0.75rem"
-            },
-            spacing: {
-                "margin-mobile": "16px",
-                "container-max": "1200px",
-                unit: "8px",
-                "margin-desktop": "40px",
-                gutter: "24px",
-                "section-gap": "48px",
-                "component-gap": "16px"
-            },
-            fontFamily: {
-                "headline-lg-mobile": ["Inter"],
-                "display-lg": ["Inter"],
-                "label-sm": ["Inter"],
-                "title-md": ["Inter"],
-                "headline-lg": ["Inter"],
-                "body-md": ["Inter"],
-                "label-md": ["Inter"],
-                "body-lg": ["Inter"]
-            },
-            fontSize: {
-                "headline-lg-mobile": ["24px", { lineHeight: "32px", fontWeight: "600" }],
-                "display-lg": ["48px", { lineHeight: "56px", letterSpacing: "-0.02em", fontWeight: "700" }],
-                "label-sm": ["12px", { lineHeight: "16px", fontWeight: "600" }],
-                "title-md": ["20px", { lineHeight: "28px", fontWeight: "600" }],
-                "headline-lg": ["32px", { lineHeight: "40px", letterSpacing: "-0.01em", fontWeight: "600" }],
-                "body-md": ["16px", { lineHeight: "24px", fontWeight: "400" }],
-                "label-md": ["14px", { lineHeight: "20px", letterSpacing: "0.01em", fontWeight: "500" }],
-                "body-lg": ["18px", { lineHeight: "28px", fontWeight: "400" }]
-            }
-        }
-    }
-};
-</script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 :root {
-    --bg: #F8F8F7;
-    --surface: #FFFFFF;
-    --surface-muted: #F3F3F2;
-    --surface-hover: #EFEFED;
-    --border: rgba(0,0,0,0.08);
-    --border-strong: rgba(0,0,0,0.14);
-    --border-active: rgba(14,35,32,0.35);
-    --text: #0A0A0A;
-    --text-muted: #666666;
-    --text-dim: #888888;
-    --primary: #0E2320;
-    --primary-dark: #001A12;
-    --accent: #5A8A7A;
-    --accent-soft: rgba(90,138,122,0.12);
-    --gradient: linear-gradient(135deg, #0E2320 0%, #1a4038 100%);
-    --success: #2E7D52;
-    --warning: #B8860B;
-    --danger: #C62828;
-    --radius: 12px;
-    --radius-sm: 8px;
-    --radius-pill: 999px;
+    --bg: #FAF3E0; --surface: rgba(0,0,0,0.04); --surface-hover: rgba(0,0,0,0.08);
+    --border: rgba(0,0,0,0.16); --border-active: rgba(0,150,160,0.5);
+    --text: #0d0d0d; --text-muted: #1f1f1f; --text-dim: #3a3a3a;
+    --primary: #00a0ad; --primary-dark: #007d88;
+    --gradient: linear-gradient(135deg, #00a0ad 0%, #8a2be2 100%);
+    --success: #1a9e5c; --warning: #b8860b; --danger: #d32f2f;
+    --radius: 0px; --radius-sm: 0px;
     --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     --transition: all 0.2s ease;
-    --shadow-sm: 0 1px 3px rgba(0,0,0,0.04);
-    --shadow-md: 0 8px 32px rgba(0,0,0,0.08);
-    --header-h: 72px;
-    --max-w: 1040px;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
-html { scroll-behavior: smooth; }
-body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: var(--font);
-    min-height: 100vh;
-    line-height: 1.5;
-    -webkit-font-smoothing: antialiased;
-}
-.material-symbols-outlined {
-    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
-}
-.glass-scrim {
-    backdrop-filter: blur(20px);
-    background-color: rgba(252, 249, 248, 0.8);
-}
-.madlib-underline {
-    position: relative;
-}
-.madlib-underline::after {
-    content: '';
-    position: absolute;
-    bottom: -4px;
-    left: 0;
-    width: 100%;
-    height: 2px;
-    background-color: #00150e;
-    opacity: 0.2;
-    transition: opacity 0.3s ease;
-}
-.madlib-underline:hover::after {
-    opacity: 1;
-}
-.madlib-button-filled::after {
-    opacity: 0.8;
-    height: 3px;
-}
-.fade-in-up {
-    animation: fadeInUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-}
-@keyframes fadeInUp {
-    from { opacity: 0; transform: translateY(20px); }
-    to { opacity: 1; transform: translateY(0); }
-}
-input::-webkit-outer-spin-button,
-input::-webkit-inner-spin-button {
-    -webkit-appearance: none;
-    margin: 0;
-}
-input[type=number] {
-    -moz-appearance: textfield;
-}
-
-/* Additional custom styles */
-.role-badge {
-    font-size: 9px;
-    color: var(--primary);
-    border: 1px solid var(--border-strong);
-    padding: 3px 8px;
-    border-radius: var(--radius-sm);
-    text-transform: uppercase;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-}
-.agent-badge {
-    font-size: 9px;
-    color: #fff;
-    background: var(--primary);
-    padding: 3px 8px;
-    border-radius: var(--radius-sm);
-    text-transform: uppercase;
-    font-weight: 700;
-}
-.test-mode-badge {
-    font-size: 9px;
-    color: var(--danger);
-    border: 1px solid rgba(198,40,40,0.35);
-    background: rgba(198,40,40,0.06);
-    padding: 3px 8px;
-    border-radius: var(--radius-sm);
-    text-transform: uppercase;
-    font-weight: 700;
-}
-.toolbox-badge {
-    min-width: 18px;
-    height: 18px;
-    padding: 0 5px;
-    background: var(--danger);
-    color: #fff;
-    font-size: 10px;
-    font-weight: 700;
-    border-radius: var(--radius-pill);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-}
-
-/* ── Site header ── */
-.site-header {
-    position: sticky;
-    top: 0;
-    z-index: 100;
-    background: var(--surface);
-    border-bottom: 1px solid var(--border);
-    box-shadow: var(--shadow-sm);
-}
-.header-inner {
-    max-width: var(--max-w);
-    margin: 0 auto;
-    padding: 0 24px;
-    height: var(--header-h);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-}
-.brand { display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
-.brand-text { display: flex; flex-direction: column; gap: 1px; }
-.logo { font-size: 20px; font-weight: 800; color: var(--text); letter-spacing: -0.02em; line-height: 1.1; }
-.logo sup { font-size: 9px; font-weight: 700; vertical-align: super; }
-.tagline {
-    font-size: 10px;
-    font-weight: 500;
-    color: var(--text-dim);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    font-style: italic;
-}
-.brand-divider { width: 1px; height: 28px; background: var(--border-strong); display: none; }
-@media (min-width: 640px) { .brand-divider { display: block; } }
-
-/* Restore missing CSS classes */
-.header-meta { display: none; align-items: center; gap: 10px; }
-@media (min-width: 900px) { .header-meta { display: flex; } }
-.user-chip-text { display: none; flex-direction: column; line-height: 1.2; }
-@media (min-width: 640px) { .user-chip-text { display: flex; } }
-.user-chip-name { font-size: 13px; font-weight: 700; color: var(--text); }
-.user-chip-role { font-size: 11px; color: var(--text-dim); }
-.user-avatar {
-    width: 34px; height: 34px;
-    border-radius: 50%;
-    background: var(--primary);
-    color: #fff;
-    font-size: 12px;
-    font-weight: 700;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-}
-
-/* Footer styles */
-.page-footer {
-    max-width: var(--max-w);
-    width: 100%;
-    margin: 0 auto;
-    padding: 24px 24px 32px;
-    border-top: 1px solid var(--border);
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-}
-.page-footer .footer-copy { font-size: 12px; color: var(--text-dim); }
-.page-footer .footer-links { display: flex; gap: 20px; font-size: 12px; }
-.page-footer .footer-links span { color: var(--text-muted); font-weight: 600; cursor: pointer; transition: var(--transition); }
+body { background: var(--bg); color: var(--text); font-family: var(--font); min-height: 100vh; line-height: 1.5; padding: 24px 16px; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.container { width: 100%; max-width: 960px; margin: 6vh auto 0; position: relative; z-index: 1; }
+.topbar { display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
+.logo { font-size: 22px; font-weight: 800; color: var(--text); letter-spacing: 0.3px; }
+.logo sup { font-size: 11px; font-weight: 700; margin-left: 2px; }
+.page-footer { max-width: 960px; width: 100%; margin: 40px auto 0; text-align: center; }
+.page-footer p { font-size: 13px; color: var(--text-dim); line-height: 1.7; max-width: 620px; margin: 0 auto 14px; }
+.page-footer .footer-links { display: flex; gap: 18px; justify-content: center; font-size: 12px; }
+.page-footer .footer-links span { color: var(--text-muted); font-weight: 700; cursor: pointer; }
 .page-footer .footer-links span:hover { color: var(--text); }
-.page-footer .footer-desc { display: none; }
+.page-footer .footer-mark { font-size: 11px; color: var(--text-dim); margin-top: 16px; }
+.topbar-right { display: flex; align-items: center; gap: 14px; font-size: 14px; flex-wrap: wrap; }
+.topbar-right .greeting { color: var(--text-muted); }
+.country-selector { background: #fff; border: 1px solid var(--border); border-radius: var(--radius); padding: 9px 14px; color: var(--text-muted); font-size: 13px; cursor: pointer; font-family: var(--font); line-height: 1; }
+.logout-btn { color: var(--text-muted); text-decoration: none; padding: 9px 18px; border: 1px solid var(--border); border-radius: var(--radius); font-weight: 700; font-size: 13px; line-height: 1; display: inline-flex; align-items: center; }
+.logout-btn:hover { border-color: var(--danger); color: var(--danger); }
+.role-badge { font-size: 10px; color: var(--primary-dark); border: 1px solid var(--primary); padding: 3px 10px; border-radius: var(--radius); text-transform: uppercase; font-weight: 700; }
+.agent-badge { font-size: 10px; color: #fff; background: var(--primary-dark); padding: 3px 10px; border-radius: var(--radius); text-transform: uppercase; font-weight: 700; }
+.test-mode-badge { font-size: 10px; color: #791f1f; border: 1px solid #d32f2f; padding: 3px 10px; border-radius: var(--radius); text-transform: uppercase; font-weight: 700; }
 
-/* Enhanced footer styling for light theme */
-.page-footer .footer-links span:hover {
-    color: var(--primary);
-    text-decoration: underline;
-}
+.toolbox-btn { position: relative; display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; color: #fff; background: var(--text); border: none; padding: 9px 18px; border-radius: var(--radius); cursor: pointer; }
+.toolbox-btn:hover { background: #000; }
+.toolbox-badge { min-width: 18px; height: 18px; padding: 0 5px; background: var(--danger); color: #fff; font-size: 11px; font-weight: 700; border-radius: var(--radius); display: inline-flex; align-items: center; justify-content: center; }
 
-.main-nav {
-    display: none;
-    align-items: center;
-    gap: 4px;
-    background: var(--surface-muted);
-    padding: 4px;
-    border-radius: var(--radius-pill);
-    border: 1px solid var(--border);
-}
-@media (min-width: 768px) { .main-nav { display: flex; } }
-.nav-pill, .nav-link {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    padding: 9px 16px;
-    border-radius: var(--radius-pill);
-    font-size: 13px;
-    font-weight: 600;
-    font-family: var(--font);
-    border: none;
-    background: transparent;
-    color: var(--text-muted);
-    cursor: pointer;
-    text-decoration: none;
-    transition: var(--transition);
-    white-space: nowrap;
-}
-.nav-pill.active, .nav-pill:hover { background: var(--primary); color: #fff; }
-.nav-link:hover { color: var(--text); background: rgba(255,255,255,0.7); }
-.nav-icon { font-size: 14px; opacity: 0.85; }
-
-.header-actions {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-}
-.header-meta { display: none; align-items: center; gap: 10px; }
-@media (min-width: 900px) { .header-meta { display: flex; } }
-.country-selector {
-    background: var(--surface-muted);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    padding: 8px 12px;
-    color: var(--text-muted);
-    font-size: 12px;
-    cursor: pointer;
-    font-family: var(--font);
-    line-height: 1;
-}
-.toolbox-btn {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text);
-    background: var(--surface-muted);
-    border: 1px solid var(--border);
-    padding: 8px 14px;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    font-family: var(--font);
-    transition: var(--transition);
-}
-.toolbox-btn:hover { background: var(--surface-hover); border-color: var(--border-strong); }
-.toolbox-btn:active { transform: scale(0.98); }
-
-/* ── Main layout ── */
-.container {
-    width: 100%;
-    max-width: var(--max-w);
-    margin: 0 auto;
-    padding: 32px 24px 48px;
-    position: relative;
-    z-index: 1;
-}
-
-/* Tailwind-style container */
-.container-tailwind {
-    max-width: 1200px;
-    margin: 0 auto;
-    padding: 0 16px;
-}
-@media (min-width: 768px) {
-    .container-tailwind {
-        padding: 0 40px;
-    }
-}
-.message {
-    padding: 12px 16px;
-    border-radius: var(--radius-sm);
-    margin: 0 0 20px;
-    font-size: 13px;
-    display: none;
-    font-weight: 500;
-}
+.message { padding: 12px 16px; border-radius: var(--radius); margin: 0 0 16px; font-size: 13px; display: none; font-weight: 600; }
 .message.show { display: block; }
-.message.info { background: var(--accent-soft); border-left: 3px solid var(--accent); color: var(--primary); }
-.message.success { background: rgba(46,125,82,0.10); border-left: 3px solid var(--success); color: var(--success); }
-.message.error { background: rgba(198,40,40,0.08); border-left: 3px solid var(--danger); color: var(--danger); }
+.message.info { background: rgba(0,160,173,0.10); border-left: 3px solid var(--primary); color: #00707a; }
+.message.success { background: rgba(26,158,92,0.10); border-left: 3px solid var(--success); color: #146b40; }
+.message.error { background: rgba(211,47,47,0.08); border-left: 3px solid var(--danger); color: #a12525; }
 .message.warning { background: rgba(184,134,11,0.10); border-left: 3px solid var(--warning); color: #8a6508; }
 
-/* ── Hero sentence ── */
-.hero-section {
-    text-align: center;
-    margin-bottom: 28px;
-    padding: 8px 0 4px;
-    animation: fadeInUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-    min-height: 60vh;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    align-items: center;
-}
-.hero-sentence {
-    font-size: clamp(26px, 4.5vw, 38px);
-    font-weight: 700;
-    line-height: 1.35;
-    color: var(--text);
-    letter-spacing: -0.02em;
-    max-width: 720px;
-    margin: 0 auto;
-    text-align: center;
-}
-.hero-sentence .hero-word { display: inline; }
-.hero-amount-wrap {
-    display: inline-flex;
-    align-items: baseline;
-    vertical-align: baseline;
-    margin: 0 4px;
-}
-.hero-amount-wrap .amount-field { display: inline-flex; align-items: baseline; }
-.hero-amount-wrap .amount-field input {
-    width: clamp(120px, 22vw, 200px);
-    border: none;
-    border-bottom: 2px solid var(--accent);
-    background: transparent;
-    font-size: inherit;
-    font-weight: 700;
-    font-family: var(--font);
-    color: var(--accent);
-    text-align: center;
-    padding: 0 4px 2px;
-    -moz-appearance: textfield;
-}
-.hero-amount-wrap .amount-field input::-webkit-outer-spin-button,
-.hero-amount-wrap .amount-field input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
-.hero-amount-wrap .amount-field input:focus { outline: none; border-bottom-color: var(--primary); color: var(--primary); }
-.hero-amount-wrap .currency-suffix {
-    position: static;
-    transform: none;
-    font-size: 0.65em;
-    font-weight: 700;
-    color: var(--accent);
-    margin-left: 4px;
-}
-.hero-jump {
-    color: var(--accent);
-    text-decoration: none;
-    border-bottom: 2px solid var(--accent);
-    cursor: pointer;
-    transition: var(--transition);
-}
-.hero-jump:hover { color: var(--primary); border-bottom-color: var(--primary); }
-.hero-send-note {
-    margin-top: 12px;
-    font-size: 14px;
-    color: var(--text-muted);
-    font-weight: 500;
-}
-
-/* Mad Libs styling from reference */
-.madlib-underline {
-    position: relative;
-    display: inline-block;
-}
-.madlib-underline::after {
-    content: '';
-    position: absolute;
-    bottom: -4px;
-    left: 0;
-    width: 100%;
-    height: 2px;
-    background-color: #00150e;
-    opacity: 0.2;
-    transition: opacity 0.3s ease;
-}
-.madlib-underline:hover::after {
-    opacity: 1;
-}
-
-.balance-card {
-    max-width: 420px;
-    margin: 24px auto 36px;
-    padding: 20px 24px;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    text-align: center;
-    cursor: pointer;
-    transition: var(--transition);
-    box-shadow: var(--shadow-sm);
-}
-.balance-card:hover { border-color: var(--border-strong); box-shadow: var(--shadow-md); transform: translateY(-1px); }
-.balance-card-label { font-size: 12px; color: var(--text-dim); font-weight: 500; margin-bottom: 6px; }
-.balance-card-hint { font-size: 11px; color: var(--accent); font-weight: 600; }
-.balance-card-amount { font-size: 32px; font-weight: 800; color: var(--primary); margin-bottom: 4px; }
-
-/* ── Swap workspace ── */
 .card { background: transparent; border: none; padding: 0; }
-.swap-columns {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 20px;
-}
-@media (min-width: 900px) {
-    .swap-columns { grid-template-columns: 1fr 1fr; gap: 24px; }
-}
-.swap-divider { display: none !important; }
-.section.split-box {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 24px;
-    box-shadow: var(--shadow-sm);
-}
-.section-title {
-    display: flex;
-    align-items: flex-start;
-    gap: 12px;
-    margin-bottom: 6px;
-    color: var(--text);
-}
-.section-title .n {
-    width: 36px; height: 36px;
-    border-radius: var(--radius-sm);
-    background: var(--surface-muted);
-    border: 1px solid var(--border);
-    color: var(--text-muted);
-    font-size: 16px;
-    font-weight: 400;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-}
-.section-heading { flex: 1; }
-.section-heading h2 { font-size: 18px; font-weight: 700; letter-spacing: -0.01em; margin-bottom: 4px; }
-.section-heading p { font-size: 13px; color: var(--text-muted); font-weight: 400; line-height: 1.45; }
+.section.split-box { background: #fff; border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; }
+.swap-columns { display: flex; align-items: stretch; gap: 18px; }
+.swap-columns > .section { flex: 1 1 0; min-width: 0; }
+@media (max-width: 860px) { .container { max-width: 560px; } .swap-columns { flex-direction: column; } .swap-divider span { transform: rotate(0deg) !important; } }
+.swap-divider { display: flex; align-items: center; justify-content: center; margin: 0; color: var(--text-dim); flex: 0 0 auto; }
+.swap-divider span { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border: 1px solid var(--border); background: #fff; border-radius: var(--radius); font-size: 15px; transform: rotate(90deg); }
+.section-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; margin-bottom: 14px; color: var(--text); }
+.section-title .n { width: 20px; height: 20px; border-radius: var(--radius); background: var(--text); color: #fff; font-size: 11px; font-weight: 800; display: flex; align-items: center; justify-content: center; }
 
-.field-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; display: block; margin-bottom: 6px; font-weight: 600; letter-spacing: 0.05em; }
-.field-group { margin-bottom: 14px; }
-.field-group label { display: block; font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--text-dim); margin-bottom: 6px; letter-spacing: 0.05em; }
-.field-group input, .field-group select {
-    width: 100%;
-    padding: 12px 14px;
-    background: var(--surface);
-    border: 1px solid var(--border-strong);
-    border-radius: var(--radius-sm);
-    color: var(--text);
-    font-size: 15px;
-    font-family: var(--font);
-    transition: var(--transition);
-}
-.field-group input:focus, .field-group select:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(14,35,32,0.08); }
+.field-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; display: block; margin-bottom: 4px; font-weight: 700; letter-spacing: 0.3px; }
+.field-group { margin-bottom: 12px; }
+.field-group label { display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-muted); margin-bottom: 4px; letter-spacing: 0.3px; }
+.field-group input, .field-group select { width: 100%; padding: 12px 14px; background: #fff; border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: 16px; font-family: var(--font); }
+.field-group input:focus, .field-group select:focus { outline: none; border-color: var(--primary); }
 .field-group input.invalid { border-color: var(--danger); }
-.field-group .help { font-size: 12px; color: var(--text-dim); margin-top: 5px; }
-.from-amount-hidden { display: none !important; }
-.asset-fields { margin: 8px 0 14px; padding: 16px; background: var(--surface-muted); border: 1px solid var(--border); border-radius: var(--radius-sm); }
-.identity-field { margin: 8px 0 14px; padding: 16px; background: var(--accent-soft); border: 1px dashed var(--accent); border-radius: var(--radius-sm); }
-
-.cta-row { display: flex; justify-content: center; margin-top: 28px; gap: 12px; }
-.cta-row .btn, .cta-row .btn-secondary { flex: 1 1 0; max-width: 360px; }
-.btn {
-    padding: 14px 28px;
-    border: none;
-    border-radius: var(--radius-sm);
-    font-size: 13px;
-    font-weight: 700;
-    font-family: var(--font);
-    cursor: pointer;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    transition: var(--transition);
-}
-.btn-primary { background: var(--primary); color: #fff; }
-.btn-primary:hover:not(:disabled) { background: var(--primary-dark); }
-.btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
-.btn-secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border-strong); font-weight: 600; text-transform: none; letter-spacing: 0; }
-.btn-secondary:hover { background: var(--surface-muted); }
-.btn-danger-outline { background: transparent; color: var(--danger); border: 1px solid rgba(198,40,40,0.35); padding: 6px 14px; border-radius: var(--radius-sm); font-size: 11px; cursor: pointer; font-weight: 600; }
-.btn-sm { padding: 10px 18px !important; font-size: 12px; text-transform: none; letter-spacing: 0; }
-.btn-link { background: none; border: none; padding: 0; cursor: pointer; color: var(--accent); font-size: 12px; font-weight: 600; }
-
-/* Tailwind-style button classes */
-
-.quick-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
-.quick-link {
-    display: inline-flex; align-items: center; gap: 4px;
-    font-size: 12px; font-weight: 600;
-    color: var(--text-muted);
-    background: var(--surface-muted);
-    border: 1px solid var(--border);
-    padding: 7px 12px;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    transition: var(--transition);
-}
-.quick-link:hover { border-color: var(--border-strong); color: var(--text); }
-.quick-link:active { transform: scale(0.95); }
-.quick-link.muted { color: var(--text-dim); }
-.quick-link.danger { color: var(--danger); background: rgba(198,40,40,0.05); border-color: rgba(198,40,40,0.2); }
-.quick-link.selected { background: var(--primary); color: #fff; border-color: var(--primary); }
-
-.source-row { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 14px; margin-bottom: 10px; background: var(--surface); }
+.field-group .help { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+.amount-field { position: relative; }
+.amount-field input { padding-right: 64px; font-size: 18px; font-weight: 700; }
+.amount-field .currency-suffix { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); color: var(--text-muted); font-size: 12px; font-weight: 700; }
+.asset-fields { margin: 4px 0 12px; padding: 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+.identity-field { margin: 4px 0 12px; padding: 14px; background: rgba(0,160,173,0.05); border: 1px dashed var(--primary); border-radius: var(--radius); }
+.cta-row { display: flex; justify-content: center; margin-top: 24px; gap: 12px; }
+.cta-row .btn, .cta-row .btn-secondary { flex: 1 1 0; }
+.cta-row .btn:only-child, .cta-row .btn-secondary:only-child { flex: 0 1 320px; }
+.btn { padding: 14px 40px; border: none; border-radius: var(--radius); font-size: 14px; font-weight: 700; font-family: var(--font); cursor: pointer; }
+.btn-primary { background: var(--text); color: #fff; }
+.btn-primary:hover { background: #000; }
+.btn-secondary { background: #fff; color: var(--text); border: 1px solid var(--border); padding: 14px 32px; border-radius: var(--radius); font-weight: 700; cursor: pointer; }
+.btn-danger-outline { background: transparent; color: var(--danger); border: 1px solid rgba(211,47,47,0.4); padding: 6px 14px; border-radius: var(--radius); font-size: 11px; cursor: pointer; font-weight: 700; }
+.btn-sm { padding: 8px 18px !important; font-size: 12px; }
+.btn-link { background: none; border: none; padding: 0; cursor: pointer; color: var(--primary-dark); font-size: 12px; }
+.quick-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: -4px 0 12px; }
+.quick-link { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 700; color: var(--primary-dark); background: rgba(0,160,173,0.07); border: 1px solid rgba(0,160,173,0.25); padding: 6px 12px; border-radius: var(--radius); cursor: pointer; }
+.quick-link.muted { color: var(--text-muted); background: var(--surface); border-color: var(--border); }
+.quick-link.danger { color: var(--danger); background: rgba(211,47,47,0.05); border-color: rgba(211,47,47,0.25); }
+.quick-link.selected { background: var(--text); color: #fff; border-color: var(--text); }
+.source-row { border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; margin-bottom: 10px; background: #fff; }
 .source-row-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
 .multi-total { text-align: center; font-size: 13px; color: var(--text-muted); margin-top: 12px; font-weight: 600; }
 .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid rgba(255,255,255,0.4); border-top-color: #fff; border-radius: 50%; animation: spin 0.7s linear infinite; margin-right: 6px; }
 @keyframes spin { to { transform: rotate(360deg); } }
-
-/* ── Modals ── */
-.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); backdrop-filter: blur(4px); z-index: 1000; align-items: center; justify-content: center; padding: 20px; }
+.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(10,10,10,0.6); z-index: 1000; align-items: center; justify-content: center; padding: 20px; }
 .modal-overlay.active { display: flex; }
-.modal {
-    background: var(--surface);
-    border-radius: var(--radius);
-    max-width: 760px;
-    width: 100%;
-    max-height: 90vh;
-    overflow-y: auto;
-    border: 1px solid var(--border);
-    box-shadow: var(--shadow-md);
-}
-.modal-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 18px 24px;
-    background: #F3EFEF;
-    border-bottom: 1px solid var(--border);
-    margin-bottom: 0;
-}
-.modal-header h2 { font-size: 13px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text); }
-.modal-close { background: none; border: none; color: var(--text-muted); font-size: 22px; cursor: pointer; line-height: 1; padding: 4px; }
-
-/* Glass morphism effect for modals */
-.modal-glass {
-    background: rgba(252, 249, 248, 0.95);
-    backdrop-filter: blur(20px);
-}
-
-/* Enhanced modal styling for light theme */
-.modal-content {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    box-shadow: var(--shadow-md);
-    max-width: 520px;
-    width: 100%;
-    max-height: 90vh;
-    overflow-y: auto;
-    border-radius: var(--radius);
-}
-
-/* Ensure modal header has proper contrast */
-.modal-header {
-    background: var(--surface-muted);
-    border-bottom: 1px solid var(--border);
-    padding: 18px 24px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-}
-
-/* Ensure modal body has proper spacing */
-#modalBody {
-    padding: 24px;
-}
-
-/* Tab builder styling enhancements */
-.tab-hero {
-    text-align: center;
-    padding: 24px 10px;
-    background: var(--gradient);
-    border-radius: var(--radius-sm);
-    color: #fff;
-    margin-bottom: 14px;
-}
-.tab-hero-label {
-    font-size: 10px;
-    opacity: 0.85;
-    text-transform: uppercase;
-    letter-spacing: 1.5px;
-    font-weight: 700;
-}
-.tab-hero-input {
-    background: transparent;
-    border: none;
-    text-align: center;
-    font-size: 34px;
-    font-weight: 800;
-    width: 100%;
-    color: inherit;
-    font-family: var(--font);
-}
-.tab-hero-input:focus {
-    outline: none;
-}
-.tab-hero-sub {
-    font-size: 12px;
-    opacity: 0.85;
-    margin-top: 4px;
-}
-
-.review-hero { text-align: center; padding: 8px 0 20px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
-.review-hero-label { font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-dim); margin-bottom: 8px; }
-.review-hero-amount { font-size: 36px; font-weight: 800; color: var(--primary); letter-spacing: -0.02em; }
-.review-hero-note { font-size: 11px; color: var(--success); font-weight: 600; margin-top: 8px; display: flex; align-items: center; justify-content: center; gap: 6px; }
-.review-hero-note::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
-
-.preview-box { background: transparent; border: none; border-radius: 0; padding: 0; margin: 0; }
-.preview-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 14px 16px;
-    gap: 12px;
-    font-size: 13px;
-    border-bottom: 1px solid var(--border);
-    background: var(--surface);
-}
-.preview-row:nth-child(even) { background: var(--surface-muted); }
-.preview-row span:first-child { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-dim); }
-.preview-row .value { font-weight: 700; color: var(--text); text-align: right; }
-.preview-row .value.highlight { color: var(--primary); font-size: 22px; font-weight: 800; }
-.preview-security {
-    display: flex; gap: 14px; align-items: flex-start;
-    padding: 16px;
-    background: var(--surface-muted);
-    border-radius: var(--radius-sm);
-    margin: 16px 0;
-    border: 1px solid var(--border);
-}
-.preview-security-icon {
-    width: 36px; height: 36px;
-    background: var(--primary);
-    border-radius: var(--radius-sm);
-    display: flex; align-items: center; justify-content: center;
-    color: #fff; font-size: 16px; flex-shrink: 0;
-}
-.preview-security-text strong { display: block; font-size: 13px; margin-bottom: 4px; }
-.preview-security-text p { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
-.modal-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 20px; padding-top: 4px; }
-.modal-actions .btn-secondary { flex: 0 0 auto; text-transform: none; border: none; background: transparent; color: var(--text-muted); font-size: 13px; }
-.modal-actions .btn-primary { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
-
-#modalBody { padding: 24px; }
-
+.modal { background: #fff; border-radius: var(--radius); max-width: 480px; width: 100%; max-height: 90vh; overflow-y: auto; padding: 24px; border: 1px solid var(--border); }
+.modal-header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 12px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+.modal-header h2 { font-size: 16px; font-weight: 700; }
+.modal-close { background: none; border: none; color: var(--text-muted); font-size: 22px; cursor: pointer; line-height: 1; }
+.preview-box { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin: 12px 0; }
+.preview-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); gap: 12px; font-size: 13px; }
+.preview-row .value.highlight { color: var(--primary-dark); font-size: 20px; font-weight: 700; }
 .result-box { text-align: center; padding: 12px 0; }
-.result-box .icon { font-size: 48px; color: var(--success); margin-bottom: 8px; filter: brightness(1.2); }
-.result-box .result-title { font-size: 22px; font-weight: 800; margin-bottom: 8px; letter-spacing: -0.02em; }
-.result-box .result-sub { font-size: 13px; color: var(--text-muted); margin-bottom: 16px; line-height: 1.5; }
-.result-box .atm-code { margin: 16px 0; padding: 20px; background: var(--surface-muted); border: 1px solid var(--border); border-radius: var(--radius-sm); }
-.result-box .atm-code .code { font-size: 26px; font-weight: 700; font-family: monospace; letter-spacing: 4px; color: var(--primary); }
-.raw-json { text-align: left; font-size: 11px; background: var(--surface-muted); border-radius: var(--radius-sm); padding: 10px; white-space: pre-wrap; word-break: break-all; color: var(--text-dim); margin-top: 12px; max-height: 200px; overflow-y: auto; }
+.result-box .icon { font-size: 40px; }
+.result-box .atm-code { margin: 12px 0; padding: 16px; background: rgba(0,160,173,0.06); border: 2px solid var(--primary); border-radius: var(--radius); }
+.result-box .atm-code .code { font-size: 26px; font-weight: 700; font-family: monospace; letter-spacing: 4px; color: var(--primary-dark); }
+.raw-json { text-align: left; font-size: 11px; background: var(--surface); border-radius: var(--radius); padding: 10px; white-space: pre-wrap; word-break: break-all; color: var(--text-dim); margin-top: 12px; max-height: 200px; overflow-y: auto; }
+@media (max-width: 480px) { body { padding: 12px; } .btn, .btn-secondary { padding: 12px 24px; width: 100%; } .cta-row { flex-direction: column; } .cta-row .btn, .cta-row .btn-secondary, .cta-row .btn:only-child, .cta-row .btn-secondary:only-child { flex: 0 0 auto; } .topbar { flex-direction: column; align-items: stretch; } }
 
-/* ── Source type cards ── */
-.source-type-buttons { display: flex; flex-direction: column; gap: 10px; }
-.source-type-btn {
-    display: flex; align-items: center; justify-content: space-between;
-    width: 100%; padding: 14px 16px;
-    font-size: 15px; font-weight: 600; text-align: left;
-    background: var(--surface);
-    color: var(--text);
-    border: 1px solid var(--border-strong);
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    font-family: var(--font);
-    transition: var(--transition);
-}
-.source-type-btn:hover { border-color: var(--primary); background: var(--surface-muted); }
-.source-type-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); }
-
-/* Add active scale effect */
-.source-type-btn:active { transform: scale(0.98); }
-.source-type-btn .btn-label { display: flex; align-items: center; gap: 10px; }
-.source-type-btn .count { background: var(--accent); color: #fff; border-radius: var(--radius-pill); font-size: 10px; font-weight: 800; padding: 2px 8px; }
-.source-type-btn.active .count { background: rgba(255,255,255,0.25); color: #fff; }
-.source-type-btn .chevron { font-size: 11px; opacity: 0.45; }
-.source-type-btn.active .chevron { color: #fff; opacity: 0.8; }
-.source-panel-wrap { margin-bottom: 8px; margin-top: 4px; }
+.source-type-buttons { display: flex; flex-direction: column; gap: 12px; }
+.source-type-btn { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 12px 14px; font-size: 16px; font-weight: 600; text-align: left; background: #fff; color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; font-family: var(--font); position: relative; }
+.source-type-btn:hover { border-color: var(--primary); color: var(--primary-dark); }
+.source-type-btn.active { background: var(--text); color: #fff; border-color: var(--text); }
+.source-type-btn .btn-label { display: flex; align-items: center; gap: 8px; }
+.source-type-btn .count { background: var(--primary); color: #fff; border-radius: 10px; font-size: 11px; font-weight: 800; padding: 1px 7px; }
+.source-type-btn.active .count { background: #fff; color: var(--text); }
+.source-type-btn .chevron { font-size: 12px; opacity: 0.55; }
+.source-type-btn.active .chevron { color: #fff; opacity: 0.85; }
+.source-panel-wrap { margin-bottom: 4px; }
 .source-panel { margin-bottom: 4px; }
-.empty-source-box { text-align: center; padding: 28px 16px; border: 1px dashed var(--border-strong); border-radius: var(--radius-sm); background: var(--surface-muted); }
-.empty-source-box p { font-size: 13px; color: var(--text-dim); margin-bottom: 14px; }
+.empty-source-box { text-align: center; padding: 18px 12px; border: 1px dashed var(--border); border-radius: var(--radius); background: var(--surface); }
+.empty-source-box p { font-size: 12px; color: var(--text-dim); margin-bottom: 10px; }
 
-.source-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 14px; margin-bottom: 10px; }
-.transaction-ledger-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
-.transaction-ledger-toolbar .toolbar-title { font-size: 20px; font-weight: 800; letter-spacing: -0.02em; }
-.transaction-ledger-toolbar .toolbar-subtitle { font-size: 13px; color: var(--text-dim); margin-top: 4px; }
-.transaction-ledger-toolbar .toolbar-actions { display: flex; gap: 10px; flex-wrap: wrap; }
-.transaction-ledger-toolbar .toolbar-actions .btn { padding: 12px 16px; }
-.transaction-row { display: grid; grid-template-columns: 1.6fr 3fr 1.8fr auto; gap: 12px; align-items: center; padding: 18px 20px; background: var(--surface); border: 1px solid rgba(0,0,0,0.06); border-radius: var(--radius-sm); margin-bottom: 10px; transition: transform 0.2s ease, box-shadow 0.2s ease; cursor: pointer; }
-.transaction-row:hover { transform: translateY(-1px); box-shadow: 0 10px 25px rgba(0,0,0,0.05); }
-.transaction-row .txn-date { font-size: 12px; color: var(--text-dim); line-height: 1.4; }
-.transaction-row .txn-date .primary { display: block; font-weight: 700; color: var(--text); }
-.transaction-row .txn-date .secondary { display: block; margin-top: 4px; }
-.transaction-row .txn-destination { display: flex; gap: 12px; align-items: center; }
-.transaction-row .txn-destination-icon { width: 44px; height: 44px; border-radius: 14px; background: rgba(90,138,122,0.12); display: flex; align-items: center; justify-content: center; font-size: 18px; color: var(--primary); flex-shrink: 0; }
-.transaction-row .txn-destination-info { min-width: 0; }
-.transaction-row .txn-destination-title { font-weight: 700; font-size: 14px; color: var(--text); }
-.transaction-row .txn-destination-sub { font-size: 12px; color: var(--text-dim); margin-top: 3px; }
-.ledger-summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 20px; }
-.ledger-summary-card { background: #0E261F; color: #fff; border-radius: var(--radius); padding: 20px; box-shadow: var(--shadow-sm); display: flex; flex-direction: column; gap: 10px; }
-.ledger-summary-card.secondary { background: var(--surface-muted); color: var(--text); border: 1px solid var(--border); }
-.ledger-summary-card h3 { margin: 0; font-size: 14px; font-weight: 700; letter-spacing: -0.02em; }
-.ledger-summary-card p { margin: 0; color: inherit; font-size: 13px; line-height: 1.5; }
-.ledger-summary-card .summary-value { font-size: 28px; font-weight: 800; line-height: 1.1; }
-.ledger-summary-card .summary-note { font-size: 12px; color: rgba(255,255,255,0.75); }
-.ledger-summary-card.secondary .summary-note { color: var(--text-dim); }
-.transaction-row .txn-amount { text-align: right; font-weight: 700; font-size: 15px; }
-.transaction-row .txn-status { text-align: right; }
-.txn-badge { display: inline-flex; align-items: center; justify-content: center; padding: 6px 12px; border-radius: 999px; font-size: 11px; font-weight: 700; text-transform: capitalize; }
-.txn-badge.pending { background: rgba(184,134,11,0.12); color: #8A6508; }
-.txn-badge.completed { background: rgba(34,197,94,0.12); color: #166534; }
-.txn-badge.failed { background: rgba(198,40,40,0.12); color: #b91c1c; }
-.ledger-footer { font-size: 12px; color: var(--text-dim); margin-top: 10px; }
+.source-card { background: #fff; border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; margin-bottom: 10px; }
 .source-card .source-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
 .source-card .source-institution { font-weight: 700; font-size: 15px; }
 .source-card .source-details { font-size: 13px; color: var(--text-muted); }
-.source-card .source-status { font-size: 10px; padding: 3px 10px; border-radius: var(--radius-pill); font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
-.source-status.active { background: rgba(46,125,82,0.12); color: var(--success); }
-.source-status.pending { background: rgba(184,134,11,0.12); color: var(--warning); }
-.source-status.inactive { background: rgba(198,40,40,0.08); color: var(--danger); }
+.source-card .source-status { font-size: 11px; padding: 3px 10px; border-radius: var(--radius); font-weight: 700; }
+.source-status.active { background: #dcfce7; color: #166534; }
+.source-status.pending { background: #fef3c7; color: #8a5a0b; }
+.source-status.inactive { background: #fbeceb; color: var(--danger); }
 .otp-input-group { display: flex; gap: 8px; margin: 12px 0; }
 .otp-input-group input { flex: 1; }
 .otp-input-group button { flex-shrink: 0; }
 
-.saved-source-list { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); overflow: hidden; }
-.saved-source-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 13px 14px; cursor: pointer; border-bottom: 1px solid var(--border); transition: var(--transition); }
+.saved-source-list { border: 1px solid var(--border); border-radius: var(--radius); background: #fff; overflow: hidden; }
+.saved-source-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 12px 14px; cursor: pointer; border-bottom: 1px solid var(--border); }
 .saved-source-row:last-child { border-bottom: none; }
-.saved-source-row:hover { background: var(--surface-muted); }
-.saved-source-row.active { background: var(--primary); color: #fff; }
+.saved-source-row:hover { background: var(--surface); }
+.saved-source-row.active { background: var(--text); color: #fff; }
 .saved-source-row .row-icon { font-size: 16px; flex-shrink: 0; }
 .saved-source-row .row-main { flex: 1; min-width: 0; }
 .saved-source-row .row-inst { font-weight: 700; font-size: 13px; }
@@ -1032,181 +313,83 @@ input[type=number] {
 .saved-source-row .row-check { font-size: 14px; opacity: 0; }
 .saved-source-row.active .row-check { opacity: 1; }
 
-.toolbox-list { display: flex; flex-direction: column; gap: 6px; }
-.toolbox-row {
-    display: flex; align-items: center; gap: 12px;
-    padding: 14px 14px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    background: var(--surface);
-    transition: var(--transition);
-}
-.toolbox-row:hover { background: var(--surface-muted); border-color: var(--border-strong); transform: translateY(-1px); }
-.toolbox-row:active { transform: scale(0.98); }
+.toolbox-list { display: flex; flex-direction: column; gap: 2px; }
+.toolbox-row { display: flex; align-items: center; gap: 12px; padding: 13px 12px; border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; margin-bottom: 6px; background: #fff; }
+.toolbox-row:hover { background: var(--surface); border-color: var(--text); }
 .toolbox-row-icon { width: 22px; text-align: center; font-size: 15px; }
 .toolbox-row-label { flex: 1; font-size: 14px; font-weight: 600; color: var(--text); }
-.toolbox-row-badge { min-width: 18px; height: 18px; padding: 0 5px; background: var(--danger); color: #fff; font-size: 10px; font-weight: 700; border-radius: var(--radius-pill); display: inline-flex; align-items: center; justify-content: center; }
+.toolbox-row-badge { min-width: 18px; height: 18px; padding: 0 5px; background: var(--danger); color: #fff; font-size: 11px; font-weight: 700; border-radius: var(--radius); display: inline-flex; align-items: center; justify-content: center; }
 
-#identitySwapHint { display: none; background: var(--accent-soft); border-left: 3px solid var(--accent); padding: 12px 14px; border-radius: var(--radius-sm); font-size: 13px; margin-top: 8px; color: var(--text-muted); }
-#swapReadinessHint { text-align: center; font-size: 13px; color: var(--text-muted); margin-top: 12px; display: none; max-width: 560px; margin-left: auto; margin-right: auto; }
+#identitySwapHint { display: none; background: rgba(0,160,173,0.08); border-left: 3px solid var(--primary); padding: 10px 14px; border-radius: 6px; font-size: 13px; margin-top: 8px; }
+#swapReadinessHint { text-align: center; font-size: 13px; color: var(--text-muted); margin-top: 8px; display: none; }
 #swapReadinessHint.show { display: block; }
-#swapReadinessHint.warning { background: rgba(184,134,11,0.08); border-left: 3px solid var(--warning); padding: 12px 16px; border-radius: var(--radius-sm); }
-#swapReadinessHint.success { background: rgba(46,125,82,0.08); border-left: 3px solid var(--success); padding: 12px 16px; border-radius: var(--radius-sm); color: var(--success); }
+#swapReadinessHint.warning { background: rgba(184,134,11,0.08); border-left: 3px solid var(--warning); padding: 10px 14px; border-radius: var(--radius); color: var(--text-muted); }
+#swapReadinessHint.success { background: rgba(26,158,92,0.08); border-left: 3px solid var(--success); padding: 10px 14px; border-radius: var(--radius); color: #146b40; }
 
-/* ── Tab builder ── */
-.tab-launcher { display: flex; align-items: center; gap: 14px; padding: 18px; background: var(--gradient); border-radius: var(--radius-sm); cursor: pointer; color: #fff; transition: var(--transition); }
-.tab-launcher:hover { opacity: 0.95; transform: translateY(-1px); }
-.tab-launcher-icon { font-size: 26px; }
-.tab-launcher-body { flex: 1; }
-.tab-launcher-title { font-weight: 800; font-size: 15px; }
-.tab-launcher-sub { font-size: 12px; opacity: 0.85; margin-top: 2px; }
-.tab-launcher-total { font-size: 18px; font-weight: 800; }
-.tab-hero { text-align: center; padding: 24px 10px; background: var(--gradient); border-radius: var(--radius-sm); color: #fff; margin-bottom: 14px; }
-.tab-hero-label { font-size: 10px; opacity: 0.85; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 700; }
-.tab-hero-input { background: transparent; border: none; text-align: center; font-size: 34px; font-weight: 800; width: 100%; color: inherit; font-family: var(--font); }
-.tab-hero-input:focus { outline: none; }
-.tab-hero-sub { font-size: 12px; opacity: 0.85; margin-top: 4px; }
-.tab-hero { text-align: center; padding: 24px 10px; background: var(--gradient); border-radius: var(--radius-sm); color: #fff; margin-bottom: 14px; }
-.tab-hero-label { font-size: 10px; opacity: 0.85; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 700; }
-.tab-hero-input { background: transparent; border: none; text-align: center; font-size: 34px; font-weight: 800; width: 100%; color: inherit; font-family: var(--font); }
-.tab-hero-input:focus { outline: none; }
-.tab-hero-sub { font-size: 12px; opacity: 0.85; margin-top: 4px; }
-.tab-status-line { text-align: center; font-size: 12px; margin-bottom: 14px; padding: 10px; border-radius: var(--radius-sm); font-weight: 600; }
-.tab-status-line.ok { background: rgba(46,125,82,0.10); color: var(--success); }
-.tab-status-line.warn { background: rgba(184,134,11,0.10); color: #8a6508; }
-.tab-status-line.bad { background: rgba(198,40,40,0.08); color: var(--danger); }
-.tab-strategy-row { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }
-.tab-strategy-row .quick-link { flex: 1; justify-content: center; min-width: 70px; }
-.tab-source-card { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 14px; margin-bottom: 10px; background: var(--surface); }
-.tab-source-empty { border: 1px dashed var(--border-strong); border-radius: var(--radius-sm); padding: 14px; margin-bottom: 10px; background: var(--surface-muted); }
-.tab-fixed-note { margin-top: 8px; padding: 10px; background: var(--surface-muted); border-radius: var(--radius-sm); font-size: 12px; color: var(--text-dim); }
-.tab-estimated-note { font-size: 11px; color: var(--text-dim); margin-top: 4px; font-style: italic; }
-.tab-invite-teaser { display: flex; align-items: center; gap: 12px; margin-top: 16px; padding: 14px; border: 1px dashed var(--accent); border-radius: var(--radius-sm); background: var(--accent-soft); cursor: pointer; }
-.tab-invite-icon { font-size: 24px; }
-.tab-invite-title { font-weight: 700; font-size: 14px; }
-.tab-invite-sub { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
-.vm-card-note { font-size: 12px; color: var(--text-muted); background: var(--accent-soft); border-left: 3px solid var(--accent); padding: 12px 14px; border-radius: var(--radius-sm); margin-top: 10px; }
-
-/* ── Footer ── */
-.page-footer {
-    max-width: var(--max-w);
-    width: 100%;
-    margin: 0 auto;
-    padding: 24px 24px 32px;
-    border-top: 1px solid var(--border);
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-}
-.page-footer .footer-copy { font-size: 12px; color: var(--text-dim); }
-.page-footer .footer-links { display: flex; gap: 20px; font-size: 12px; }
-.page-footer .footer-links span { color: var(--text-muted); font-weight: 600; cursor: pointer; transition: var(--transition); }
-.page-footer .footer-links span:hover { color: var(--text); }
-.page-footer .footer-desc { display: none; }
-
-@media (max-width: 768px) {
-    .header-inner { padding: 0 16px; height: auto; min-height: var(--header-h); flex-wrap: wrap; padding-top: 12px; padding-bottom: 12px; }
-    .container { padding: 24px 16px 40px; }
-    .hero-sentence { font-size: 24px; }
-    .section.split-box { padding: 18px; }
-    .cta-row { flex-direction: column; align-items: stretch; }
-    .cta-row .btn, .cta-row .btn-secondary { max-width: none; }
-    .modal-actions { flex-direction: column-reverse; }
-    .modal-actions .btn-primary { width: 100%; }
-}
-@media (max-width: 480px) {
-    .btn, .btn-secondary { width: 100%; }
-}
+/* ============================================================
+   TAB BUILDER — the "Build Your Tab" multi-source experience
+   ============================================================ */
+.tab-launcher { display:flex; align-items:center; gap:14px; padding:16px; background:var(--gradient); border-radius:var(--radius); cursor:pointer; color:#fff; }
+.tab-launcher-icon { font-size:26px; }
+.tab-launcher-body { flex:1; }
+.tab-launcher-title { font-weight:800; font-size:15px; }
+.tab-launcher-sub { font-size:12px; opacity:0.85; margin-top:2px; }
+.tab-launcher-total { font-size:18px; font-weight:800; }
+.tab-hero { text-align:center; padding:20px 10px 22px; background:var(--gradient); border-radius:var(--radius); color:#fff; margin-bottom:12px; }
+.tab-hero-label { font-size:11px; opacity:0.85; text-transform:uppercase; letter-spacing:1.5px; font-weight:700; }
+.tab-hero-input { background:transparent; border:none; text-align:center; font-size:34px; font-weight:800; width:100%; color:inherit; font-family:var(--font); }
+.tab-hero-input:focus { outline:none; }
+.tab-hero-sub { font-size:12px; opacity:0.85; margin-top:4px; }
+.tab-status-line { text-align:center; font-size:12px; margin-bottom:14px; padding:8px 10px; border-radius:var(--radius); font-weight:700; }
+.tab-status-line.ok { background:rgba(26,158,92,0.10); color:#146b40; }
+.tab-status-line.warn { background:rgba(184,134,11,0.10); color:#8a6508; }
+.tab-status-line.bad { background:rgba(211,47,47,0.08); color:#a12525; }
+.tab-strategy-row { display:flex; gap:6px; margin-bottom:14px; }
+.tab-strategy-row .quick-link { flex:1; justify-content:center; }
+.tab-source-card { border:1px solid var(--border); border-radius:var(--radius); padding:14px; margin-bottom:10px; background:#fff; }
+.tab-source-empty { border:1px dashed var(--border); border-radius:var(--radius); padding:14px; margin-bottom:10px; background:var(--surface); }
+.tab-fixed-note { margin-top:8px; padding:8px; background:var(--surface); border-radius:var(--radius); font-size:12px; color:var(--text-dim); }
+.tab-estimated-note { font-size:11px; color:var(--text-dim); margin-top:4px; font-style:italic; }
+.tab-invite-teaser { display:flex; align-items:center; gap:12px; margin-top:16px; padding:14px; border:1px dashed var(--primary); border-radius:var(--radius); background:rgba(0,160,173,0.05); cursor:pointer; }
+.tab-invite-icon { font-size:24px; }
+.tab-invite-title { font-weight:700; font-size:14px; }
+.tab-invite-sub { font-size:12px; color:var(--text-muted); margin-top:2px; }
+.vm-card-note { font-size:12px; color:var(--text-muted); background:rgba(138,43,226,0.06); border-left:3px solid #8a2be2; padding:10px 12px; border-radius:6px; margin-top:10px; }
 </style>
 </head>
 <body>
+<div class="container">
+<div class="topbar">
+    <div class="logo">VOUCHMORPH<sup>TM</sup></div>
+    <div class="topbar-right">
+        <span class="greeting">Hello, <span id="userName"><?php echo htmlspecialchars($userName); ?></span></span>
+        <span class="role-badge"><?php echo htmlspecialchars(strtoupper($userRole)); ?></span>
+        <span class="agent-badge" id="agentBadge" style="display:none;">Agent</span>
+        <?php if ($isTestMode): ?><span class="test-mode-badge">Test mode</span><?php endif; ?>
+        <select class="country-selector" id="countrySelector" onchange="switchCountry(this.value)">
+            <?php foreach ($availableCountries as $country): ?>
+            <option value="<?php echo htmlspecialchars($country); ?>" <?php echo $country === $userCountry ? 'selected' : ''; ?>><?php echo htmlspecialchars($country); ?></option>
+            <?php endforeach; ?>
+        </select>
 
-<header class="site-header">
-    <div class="header-inner">
-        <div class="brand">
-            <div class="brand-text">
-                <div class="logo">VouchMorph<sup>TM</sup></div>
-                <div class="tagline">The Quiet Professional</div>
-            </div>
-            <div class="brand-divider"></div>
-        </div>
-        <nav class="main-nav" aria-label="Main">
-            <span class="nav-pill active"><span class="nav-icon">⇄</span> Move Money</span>
-            <button type="button" class="nav-link" onclick="openSwapHistory()"><span class="nav-icon">◷</span> Activity</button>
-            <button type="button" class="nav-link" onclick="openMyWalletsMenu()"><span class="nav-icon">▭</span> My Wallets</button>
-        </nav>
-        <div class="header-actions">
-            <div class="header-meta">
-                <span class="role-badge"><?php echo htmlspecialchars(strtoupper($userRole)); ?></span>
-                <span class="agent-badge" id="agentBadge" style="display:none;">Agent</span>
-                <?php if ($isTestMode): ?><span class="test-mode-badge">Test mode</span><?php endif; ?>
-                <select class="country-selector" id="countrySelector" onchange="switchCountry(this.value)">
-                    <?php foreach ($availableCountries as $country): ?>
-                    <option value="<?php echo htmlspecialchars($country); ?>" <?php echo $country === $userCountry ? 'selected' : ''; ?>><?php echo htmlspecialchars($country); ?></option>
-                    <?php endforeach; ?>
-                </select>
-                <button type="button" class="toolbox-btn" onclick="openToolbox()">
-                    <span class="material-symbols-outlined" style="font-size:18px;line-height:1;vertical-align:middle;">settings</span>
-                    Toolbox
-                    <span id="toolboxBadge" class="toolbox-badge" style="display:none;"></span>
-                </button>
-            </div>
-            <div class="user-chip">
-                <div class="user-chip-text">
-                    <span class="user-chip-name" id="userName"><?php echo htmlspecialchars($userName); ?></span>
-                    <span class="user-chip-role"><?php echo htmlspecialchars(ucfirst($userRole)); ?> &middot; <?php echo htmlspecialchars($userCountry); ?></span>
-                </div>
-                <div class="user-avatar" aria-hidden="true"><?php echo htmlspecialchars($userInitials); ?></div>
-            </div>
-            <a href="logout.php" class="logout-btn">Logout</a>
-        </div>
+        <button class="toolbox-btn" onclick="openToolbox()">
+            Toolbox
+            <span id="toolboxBadge" class="toolbox-badge" style="display:none;"></span>
+        </button>
+        <a href="logout.php" class="logout-btn">Logout</a>
     </div>
-</header>
-
-<div class="container container-tailwind">
-<div id="mainMessage" class="message"></div>
-
-<div id="moveMoneyHero">
-<section class="hero-section fade-in-up" id="heroSection">
-    <div class="hero-sentence">
-        <span class="hero-word">I want to send</span>
-        <span class="hero-amount-wrap">
-            <span class="amount-field">
-                <input type="number" id="fromAmount" placeholder="0.00" step="0.01" min="0.01">
-                <span class="currency-suffix" id="fromCurrencyLabel"></span>
-            </span>
-        </span>
-        <span class="hero-word">from my</span><br>
-        <a class="hero-jump" href="#" id="sourceLink" onclick="openSourceSelectionModal();return false;">Select Source</a>
-        <span class="hero-word"> to </span>
-        <a class="hero-jump" href="#" id="destinationLink" onclick="openDestinationSelectionModal();return false;">Select Destination</a><span class="hero-word">.</span>
-    </div>
-    <div class="hero-send-note">You'll send <strong id="amountPreview">0.00</strong></div>
-    
-    <div class="balance-card" onclick="viewWalletBalance()" onkeydown="if(event.key==='Enter'||event.key===' '){viewWalletBalance();}" role="button" tabindex="0" aria-label="View total balance">
-        <div class="balance-card-label">Total Balance across all sources</div>
-        <div class="balance-card-hint">Tap to view balances</div>
-    </div>
-</section>
 </div>
 
-<div class="card" id="fullFormCard" style="display:none;">
+<div id="mainMessage" class="message"></div>
+
+<div class="card">
     <div class="swap-columns">
     <div class="section split-box" id="fromSection">
-        <div class="section-title">
-            <span class="n">🏛</span>
-            <div class="section-heading">
-                <h2>Select a Source</h2>
-                <p>Where are we moving money from?</p>
-            </div>
-        </div>
+        <div class="section-title"><span class="n">1</span> From</div>
 
-        <div class="field-group" style="display:none;">
+        <div class="field-group">
             <label>Source Type</label>
-            <div class="source-type-buttons" id="sourceTypeButtons" style="display:none;">
+            <div class="source-type-buttons" id="sourceTypeButtons">
                 <button type="button" class="source-type-btn" data-cat="WALLET" onclick="toggleSourcePanel('WALLET')">
                     <span class="btn-label">💳 Wallet / Account <span class="count" id="walletBtnCount" style="display:none;">0</span></span>
                     <span class="chevron">▾</span>
@@ -1233,7 +416,7 @@ input[type=number] {
                 </div>
                 <div id="noSourcesPrompt" class="empty-source-box" style="display:none;">
                     <p>No linked wallet or account yet.</p>
-                    <button class="btn btn-primary btn-sm" onclick="openAddSource()">Link an Account</button>
+                    <button class="btn btn-primary btn-sm" onclick="openAddSource()">Add wallet or account</button>
                 </div>
             </div>
 
@@ -1247,33 +430,31 @@ input[type=number] {
 
         <div class="asset-fields" id="fromFields" style="display:none;"></div>
 
-        <div class="field-group" style="margin-bottom:0;">
+        <div class="field-group amount-field">
+            <label>Amount</label>
+            <input type="number" id="fromAmount" placeholder="0.00" step="0.01" min="0.01">
+            <span class="currency-suffix" id="fromCurrencyLabel"></span>
             <div class="help" id="fromLimitsHelp"></div>
             <div class="help" id="fromCurrencyInfo" style="font-size:11px;color:var(--text-dim);margin-top:2px;"></div>
-            <div class="help" id="sourceSelectedHelp" style="font-size:11px;color:var(--accent);margin-top:2px;display:none;"></div>
+            <div class="help" id="sourceSelectedHelp" style="font-size:11px;color:var(--primary-dark);margin-top:2px;display:none;"></div>
         </div>
+        <div style="font-size:13px;color:var(--text-muted);margin-top:4px;">You'll send <strong id="amountPreview">0.00</strong></div>
     </div>
     <div class="swap-divider"><span>&#8645;</span></div>
     <div class="section split-box" id="toSection">
-        <div class="section-title">
-            <span class="n">→</span>
-            <div class="section-heading">
-                <h2>Select a Destination</h2>
-                <p>Where should this money go?</p>
-            </div>
-        </div>
+        <div class="section-title"><span class="n">2</span> To</div>
         <div class="field-group">
             <label>Swap Type</label>
             <select id="swapTypeSelect" onchange="setSwapType(this.value)">
-                <option value="DEPOSIT">Deposit to Bank / Institution</option>
+                <option value="DEPOSIT">Deposit</option>
                 <option value="CASHOUT">Cashout</option>
-                <option value="IDENTITY">Send to ID Card</option>
-                <option value="MULTI_SOURCE">Combine Funds</option>
+                <option value="IDENTITY">Send to Identity</option>
+                <option value="MULTI_SOURCE">Multi-Source</option>
             </select>
         </div>
         <div class="quick-actions">
-            <span class="quick-link" onclick="quickSetSwapType('IDENTITY')">Send to identity</span>
-            <span class="quick-link" onclick="quickSetSwapType('MULTI_SOURCE')">Combine funds</span>
+            <span class="quick-link" onclick="quickSetSwapType('IDENTITY')">Swap to identity</span>
+            <span class="quick-link" onclick="quickSetSwapType('MULTI_SOURCE')">Multi-source</span>
         </div>
 
         <div id="multiDestModeRow" class="quick-actions" style="display:none;">
@@ -1321,8 +502,8 @@ input[type=number] {
                 </select>
             </div>
             <div class="field-group">
-                <label>Recipient National ID Number</label>
-                <input id="identityValue" placeholder="0000 - 0000 - 0000" oninput="state.toIdentityValue=this.value.trim(); refreshUI();">
+                <label>Identity Value</label>
+                <input id="identityValue" placeholder="Enter the identity value" oninput="state.toIdentityValue=this.value.trim(); refreshUI();">
             </div>
             <div class="field-group">
                 <label>SMS Notification (optional)</label>
@@ -1336,36 +517,38 @@ input[type=number] {
             <div class="tab-launcher" onclick="openTabBuilder()">
                 <div class="tab-launcher-icon">🎟️</div>
                 <div class="tab-launcher-body">
-                    <div class="tab-launcher-title">Combine Funds</div>
+                    <div class="tab-launcher-title">Build Your Tab</div>
                     <div class="tab-launcher-sub" id="tabLauncherSub">No sources added yet</div>
                 </div>
                 <div class="tab-launcher-total" id="multiTotal">0.00</div>
             </div>
+            <!-- kept off-screen: existing multi-source mutators still write here for back-compat -->
             <div id="multiSourceList" style="display:none;"></div>
         </div>
     </div>
     </div>
     <div class="cta-row">
-        <button class="btn btn-primary" id="reviewBtn" onclick="previewSwap()">Review Transaction &rarr;</button>
+        <button class="btn btn-primary" id="reviewBtn" onclick="previewSwap()">Review Swap &rarr;</button>
     </div>
     <div id="swapReadinessHint"></div>
 </div>
-</div>
 
-<<<footer class="page-footer">
-    <div class="footer-copy">&copy; 2026 VouchMorph Financial. All rights reserved.</div>
+<div class="page-footer">
+    <p>VOUCHMORPH connects wallets, bank accounts, cards and vouchers across participating institutions, so a swap started in one place can be claimed in another — by an account, a phone number, or a national ID — in minutes.</p>
     <div class="footer-links">
         <span onclick="openHelpModal()">Help</span>
-        <span onclick="openTermsModal()">Terms &amp; Conditions</span>
-        <span onclick="openMyWalletsMenu()">My Wallets</span>
+        <span onclick="openTermsModal()">Terms &amp; conditions</span>
+        <span onclick="openMySourcesLegacy()">My sources</span>
     </div>
-</footer>
+    <div class="footer-mark">VOUCHMORPH<sup>TM</sup> &middot; <?php echo htmlspecialchars($userCountry); ?></div>
+</div>
+</div>
 
 <div class="modal-overlay" id="modal" onclick="if(event.target===this)closeModal()">
-    <div class="modal modal-glass" id="modalContent">
+    <div class="modal" id="modalContent">
         <div class="modal-header">
             <h2 id="modalTitle">Swap Preview</h2>
-            <button class="modal-close" onclick="closeModal()" aria-label="Close">&times;</button>
+            <button class="modal-close" onclick="closeModal()">&times;</button>
         </div>
         <div id="modalBody"></div>
     </div>
@@ -1432,11 +615,7 @@ let state = {
     tabTotalAmount: 0,
     tabAllocationMode: 'even', // 'even' | 'custom' — only meaningful while EQUAL/USER_SPECIFIED
     contributionStrategy: 'SMART', // 'EQUAL' | 'RATIO' | 'SMART' | 'USER_SPECIFIED' — real backend enum values
-    // NEW — UI selection state
-    selectedSourceType: null,
-    selectedDestinationType: null,
 };
-let ledgerState = { allSwaps: [], filters: { status: 'all', query: '' } };
 let savedIdentities = [];
 let userSources = [];
 let agentSearchData = null;
@@ -1840,51 +1019,9 @@ async function fetchAllBalances() {
 }
 
 function openMySourcesFromHeader() {
-    openMyWalletsMenu();
-}
-
-async function openMyWalletsMenu() {
-    if (userSources.length === 0) {
-        openModal('My Wallets', '<div style="text-align:center;padding:24px;"><div class="spinner"></div> Loading linked wallets...</div>');
-        await loadUserSources();
-    }
-    const walletSources = userSources.filter(source => ['ACCOUNT', 'WALLET', 'CARD'].includes(source.asset_type));
-    if (walletSources.length === 0) {
-        openModal('My Wallets', `
-            <div style="text-align:center;padding:24px;">
-                <div style="font-size:26px;line-height:1;margin-bottom:14px;">🧾</div>
-                <div style="font-weight:700;font-size:16px;margin-bottom:6px;">No linked wallets yet</div>
-                <div style="font-size:13px;color:var(--text-muted);margin-bottom:20px;">Link an account, wallet or card to start transacting from your dashboard.</div>
-                <button class="btn btn-primary" onclick="openAddSource()">Add a Wallet or Account</button>
-            </div>`);
-        return;
-    }
-
-    const rows = walletSources.map(source => {
-        const statusLabel = source.status === 'active' ? 'Active' : source.status === 'pending_confirmation' ? 'Pending' : 'Inactive';
-        const assetLabel = ASSETS[source.asset_type]?.label || source.asset_type;
-        const name = escapeHtml(PARTICIPANTS[source.institution]?.name || source.institution);
-        const details = [assetLabel, escapeHtml(source.identifier || source.source_identifier), source.account_name ? escapeHtml(source.account_name) : null].filter(Boolean).join(' · ');
-        return `
-            <div class="source-card" style="padding:16px;margin-bottom:10px;cursor:pointer;" onclick="useSourceForSwap('${source.id}')">
-                <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
-                    <div>
-                        <div style="font-weight:700;font-size:14px;color:var(--text);">${name}</div>
-                        <div style="font-size:12px;color:var(--text-dim);margin-top:4px;">${details}</div>
-                    </div>
-                    <span class="source-status ${source.status === 'active' ? 'active' : source.status === 'pending_confirmation' ? 'pending' : 'inactive'}" style="font-size:11px;padding:4px 10px;">${statusLabel}</span>
-                </div>
-                <div style="margin-top:10px;font-size:12px;color:var(--text-muted);">Tap to select this wallet or account for your next swap.</div>
-            </div>`;
-    }).join('');
-
-    openModal('My Wallets', `
-        <div style="margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
-            <div><div style="font-size:18px;font-weight:800;">My Wallets</div><div style="font-size:12px;color:var(--text-muted);">Select an active wallet, account, or card linked to your profile.</div></div>
-            <button class="btn btn-secondary btn-sm" onclick="openAddSource()">+ Add New</button>
-        </div>
-        <div style="max-height:60vh;overflow-y:auto;">${rows}</div>
-    `);
+    closeModal();
+    document.getElementById('sourceTypeButtons')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if (sourcePanelOpenCat !== 'WALLET') toggleSourcePanel('WALLET');
 }
 
 function toggleSourcePanel(cat) {
@@ -2154,9 +1291,6 @@ function setSwapType(type) {
     document.getElementById('toAssetSection').style.display = (isDeposit || isMulti) && state.toAsset && !(isMulti && state.multiDestMode === 'identity') ? 'block' : 'none';
     document.getElementById('toFields').style.display = (isDeposit || isMulti) && state.toAsset && !(isMulti && state.multiDestMode === 'identity') ? 'block' : 'none';
     document.getElementById('fromSection').style.display = isMulti ? 'none' : 'block';
-    // Don't hide the hero section - keep Mad Libs sentence visible
-    // const moveHero = document.getElementById('moveMoneyHero');
-    // if (moveHero) moveHero.style.display = isMulti ? 'none' : 'block';
     document.querySelector('.swap-divider').style.display = isMulti ? 'none' : 'flex';
     if (isIdentity) updateIdentityHelp();
     updateCurrencyDisplay();
@@ -2686,34 +1820,21 @@ async function previewSwap() {
 function showPreviewModal(previewData) {
     const data = previewData.preview || {};
     const swapType = state.swapPayload.swap_type;
-    const netAmount = data.net_amount_destination_currency || data.net_amount;
-    const destCurrency = data.destination_currency || data.source_currency;
     const bodyHtml = `
-        <div class="review-hero">
-            <div class="review-hero-label">Settlement Amount</div>
-            <div class="review-hero-amount">${formatMoney(netAmount, destCurrency)}</div>
-            <div class="review-hero-note">Real-time quote active</div>
-        </div>
         <div class="preview-box">
-            <div class="preview-row"><span>Protocol Type</span><span class="value">${swapType.replace(/_/g, ' ')}</span></div>
-            <div class="preview-row"><span>Source Entity</span><span class="value">${escapeHtml(data.source_institution || '—')}</span></div>
-            <div class="preview-row"><span>Destination Entity</span><span class="value">${escapeHtml(data.destination_institution || '—')}</span></div>
-            <div class="preview-row"><span>Principal Amount</span><span class="value">${formatMoney(data.amount_requested, data.source_currency)}</span></div>
-            <div class="preview-row"><span>Transaction Fee</span><span class="value">${formatMoney(data.total_fee, data.source_currency)}</span></div>
+            <div class="preview-row"><span>Swap Type</span><span class="value">${swapType}</span></div>
+            <div class="preview-row"><span>Source</span><span class="value">${data.source_institution || '—'}</span></div>
+            <div class="preview-row"><span>Destination</span><span class="value">${data.destination_institution || '—'}</span></div>
+            <div class="preview-row"><span>Amount Requested</span><span class="value">${formatMoney(data.amount_requested, data.source_currency)}</span></div>
+            <div class="preview-row" style="border-top:2px solid var(--border);padding-top:8px;"><span style="font-weight:700;">Total Fee</span><span class="value" style="color:var(--danger);">${formatMoney(data.total_fee, data.source_currency)}</span></div>
+            <div class="preview-row" style="border-top:2px solid var(--primary);padding-top:8px;"><span style="font-weight:700;font-size:16px;">Net Amount</span><span class="value highlight">${formatMoney(data.net_amount_destination_currency || data.net_amount, data.destination_currency || data.source_currency)}</span></div>
         </div>
-        <div class="preview-security">
-            <div class="preview-security-icon">🔒</div>
-            <div class="preview-security-text">
-                <strong>Encrypted Settlement Guaranteed</strong>
-                <p>This transaction is protected by VouchMorph's audit-grade multi-layer encryption. All funds are cleared through institutional protocols.</p>
-            </div>
-        </div>
-        <div class="modal-actions">
-            <button class="btn btn-secondary" onclick="closeModal()">Discard Request</button>
-            <button class="btn btn-primary" onclick="confirmSwap()">✓ Confirm &amp; Execute Transfer</button>
+        <div class="cta-row">
+            <button class="btn btn-secondary" onclick="closeModal()" style="flex:1;">Cancel</button>
+            <button class="btn btn-primary" onclick="confirmSwap()" style="flex:1;">Confirm &amp; execute</button>
         </div>`;
     state.lastPreview = previewData;
-    openModal('Review Transaction', bodyHtml);
+    openModal('Swap Preview', bodyHtml);
 }
 async function confirmSwap() {
     closeModal();
@@ -3898,271 +3019,45 @@ async function submitAgentFinalizeAggregated(identityType, identityValue, totalA
 // ============================================================
 
 async function openSwapHistory() {
-    openModal('Transaction Ledger', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading swaps...</div>');
+    openModal('Swap History', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading swaps...</div>');
     if (!CONFIG.USER_ID) {
         document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:30px;color:var(--danger);"><div style="font-weight:700;">Could not identify your account</div><div style="font-size:13px;color:var(--text-muted);margin-top:8px;">Your session doesn't have a user ID attached. Try logging out and back in.</div></div>`;
         return;
     }
     const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/history.php', { user_id: CONFIG.USER_ID, limit: 50 });
-    if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">Failed to load transaction ledger: ${escapeHtml(result.error)}</div>`; return; }
-    const swaps = result.body.data || result.body.swaps || [];
-    ledgerState.allSwaps = swaps;
-    ledgerState.filters = { status: 'all', query: '' };
+    if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">Failed to load swap history: ${escapeHtml(result.error)}</div>`; return; }
     renderSwapHistory(result.body);
 }
 
-function formatLedgerDate(value) {
-    const parsed = new Date(value);
-    if (Number.isNaN(parsed.getTime())) return { primary: value || 'Unknown', secondary: '' };
-    const now = new Date();
-    const options = { month: 'short', day: 'numeric' };
-    if (parsed.getFullYear() !== now.getFullYear()) options.year = 'numeric';
-    const primary = parsed.toDateString() === now.toDateString() ? 'Today' : parsed.toLocaleDateString(undefined, options);
-    const secondary = parsed.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-    return { primary, secondary };
-}
-
-function transactionDestinationSummary(swap) {
-    const destination = swap.destination_institution || swap.destination_name || swap.destination || swap.to || swap.identity_value || 'Unknown destination';
-    const subtype = swap.destination_asset_type || swap.destination_identifier || swap.destination_type || swap.swap_type || '';
-    return { title: destination, subtitle: subtype };
-}
-
-function transactionIconForSwap(swap) {
-    const type = String(swap.destination_asset_type || swap.asset_type || swap.swap_type || '').toUpperCase();
-    if (type.includes('WALLET') || type.includes('ACCOUNT')) return '🏦';
-    if (type.includes('CARD')) return '💳';
-    if (type.includes('VOUCHER') || type.includes('CASHOUT')) return '🎟️';
-    if (type.includes('IDENTITY')) return '🪪';
-    return '↔️';
-}
-
 function renderSwapHistory(data) {
-    ledgerState.allSwaps = data.data || data.swaps || ledgerState.allSwaps || [];
-    const allSwaps = ledgerState.allSwaps;
-    const totalCount = allSwaps.length;
-    const filteredSwaps = allSwaps.filter(swap => transactionMatchesFilter(swap, ledgerState.filters));
-    const recentVolume = allSwaps.reduce((sum, swap) => {
-        const amount = parseFloat(swap.amount || swap.total_amount || 0);
-        const created = new Date(swap.created_at || swap.date || swap.timestamp || swap.inserted_at || '');
-        const daysAgo = (Date.now() - created.getTime()) / (1000 * 60 * 60 * 24);
-        return (!Number.isNaN(amount) && daysAgo >= 0 && daysAgo <= 30) ? sum + Math.abs(amount) : sum;
-    }, 0);
-    const recentVolumeText = recentVolume ? formatMoney(recentVolume, allSwaps[0]?.currency || allSwaps[0]?.destination_currency || allSwaps[0]?.source_currency || '') : '—';
-
-    if (allSwaps.length === 0) {
-        document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:30px;color:var(--text-muted);"><div style="font-weight:700;">No transactions found</div></div>`;
-        return;
+    const swaps = data.data || data.swaps || [];
+    if (swaps.length === 0) { 
+        document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:30px;color:var(--text-muted);"><div style="font-weight:700;">No swaps found</div></div>`; 
+        return; 
     }
-
-    if (filteredSwaps.length === 0) {
-        document.getElementById('modalBody').innerHTML = `
-            <div class="transaction-ledger-toolbar">
-                <div>
-                    <div class="toolbar-title">Transaction Ledger</div>
-                    <div class="toolbar-subtitle">Review your historical and pending fund movements.</div>
-                </div>
-                <div class="toolbar-actions">
-                    <button class="btn btn-secondary btn-sm" onclick="filterLedger()">Filter</button>
-                    <button class="btn btn-secondary btn-sm" onclick="exportLedger()">Export</button>
-                </div>
-            </div>
-            <div style="text-align:center;padding:40px;color:var(--text-muted);">
-                <div style="font-weight:700;font-size:16px;">No transactions match this filter</div>
-                <div style="margin-top:8px;">Try clearing filters or choosing another status.</div>
-            </div>`;
-        return;
-    }
-    let historyHtml = `
-        <div class="transaction-ledger-toolbar">
-            <div>
-                <div class="toolbar-title">Transaction Ledger</div>
-                <div class="toolbar-subtitle">Review your historical and pending fund movements.</div>
-            </div>
-            <div class="toolbar-actions">
-                <button class="btn btn-secondary btn-sm" onclick="filterLedger()">Filter</button>
-                <button class="btn btn-secondary btn-sm" onclick="exportLedger()">Export</button>
-            </div>
-        </div>
-        <div style="margin-bottom:10px;display:grid;grid-template-columns:1.6fr 3fr 1.8fr auto;gap:12px;padding:12px 18px;background:var(--surface-muted);border:1px solid var(--border);border-radius:var(--radius-sm);font-size:12px;color:var(--text-dim);font-weight:700;">
-            <div>DATE</div>
-            <div>DESTINATION</div>
-            <div style="text-align:right;">AMOUNT</div>
-            <div style="text-align:right;">STATUS</div>
-        </div>
-        <div style="max-height:60vh;overflow-y:auto;">`;
-
-    filteredSwaps.forEach((swap) => {
-        const status = String(swap.status || swap.state || '').toLowerCase();
-        const badgeClass = status === 'completed' || status === 'success' ? 'completed' : status === 'pending' ? 'pending' : 'failed';
-        const badgeLabel = swap.status || swap.state || 'Unknown';
-        const dateInfo = formatLedgerDate(swap.created_at || swap.date || swap.timestamp || swap.inserted_at || '');
-        const destination = transactionDestinationSummary(swap);
-        const icon = transactionIconForSwap(swap);
-        const amountValue = parseFloat(swap.amount || swap.total_amount || 0);
-        const amountText = `${amountValue >= 0 ? '+' : '-'}${formatMoney(Math.abs(amountValue), swap.currency || swap.destination_currency || swap.source_currency || '')}`;
-
-        historyHtml += `
-            <div class="transaction-row" onclick="viewSwapDetail('${escapeHtml(swap.reference || swap.swap_reference || 'N/A')}')">
-                <div class="txn-date"><span class="primary">${escapeHtml(dateInfo.primary)}</span><span class="secondary">${escapeHtml(dateInfo.secondary)}</span></div>
-                <div class="txn-destination">
-                    <span class="txn-destination-icon">${icon}</span>
-                    <div class="txn-destination-info">
-                        <div class="txn-destination-title">${escapeHtml(destination.title)}</div>
-                        <div class="txn-destination-sub">${escapeHtml(destination.subtitle)}</div>
-                    </div>
-                </div>
-                <div class="txn-amount">${escapeHtml(amountText)}</div>
-                <div class="txn-status"><span class="txn-badge ${badgeClass}">${escapeHtml(badgeLabel)}</span></div>
-            </div>`;
+    let historyHtml = `<div style="max-height:60vh;overflow-y:auto;"><div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Showing ${swaps.length} swap(s)</div>`;
+    swaps.forEach((swap) => {
+        const statusColor = swap.status === 'completed' || swap.status === 'success' ? 'var(--success)' : swap.status === 'pending' ? 'var(--warning)' : 'var(--danger)';
+        const code = swap.voucher_number || null;
+        const pin = swap.atm_pin || null;
+        const claimPin = swap.claim_pin || null; // NEW
+        const hasCode = !!(code || pin || claimPin);
+        const codeInlineHtml = hasCode ? `
+            <div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);display:flex;gap:16px;flex-wrap:wrap;">
+                ${code ? `<div><div style="font-size:10px;color:var(--text-dim);">Code</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--primary-dark);">${escapeHtml(code)}</div></div>` : ''}
+                ${pin ? `<div><div style="font-size:10px;color:var(--text-dim);">PIN</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--primary-dark);">${escapeHtml(pin)}</div></div>` : ''}
+                ${claimPin ? `<div><div style="font-size:10px;color:var(--text-dim);">Claim PIN</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--primary-dark);">${escapeHtml(claimPin)}</div></div>` : ''}
+                ${swap.voucher_expiry ? `<div><div style="font-size:10px;color:var(--text-dim);">Expires</div><div style="font-size:12px;color:var(--text-muted);">${new Date(swap.voucher_expiry).toLocaleString()}</div></div>` : ''}
+            </div>` : '';
+        historyHtml += `<div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px;background:#fff;cursor:pointer;" onclick="viewSwapDetail('${swap.reference || swap.swap_reference || 'N/A'}')">
+            <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+                <div><div style="font-weight:700;">${swap.swap_type || 'SWAP'} <span style="font-size:11px;color:var(--text-muted);">${swap.reference || swap.swap_reference || ''}</span></div><div style="font-size:12px;color:var(--text-muted);">${swap.source_institution || 'Unknown'} → ${swap.destination_institution || 'Unknown'}</div></div>
+                <div style="text-align:right;"><div style="font-weight:700;color:var(--primary-dark);">${formatMoney(swap.amount, swap.currency)}</div><div style="font-size:11px;color:${statusColor};">${swap.status || 'unknown'}</div></div>
+            </div>${codeInlineHtml}</div>`;
     });
-
-    historyHtml += `</div>
-        <div class="ledger-summary-grid">
-            <div class="ledger-summary-card">
-                <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
-                    <div>
-                        <h3>Monthly Volume</h3>
-                        <div class="summary-note">Total moved in the last 30 days</div>
-                    </div>
-                    <div class="summary-value">${escapeHtml(recentVolumeText)}</div>
-                </div>
-            </div>
-            <div class="ledger-summary-card secondary">
-                <div>
-                    <h3>Security Audit</h3>
-                    <p>All transactions listed are cryptographically verified and signed by your primary identity key.</p>
-                </div>
-            </div>
-        </div>
-        <div class="ledger-footer">Showing ${filteredSwaps.length} of ${totalCount} transaction(s)</div>`;
+    historyHtml += `</div>`;
     document.getElementById('modalBody').innerHTML = historyHtml;
 }
-
-function transactionMatchesFilter(swap, filters) {
-    const statusFilter = filters?.status || 'all';
-    const queryFilter = String(filters?.query || '').trim().toLowerCase();
-    const status = String(swap.status || swap.state || '').toLowerCase();
-    if (statusFilter !== 'all') {
-        const matching = statusFilter === 'completed'
-            ? ['completed', 'success'].includes(status)
-            : statusFilter === 'pending'
-                ? status === 'pending'
-                : ['failed', 'cancelled', 'rejected', 'error'].some(tag => status.includes(tag));
-        if (!matching) return false;
-    }
-    if (queryFilter.length > 0) {
-        const haystack = [
-            swap.reference,
-            swap.swap_reference,
-            swap.source_institution,
-            swap.destination_institution,
-            swap.destination_name,
-            swap.destination_asset_type,
-            swap.swap_type,
-            swap.amount,
-            swap.currency,
-            swap.status
-        ].filter(Boolean).join(' ').toLowerCase();
-        if (!haystack.includes(queryFilter)) return false;
-    }
-    return true;
-}
-
-function filterLedger() {
-    const selectedStatus = ledgerState.filters.status || 'all';
-    const currentQuery = ledgerState.filters.query || '';
-    const body = `
-        <div style="margin-bottom:16px;">
-            <div style="font-size:14px;font-weight:700;margin-bottom:4px;">Filter Transaction Ledger</div>
-            <div style="font-size:12px;color:var(--text-muted);">Filter transactions by status or search text.</div>
-        </div>
-        <div class="field-group">
-            <label>Status</label>
-            <select id="ledgerFilterStatus">
-                <option value="all"${selectedStatus === 'all' ? ' selected' : ''}>All statuses</option>
-                <option value="completed"${selectedStatus === 'completed' ? ' selected' : ''}>Completed</option>
-                <option value="pending"${selectedStatus === 'pending' ? ' selected' : ''}>Pending</option>
-                <option value="failed"${selectedStatus === 'failed' ? ' selected' : ''}>Failed / Other</option>
-            </select>
-        </div>
-        <div class="field-group">
-            <label>Search</label>
-            <input id="ledgerFilterQuery" placeholder="Reference, destination, amount..." value="${escapeHtml(currentQuery)}">
-        </div>
-        <div class="cta-row" style="margin-top:16px;gap:8px;flex-wrap:wrap;">
-            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-            <button class="btn btn-secondary" onclick="resetLedgerFilters()">Clear</button>
-            <button class="btn btn-primary" onclick="applyLedgerFilters()">Apply</button>
-        </div>`;
-    openModal('Filter Ledger', body);
-}
-
-function applyLedgerFilters() {
-    ledgerState.filters.status = document.getElementById('ledgerFilterStatus').value;
-    ledgerState.filters.query = document.getElementById('ledgerFilterQuery').value.trim();
-    closeModal();
-    renderSwapHistory({ data: ledgerState.allSwaps });
-    showMessage('Transaction ledger updated.', 'success');
-}
-
-function resetLedgerFilters() {
-    ledgerState.filters.status = 'all';
-    ledgerState.filters.query = '';
-    closeModal();
-    renderSwapHistory({ data: ledgerState.allSwaps });
-    showMessage('Filters cleared.', 'success');
-}
-
-function escapeCsv(value) {
-    if (value == null) return '""';
-    const text = String(value).replace(/"/g, '""');
-    return `"${text}"`;
-}
-
-function exportLedger() {
-    if (!ledgerState.allSwaps.length) {
-        showMessage('No transactions loaded to export.', 'warning');
-        return;
-    }
-    const rows = ledgerState.allSwaps.filter(swap => transactionMatchesFilter(swap, ledgerState.filters));
-    if (rows.length === 0) {
-        showMessage('No transactions match the current filters.', 'warning');
-        return;
-    }
-    const csvRows = [
-        ['Date', 'Reference', 'Destination', 'Type', 'Amount', 'Currency', 'Status']
-    ];
-    rows.forEach(swap => {
-        const dateInfo = formatLedgerDate(swap.created_at || swap.date || swap.timestamp || swap.inserted_at || '');
-        const dateString = `${dateInfo.primary}${dateInfo.secondary ? ' ' + dateInfo.secondary : ''}`;
-        const destination = transactionDestinationSummary(swap);
-        const amountValue = parseFloat(swap.amount || swap.total_amount || 0);
-        const amountText = `${amountValue >= 0 ? '+' : '-'}${formatMoney(Math.abs(amountValue), swap.currency || swap.destination_currency || swap.source_currency || '')}`;
-        csvRows.push([
-            dateString,
-            swap.reference || swap.swap_reference || '',
-            destination.title,
-            swap.swap_type || swap.destination_asset_type || '',
-            amountText,
-            swap.currency || swap.destination_currency || swap.source_currency || '',
-            swap.status || swap.state || ''
-        ]);
-    });
-    const csvText = csvRows.map(row => row.map(escapeCsv).join(',')).join('\r\n');
-    const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const filename = `transaction_ledger_${new Date().toISOString().slice(0,10)}.csv`;
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', filename);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-    showMessage('Current ledger view exported.', 'success');
-}
-
 async function viewSwapDetail(reference) {
     openModal('Swap Details', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading details...</div>');
     const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/details.php', { reference: reference });
@@ -4320,103 +3215,9 @@ async function checkPendingClaims() {
 }
 
 function openModal(title, bodyHtml) {
-    const modalTitle = document.getElementById('modalTitle');
-    const modalBody = document.getElementById('modalBody');
-    const modal = document.getElementById('modal');
-    
-    if (modalTitle) modalTitle.textContent = title;
-    if (modalBody) modalBody.innerHTML = bodyHtml;
-    if (modal) modal.classList.add('active');
-}
-
-function openSourceSelectionModal() {
-    const body = `
-        <div style="margin-bottom:20px;">
-            <div style="font-size:18px;font-weight:800;margin-bottom:6px;">Select a Source</div>
-            <div style="font-size:13px;color:var(--text-muted);">Choose the account, wallet or voucher you want to fund your transaction from.</div>
-        </div>
-        <div class="source-type-buttons">
-            <button type="button" class="source-type-btn" onclick="selectSourceType('WALLET')">
-                <span class="btn-label">💳 Wallet / Account</span>
-                <span class="chevron">▾</span>
-            </button>
-            <button type="button" class="source-type-btn" onclick="selectSourceType('CARD')">
-                <span class="btn-label">🏦 Card</span>
-                <span class="chevron">▾</span>
-            </button>
-            <button type="button" class="source-type-btn" onclick="selectSourceType('VOUCHER')">
-                <span class="btn-label">🎟️ Voucher</span>
-                <span class="chevron">▾</span>
-            </button>
-        </div>
-    `;
-    openModal('Select Source', body);
-}
-
-function openDestinationSelectionModal() {
-    const body = `
-        <div style="margin-bottom:20px;">
-            <div style="font-size:18px;font-weight:800;margin-bottom:6px;">Select a Destination</div>
-            <div style="font-size:13px;color:var(--text-muted);">Choose where your funds should settle, then complete the transfer details.</div>
-        </div>
-        <div class="source-type-buttons">
-            <button type="button" class="source-type-btn" onclick="selectDestinationType('DEPOSIT')">
-                <span class="btn-label">🏦 Deposit to Bank / Institution</span>
-                <span class="chevron">▾</span>
-            </button>
-            <button type="button" class="source-type-btn" onclick="selectDestinationType('CASHOUT')">
-                <span class="btn-label">💵 Cashout</span>
-                <span class="chevron">▾</span>
-            </button>
-            <button type="button" class="source-type-btn" onclick="selectDestinationType('IDENTITY')">
-                <span class="btn-label">🪪 Send to ID Card</span>
-                <span class="chevron">▾</span>
-            </button>
-            <button type="button" class="source-type-btn" onclick="selectDestinationType('MULTI_SOURCE')">
-                <span class="btn-label">🎟️ Combine Funds</span>
-                <span class="chevron">▾</span>
-            </button>
-        </div>
-    `;
-    openModal('Select Destination', body);
-}
-
-function selectSourceType(type) {
-    closeModal();
-    const typeLabels = {
-        'WALLET': '💳 Wallet / Account',
-        'CARD': '🏦 Card',
-        'VOUCHER': '🎟️ Voucher'
-    };
-    document.getElementById('sourceLink').textContent = typeLabels[type] || type;
-    document.getElementById('sourceLink').style.color = 'var(--primary)';
-    document.getElementById('sourceLink').style.borderBottomColor = 'var(--primary)';
-    // Store the selection and update state
-    state.selectedSourceType = type;
-    state.fromCategory = type;
-    // Show the full form card for entering details
-    document.getElementById('fullFormCard').style.display = 'block';
-    toggleSourcePanel(type);
-}
-
-function selectDestinationType(type) {
-    closeModal();
-    const typeLabels = {
-        'DEPOSIT': '🏦 Deposit to Bank',
-        'CASHOUT': '💵 Cashout',
-        'IDENTITY': '🪪 Send to ID Card',
-        'MULTI_SOURCE': '🎟️ Combine Funds'
-    };
-    document.getElementById('destinationLink').textContent = typeLabels[type] || type;
-    document.getElementById('destinationLink').style.color = 'var(--primary)';
-    document.getElementById('destinationLink').style.borderBottomColor = 'var(--primary)';
-    // Store the selection and update state
-    state.selectedDestinationType = type;
-    state.swapType = type;
-    // Show the full form card for entering details
-    document.getElementById('fullFormCard').style.display = 'block';
-    // Update the destination section but don't scroll
-    setSwapType(type);
+    document.getElementById('modalTitle').textContent = title;
+    document.getElementById('modalBody').innerHTML = bodyHtml;
+    document.getElementById('modal').classList.add('active');
 }
 
 function closeModal() { document.getElementById('modal').classList.remove('active'); }
