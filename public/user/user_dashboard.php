@@ -978,6 +978,26 @@ input[type=number] {
 .empty-source-box p { font-size: 13px; color: var(--text-dim); margin-bottom: 14px; }
 
 .source-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 14px; margin-bottom: 10px; }
+.transaction-ledger-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
+.transaction-ledger-toolbar .toolbar-title { font-size: 18px; font-weight: 800; }
+.transaction-ledger-toolbar .toolbar-subtitle { font-size: 13px; color: var(--text-dim); margin-top: 4px; }
+.transaction-ledger-toolbar .toolbar-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.transaction-row { display: grid; grid-template-columns: 1.6fr 3fr 1.8fr auto; gap: 12px; align-items: center; padding: 16px 18px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 10px; }
+.transaction-row .txn-date { font-size: 12px; color: var(--text-dim); line-height: 1.4; }
+.transaction-row .txn-date .primary { display: block; font-weight: 700; color: var(--text); }
+.transaction-row .txn-date .secondary { display: block; margin-top: 4px; }
+.transaction-row .txn-destination { display: flex; gap: 12px; align-items: center; }
+.transaction-row .txn-destination-icon { width: 38px; height: 38px; border-radius: 14px; background: rgba(90,138,122,0.12); display: flex; align-items: center; justify-content: center; font-size: 18px; color: var(--primary); flex-shrink: 0; }
+.transaction-row .txn-destination-info { min-width: 0; }
+.transaction-row .txn-destination-title { font-weight: 700; font-size: 14px; color: var(--text); }
+.transaction-row .txn-destination-sub { font-size: 12px; color: var(--text-dim); margin-top: 3px; }
+.transaction-row .txn-amount { text-align: right; font-weight: 700; font-size: 15px; }
+.transaction-row .txn-status { text-align: right; }
+.txn-badge { display: inline-flex; align-items: center; justify-content: center; padding: 6px 12px; border-radius: 999px; font-size: 11px; font-weight: 700; text-transform: capitalize; }
+.txn-badge.pending { background: rgba(184,134,11,0.12); color: #8A6508; }
+.txn-badge.completed { background: rgba(34,197,94,0.12); color: #166534; }
+.txn-badge.failed { background: rgba(198,40,40,0.12); color: #b91c1c; }
+.ledger-footer { font-size: 12px; color: var(--text-dim); margin-top: 10px; }
 .source-card .source-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
 .source-card .source-institution { font-weight: 700; font-size: 15px; }
 .source-card .source-details { font-size: 13px; color: var(--text-muted); }
@@ -1106,7 +1126,7 @@ input[type=number] {
         <nav class="main-nav" aria-label="Main">
             <span class="nav-pill active"><span class="nav-icon">⇄</span> Move Money</span>
             <button type="button" class="nav-link" onclick="openSwapHistory()"><span class="nav-icon">◷</span> Activity</button>
-            <button type="button" class="nav-link" onclick="openMySourcesFromHeader()"><span class="nav-icon">▭</span> My Wallets</button>
+            <button type="button" class="nav-link" onclick="openMyWalletsMenu()"><span class="nav-icon">▭</span> My Wallets</button>
         </nav>
         <div class="header-actions">
             <div class="header-meta">
@@ -1119,6 +1139,7 @@ input[type=number] {
                     <?php endforeach; ?>
                 </select>
                 <button type="button" class="toolbox-btn" onclick="openToolbox()">
+                    <span class="material-symbols-outlined" style="font-size:18px;line-height:1;vertical-align:middle;">settings</span>
                     Toolbox
                     <span id="toolboxBadge" class="toolbox-badge" style="display:none;"></span>
                 </button>
@@ -1326,7 +1347,7 @@ input[type=number] {
     <div class="footer-links">
         <span onclick="openHelpModal()">Help</span>
         <span onclick="openTermsModal()">Terms &amp; Conditions</span>
-        <span onclick="openMySourcesLegacy()">My Sources</span>
+        <span onclick="openMyWalletsMenu()">My Wallets</span>
     </div>
 </footer>
 
@@ -1808,9 +1829,47 @@ async function fetchAllBalances() {
 }
 
 function openMySourcesFromHeader() {
-    closeModal();
-    document.getElementById('sourceTypeButtons')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    if (sourcePanelOpenCat !== 'WALLET') toggleSourcePanel('WALLET');
+    openMyWalletsMenu();
+}
+
+function openMyWalletsMenu() {
+    const walletSources = userSources.filter(source => ['ACCOUNT', 'WALLET', 'CARD'].includes(source.asset_type));
+    if (walletSources.length === 0) {
+        openModal('My Wallets', `
+            <div style="text-align:center;padding:24px;">
+                <div style="font-size:26px;line-height:1;margin-bottom:14px;">🧾</div>
+                <div style="font-weight:700;font-size:16px;margin-bottom:6px;">No linked wallets yet</div>
+                <div style="font-size:13px;color:var(--text-muted);margin-bottom:20px;">Link an account, wallet or card to start transacting from your dashboard.</div>
+                <button class="btn btn-primary" onclick="openAddSource()">Add a Wallet or Account</button>
+            </div>`);
+        return;
+    }
+
+    const rows = walletSources.map(source => {
+        const statusLabel = source.status === 'active' ? 'Active' : source.status === 'pending_confirmation' ? 'Pending' : 'Inactive';
+        const assetLabel = ASSETS[source.asset_type]?.label || source.asset_type;
+        const name = escapeHtml(PARTICIPANTS[source.institution]?.name || source.institution);
+        const details = [assetLabel, escapeHtml(source.identifier || source.source_identifier), source.account_name ? escapeHtml(source.account_name) : null].filter(Boolean).join(' · ');
+        return `
+            <div class="source-card" style="padding:16px;margin-bottom:10px;cursor:pointer;" onclick="useSourceForSwap('${source.id}')">
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
+                    <div>
+                        <div style="font-weight:700;font-size:14px;color:var(--text);">${name}</div>
+                        <div style="font-size:12px;color:var(--text-dim);margin-top:4px;">${details}</div>
+                    </div>
+                    <span class="source-status ${source.status === 'active' ? 'active' : source.status === 'pending_confirmation' ? 'pending' : 'inactive'}" style="font-size:11px;padding:4px 10px;">${statusLabel}</span>
+                </div>
+                <div style="margin-top:10px;font-size:12px;color:var(--text-muted);">Tap to select this wallet or account for your next swap.</div>
+            </div>`;
+    }).join('');
+
+    openModal('My Wallets', `
+        <div style="margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+            <div><div style="font-size:18px;font-weight:800;">My Wallets</div><div style="font-size:12px;color:var(--text-muted);">Select an active wallet, account, or card linked to your profile.</div></div>
+            <button class="btn btn-secondary btn-sm" onclick="openAddSource()">+ Add New</button>
+        </div>
+        <div style="max-height:60vh;overflow-y:auto;">${rows}</div>
+    `);
 }
 
 function toggleSourcePanel(cat) {
@@ -3824,44 +3883,102 @@ async function submitAgentFinalizeAggregated(identityType, identityValue, totalA
 // ============================================================
 
 async function openSwapHistory() {
-    openModal('Swap History', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading swaps...</div>');
+    openModal('Transaction Ledger', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading swaps...</div>');
     if (!CONFIG.USER_ID) {
         document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:30px;color:var(--danger);"><div style="font-weight:700;">Could not identify your account</div><div style="font-size:13px;color:var(--text-muted);margin-top:8px;">Your session doesn't have a user ID attached. Try logging out and back in.</div></div>`;
         return;
     }
     const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/history.php', { user_id: CONFIG.USER_ID, limit: 50 });
-    if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">Failed to load swap history: ${escapeHtml(result.error)}</div>`; return; }
+    if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">Failed to load transaction ledger: ${escapeHtml(result.error)}</div>`; return; }
     renderSwapHistory(result.body);
+}
+
+function formatLedgerDate(value) {
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return { primary: value || 'Unknown', secondary: '' };
+    const now = new Date();
+    const options = { month: 'short', day: 'numeric' };
+    if (parsed.getFullYear() !== now.getFullYear()) options.year = 'numeric';
+    const primary = parsed.toDateString() === now.toDateString() ? 'Today' : parsed.toLocaleDateString(undefined, options);
+    const secondary = parsed.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    return { primary, secondary };
+}
+
+function transactionDestinationSummary(swap) {
+    const destination = swap.destination_institution || swap.destination_name || swap.destination || swap.to || swap.identity_value || 'Unknown destination';
+    const subtype = swap.destination_asset_type || swap.destination_identifier || swap.destination_type || swap.swap_type || '';
+    return { title: destination, subtitle: subtype };
+}
+
+function transactionIconForSwap(swap) {
+    const type = String(swap.destination_asset_type || swap.asset_type || swap.swap_type || '').toUpperCase();
+    if (type.includes('WALLET') || type.includes('ACCOUNT')) return '🏦';
+    if (type.includes('CARD')) return '💳';
+    if (type.includes('VOUCHER') || type.includes('CASHOUT')) return '🎟️';
+    if (type.includes('IDENTITY')) return '🪪';
+    return '↔️';
 }
 
 function renderSwapHistory(data) {
     const swaps = data.data || data.swaps || [];
-    if (swaps.length === 0) { 
-        document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:30px;color:var(--text-muted);"><div style="font-weight:700;">No swaps found</div></div>`; 
-        return; 
+    if (swaps.length === 0) {
+        document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:30px;color:var(--text-muted);"><div style="font-weight:700;">No transactions found</div></div>`;
+        return;
     }
-    let historyHtml = `<div style="max-height:60vh;overflow-y:auto;"><div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Showing ${swaps.length} swap(s)</div>`;
+    let historyHtml = `
+        <div class="transaction-ledger-toolbar">
+            <div>
+                <div class="toolbar-title">Transaction Ledger</div>
+                <div class="toolbar-subtitle">Review your historical and pending fund movements.</div>
+            </div>
+            <div class="toolbar-actions">
+                <button class="btn btn-secondary btn-sm" onclick="filterLedger()">Filter</button>
+                <button class="btn btn-secondary btn-sm" onclick="exportLedger()">Export</button>
+            </div>
+        </div>
+        <div style="margin-bottom:10px;display:grid;grid-template-columns:1.6fr 3fr 1.8fr auto;gap:12px;padding:12px 18px;background:var(--surface-muted);border:1px solid var(--border);border-radius:var(--radius-sm);font-size:12px;color:var(--text-dim);font-weight:700;">
+            <div>DATE</div>
+            <div>DESTINATION</div>
+            <div style="text-align:right;">AMOUNT</div>
+            <div style="text-align:right;">STATUS</div>
+        </div>
+        <div style="max-height:60vh;overflow-y:auto;">`;
+
     swaps.forEach((swap) => {
-        const statusColor = swap.status === 'completed' || swap.status === 'success' ? 'var(--success)' : swap.status === 'pending' ? 'var(--warning)' : 'var(--danger)';
-        const code = swap.voucher_number || null;
-        const pin = swap.atm_pin || null;
-        const claimPin = swap.claim_pin || null; // NEW
-        const hasCode = !!(code || pin || claimPin);
-        const codeInlineHtml = hasCode ? `
-            <div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);display:flex;gap:16px;flex-wrap:wrap;">
-                ${code ? `<div><div style="font-size:10px;color:var(--text-dim);">Code</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--primary-dark);">${escapeHtml(code)}</div></div>` : ''}
-                ${pin ? `<div><div style="font-size:10px;color:var(--text-dim);">PIN</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--primary-dark);">${escapeHtml(pin)}</div></div>` : ''}
-                ${claimPin ? `<div><div style="font-size:10px;color:var(--text-dim);">Claim PIN</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--primary-dark);">${escapeHtml(claimPin)}</div></div>` : ''}
-                ${swap.voucher_expiry ? `<div><div style="font-size:10px;color:var(--text-dim);">Expires</div><div style="font-size:12px;color:var(--text-muted);">${new Date(swap.voucher_expiry).toLocaleString()}</div></div>` : ''}
-            </div>` : '';
-        historyHtml += `<div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px;background:#fff;cursor:pointer;" onclick="viewSwapDetail('${swap.reference || swap.swap_reference || 'N/A'}')">
-            <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
-                <div><div style="font-weight:700;">${swap.swap_type || 'SWAP'} <span style="font-size:11px;color:var(--text-muted);">${swap.reference || swap.swap_reference || ''}</span></div><div style="font-size:12px;color:var(--text-muted);">${swap.source_institution || 'Unknown'} → ${swap.destination_institution || 'Unknown'}</div></div>
-                <div style="text-align:right;"><div style="font-weight:700;color:var(--primary-dark);">${formatMoney(swap.amount, swap.currency)}</div><div style="font-size:11px;color:${statusColor};">${swap.status || 'unknown'}</div></div>
-            </div>${codeInlineHtml}</div>`;
+        const status = String(swap.status || swap.state || '').toLowerCase();
+        const badgeClass = status === 'completed' || status === 'success' ? 'completed' : status === 'pending' ? 'pending' : 'failed';
+        const badgeLabel = swap.status || swap.state || 'Unknown';
+        const dateInfo = formatLedgerDate(swap.created_at || swap.date || swap.timestamp || swap.inserted_at || '');
+        const destination = transactionDestinationSummary(swap);
+        const icon = transactionIconForSwap(swap);
+        const amountValue = parseFloat(swap.amount || swap.total_amount || 0);
+        const amountText = `${amountValue >= 0 ? '+' : '-'}${formatMoney(Math.abs(amountValue), swap.currency || swap.destination_currency || swap.source_currency || '')}`;
+
+        historyHtml += `
+            <div class="transaction-row" onclick="viewSwapDetail('${escapeHtml(swap.reference || swap.swap_reference || 'N/A')}')">
+                <div class="txn-date"><span class="primary">${escapeHtml(dateInfo.primary)}</span><span class="secondary">${escapeHtml(dateInfo.secondary)}</span></div>
+                <div class="txn-destination">
+                    <span class="txn-destination-icon">${icon}</span>
+                    <div class="txn-destination-info">
+                        <div class="txn-destination-title">${escapeHtml(destination.title)}</div>
+                        <div class="txn-destination-sub">${escapeHtml(destination.subtitle)}</div>
+                    </div>
+                </div>
+                <div class="txn-amount">${escapeHtml(amountText)}</div>
+                <div class="txn-status"><span class="txn-badge ${badgeClass}">${escapeHtml(badgeLabel)}</span></div>
+            </div>`;
     });
-    historyHtml += `</div>`;
+
+    historyHtml += `</div><div class="ledger-footer">Showing ${swaps.length} transaction(s)</div>`;
     document.getElementById('modalBody').innerHTML = historyHtml;
+}
+
+function filterLedger() {
+    showMessage('Filter is not available in this preview.', 'info');
+}
+
+function exportLedger() {
+    showMessage('Export is not available in this preview.', 'info');
 }
 async function viewSwapDetail(reference) {
     openModal('Swap Details', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading details...</div>');
