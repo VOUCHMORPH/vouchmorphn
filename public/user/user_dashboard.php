@@ -176,7 +176,7 @@ foreach ($assets as $assetKey => $assetConfig) {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>VouchMorph – Move Money</title>
+<title>VouchMorph – Swap</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
 <style>
 :root {
@@ -184,9 +184,9 @@ foreach ($assets as $assetKey => $assetConfig) {
     --surface: #FFFFFF;
     --surface-muted: #F4F3EF;
     --surface-hover: #EFEEE8;
-    --border: rgba(16,30,27,0.09);
-    --border-strong: rgba(16,30,27,0.16);
-    --border-active: rgba(0,168,120,0.4);
+    --border: rgba(16,30,27,0.12);
+    --border-strong: rgba(16,30,27,0.22);
+    --border-active: rgba(16,30,27,0.6);
     --text: #10201C;
     --text-muted: #63706A;
     --text-dim: #8A968F;
@@ -194,20 +194,19 @@ foreach ($assets as $assetKey => $assetConfig) {
     --primary-dark: #04120E;
     --accent: #00A878;
     --accent-2: #FF7A59;
-    --accent-soft: rgba(0,168,120,0.12);
-    --accent-2-soft: rgba(255,122,89,0.14);
-    --gradient: linear-gradient(135deg, #10201C 0%, #00695C 100%);
+    --accent-soft: rgba(0,168,120,0.10);
     --success: #1F8A54;
     --warning: #B8860B;
     --danger: #C62828;
-    --radius: 16px;
-    --radius-sm: 10px;
-    --radius-pill: 999px;
+    --radius: 0;
+    --radius-sm: 0;
+    --radius-pill: 0;
     --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, 'Cascadia Mono', Consolas, monospace;
     --transition: all 0.2s ease;
-    --shadow-sm: 0 1px 3px rgba(16,30,27,0.05);
-    --shadow-md: 0 10px 36px rgba(16,30,27,0.10);
-    --header-h: 72px;
+    --shadow-sm: 0 1px 2px rgba(16,30,27,0.04);
+    --shadow-md: 0 6px 20px rgba(16,30,27,0.08);
+    --header-h: 68px;
     --max-w: 1040px;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -215,277 +214,224 @@ html { scroll-behavior: smooth; }
 body { background: var(--bg); color: var(--text); font-family: var(--font); min-height: 100vh; line-height: 1.5; -webkit-font-smoothing: antialiased; }
 input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 input[type=number] { -moz-appearance: textfield; }
+.fade-in-up { animation: fadeInUp 0.4s ease forwards; }
+@keyframes fadeInUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
-.madlib-underline { position: relative; display: inline-block; }
-.madlib-underline::after { content: ''; position: absolute; bottom: -4px; left: 0; width: 100%; height: 2px; background-color: var(--accent); opacity: 0.35; transition: opacity 0.3s ease; }
-.madlib-underline:hover::after { opacity: 1; }
-.fade-in-up { animation: fadeInUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-@keyframes fadeInUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+.role-badge { font-size: 9px; color: var(--primary); border: 1px solid var(--border-strong); padding: 3px 8px; text-transform: uppercase; font-weight: 700; letter-spacing: 0.04em; }
+.agent-badge { font-size: 9px; color: #fff; background: var(--accent-2); padding: 3px 8px; text-transform: uppercase; font-weight: 700; }
+.test-mode-badge { font-size: 9px; color: var(--danger); border: 1px solid rgba(198,40,40,0.35); background: rgba(198,40,40,0.06); padding: 3px 8px; text-transform: uppercase; font-weight: 700; }
+.toolbox-badge { min-width: 18px; height: 18px; padding: 0 5px; background: var(--accent-2); color: #fff; font-size: 10px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
 
-.role-badge { font-size: 9px; color: var(--primary); border: 1px solid var(--border-strong); padding: 3px 8px; border-radius: var(--radius-sm); text-transform: uppercase; font-weight: 700; letter-spacing: 0.04em; }
-.agent-badge { font-size: 9px; color: #fff; background: var(--accent-2); padding: 3px 8px; border-radius: var(--radius-sm); text-transform: uppercase; font-weight: 700; }
-.test-mode-badge { font-size: 9px; color: var(--danger); border: 1px solid rgba(198,40,40,0.35); background: rgba(198,40,40,0.06); padding: 3px 8px; border-radius: var(--radius-sm); text-transform: uppercase; font-weight: 700; }
-.toolbox-badge { min-width: 18px; height: 18px; padding: 0 5px; background: var(--accent-2); color: #fff; font-size: 10px; font-weight: 700; border-radius: var(--radius-pill); display: inline-flex; align-items: center; justify-content: center; }
-
-.site-header { position: sticky; top: 0; z-index: 100; background: var(--surface); border-bottom: 1px solid var(--border); box-shadow: var(--shadow-sm); }
+.site-header { position: sticky; top: 0; z-index: 100; background: var(--surface); border-bottom: 1px solid var(--border); }
 .header-inner { max-width: var(--max-w); margin: 0 auto; padding: 0 24px; height: var(--header-h); display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .brand { display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
 .brand-text { display: flex; flex-direction: column; gap: 1px; }
-.logo { font-size: 20px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.1; background: var(--gradient); -webkit-background-clip: text; background-clip: text; color: transparent; }
-.logo sup { font-size: 9px; font-weight: 700; vertical-align: super; -webkit-text-fill-color: var(--accent); }
-.tagline { font-size: 10px; font-weight: 600; color: var(--text-dim); letter-spacing: 0.06em; text-transform: uppercase; }
-.brand-divider { width: 1px; height: 28px; background: var(--border-strong); display: none; }
+.logo { font-size: 18px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.1; color: var(--text); }
+.logo sup { font-size: 9px; font-weight: 700; vertical-align: super; color: var(--accent); }
+.tagline { font-size: 10px; font-weight: 600; color: var(--text-dim); letter-spacing: 0.06em; text-transform: uppercase; font-family: var(--font-mono); }
+.brand-divider { width: 1px; height: 26px; background: var(--border-strong); display: none; }
 @media (min-width: 640px) { .brand-divider { display: block; } }
 
-.main-nav { display: none; align-items: center; gap: 4px; background: var(--surface-muted); padding: 4px; border-radius: var(--radius-pill); border: 1px solid var(--border); }
+.main-nav { display: none; align-items: center; gap: 2px; border: 1px solid var(--border); }
 @media (min-width: 768px) { .main-nav { display: flex; } }
-.nav-pill, .nav-link { display: inline-flex; align-items: center; gap: 7px; padding: 9px 16px; border-radius: var(--radius-pill); font-size: 13px; font-weight: 600; font-family: var(--font); border: none; background: transparent; color: var(--text-muted); cursor: pointer; text-decoration: none; transition: var(--transition); white-space: nowrap; }
+.nav-pill, .nav-link { display: inline-flex; align-items: center; gap: 7px; padding: 9px 16px; font-size: 12px; font-weight: 600; font-family: var(--font); border: none; background: transparent; color: var(--text-muted); cursor: pointer; text-decoration: none; transition: var(--transition); white-space: nowrap; text-transform: uppercase; letter-spacing: 0.04em; }
 .nav-pill.active, .nav-pill:hover { background: var(--primary); color: #fff; }
-.nav-link:hover { color: var(--text); background: rgba(255,255,255,0.7); }
-.nav-icon { font-size: 14px; opacity: 0.85; }
+.nav-link:hover { color: var(--text); background: var(--surface-muted); }
+.nav-icon { font-size: 13px; opacity: 0.85; }
 
 .header-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
 .header-meta { display: none; align-items: center; gap: 10px; }
 @media (min-width: 900px) { .header-meta { display: flex; } }
-.country-selector { background: var(--surface-muted); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 12px; color: var(--text-muted); font-size: 12px; cursor: pointer; font-family: var(--font); line-height: 1; }
-.toolbox-btn { position: relative; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; color: var(--text); background: var(--surface-muted); border: 1px solid var(--border); padding: 8px 14px; border-radius: var(--radius-sm); cursor: pointer; font-family: var(--font); transition: var(--transition); }
-.toolbox-btn:hover { background: var(--surface-hover); border-color: var(--border-strong); transform: translateY(-1px); }
-.toolbox-btn:active { transform: scale(0.98); }
+.country-selector { background: var(--surface-muted); border: 1px solid var(--border); padding: 8px 12px; color: var(--text-muted); font-size: 12px; cursor: pointer; font-family: var(--font); line-height: 1; }
+.toolbox-btn { position: relative; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; color: var(--text); background: transparent; border: 1px solid var(--border-strong); padding: 8px 14px; cursor: pointer; font-family: var(--font); transition: var(--transition); text-transform: uppercase; letter-spacing: 0.03em; }
+.toolbox-btn:hover { background: var(--primary); color: #fff; border-color: var(--primary); }
 
 .user-chip { display: flex; align-items: center; gap: 10px; }
 .user-chip-text { display: none; flex-direction: column; line-height: 1.2; }
 @media (min-width: 640px) { .user-chip-text { display: flex; } }
-.user-chip-name { font-size: 13px; font-weight: 700; color: var(--text); }
+.user-chip-name { font-size: 13px; font-weight: 600; color: var(--text); }
 .user-chip-role { font-size: 11px; color: var(--text-dim); }
-.user-avatar { width: 34px; height: 34px; border-radius: 50%; background: var(--gradient); color: #fff; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.user-avatar { width: 32px; height: 32px; background: var(--primary); color: #fff; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .logout-btn { font-size: 12px; font-weight: 600; color: var(--text-dim); text-decoration: none; padding: 8px 6px; }
 .logout-btn:hover { color: var(--danger); }
 
-.container { width: 100%; max-width: 680px; margin: 0 auto; padding: 32px 24px 48px; position: relative; z-index: 1; }
-.message { padding: 12px 16px; border-radius: var(--radius-sm); margin: 0 0 20px; font-size: 13px; display: none; font-weight: 500; }
+.container { width: 100%; max-width: 460px; margin: 0 auto; padding: 40px 24px 48px; position: relative; z-index: 1; }
+.message { padding: 12px 16px; margin: 0 0 20px; font-size: 13px; display: none; font-weight: 500; }
 .message.show { display: block; }
 .message.info { background: var(--accent-soft); border-left: 3px solid var(--accent); color: var(--primary); }
-.message.success { background: rgba(31,138,84,0.10); border-left: 3px solid var(--success); color: var(--success); }
+.message.success { background: rgba(31,138,84,0.08); border-left: 3px solid var(--success); color: var(--success); }
 .message.error { background: rgba(198,40,40,0.08); border-left: 3px solid var(--danger); color: var(--danger); }
-.message.warning { background: rgba(184,134,11,0.10); border-left: 3px solid var(--warning); color: #8a6508; }
+.message.warning { background: rgba(184,134,11,0.08); border-left: 3px solid var(--warning); color: #8a6508; }
 
-/* ── Hero (the entire landing view) ── */
-.hero-section { text-align: center; margin-bottom: 8px; padding: 8px 0 4px; animation: fadeInUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-.hero-eyebrow { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--accent); background: var(--accent-soft); padding: 5px 14px; border-radius: var(--radius-pill); margin-bottom: 14px; }
-.hero-sentence { font-size: clamp(24px, 4.5vw, 34px); font-weight: 700; line-height: 1.4; color: var(--text); letter-spacing: -0.02em; max-width: 560px; margin: 0 auto; }
-.hero-word { display: inline; }
-.hero-amount-wrap { display: inline-flex; align-items: baseline; vertical-align: baseline; margin: 0 4px; }
-.hero-amount-wrap .amount-field { display: inline-flex; align-items: baseline; }
-.hero-amount-wrap .amount-field input { width: clamp(110px, 20vw, 180px); border: none; border-bottom: 2px solid var(--accent); background: transparent; font-size: inherit; font-weight: 700; font-family: var(--font); color: var(--accent); text-align: center; padding: 0 4px 2px; -moz-appearance: textfield; }
-.hero-amount-wrap .amount-field input::-webkit-outer-spin-button, .hero-amount-wrap .amount-field input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
-.hero-amount-wrap .amount-field input:focus { outline: none; border-bottom-color: var(--primary); color: var(--primary); }
-.hero-amount-wrap .currency-suffix { font-size: 0.65em; font-weight: 700; color: var(--accent); margin-left: 4px; }
-.hero-jump { color: var(--accent); text-decoration: none; border-bottom: 2px solid var(--accent); cursor: pointer; transition: var(--transition); background: none; font: inherit; font-weight: 700; padding: 0; }
-.hero-jump:hover { color: var(--primary); border-bottom-color: var(--primary); }
-.hero-send-note { margin-top: 12px; font-size: 14px; color: var(--text-muted); font-weight: 500; }
+.ledger-card { background: var(--surface); border: 1px solid var(--border); padding: 1.75rem; }
+.ledger-eyebrow { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-dim); margin-bottom: 14px; font-family: var(--font-mono); text-align: center; }
+.ledger-sentence { font-size: 23px; font-weight: 600; line-height: 1.5; text-align: center; }
+.ledger-sentence input[type=number] { width: 100px; border: none; border-bottom: 1px solid var(--text); background: transparent; font-size: 23px; font-weight: 600; font-family: var(--font-mono); color: var(--text); text-align: center; padding: 0 2px 1px; }
+.ledger-sentence input[type=number]:focus { outline: none; border-bottom-color: var(--accent); color: var(--accent); }
 
-.progress-dots { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 22px; }
-.dot { display: flex; flex-direction: column; align-items: center; gap: 6px; font-size: 10.5px; font-weight: 700; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.03em; }
-.dot span { width: 26px; height: 26px; border-radius: 50%; background: var(--surface-muted); border: 1.5px solid var(--border-strong); display: flex; align-items: center; justify-content: center; font-size: 12px; color: var(--text-dim); transition: var(--transition); }
-.dot.done span { background: var(--accent); border-color: var(--accent); color: #fff; }
-.dot.done { color: var(--accent); }
-.dot-line { width: 36px; height: 2px; background: var(--border-strong); margin-bottom: 16px; border-radius: 2px; }
+.ledger-rows { border-top: 1px solid var(--border); margin-top: 18px; }
+.ledger-row { display: flex; justify-content: space-between; align-items: center; padding: 15px 0; border-bottom: 1px solid var(--border); cursor: pointer; transition: var(--transition); }
+.ledger-row:hover { background: var(--surface-muted); margin: 0 -1.75rem; padding: 15px 1.75rem; }
+.ledger-row-label { font-size: 12px; color: var(--text-muted); display: flex; align-items: center; gap: 8px; }
+.ledger-row-value { font-size: 13px; font-weight: 600; color: var(--text-dim); display: flex; align-items: center; gap: 6px; }
+.ledger-row-value.filled { color: var(--text); }
 
-/* ── Selection chips: what you've picked so far, tap to change ── */
-.selection-row { display: flex; flex-direction: column; gap: 10px; margin: 26px 0 6px; }
-@media (min-width: 560px) { .selection-row { flex-direction: row; } }
-.selection-chip { flex: 1; display: flex; align-items: center; gap: 10px; padding: 14px 16px; background: var(--surface); border: 1.5px solid var(--border-strong); border-radius: var(--radius); cursor: pointer; transition: var(--transition); text-align: left; }
-.selection-chip:hover { border-color: var(--accent); box-shadow: var(--shadow-sm); transform: translateY(-1px); }
-.selection-chip.filled { border-color: var(--accent); background: var(--accent-soft); }
-.selection-chip-icon { font-size: 18px; }
-.selection-chip-body { flex: 1; min-width: 0; }
-.selection-chip-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-dim); font-weight: 700; }
-.selection-chip-text { font-size: 13.5px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.selection-chip-edit { font-size: 13px; color: var(--text-dim); flex-shrink: 0; }
+.ledger-links { display: flex; justify-content: center; gap: 20px; margin-top: 16px; }
+.ledger-link { font-size: 12px; font-weight: 600; color: var(--text-muted); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; background: none; border: none; font-family: var(--font); }
+.ledger-link:hover { color: var(--accent); }
 
-/* ── Secondary flows: identity / multi-source ── */
-.alt-actions { display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; margin: 16px 0 6px; }
-.alt-action { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; color: var(--text-muted); background: var(--surface-muted); border: 1px solid var(--border); padding: 8px 14px; border-radius: var(--radius-pill); cursor: pointer; transition: var(--transition); }
-.alt-action:hover { border-color: var(--accent); color: var(--text); background: var(--accent-soft); }
+.balance-link-wrap { text-align: center; margin-top: 18px; }
 
-/* ── Balance chip ── */
-.balance-chip-wrap { text-align: center; margin-top: 4px; }
-.balance-chip { display: inline-flex; align-items: center; gap: 8px; margin: 14px auto 6px; padding: 10px 18px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-pill); font-size: 13px; font-weight: 600; color: var(--text); cursor: pointer; transition: var(--transition); box-shadow: var(--shadow-sm); }
-.balance-chip:hover { border-color: var(--border-active); box-shadow: var(--shadow-md); transform: translateY(-1px); }
-.balance-chip-arrow { color: var(--accent); font-weight: 700; }
-
-/* ── Review CTA ── */
-.review-block { margin-top: 26px; }
-.cta-row { display: flex; justify-content: center; margin-top: 10px; gap: 12px; }
+.cta-row { display: flex; justify-content: center; margin-top: 10px; gap: 10px; }
 .cta-row .btn, .cta-row .btn-secondary { flex: 1 1 0; max-width: 360px; }
-.btn { padding: 14px 28px; border: none; border-radius: var(--radius-sm); font-size: 13px; font-weight: 700; font-family: var(--font); cursor: pointer; letter-spacing: 0.04em; text-transform: uppercase; transition: var(--transition); }
-.btn-primary { background: var(--gradient); color: #fff; box-shadow: var(--shadow-sm); }
-.btn-primary:hover:not(:disabled) { transform: translateY(-1px); box-shadow: var(--shadow-md); }
-.btn-primary:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
-.btn-secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border-strong); font-weight: 600; text-transform: none; letter-spacing: 0; }
+.btn { padding: 14px 24px; border: none; font-size: 11px; font-weight: 700; font-family: var(--font); cursor: pointer; letter-spacing: 0.08em; text-transform: uppercase; transition: var(--transition); }
+.btn-primary { background: var(--primary); color: #fff; }
+.btn-primary:hover:not(:disabled) { background: var(--accent); }
+.btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-secondary { background: transparent; color: var(--text); border: 1px solid var(--border-strong); font-weight: 600; text-transform: none; letter-spacing: 0; }
 .btn-secondary:hover { background: var(--surface-muted); }
-.btn-danger-outline { background: transparent; color: var(--danger); border: 1px solid rgba(198,40,40,0.35); padding: 6px 14px; border-radius: var(--radius-sm); font-size: 11px; cursor: pointer; font-weight: 600; }
-.btn-sm { padding: 10px 18px !important; font-size: 12px; text-transform: none; letter-spacing: 0; }
+.btn-danger-outline { background: transparent; color: var(--danger); border: 1px solid rgba(198,40,40,0.4); padding: 6px 14px; font-size: 11px; cursor: pointer; font-weight: 600; }
+.btn-sm { padding: 10px 16px !important; font-size: 11px; text-transform: none; letter-spacing: 0; }
 .btn-link { background: none; border: none; padding: 0; cursor: pointer; color: var(--accent); font-size: 12px; font-weight: 600; }
 
 .quick-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
-.quick-link { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600; color: var(--text-muted); background: var(--surface-muted); border: 1px solid var(--border); padding: 7px 12px; border-radius: var(--radius-sm); cursor: pointer; transition: var(--transition); }
-.quick-link:hover { border-color: var(--border-strong); color: var(--text); }
-.quick-link:active { transform: scale(0.95); }
-.quick-link.muted { color: var(--text-dim); }
-.quick-link.danger { color: var(--danger); background: rgba(198,40,40,0.05); border-color: rgba(198,40,40,0.2); }
+.quick-link { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; color: var(--text-muted); background: transparent; border: 1px solid var(--border-strong); padding: 8px 12px; cursor: pointer; transition: var(--transition); text-transform: uppercase; letter-spacing: 0.03em; }
+.quick-link:hover { border-color: var(--text); color: var(--text); }
+.quick-link.muted { color: var(--text-dim); font-weight: 500; text-transform: none; letter-spacing: 0; border: none; padding: 4px 0; }
+.quick-link.danger { color: var(--danger); border-color: rgba(198,40,40,0.3); }
 .quick-link.selected { background: var(--primary); color: #fff; border-color: var(--primary); }
 
-.source-row { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 14px; margin-bottom: 10px; background: var(--surface); }
-.source-row-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-.multi-total { text-align: center; font-size: 13px; color: var(--text-muted); margin-top: 12px; font-weight: 600; }
 .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid rgba(255,255,255,0.4); border-top-color: #fff; border-radius: 50%; animation: spin 0.7s linear infinite; margin-right: 6px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* ── Modals ── */
-.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(4,18,14,0.45); backdrop-filter: blur(4px); z-index: 1000; align-items: center; justify-content: center; padding: 20px; }
+.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(4,18,14,0.5); z-index: 1000; align-items: center; justify-content: center; padding: 20px; }
 .modal-overlay.active { display: flex; }
-.modal { background: var(--surface); border-radius: var(--radius); max-width: 520px; width: 100%; max-height: 90vh; overflow-y: auto; border: 1px solid var(--border); box-shadow: var(--shadow-md); }
-.modal-header { display: flex; justify-content: space-between; align-items: center; padding: 18px 24px; background: var(--surface-muted); border-bottom: 1px solid var(--border); margin-bottom: 0; }
-.modal-header h2 { font-size: 13px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text); }
-.modal-close { background: none; border: none; color: var(--text-muted); font-size: 22px; cursor: pointer; line-height: 1; padding: 4px; }
-#modalBody { padding: 24px; }
+.modal { background: var(--surface); max-width: 480px; width: 100%; max-height: 90vh; overflow-y: auto; border: 1px solid var(--border-strong); }
+.modal-header { display: flex; justify-content: space-between; align-items: center; padding: 16px 22px; background: var(--surface-muted); border-bottom: 1px solid var(--border); }
+.modal-header h2 { font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text); font-family: var(--font-mono); }
+.modal-close { background: none; border: none; color: var(--text-muted); font-size: 20px; cursor: pointer; line-height: 1; padding: 4px; }
+#modalBody { padding: 22px; }
 
-.tab-hero { text-align: center; padding: 24px 10px; background: var(--gradient); border-radius: var(--radius-sm); color: #fff; margin-bottom: 14px; }
-.tab-hero-label { font-size: 10px; opacity: 0.85; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 700; }
-.tab-hero-input { background: transparent; border: none; text-align: center; font-size: 34px; font-weight: 800; width: 100%; color: inherit; font-family: var(--font); }
+.tab-hero { text-align: center; padding: 6px 0 14px; border-bottom: 1px solid var(--border); margin-bottom: 14px; }
+.tab-hero-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 700; color: var(--text-dim); font-family: var(--font-mono); }
+.tab-hero-input { background: transparent; border: none; text-align: center; font-size: 32px; font-weight: 600; width: 100%; color: var(--text); font-family: var(--font-mono); }
 .tab-hero-input:focus { outline: none; }
-.tab-hero-sub { font-size: 12px; opacity: 0.85; margin-top: 4px; }
+.tab-hero-sub { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.comp-bar-track { display: flex; height: 6px; width: 100%; background: var(--surface-muted); overflow: hidden; margin-bottom: 16px; border: 1px solid var(--border); }
+.comp-bar-seg { height: 100%; flex-shrink: 0; transition: width 0.5s cubic-bezier(0.16,1,0.3,1); }
+.tab-status-line { text-align: center; font-size: 12px; margin-bottom: 14px; padding: 10px; font-weight: 600; border: 1px solid var(--border); }
+.tab-status-line.ok { color: var(--success); border-color: var(--success); }
+.tab-status-line.warn { color: #8a6508; border-color: var(--warning); }
+.tab-status-line.bad { color: var(--danger); border-color: var(--danger); }
+.tab-strategy-row { display: flex; gap: 0; margin-bottom: 16px; border: 1px solid var(--border-strong); }
+.tab-strategy-row .quick-link { flex: 1; justify-content: center; border: none; border-right: 1px solid var(--border-strong); }
+.tab-strategy-row .quick-link:last-child { border-right: none; }
+.tab-source-list { transition: opacity 0.35s ease; }
+.tab-source-card { border: 1px solid var(--border); padding: 14px; margin-bottom: 8px; background: var(--surface); }
+.tab-source-empty { border: 1px dashed var(--border-strong); padding: 14px; margin-bottom: 8px; background: var(--surface-muted); }
+.tab-fixed-note { margin-top: 8px; padding: 10px; background: var(--surface-muted); font-size: 12px; color: var(--text-dim); }
+.tab-estimated-note { font-size: 11px; color: var(--text-dim); margin-top: 4px; font-style: italic; }
+.tab-invite-teaser { display: flex; align-items: center; gap: 12px; margin-top: 16px; padding: 14px; border: 1px dashed var(--accent); background: var(--accent-soft); cursor: pointer; }
+.tab-invite-icon { font-size: 22px; }
+.tab-invite-title { font-weight: 700; font-size: 13px; }
+.tab-invite-sub { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.vm-card-note { font-size: 12px; color: var(--text-muted); background: var(--accent-soft); border-left: 3px solid var(--accent); padding: 12px 14px; margin-top: 10px; }
 
-.review-hero { text-align: center; padding: 8px 0 20px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
-.review-hero-label { font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-dim); margin-bottom: 8px; }
-.review-hero-amount { font-size: 36px; font-weight: 800; color: var(--primary); letter-spacing: -0.02em; }
-.review-hero-note { font-size: 11px; color: var(--success); font-weight: 600; margin-top: 8px; display: flex; align-items: center; justify-content: center; gap: 6px; }
-.review-hero-note::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
-
-.preview-box { background: transparent; border: none; border-radius: 0; padding: 0; margin: 0; }
-.preview-row { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; gap: 12px; font-size: 13px; border-bottom: 1px solid var(--border); background: var(--surface); }
-.preview-row:nth-child(even) { background: var(--surface-muted); }
+.review-hero { text-align: center; padding: 6px 0 18px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+.review-hero-label { font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-dim); margin-bottom: 8px; font-family: var(--font-mono); }
+.review-hero-amount { font-size: 34px; font-weight: 600; color: var(--text); font-family: var(--font-mono); }
+.review-hero-note { font-size: 11px; color: var(--success); font-weight: 600; margin-top: 8px; }
+.preview-box { margin: 0; }
+.preview-row { display: flex; justify-content: space-between; align-items: center; padding: 13px 0; gap: 12px; font-size: 13px; border-bottom: 1px solid var(--border); }
 .preview-row span:first-child { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-dim); }
-.preview-row .value { font-weight: 700; color: var(--text); text-align: right; }
-.preview-row .value.highlight { color: var(--accent); font-size: 22px; font-weight: 800; }
-.preview-security { display: flex; gap: 14px; align-items: flex-start; padding: 16px; background: var(--surface-muted); border-radius: var(--radius-sm); margin: 16px 0; border: 1px solid var(--border); }
-.preview-security-icon { width: 36px; height: 36px; background: var(--gradient); border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center; color: #fff; font-size: 16px; flex-shrink: 0; }
-.preview-security-text strong { display: block; font-size: 13px; margin-bottom: 4px; }
-.preview-security-text p { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
-.modal-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 20px; padding-top: 4px; }
-.modal-actions .btn-secondary { flex: 0 0 auto; text-transform: none; border: none; background: transparent; color: var(--text-muted); font-size: 13px; }
+.preview-row .value { font-weight: 600; color: var(--text); text-align: right; font-family: var(--font-mono); }
+.preview-row .value.highlight { color: var(--accent); font-size: 20px; }
+.preview-security { display: flex; gap: 14px; align-items: flex-start; padding: 14px; background: var(--surface-muted); margin: 16px 0; border: 1px solid var(--border); }
+.preview-security-icon { width: 34px; height: 34px; background: var(--primary); display: flex; align-items: center; justify-content: center; color: #fff; font-size: 15px; flex-shrink: 0; }
+.preview-security-text strong { display: block; font-size: 12px; margin-bottom: 4px; }
+.preview-security-text p { font-size: 11px; color: var(--text-muted); line-height: 1.5; }
+.modal-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 20px; }
+.modal-actions .btn-secondary { flex: 0 0 auto; text-transform: none; border: none; background: transparent; color: var(--text-muted); font-size: 12px; }
 .modal-actions .btn-primary { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
 
-.result-box { text-align: center; padding: 12px 0; }
-.result-box .icon { font-size: 48px; color: var(--success); margin-bottom: 8px; filter: brightness(1.15); }
-.result-box .result-title { font-size: 22px; font-weight: 800; margin-bottom: 8px; letter-spacing: -0.02em; }
-.result-box .result-sub { font-size: 13px; color: var(--text-muted); margin-bottom: 16px; line-height: 1.5; }
-.result-box .atm-code { margin: 16px 0; padding: 20px; background: var(--surface-muted); border: 1px solid var(--border); border-radius: var(--radius-sm); }
-.result-box .atm-code .code { font-size: 26px; font-weight: 700; font-family: monospace; letter-spacing: 4px; color: var(--accent); }
-.raw-json { text-align: left; font-size: 11px; background: var(--surface-muted); border-radius: var(--radius-sm); padding: 10px; white-space: pre-wrap; word-break: break-all; color: var(--text-dim); margin-top: 12px; max-height: 200px; overflow-y: auto; }
+.result-box { text-align: center; padding: 10px 0; }
+.result-box .icon { font-size: 42px; color: var(--success); margin-bottom: 8px; }
+.result-box .result-title { font-size: 20px; font-weight: 600; margin-bottom: 8px; }
+.result-box .result-sub { font-size: 12px; color: var(--text-muted); margin-bottom: 16px; font-family: var(--font-mono); }
+.result-box .atm-code { margin: 16px 0; padding: 18px; background: var(--surface-muted); border: 1px solid var(--border); }
+.result-box .atm-code .code { font-size: 24px; font-weight: 700; font-family: var(--font-mono); letter-spacing: 4px; color: var(--accent); }
 
-.source-type-buttons { display: flex; flex-direction: column; gap: 10px; }
-.source-type-btn { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 14px 16px; font-size: 15px; font-weight: 600; text-align: left; background: var(--surface); color: var(--text); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); cursor: pointer; font-family: var(--font); transition: var(--transition); }
-.source-type-btn:hover { border-color: var(--accent); background: var(--surface-muted); }
-.source-type-btn.active { background: var(--gradient); color: #fff; border-color: transparent; }
-.source-type-btn:active { transform: scale(0.98); }
+.field-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; display: block; margin-bottom: 6px; font-weight: 700; letter-spacing: 0.05em; }
+.field-group { margin-bottom: 14px; }
+.field-group label { display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); margin-bottom: 6px; letter-spacing: 0.05em; }
+.field-group input, .field-group select { width: 100%; padding: 12px 14px; background: var(--surface); border: 1px solid var(--border-strong); color: var(--text); font-size: 14px; font-family: var(--font); }
+.field-group input:focus, .field-group select:focus { outline: none; border-color: var(--accent); }
+.field-group .help { font-size: 11px; color: var(--text-dim); margin-top: 5px; }
+.asset-fields { margin: 8px 0 14px; padding: 14px; background: var(--surface-muted); border: 1px solid var(--border); }
+.identity-field { margin: 8px 0 14px; padding: 14px; background: var(--accent-soft); border: 1px dashed var(--accent); }
+
+.source-type-buttons { display: flex; flex-direction: column; gap: 0; border: 1px solid var(--border-strong); margin-bottom: 8px; }
+.source-type-btn { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 13px 15px; font-size: 14px; font-weight: 600; text-align: left; background: var(--surface); color: var(--text); border: none; border-bottom: 1px solid var(--border-strong); cursor: pointer; font-family: var(--font); }
+.source-type-btn:last-child { border-bottom: none; }
+.source-type-btn:hover { background: var(--surface-muted); }
+.source-type-btn.active { background: var(--primary); color: #fff; }
 .source-type-btn .btn-label { display: flex; align-items: center; gap: 10px; }
-.source-type-btn .count { background: var(--accent-2); color: #fff; border-radius: var(--radius-pill); font-size: 10px; font-weight: 800; padding: 2px 8px; }
-.source-type-btn.active .count { background: rgba(255,255,255,0.25); color: #fff; }
-.source-type-btn .chevron { font-size: 11px; opacity: 0.45; }
-.source-type-btn.active .chevron { color: #fff; opacity: 0.8; }
+.source-type-btn .count { background: var(--accent-2); color: #fff; font-size: 10px; font-weight: 800; padding: 2px 7px; }
+.source-type-btn.active .count { background: rgba(255,255,255,0.25); }
 .source-panel-wrap { margin-bottom: 8px; margin-top: 4px; }
 .source-panel { margin-bottom: 4px; }
-.empty-source-box { text-align: center; padding: 28px 16px; border: 1px dashed var(--border-strong); border-radius: var(--radius-sm); background: var(--surface-muted); }
-.empty-source-box p { font-size: 13px; color: var(--text-dim); margin-bottom: 14px; }
+.empty-source-box { text-align: center; padding: 24px 14px; border: 1px dashed var(--border-strong); background: var(--surface-muted); }
+.empty-source-box p { font-size: 12px; color: var(--text-dim); margin-bottom: 12px; }
 
-.source-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 14px; margin-bottom: 10px; }
+.source-card { background: var(--surface); border: 1px solid var(--border); padding: 13px; margin-bottom: 8px; }
 .source-card .source-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-.source-card .source-institution { font-weight: 700; font-size: 15px; }
-.source-card .source-details { font-size: 13px; color: var(--text-muted); }
-.source-card .source-status { font-size: 10px; padding: 3px 10px; border-radius: var(--radius-pill); font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
-.source-status.active { background: rgba(31,138,84,0.12); color: var(--success); }
-.source-status.pending { background: rgba(184,134,11,0.12); color: var(--warning); }
-.source-status.inactive { background: rgba(198,40,40,0.08); color: var(--danger); }
+.source-card .source-institution { font-weight: 700; font-size: 14px; }
+.source-card .source-details { font-size: 12px; color: var(--text-muted); }
+.source-card .source-status { font-size: 10px; padding: 2px 8px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+.source-status.active { background: rgba(31,138,84,0.1); color: var(--success); }
+.source-status.pending { background: rgba(184,134,11,0.1); color: var(--warning); }
+.source-status.inactive { background: rgba(198,40,40,0.06); color: var(--danger); }
 .otp-input-group { display: flex; gap: 8px; margin: 12px 0; }
 .otp-input-group input { flex: 1; }
-.otp-input-group button { flex-shrink: 0; }
 
-.saved-source-list { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); overflow: hidden; }
-.saved-source-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 13px 14px; cursor: pointer; border-bottom: 1px solid var(--border); transition: var(--transition); }
+.saved-source-list { border: 1px solid var(--border-strong); background: var(--surface); }
+.saved-source-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 12px 14px; cursor: pointer; border-bottom: 1px solid var(--border); }
 .saved-source-row:last-child { border-bottom: none; }
 .saved-source-row:hover { background: var(--surface-muted); }
-.saved-source-row.active { background: var(--gradient); color: #fff; }
-.saved-source-row .row-icon { font-size: 16px; flex-shrink: 0; }
+.saved-source-row.active { background: var(--primary); color: #fff; }
 .saved-source-row .row-main { flex: 1; min-width: 0; }
 .saved-source-row .row-inst { font-weight: 700; font-size: 13px; }
 .saved-source-row .row-ident { font-size: 11px; color: var(--text-dim); }
-.saved-source-row.active .row-ident { color: rgba(255,255,255,0.75); }
-.saved-source-row .row-check { font-size: 14px; opacity: 0; }
+.saved-source-row.active .row-ident { color: rgba(255,255,255,0.7); }
+.saved-source-row .row-check { font-size: 13px; opacity: 0; }
 .saved-source-row.active .row-check { opacity: 1; }
 
 .toolbox-group { margin-bottom: 18px; }
 .toolbox-group:last-child { margin-bottom: 0; }
-.toolbox-group-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); margin-bottom: 8px; padding-left: 2px; }
-.toolbox-list { display: flex; flex-direction: column; gap: 6px; }
-.toolbox-row { display: flex; align-items: center; gap: 12px; padding: 14px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer; background: var(--surface); transition: var(--transition); }
-.toolbox-row:hover { background: var(--surface-muted); border-color: var(--border-strong); transform: translateY(-1px); }
-.toolbox-row:active { transform: scale(0.98); }
-.toolbox-row-icon { width: 22px; text-align: center; font-size: 15px; }
-.toolbox-row-label { flex: 1; font-size: 14px; font-weight: 600; color: var(--text); }
-.toolbox-row-badge { min-width: 18px; height: 18px; padding: 0 5px; background: var(--accent-2); color: #fff; font-size: 10px; font-weight: 700; border-radius: var(--radius-pill); display: inline-flex; align-items: center; justify-content: center; }
+.toolbox-group-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); margin-bottom: 8px; font-family: var(--font-mono); }
+.toolbox-list { display: flex; flex-direction: column; gap: 0; border: 1px solid var(--border); }
+.toolbox-row { display: flex; align-items: center; gap: 12px; padding: 13px 14px; cursor: pointer; background: var(--surface); border-bottom: 1px solid var(--border); }
+.toolbox-row:last-child { border-bottom: none; }
+.toolbox-row:hover { background: var(--surface-muted); }
+.toolbox-row-icon { width: 20px; text-align: center; font-size: 14px; }
+.toolbox-row-label { flex: 1; font-size: 13px; font-weight: 600; color: var(--text); }
 
-#identitySwapHint { display: none; background: var(--accent-soft); border-left: 3px solid var(--accent); padding: 12px 14px; border-radius: var(--radius-sm); font-size: 13px; margin-top: 8px; color: var(--text-muted); }
-#swapReadinessHint { text-align: center; font-size: 13px; color: var(--text-muted); margin-top: 12px; display: none; max-width: 560px; margin-left: auto; margin-right: auto; }
+#identitySwapHint { display: none; background: var(--accent-soft); border-left: 3px solid var(--accent); padding: 12px 14px; font-size: 12px; margin-top: 8px; color: var(--text-muted); }
+#swapReadinessHint { text-align: center; font-size: 12px; color: var(--text-muted); margin-top: 12px; display: none; }
 #swapReadinessHint.show { display: block; }
-#swapReadinessHint.warning { background: rgba(184,134,11,0.08); border-left: 3px solid var(--warning); padding: 12px 16px; border-radius: var(--radius-sm); }
-#swapReadinessHint.success { background: rgba(31,138,84,0.08); border-left: 3px solid var(--success); padding: 12px 16px; border-radius: var(--radius-sm); color: var(--success); }
-
-.tab-launcher { display: flex; align-items: center; gap: 14px; padding: 18px; background: var(--gradient); border-radius: var(--radius-sm); cursor: pointer; color: #fff; transition: var(--transition); }
-.tab-launcher:hover { opacity: 0.95; transform: translateY(-1px); }
-.tab-launcher-icon { font-size: 26px; }
-.tab-launcher-body { flex: 1; }
-.tab-launcher-title { font-weight: 800; font-size: 15px; }
-.tab-launcher-sub { font-size: 12px; opacity: 0.85; margin-top: 2px; }
-.tab-launcher-total { font-size: 18px; font-weight: 800; }
-.tab-status-line { text-align: center; font-size: 12px; margin-bottom: 14px; padding: 10px; border-radius: var(--radius-sm); font-weight: 600; }
-.tab-status-line.ok { background: rgba(31,138,84,0.10); color: var(--success); }
-.tab-status-line.warn { background: rgba(184,134,11,0.10); color: #8a6508; }
-.tab-status-line.bad { background: rgba(198,40,40,0.08); color: var(--danger); }
-.tab-strategy-row { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }
-.tab-strategy-row .quick-link { flex: 1; justify-content: center; min-width: 70px; }
-.tab-source-card { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 14px; margin-bottom: 10px; background: var(--surface); }
-.tab-source-empty { border: 1px dashed var(--border-strong); border-radius: var(--radius-sm); padding: 14px; margin-bottom: 10px; background: var(--surface-muted); }
-.tab-fixed-note { margin-top: 8px; padding: 10px; background: var(--surface-muted); border-radius: var(--radius-sm); font-size: 12px; color: var(--text-dim); }
-.tab-estimated-note { font-size: 11px; color: var(--text-dim); margin-top: 4px; font-style: italic; }
-.tab-invite-teaser { display: flex; align-items: center; gap: 12px; margin-top: 16px; padding: 14px; border: 1px dashed var(--accent); border-radius: var(--radius-sm); background: var(--accent-soft); cursor: pointer; }
-.tab-invite-icon { font-size: 24px; }
-.tab-invite-title { font-weight: 700; font-size: 14px; }
-.tab-invite-sub { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
-.vm-card-note { font-size: 12px; color: var(--text-muted); background: var(--accent-soft); border-left: 3px solid var(--accent); padding: 12px 14px; border-radius: var(--radius-sm); margin-top: 10px; }
+#swapReadinessHint.warning { background: rgba(184,134,11,0.08); border-left: 3px solid var(--warning); padding: 12px 16px; }
+#swapReadinessHint.success { background: rgba(31,138,84,0.08); border-left: 3px solid var(--success); padding: 12px 16px; color: var(--success); }
 
 .page-footer { max-width: var(--max-w); width: 100%; margin: 0 auto; padding: 24px 24px 32px; border-top: 1px solid var(--border); display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
-.page-footer .footer-copy { font-size: 12px; color: var(--text-dim); }
+.page-footer .footer-copy { font-size: 11px; color: var(--text-dim); font-family: var(--font-mono); }
 .page-footer .footer-links { display: flex; gap: 20px; font-size: 12px; }
-.page-footer .footer-links span { color: var(--text-muted); font-weight: 600; cursor: pointer; transition: var(--transition); }
+.page-footer .footer-links span { color: var(--text-muted); font-weight: 600; cursor: pointer; }
 .page-footer .footer-links span:hover { color: var(--accent); text-decoration: underline; }
-
-/* Fields, used inside modals */
-.field-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; display: block; margin-bottom: 6px; font-weight: 600; letter-spacing: 0.05em; }
-.field-group { margin-bottom: 14px; }
-.field-group label { display: block; font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--text-dim); margin-bottom: 6px; letter-spacing: 0.05em; }
-.field-group input, .field-group select { width: 100%; padding: 12px 14px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); color: var(--text); font-size: 15px; font-family: var(--font); transition: var(--transition); }
-.field-group input:focus, .field-group select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-.field-group input.invalid { border-color: var(--danger); }
-.field-group .help { font-size: 12px; color: var(--text-dim); margin-top: 5px; }
-.asset-fields { margin: 8px 0 14px; padding: 16px; background: var(--surface-muted); border: 1px solid var(--border); border-radius: var(--radius-sm); }
-.identity-field { margin: 8px 0 14px; padding: 16px; background: var(--accent-soft); border: 1px dashed var(--accent); border-radius: var(--radius-sm); }
 
 @media (max-width: 768px) {
     .header-inner { padding: 0 16px; height: auto; min-height: var(--header-h); flex-wrap: wrap; padding-top: 12px; padding-bottom: 12px; }
-    .container { padding: 24px 16px 40px; }
-    .hero-sentence { font-size: 22px; }
+    .container { padding: 28px 16px 40px; }
+    .ledger-sentence { font-size: 20px; }
     .cta-row { flex-direction: column; align-items: stretch; }
     .cta-row .btn, .cta-row .btn-secondary { max-width: none; }
     .modal-actions { flex-direction: column-reverse; }
@@ -501,13 +447,13 @@ input[type=number] { -moz-appearance: textfield; }
         <div class="brand">
             <div class="brand-text">
                 <div class="logo">VouchMorph<sup>TM</sup></div>
-                <div class="tagline">Money, moved simply</div>
+                <div class="tagline">Money, swapped simply</div>
             </div>
             <div class="brand-divider"></div>
         </div>
         <nav class="main-nav" aria-label="Main">
-            <span class="nav-pill active"><span class="nav-icon">⇄</span> Move Money</span>
-            <button type="button" class="nav-link" onclick="openSwapHistory()"><span class="nav-icon">◷</span> Activity</button>
+            <span class="nav-pill active">Move money</span>
+            <button type="button" class="nav-link" onclick="openSwapHistory()">Activity</button>
         </nav>
         <div class="header-actions">
             <div class="header-meta">
@@ -539,108 +485,65 @@ input[type=number] { -moz-appearance: textfield; }
 <div class="container">
 <div id="mainMessage" class="message"></div>
 
-<!-- ============================================================
-     LANDING VIEW — this is the whole page. Source and Destination
-     each open in the shared modal; Identity and Multi-Source are
-     their own separate entry points, not folded into "Destination."
-     ============================================================ -->
-<section class="hero-section fade-in-up" id="heroSection">
-    <div class="hero-eyebrow">✨ Move money in seconds</div>
-    <div class="hero-sentence">
-        <span class="hero-word">I want to send</span>
-        <span class="hero-amount-wrap">
-            <span class="amount-field">
-                <input type="number" id="fromAmount" placeholder="0.00" step="0.01" min="0.01">
-                <span class="currency-suffix" id="fromCurrencyLabel"></span>
-            </span>
-        </span>
-        <span class="hero-word">from my</span><br>
-        <button type="button" class="hero-jump" onclick="openSourceModal()">Select Source</button>
-        <span class="hero-word"> to </span>
-        <button type="button" class="hero-jump" onclick="openDestinationModal()">Select Destination</button><span class="hero-word">.</span>
+<div class="ledger-card fade-in-up">
+    <div class="ledger-eyebrow">Move money</div>
+    <div class="ledger-sentence">
+        Swap
+        <input type="number" id="fromAmount" placeholder="0.00" step="0.01" min="0.01">
+        <span id="fromCurrencyLabel" style="font-size:14px;color:var(--text-dim);"></span>
+        from
     </div>
-    <div class="hero-send-note">You'll send <strong id="amountPreview">0.00</strong></div>
+    <div style="text-align:center;font-size:12px;color:var(--text-muted);margin-top:8px;">You'll swap <strong id="amountPreview" style="font-family:var(--font-mono);color:var(--text);">0.00</strong></div>
 
-    <div class="progress-dots" id="progressDots">
-        <div class="dot" id="dot1"><span>1</span>Amount</div>
-        <div class="dot-line"></div>
-        <div class="dot" id="dot2"><span>2</span>Source</div>
-        <div class="dot-line"></div>
-        <div class="dot" id="dot3"><span>3</span>Destination</div>
-    </div>
-</section>
-
-<div class="selection-row">
-    <div class="selection-chip" id="sourceChip" onclick="openSourceModal()">
-        <span class="selection-chip-icon">🏦</span>
-        <div class="selection-chip-body">
-            <div class="selection-chip-label">Source</div>
-            <div class="selection-chip-text" id="sourceChipText">Not selected yet</div>
+    <div class="ledger-rows">
+        <div class="ledger-row" onclick="openSourceModal()">
+            <span class="ledger-row-label">Source</span>
+            <span class="ledger-row-value" id="sourceRowText">Not selected &rsaquo;</span>
         </div>
-        <span class="selection-chip-edit">✎</span>
-    </div>
-    <div class="selection-chip" id="destChip" onclick="openDestinationModal()">
-        <span class="selection-chip-icon">🎯</span>
-        <div class="selection-chip-body">
-            <div class="selection-chip-label">Destination</div>
-            <div class="selection-chip-text" id="destChipText">Not selected yet</div>
+        <div class="ledger-row" onclick="openDestinationModal()" style="border-bottom:none;">
+            <span class="ledger-row-label">Destination</span>
+            <span class="ledger-row-value" id="destRowText">Not selected &rsaquo;</span>
         </div>
-        <span class="selection-chip-edit">✎</span>
     </div>
-</div>
 
-<div class="alt-actions">
-    <span class="alt-action" onclick="openIdentitySendModal()">📩 Send to identity instead</span>
-    <span class="alt-action" onclick="quickSetSwapType('MULTI_SOURCE')">🎟️ Combine multiple sources</span>
-</div>
-
-<div class="balance-chip-wrap">
-    <span class="balance-chip" onclick="viewWalletBalance()" onkeydown="if(event.key==='Enter'||event.key===' '){viewWalletBalance();}" role="button" tabindex="0" aria-label="View total balance">
-        <span>💰</span><span>View my balance</span><span class="balance-chip-arrow">→</span>
-    </span>
-</div>
-
-<div class="review-block">
     <div class="cta-row">
-        <button class="btn btn-primary" id="reviewBtn" onclick="previewSwap()">Review Transaction &rarr;</button>
+        <button class="btn btn-primary" id="reviewBtn" onclick="previewSwap()">Review swap</button>
     </div>
     <div id="swapReadinessHint"></div>
+
+    <div class="ledger-links">
+        <button type="button" class="ledger-link" onclick="openIdentitySendModal()">Swap to identity</button>
+        <button type="button" class="ledger-link" onclick="quickSetSwapType('MULTI_SOURCE')">Combine sources</button>
+    </div>
+</div>
+
+<div class="balance-link-wrap">
+    <button type="button" class="ledger-link" onclick="viewWalletBalance()">View balance</button>
 </div>
 
 </div>
 
 <footer class="page-footer">
-    <div class="footer-copy">&copy; 2026 VouchMorph Financial. All rights reserved.</div>
+    <div class="footer-copy">&copy; 2026 VouchMorph Financial</div>
     <div class="footer-links">
         <span onclick="openHelpModal()">Help</span>
         <span onclick="openTermsModal()">Terms &amp; Conditions</span>
     </div>
 </footer>
 
-<!-- ============================================================
-     HIDDEN HOLDERS — real, functional DOM nodes. Nothing here is
-     ever shown on the page itself; each one is *moved* into the
-     shared modal by openSourceModal() / openDestinationModal() /
-     openIdentitySendModal() / the Tab Builder, then moved back to
-     its holder the moment any modal closes. Same elements, same
-     ids, same JS the whole time — only their visible location moves.
-     ============================================================ -->
 <div id="sourceSectionHolder" style="display:none;">
     <div id="fromSection">
         <div class="field-group">
-            <label>Source Type</label>
+            <label>Source type</label>
             <div class="source-type-buttons" id="sourceTypeButtons">
                 <button type="button" class="source-type-btn" data-cat="WALLET" onclick="toggleSourcePanel('WALLET')">
-                    <span class="btn-label">💳 Wallet / Account <span class="count" id="walletBtnCount" style="display:none;">0</span></span>
-                    <span class="chevron">▾</span>
+                    <span class="btn-label">Wallet / Account <span class="count" id="walletBtnCount" style="display:none;">0</span></span>
                 </button>
                 <button type="button" class="source-type-btn" data-cat="CARD" onclick="toggleSourcePanel('CARD')">
-                    <span class="btn-label">🏦 Card</span>
-                    <span class="chevron">▾</span>
+                    <span class="btn-label">Card</span>
                 </button>
                 <button type="button" class="source-type-btn" data-cat="VOUCHER" onclick="toggleSourcePanel('VOUCHER')">
-                    <span class="btn-label">🎟️ Voucher</span>
-                    <span class="chevron">▾</span>
+                    <span class="btn-label">Voucher</span>
                 </button>
             </div>
         </div>
@@ -650,13 +553,13 @@ input[type=number] { -moz-appearance: textfield; }
                 <div id="savedSourcesContainer" style="margin-bottom:12px;display:none;">
                     <div id="savedSourcesChips" class="saved-source-list"></div>
                     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-top:8px;">
-                        <div style="font-size:12px;color:var(--text-dim);">Tap a saved source to auto-fill it, then just enter the amount. <span class="quick-link muted" onclick="openAddSource()">+ Add another</span></div>
+                        <div style="font-size:11px;color:var(--text-dim);">Tap a saved source to auto-fill it. <span class="quick-link muted" onclick="openAddSource()">+ Add another</span></div>
                         <span class="quick-link muted" onclick="clearSourceSelection()" style="display:none;" id="clearSourceBtn">Clear</span>
                     </div>
                 </div>
                 <div id="noSourcesPrompt" class="empty-source-box" style="display:none;">
                     <p>No linked wallet or account yet.</p>
-                    <button class="btn btn-primary btn-sm" onclick="openAddSource()">Link an Account</button>
+                    <button class="btn btn-primary btn-sm" onclick="openAddSource()">Link an account</button>
                 </div>
             </div>
 
@@ -681,8 +584,8 @@ input[type=number] { -moz-appearance: textfield; }
 <div id="destinationSectionHolder" style="display:none;">
     <div id="toSection">
         <div class="quick-actions" id="destTypeToggle">
-            <span class="quick-link" id="depositToggleBtn" onclick="setSwapType('DEPOSIT')">🏦 Deposit</span>
-            <span class="quick-link" id="cashoutToggleBtn" onclick="setSwapType('CASHOUT')">💵 Cashout</span>
+            <span class="quick-link" id="depositToggleBtn" onclick="setSwapType('DEPOSIT')">Deposit</span>
+            <span class="quick-link" id="cashoutToggleBtn" onclick="setSwapType('CASHOUT')">Cashout</span>
         </div>
 
         <div id="toInstAssetGroupSlot">
@@ -694,7 +597,7 @@ input[type=number] { -moz-appearance: textfield; }
                     </div>
                 </div>
                 <div class="field-group" id="toAssetSection" style="display:none;">
-                    <label>Asset Type</label>
+                    <label>Asset type</label>
                     <select id="toAssetSelect" onchange="selectToAsset(this.value)"></select>
                 </div>
                 <div class="asset-fields" id="toFields" style="display:none;"></div>
@@ -703,7 +606,7 @@ input[type=number] { -moz-appearance: textfield; }
 
         <div id="cashoutFields" style="display:none;">
             <div class="field-group">
-                <label>Delivery Method</label>
+                <label>Delivery method</label>
                 <select id="deliveryMethodSelect" onchange="setDeliveryMethod(this.value)">
                     <option value="ATM">ATM</option>
                     <option value="AGENT">Agent</option>
@@ -711,13 +614,12 @@ input[type=number] { -moz-appearance: textfield; }
                 </select>
             </div>
             <div class="field-group">
-                <label>Beneficiary Phone <span style="color:var(--danger);">*</span></label>
+                <label>Beneficiary phone <span style="color:var(--danger);">*</span></label>
                 <input id="beneficiaryPhone" placeholder="+267XXXXXXXX" oninput="state.beneficiaryPhone=this.value; refreshUI();">
                 <div class="help">Required for cashout code delivery via SMS</div>
             </div>
         </div>
 
-        <!-- hidden, kept only because quickSetSwapType()/setSwapType() read/write its .value -->
         <select id="swapTypeSelect" style="display:none;">
             <option value="DEPOSIT">Deposit</option>
             <option value="CASHOUT">Cashout</option>
@@ -730,7 +632,7 @@ input[type=number] { -moz-appearance: textfield; }
 <div id="identityFieldsHolder" style="display:none;">
     <div class="identity-field" id="identityFields">
         <div class="field-group">
-            <label>Identity Type</label>
+            <label>Identity type</label>
             <select id="identityType" onchange="state.toIdentityType=this.value; updateIdentityHelp();">
                 <option value="national_id">National ID</option>
                 <option value="birth_certificate">Birth Certificate</option>
@@ -740,15 +642,15 @@ input[type=number] { -moz-appearance: textfield; }
             </select>
         </div>
         <div class="field-group">
-            <label>Recipient National ID Number</label>
+            <label>Recipient national ID number</label>
             <input id="identityValue" placeholder="0000 - 0000 - 0000" oninput="state.toIdentityValue=this.value.trim(); refreshUI();">
         </div>
         <div class="field-group">
-            <label>SMS Notification (optional)</label>
+            <label>SMS notification (optional)</label>
             <input id="identitySms" placeholder="Phone to send SMS notification" oninput="state.toIdentitySms=this.value">
         </div>
-        <div id="identitySwapHint">📩 We'll text the recipient a code. If they have a VouchMorph account, they finalize instantly — no code needed. If not, an agent finalizes it for them using the code.</div>
-        <div class="hint" id="identityHint" style="font-size:12px;color:var(--text-muted);margin-top:4px;">The recipient will be notified and can claim the funds within 24 hours.</div>
+        <div id="identitySwapHint">We'll text the recipient a code. If they have a VouchMorph account, they finalize instantly — no code needed. If not, an agent finalizes it for them using the code.</div>
+        <div class="hint" id="identityHint" style="font-size:11px;color:var(--text-muted);margin-top:4px;">The recipient will be notified and can claim the funds within 24 hours.</div>
     </div>
 </div>
 
@@ -759,14 +661,14 @@ input[type=number] { -moz-appearance: textfield; }
             <span class="quick-link" onclick="tabSetMultiDest('identity')">Send to identity</span>
             <span class="quick-link" onclick="tabSetMultiDest('vmcard')">VouchMorph Card</span>
         </div>
-        <div id="vmCardNote" class="vm-card-note" style="display:none;">💳 No balance of its own — it's a pathway. One swipe draws directly from everything on this tab.</div>
+        <div id="vmCardNote" class="vm-card-note" style="display:none;">No balance of its own — it's a pathway. One swipe draws directly from everything on this tab.</div>
     </div>
 </div>
 
 <div class="modal-overlay" id="modal" onclick="if(event.target===this)closeModal()">
     <div class="modal" id="modalContent">
         <div class="modal-header">
-            <h2 id="modalTitle">Swap Preview</h2>
+            <h2 id="modalTitle">Swap preview</h2>
             <button class="modal-close" onclick="closeModal()" aria-label="Close">&times;</button>
         </div>
         <div id="modalBody"></div>
@@ -800,6 +702,8 @@ const ASSET_TYPE_ALIASES = {
     'CHEQUE': 'CHEQUE',
     'CRYPTO': 'CRYPTO'
 };
+
+const COMPOSITION_PALETTE = ['#00A878', '#FF7A59', '#3B82F6', '#8B5CF6', '#F59E0B', '#EC4899'];
 
 function getAssetConfig(type) {
     if (!type) return null;
@@ -882,12 +786,6 @@ async function refreshSourceCount() {
 }
 document.addEventListener('DOMContentLoaded', refreshSourceCount);
 
-// ============================================================
-// MODAL ORCHESTRATION — moves real DOM nodes in and out of the
-// shared modal. Every field-rendering/validation function below
-// keeps working unmodified since ids never change, only location.
-// ============================================================
-
 function returnAllMovableNodesHome() {
     const mappings = [
         ['fromSection', 'sourceSectionHolder'],
@@ -904,37 +802,33 @@ function returnAllMovableNodesHome() {
 }
 
 function updateSelectionChips() {
-    const sourceChip = document.getElementById('sourceChip');
-    const sourceChipText = document.getElementById('sourceChipText');
-    if (sourceChipText) {
+    const sourceEl = document.getElementById('sourceRowText');
+    if (sourceEl) {
         if (state.fromInst && state.fromAsset) {
             const instName = PARTICIPANTS[state.fromInst]?.name || state.fromInst;
-            const assetLabel = getAssetConfig(state.fromAsset)?.label || state.fromAsset;
-            sourceChipText.textContent = `${instName} — ${assetLabel}`;
-            sourceChip?.classList.add('filled');
+            sourceEl.textContent = instName;
+            sourceEl.classList.add('filled');
         } else {
-            sourceChipText.textContent = 'Not selected yet';
-            sourceChip?.classList.remove('filled');
+            sourceEl.textContent = 'Not selected \u203a';
+            sourceEl.classList.remove('filled');
         }
     }
-
-    const destChip = document.getElementById('destChip');
-    const destChipText = document.getElementById('destChipText');
-    if (destChipText) {
+    const destEl = document.getElementById('destRowText');
+    if (destEl) {
         if (state.swapType === 'IDENTITY') {
-            if (state.toIdentityValue) { destChipText.textContent = `Send to identity: ${maskIdentifier(state.toIdentityValue)}`; destChip?.classList.add('filled'); }
-            else { destChipText.textContent = 'Not selected yet'; destChip?.classList.remove('filled'); }
+            if (state.toIdentityValue) { destEl.textContent = 'Identity: ' + maskIdentifier(state.toIdentityValue); destEl.classList.add('filled'); }
+            else { destEl.textContent = 'Not selected \u203a'; destEl.classList.remove('filled'); }
         } else if (state.swapType === 'MULTI_SOURCE') {
             const activeCount = state.multiSources.filter(s => s.institution && s.amount > 0).length;
-            if (activeCount > 0) { destChipText.textContent = `Combine funds: ${activeCount} source(s)`; destChip?.classList.add('filled'); }
-            else { destChipText.textContent = 'Not selected yet'; destChip?.classList.remove('filled'); }
+            if (activeCount > 0) { destEl.textContent = activeCount + ' combined source(s)'; destEl.classList.add('filled'); }
+            else { destEl.textContent = 'Not selected \u203a'; destEl.classList.remove('filled'); }
         } else if (state.toInst) {
             const instName = PARTICIPANTS[state.toInst]?.name || state.toInst;
-            destChipText.textContent = `${state.swapType === 'CASHOUT' ? 'Cashout at' : 'Deposit to'} ${instName}`;
-            destChip?.classList.add('filled');
+            destEl.textContent = instName;
+            destEl.classList.add('filled');
         } else {
-            destChipText.textContent = 'Not selected yet';
-            destChip?.classList.remove('filled');
+            destEl.textContent = 'Not selected \u203a';
+            destEl.classList.remove('filled');
         }
     }
 }
@@ -948,7 +842,7 @@ function openSourceModal() {
     btnRow.style.marginTop = '20px';
     btnRow.innerHTML = '<button type="button" class="btn btn-primary" onclick="confirmSourceSelection()">Use this source</button>';
     modalBody.appendChild(btnRow);
-    document.getElementById('modalTitle').textContent = 'Select a Source';
+    document.getElementById('modalTitle').textContent = 'Select a source';
     document.getElementById('modal').classList.add('active');
 }
 function confirmSourceSelection() {
@@ -969,7 +863,7 @@ function openDestinationModal() {
     btnRow.style.marginTop = '20px';
     btnRow.innerHTML = '<button type="button" class="btn btn-primary" onclick="confirmDestinationSelection()">Use this destination</button>';
     modalBody.appendChild(btnRow);
-    document.getElementById('modalTitle').textContent = 'Select a Destination';
+    document.getElementById('modalTitle').textContent = 'Select a destination';
     document.getElementById('modal').classList.add('active');
 }
 function confirmDestinationSelection() {
@@ -995,17 +889,14 @@ function openIdentitySendModal() {
     btnRow.style.marginTop = '20px';
     btnRow.innerHTML = '<button type="button" class="btn btn-primary" onclick="confirmIdentitySelection()">Use this identity</button>';
     modalBody.appendChild(btnRow);
-    document.getElementById('modalTitle').textContent = 'Send to Identity';
+    document.getElementById('modalTitle').textContent = 'Swap to identity';
     document.getElementById('modal').classList.add('active');
 }
 function confirmIdentitySelection() {
-    if (!state.toIdentityValue) { showMessage('Enter the identity value to send to.', 'warning'); return; }
+    if (!state.toIdentityValue) { showMessage('Enter the identity value to swap to.', 'warning'); return; }
     closeModal();
 }
 
-// ============================================================
-// buildPayload()
-// ============================================================
 function buildPayload() {
     const reference = 'SWAP_' + Date.now();
     const idempotencyKey = 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
@@ -1172,18 +1063,17 @@ function buildPayload() {
 }
 
 async function viewWalletBalance() {
-    openModal('💰 Balances', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading balances...</div>');
+    openModal('Balances', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading balances...</div>');
     
     const result = await fetchAllBalances();
     
     if (!result.success) {
         document.getElementById('modalBody').innerHTML = `
             <div style="text-align:center;padding:20px;color:var(--danger);">
-                <div style="font-size:40px;margin-bottom:12px;">⚠️</div>
                 <div style="font-weight:700;">Failed to load balances</div>
-                <div style="font-size:13px;color:var(--text-muted);margin-top:8px;">${escapeHtml(result.error)}</div>
+                <div style="font-size:12px;color:var(--text-muted);margin-top:8px;">${escapeHtml(result.error)}</div>
                 <button class="btn btn-primary btn-sm" onclick="viewWalletBalance()" style="margin-top:12px;">
-                    🔄 Retry
+                    Retry
                 </button>
             </div>`;
         return;
@@ -1196,11 +1086,10 @@ async function viewWalletBalance() {
     if (sources.length === 0) {
         document.getElementById('modalBody').innerHTML = `
             <div style="text-align:center;padding:30px;color:var(--text-muted);">
-                <div style="font-size:40px;margin-bottom:12px;">📭</div>
                 <div style="font-weight:700;">No sources linked yet</div>
-                <div style="font-size:13px;margin-top:8px;">Add a source to see your balance</div>
+                <div style="font-size:12px;margin-top:8px;">Add a source to see your balance</div>
                 <button class="btn btn-primary btn-sm" onclick="closeModal();openAddSource();" style="margin-top:12px;">
-                    ➕ Add Source
+                    Add source
                 </button>
             </div>`;
         return;
@@ -1211,12 +1100,12 @@ async function viewWalletBalance() {
             <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">Your total balance across all linked sources</div>`;
     
     if (Object.keys(totals).length > 0) {
-        html += `<div style="background:var(--gradient);color:#fff;padding:16px;border-radius:var(--radius);margin-bottom:12px;">`;
+        html += `<div style="background:var(--primary);color:#fff;padding:16px;margin-bottom:12px;">`;
         Object.keys(totals).forEach(cur => {
             html += `
                 <div style="display:flex;justify-content:space-between;align-items:center;">
                     <span style="font-size:12px;opacity:0.7;">Total ${cur}</span>
-                    <span style="font-size:24px;font-weight:700;">${formatMoney(totals[cur], cur)}</span>
+                    <span style="font-size:22px;font-weight:600;font-family:var(--font-mono);">${formatMoney(totals[cur], cur)}</span>
                 </div>`;
         });
         html += `</div>`;
@@ -1230,7 +1119,6 @@ async function viewWalletBalance() {
         const instName = PARTICIPANTS[source.institution]?.name || source.institution;
         const assetLabel = ASSETS[source.asset_type]?.label || source.asset_type;
         
-        let statusIcon = '✅';
         let balanceDisplay = '—';
         let currency = source.currency || 'BWP';
         
@@ -1238,12 +1126,11 @@ async function viewWalletBalance() {
             balanceDisplay = formatMoney(balance.balance, balance.currency);
             currency = balance.currency;
         } else {
-            statusIcon = '⚠️';
             balanceDisplay = `<span style="color:var(--text-muted);font-size:12px;">${escapeHtml(balance.error || 'Unavailable')}</span>`;
         }
         
         html += `
-            <div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px;background:#fff;">
+            <div style="border:1px solid var(--border);padding:13px;margin-bottom:8px;background:#fff;">
                 <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
                     <div>
                         <div style="font-weight:700;">${escapeHtml(instName)}</div>
@@ -1253,16 +1140,16 @@ async function viewWalletBalance() {
                         </div>
                     </div>
                     <div style="text-align:right;">
-                        <div style="font-size:18px;font-weight:700;color:var(--primary-dark);">
+                        <div style="font-size:16px;font-weight:600;font-family:var(--font-mono);">
                             ${balanceDisplay}
                         </div>
-                        <div style="font-size:11px;color:var(--text-dim);">
-                            ${statusIcon} ${source.status}
+                        <div style="font-size:10px;color:var(--text-dim);text-transform:uppercase;">
+                            ${source.status}
                         </div>
                     </div>
                 </div>
                 <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);display:flex;gap:8px;flex-wrap:wrap;">
-                    <button class="btn-primary btn-sm" onclick="refreshSourceBalance('${source.id}')">⟳ Refresh</button>
+                    <button class="btn-primary btn-sm" onclick="refreshSourceBalance('${source.id}')">Refresh</button>
                     <button class="btn-secondary btn-sm" onclick="closeModal();useSourceForSwap('${source.id}')">Use as source</button>
                 </div>
             </div>`;
@@ -1272,8 +1159,8 @@ async function viewWalletBalance() {
     
     html += `
         <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border);display:flex;gap:8px;flex-wrap:wrap;">
-            <button class="btn btn-primary btn-sm" onclick="refreshAllBalances()">🔄 Refresh All</button>
-            <button class="btn btn-secondary btn-sm" onclick="closeModal();openAddSource()">➕ Add Source</button>
+            <button class="btn btn-primary btn-sm" onclick="refreshAllBalances()">Refresh all</button>
+            <button class="btn btn-secondary btn-sm" onclick="closeModal();openAddSource()">Add source</button>
             <button class="btn btn-secondary btn-sm" onclick="closeModal()">Close</button>
         </div>`;
     
@@ -1720,11 +1607,6 @@ function setContributionStrategy(strategy) {
     reopenTabBuilder();
 }
 
-// ============================================================
-// Destination mode inside the Tab Builder — moves either the
-// institution/asset group or the identity fields into the Tab
-// Builder's own destination slot, returning the other one home.
-// ============================================================
 function tabSetMultiDest(mode) {
     state.multiDestMode = mode;
 
@@ -1793,11 +1675,12 @@ function openTabBuilder() {
             <div id="multiDestControlsHost"></div>
             <div id="tabBuilderDestArea" style="margin-top:10px;"></div>
         </div>`;
-    document.getElementById('modalTitle').textContent = '🎟️ Build Your Tab';
+    document.getElementById('modalTitle').textContent = 'Combine sources';
     document.getElementById('modal').classList.add('active');
     document.getElementById('multiDestControlsHost').appendChild(document.getElementById('multiDestControls'));
     document.getElementById('tabBuilderGenerated').innerHTML = renderTabBuilder();
     tabSetMultiDest(state.multiDestMode || 'institution');
+    animateTabBuilderIn();
 }
 
 function reopenTabBuilder() {
@@ -1805,6 +1688,22 @@ function reopenTabBuilder() {
     if (!gen) { openTabBuilder(); return; }
     gen.innerHTML = renderTabBuilder();
     updateMultiTotal();
+    animateTabBuilderIn();
+}
+
+function animateTabBuilderIn() {
+    const bar = document.getElementById('tabCompBar');
+    if (bar) {
+        const segs = bar.querySelectorAll('.comp-bar-seg');
+        requestAnimationFrame(() => {
+            segs.forEach(seg => { seg.style.width = (seg.dataset.target || '0') + '%'; });
+        });
+    }
+    const list = document.getElementById('tabSourceList');
+    if (list) {
+        list.style.opacity = '0';
+        requestAnimationFrame(() => { list.style.opacity = '1'; });
+    }
 }
 
 function refreshTabBuilderIfOpen() {
@@ -1835,14 +1734,21 @@ function renderTabBuilder() {
         statusHtml += `<div class="tab-status-line bad">Manual mode needs one source per institution — remove the duplicate</div>`;
     }
 
+    const activeForBar = state.multiSources.filter(s => s.institution && s.amount > 0);
+    const barTotal = activeForBar.reduce((s, r) => s + r.amount, 0) || 1;
+    const barHtml = activeForBar.length
+        ? activeForBar.map((s, i) => `<div class="comp-bar-seg" data-target="${(s.amount / barTotal * 100).toFixed(2)}" style="width:0%;background:${COMPOSITION_PALETTE[i % COMPOSITION_PALETTE.length]};"></div>`).join('')
+        : `<div class="comp-bar-seg" data-target="0" style="width:0%;background:var(--border-strong);"></div>`;
+
     const cards = state.multiSources.map((s, i) => renderTabSourceCard(s, i)).join('');
 
     return `
         <div class="tab-hero">
-            <div class="tab-hero-label">Amount to move</div>
+            <div class="tab-hero-label">Amount to swap</div>
             <input type="number" step="0.01" class="tab-hero-input" value="${state.tabTotalAmount || ''}" placeholder="0.00" oninput="setTabTotalAmount(this.value)">
-            <div class="tab-hero-sub">${state.multiSources.filter(s => s.institution && s.amount > 0).length} source(s) added</div>
+            <div class="tab-hero-sub">${activeForBar.length} source(s) added</div>
         </div>
+        <div class="comp-bar-track" id="tabCompBar">${barHtml}</div>
         ${statusHtml}
         <div class="tab-strategy-row">
             <button class="quick-link ${strategy==='EQUAL'?'selected':''}" onclick="setContributionStrategy('EQUAL')">Equal</button>
@@ -1851,13 +1757,13 @@ function renderTabBuilder() {
             <button class="quick-link ${strategy==='USER_SPECIFIED'?'selected':''}" onclick="setContributionStrategy('USER_SPECIFIED')">Manual</button>
         </div>
 
-        <div id="tabSourceList">${cards}</div>
+        <div id="tabSourceList" class="tab-source-list" style="opacity:0;">${cards}</div>
         <button class="quick-link" style="width:100%;justify-content:center;padding:12px;margin-top:4px;" onclick="addMultiSourceRow(); reopenTabBuilder();">+ Add another source</button>
 
-        ${strategy === 'USER_SPECIFIED' ? `<button class="quick-link muted" style="width:100%;justify-content:center;padding:10px;margin-top:8px;" onclick="resetToEvenSplit()">↻ Reset to even split</button>` : ''}
+        ${strategy === 'USER_SPECIFIED' ? `<button class="quick-link muted" style="width:100%;justify-content:center;padding:10px;margin-top:8px;">↻ <span onclick="resetToEvenSplit()">Reset to even split</span></button>` : ''}
 
         <div class="tab-invite-teaser" onclick="openTabInvite()">
-            <span class="tab-invite-icon">🎉</span>
+            <span class="tab-invite-icon"></span>
             <div>
                 <div class="tab-invite-title">Split this with friends</div>
                 <div class="tab-invite-sub">Invite other VouchMorph users to hook their own sources to this tab — coming soon</div>
@@ -1866,7 +1772,6 @@ function renderTabBuilder() {
 }
 
 function renderTabSourceCard(src, idx) {
-    const icons = { ACCOUNT: '🏦', WALLET: '📱', CARD: '💳', VOUCHER: '🎟️', 'CASHOUT-VOUCHER': '🎟️' };
     if (!src.institution) {
         return `<div class="tab-source-empty">
             <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px;">Source ${idx + 1} — not set up yet</div>
@@ -1896,11 +1801,12 @@ function renderTabSourceCard(src, idx) {
         amountHtml = `<div class="field-group" style="margin-top:8px;"><label>Amount from this source</label><input type="number" min="0.01" step="0.01" value="${src.amount || ''}" placeholder="0.00" oninput="tabSourceAmountEdited(${src.id}, this.value)"></div>`;
     }
 
+    const swatch = COMPOSITION_PALETTE[idx % COMPOSITION_PALETTE.length];
     return `<div class="tab-source-card">
         <div style="display:flex;justify-content:space-between;align-items:center;">
             <div style="display:flex;align-items:center;gap:8px;">
-                <span style="font-size:18px;">${icons[String(src.assetType).toUpperCase()] || '🔗'}</span>
-                <div><div style="font-weight:700;font-size:14px;">${escapeHtml(instName)}</div><div style="font-size:11px;color:var(--text-dim);">${escapeHtml(getAssetConfig(src.assetType)?.label || src.assetType || '')}</div></div>
+                <span style="width:10px;height:10px;background:${swatch};flex-shrink:0;"></span>
+                <div><div style="font-weight:700;font-size:13px;">${escapeHtml(instName)}</div><div style="font-size:11px;color:var(--text-dim);">${escapeHtml(getAssetConfig(src.assetType)?.label || src.assetType || '')}</div></div>
             </div>
             ${state.multiSources.length > 2 ? `<button class="btn-danger-outline" onclick="removeMultiSourceRow(${src.id}); reopenTabBuilder();">Remove</button>` : ''}
         </div>
@@ -1934,7 +1840,6 @@ function pickSavedSourceForTab(rowId) {
     if (eligible.length === 0) { showMessage('No saved sources yet — add one from the toolbox first.', 'info'); return; }
     const rows = eligible.map(s => `
         <div class="saved-source-row" onclick="applySavedSourceToTab(${rowId}, '${s.id}')">
-            <span class="row-icon">🔗</span>
             <div class="row-main"><div class="row-inst">${escapeHtml(PARTICIPANTS[s.institution]?.name || s.institution)}</div><div class="row-ident">${escapeHtml(s.identifier || '')}</div></div>
         </div>`).join('');
     document.getElementById('tabBuilderGenerated').innerHTML = `<div class="saved-source-list">${rows}</div><div class="cta-row" style="margin-top:14px;"><button class="btn btn-secondary" onclick="reopenTabBuilder()">Back</button></div>`;
@@ -1959,9 +1864,8 @@ function applySavedSourceToTab(rowId, sourceId) {
 function openTabInvite() {
     document.getElementById('tabBuilderGenerated').innerHTML = `
         <div style="text-align:center;padding:20px 10px;">
-            <div style="font-size:40px;">🎉</div>
-            <div style="font-weight:800;font-size:16px;margin:8px 0 4px;">Split This Tab</div>
-            <div style="font-size:13px;color:var(--text-muted);max-width:320px;margin:0 auto 16px;">Soon you'll be able to share a code with friends — they hook their own account, wallet, card, or voucher onto this exact tab, and one swipe covers the whole bill.</div>
+            <div style="font-weight:700;font-size:15px;margin:8px 0 4px;">Split this tab</div>
+            <div style="font-size:12px;color:var(--text-muted);max-width:320px;margin:0 auto 16px;">Soon you'll be able to share a code with friends — they hook their own account, wallet, card, or voucher onto this exact tab, and one swipe covers the whole bill.</div>
             <div style="font-size:11px;color:var(--text-dim);">Not available in this build yet.</div>
         </div>
         <div class="cta-row"><button class="btn btn-primary" onclick="reopenTabBuilder()">Back to my tab</button></div>`;
@@ -1987,7 +1891,7 @@ function getSwapReadiness() {
     
     if (state.swapType === 'MULTI_SOURCE') {
         if (!(state.tabTotalAmount > 0)) {
-            reasons.push('enter the total amount to move');
+            reasons.push('enter the total amount to swap');
         }
         if (!multiSourcesValid()) {
             state.multiSources.forEach((s, idx) => {
@@ -2008,10 +1912,10 @@ function getSwapReadiness() {
             if (voucherTotalExceedsTarget()) reasons.push('voucher total exceeds your tab amount');
             else if (state.contributionStrategy === 'USER_SPECIFIED' && Math.abs(tabRemaining()) > 0.01) reasons.push('manually allocated amounts don\'t add up to the total');
             else if (hasDuplicateInstitution() && state.contributionStrategy === 'USER_SPECIFIED') reasons.push('manual mode needs one source per institution');
-            else reasons.push('build your tab (at least 2 sources, in the Build Your Tab panel)');
+            else reasons.push('build your tab (at least 2 sources, in the Combine Sources panel)');
         }
         if (state.multiDestMode === 'identity') {
-            if (!state.toIdentityValue) reasons.push('enter the identity value to send to');
+            if (!state.toIdentityValue) reasons.push('enter the identity value to swap to');
         } else {
             if (!state.toInst) reasons.push('select a destination institution');
             else if (!state.toAsset) reasons.push('select a destination asset type');
@@ -2046,7 +1950,7 @@ function getSwapReadiness() {
     if (state.swapType === 'IDENTITY') {
         if (!state.toIdentityValue) {
             missingFields.push('Identity: identity value required');
-            reasons.push('enter the identity value to send to');
+            reasons.push('enter the identity value to swap to');
         }
     } else if (state.swapType === 'CASHOUT') {
         if (!state.toInst) {
@@ -2079,21 +1983,6 @@ function isSwapReady() {
     return getSwapReadiness().ready;
 }
 
-function updateProgressDots() {
-    const d1 = document.getElementById('dot1');
-    const d2 = document.getElementById('dot2');
-    const d3 = document.getElementById('dot3');
-    if (d1) d1.classList.toggle('done', state.fromAmount > 0);
-    if (d2) d2.classList.toggle('done', !!(state.fromInst && state.fromAsset) || !!selectedSourceId);
-    if (d3) {
-        let destOk = false;
-        if (state.swapType === 'IDENTITY') destOk = !!state.toIdentityValue;
-        else if (state.swapType === 'MULTI_SOURCE') destOk = state.multiDestMode === 'identity' ? !!state.toIdentityValue : !!(state.toInst && state.toAsset);
-        else destOk = !!(state.toInst && (state.swapType === 'CASHOUT' || state.toAsset));
-        d3.classList.toggle('done', destOk);
-    }
-}
-
 function refreshUI() {
     const readiness = getSwapReadiness();
     const btn = document.getElementById('reviewBtn');
@@ -2105,7 +1994,7 @@ function refreshUI() {
             hint.className = '';
             hint.style.display = 'none';
         } else {
-            let msg = '⚠️ ';
+            let msg = '';
             if (readiness.missingFields && readiness.missingFields.length > 0) {
                 msg += 'Missing: ' + readiness.missingFields.join('; ');
             } else {
@@ -2118,7 +2007,6 @@ function refreshUI() {
     }
     updateMultiTotal();
     updateToolboxBadge();
-    updateProgressDots();
     updateSelectionChips();
 }
 
@@ -2154,30 +2042,30 @@ function showPreviewModal(previewData) {
     const destCurrency = data.destination_currency || data.source_currency;
     const bodyHtml = `
         <div class="review-hero">
-            <div class="review-hero-label">Settlement Amount</div>
+            <div class="review-hero-label">Settlement amount</div>
             <div class="review-hero-amount">${formatMoney(netAmount, destCurrency)}</div>
             <div class="review-hero-note">Real-time quote active</div>
         </div>
         <div class="preview-box">
-            <div class="preview-row"><span>Protocol Type</span><span class="value">${swapType.replace(/_/g, ' ')}</span></div>
-            <div class="preview-row"><span>Source Entity</span><span class="value">${escapeHtml(data.source_institution || '—')}</span></div>
-            <div class="preview-row"><span>Destination Entity</span><span class="value">${escapeHtml(data.destination_institution || '—')}</span></div>
-            <div class="preview-row"><span>Principal Amount</span><span class="value">${formatMoney(data.amount_requested, data.source_currency)}</span></div>
-            <div class="preview-row"><span>Transaction Fee</span><span class="value">${formatMoney(data.total_fee, data.source_currency)}</span></div>
+            <div class="preview-row"><span>Protocol type</span><span class="value">${swapType.replace(/_/g, ' ')}</span></div>
+            <div class="preview-row"><span>Source entity</span><span class="value">${escapeHtml(data.source_institution || '—')}</span></div>
+            <div class="preview-row"><span>Destination entity</span><span class="value">${escapeHtml(data.destination_institution || '—')}</span></div>
+            <div class="preview-row"><span>Principal amount</span><span class="value">${formatMoney(data.amount_requested, data.source_currency)}</span></div>
+            <div class="preview-row"><span>Transaction fee</span><span class="value">${formatMoney(data.total_fee, data.source_currency)}</span></div>
         </div>
         <div class="preview-security">
-            <div class="preview-security-icon">🔒</div>
+            <div class="preview-security-icon"></div>
             <div class="preview-security-text">
-                <strong>Encrypted Settlement Guaranteed</strong>
+                <strong>Encrypted settlement guaranteed</strong>
                 <p>This transaction is protected by VouchMorph's audit-grade multi-layer encryption. All funds are cleared through institutional protocols.</p>
             </div>
         </div>
         <div class="modal-actions">
-            <button class="btn btn-secondary" onclick="closeModal()">Discard Request</button>
-            <button class="btn btn-primary" onclick="confirmSwap()">✓ Confirm &amp; Execute Transfer</button>
+            <button class="btn btn-secondary" onclick="closeModal()">Discard</button>
+            <button class="btn btn-primary" onclick="confirmSwap()">Confirm and swap</button>
         </div>`;
     state.lastPreview = previewData;
-    openModal('Review Transaction', bodyHtml);
+    openModal('Review swap', bodyHtml);
 }
 async function confirmSwap() {
     closeModal();
@@ -2200,18 +2088,18 @@ function showResultModal(response) {
     const reference = response.swap_reference || data.reference || '—';
     let inner = '';
     if (swapType === 'CASHOUT') {
-        inner = `<div class="icon">&#127881;</div><div style="font-size:18px;font-weight:700;">Cashout Code Generated</div><div style="color:var(--text-muted);">Reference: ${escapeHtml(reference)}</div>${data.atm_code || data.voucher_number ? `<div class="atm-code"><div class="code">${escapeHtml(data.atm_code || data.voucher_number || '')}</div></div>` : ''}<div style="margin-top:12px;"><div style="font-size:24px;font-weight:700;">${formatMoney(data.amount ?? state.swapPayload.amount, state.swapPayload.currency)}</div></div>`;
+        inner = `<div class="result-box"><div class="icon">&#10003;</div><div class="result-title">Cashout code generated</div><div class="result-sub">Reference: ${escapeHtml(reference)}</div>${data.atm_code || data.voucher_number ? `<div class="atm-code"><div class="code">${escapeHtml(data.atm_code || data.voucher_number || '')}</div></div>` : ''}<div style="margin-top:12px;"><div style="font-size:22px;font-weight:600;font-family:var(--font-mono);">${formatMoney(data.amount ?? state.swapPayload.amount, state.swapPayload.currency)}</div></div>`;
     } else if (swapType === 'IDENTITY') {
         const claimPinBox = data.claim_pin ? `
             <div class="atm-code" style="margin-top:12px;">
                 <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Backup PIN — only share this if the recipient doesn't get the SMS</div>
                 <div class="code">${escapeHtml(data.claim_pin)}</div>
             </div>` : '';
-        inner = `<div class="icon">&#127881;</div><div style="font-size:18px;font-weight:700;">Identity Swap Initiated</div><div style="color:var(--text-muted);">Reference: ${escapeHtml(reference)}</div><div style="margin:12px 0;"><strong>${escapeHtml(data.identity_type || state.swapPayload.identity_type)}: ${escapeHtml(data.identity_value || state.swapPayload.identity_value)}</strong></div><div style="font-size:24px;font-weight:700;">${formatMoney(data.amount ?? state.swapPayload.amount, data.currency || state.swapPayload.currency)}</div>${claimPinBox}`;
+        inner = `<div class="result-box"><div class="icon">&#10003;</div><div class="result-title">Identity swap initiated</div><div class="result-sub">Reference: ${escapeHtml(reference)}</div><div style="margin:12px 0;font-size:13px;"><strong>${escapeHtml(data.identity_type || state.swapPayload.identity_type)}: ${escapeHtml(data.identity_value || state.swapPayload.identity_value)}</strong></div><div style="font-size:22px;font-weight:600;font-family:var(--font-mono);">${formatMoney(data.amount ?? state.swapPayload.amount, data.currency || state.swapPayload.currency)}</div>${claimPinBox}`;
     } else {
-        inner = `<div class="icon">&#127881;</div><div style="font-size:18px;font-weight:700;">Swap Completed</div><div style="color:var(--text-muted);">Reference: ${escapeHtml(reference)}</div><div style="font-size:24px;font-weight:700;margin-top:12px;">${formatMoney(data.amount ?? state.swapPayload.amount, data.currency || data.destination_currency || state.swapPayload.destination_currency || state.swapPayload.currency)}</div>`;
+        inner = `<div class="result-box"><div class="icon">&#10003;</div><div class="result-title">Swap completed</div><div class="result-sub">Reference: ${escapeHtml(reference)}</div><div style="font-size:22px;font-weight:600;font-family:var(--font-mono);margin-top:12px;">${formatMoney(data.amount ?? state.swapPayload.amount, data.currency || data.destination_currency || state.swapPayload.destination_currency || state.swapPayload.currency)}</div>`;
     }
-    openModal('Swap Result', `<div class="result-box">${inner}<div class="cta-row"><button class="btn btn-primary" onclick="closeModal(); location.reload();">Done</button></div></div>`);
+    openModal('Swap result', `${inner}<div class="cta-row" style="margin-top:16px;"><button class="btn btn-primary" onclick="closeModal(); location.reload();">Done</button></div></div>`);
 }
 
 const IDENTITY_TYPE_LABELS = { national_id: 'National ID', birth_certificate: 'Birth Certificate', voter_id: 'Voter ID', phone: 'Phone Number', email: 'Email' };
@@ -2281,15 +2169,12 @@ function renderSavedSourceChips() {
     emptyPrompt.style.display = 'none';
     container.style.display = 'block';
 
-    const icons = { BANK: '🏦', WALLET: '📱', ACCOUNT: '🏦', 'MNO-WALLET': '📱', 'BANK-WALLET': '🏦' };
     chipsContainer.innerHTML = activeSources.map(source => {
         const instName = PARTICIPANTS[source.institution]?.name || source.institution;
         const identifier = source.identifier || source.source_identifier || '';
         const isSelected = selectedSourceId === source.id;
-        const icon = icons[String(source.asset_type).toUpperCase()] || '🔗';
         return `
             <div class="saved-source-row ${isSelected ? 'active' : ''}" onclick="selectSavedSource('${source.id}')">
-                <span class="row-icon">${icon}</span>
                 <div class="row-main">
                     <div class="row-inst">${escapeHtml(instName)}</div>
                     <div class="row-ident">${escapeHtml(identifier)}${source.account_name ? ' · ' + escapeHtml(source.account_name) : ''}</div>
@@ -2356,7 +2241,7 @@ function selectSavedSource(sourceId) {
                 input.value = identifier;
                 newFields[identifierField.name] = identifier;
                 input.disabled = true;
-                input.style.background = 'var(--surface)';
+                input.style.background = 'var(--surface-muted)';
                 input.style.color = 'var(--text-dim)';
                 let helpText = input.parentElement?.querySelector('.help');
                 if (helpText) { 
@@ -2376,7 +2261,7 @@ function selectSavedSource(sourceId) {
                     pinInput.value = pin;
                     newFields[pinField.name] = pin;
                     pinInput.disabled = true;
-                    pinInput.style.background = 'var(--surface)';
+                    pinInput.style.background = 'var(--surface-muted)';
                     pinInput.style.color = 'var(--text-dim)';
                 } else {
                     newFields[pinField.name] = pin;
@@ -2438,8 +2323,8 @@ function renderMySourcesLegacy() {
         return `
             <div style="text-align:center;padding:20px;">
                 <div style="font-weight:700;margin:8px 0;">No sources added yet</div>
-                <div style="font-size:13px;color:var(--text-muted);margin-bottom:16px;">Link your bank accounts, wallets, or cards to use them as swap sources.</div>
-                <button class="btn btn-primary" onclick="openAddSource()">+ Add Source</button>
+                <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px;">Link your bank accounts, wallets, or cards to use them as swap sources.</div>
+                <button class="btn btn-primary" onclick="openAddSource()">Add source</button>
             </div>`;
     }
     const sourceList = userSources.map(source => {
@@ -2467,7 +2352,7 @@ function renderMySourcesLegacy() {
     }).join('');
     return `
         <div style="margin-bottom:16px;">
-            <button class="btn btn-primary btn-sm" onclick="openAddSource()">+ Add New Source</button>
+            <button class="btn btn-primary btn-sm" onclick="openAddSource()">Add new source</button>
             <span style="font-size:12px;color:var(--text-muted);margin-left:12px;">${userSources.length} source(s) linked</span>
         </div>
         <div>${sourceList}</div>
@@ -2487,7 +2372,7 @@ function openAddSource() {
     const instOptions = Object.keys(PARTICIPANTS).map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('');
     const body = `
         <div style="margin-bottom:16px;">
-            <div style="font-size:14px;font-weight:700;margin-bottom:4px;">Link a new source</div>
+            <div style="font-size:13px;font-weight:700;margin-bottom:4px;">Link a new source</div>
             <div style="font-size:12px;color:var(--text-muted);">Your bank will verify ownership via OTP or OAuth.</div>
         </div>
         <div class="field-group">
@@ -2497,7 +2382,7 @@ function openAddSource() {
             </select>
         </div>
         <div class="field-group" id="addSourceAssetGroup" style="display:none;">
-            <label>Asset Type</label>
+            <label>Asset type</label>
             <select id="addSourceAssetType"></select>
             <div class="help">Users can only add Accounts, Wallets, or Cards.</div>
         </div>
@@ -2507,11 +2392,11 @@ function openAddSource() {
             <div class="help">The number that identifies your account at this institution.</div>
         </div>
         <div class="field-group">
-            <label>Account Name (optional)</label>
+            <label>Account name (optional)</label>
             <input id="addSourceAccountName" placeholder="e.g. My Main Account">
         </div>
         <div id="addSourceOtpFields" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
-            <div style="font-size:13px;font-weight:700;margin-bottom:8px;">Verify with OTP</div>
+            <div style="font-size:12px;font-weight:700;margin-bottom:8px;">Verify with OTP</div>
             <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;" id="otpMessage">A verification code has been sent to your registered phone.</div>
             <div class="otp-input-group">
                 <input type="text" id="addSourceOtp" placeholder="Enter code" inputmode="numeric" maxlength="8">
@@ -2522,7 +2407,7 @@ function openAddSource() {
             <button class="btn btn-secondary" onclick="openMySourcesLegacy()">Cancel</button>
             <button class="btn btn-primary" id="addSourceSubmitBtn" onclick="submitAddSource()">Link source</button>
         </div>`;
-    openModal('Add Source', body);
+    openModal('Add source', body);
 }
 
 let addSourceState = { attemptId: null, requiresOtp: false, requiresRedirect: false, redirectUrl: null, institution: null, assetType: null, identifier: null };
@@ -2605,7 +2490,7 @@ async function removeSource(sourceId) {
 }
 
 function openPendingSources() {
-    openModal('Pending Sources', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading pending sources...</div>');
+    openModal('Pending sources', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading pending sources...</div>');
     loadPendingSources();
 }
 async function loadPendingSources() {
@@ -2614,7 +2499,7 @@ async function loadPendingSources() {
         document.getElementById('modalBody').innerHTML = `
             <div style="text-align:center;padding:20px;color:var(--danger);">
                 <div style="font-weight:700;">Failed to load pending sources</div>
-                <div style="font-size:13px;color:var(--text-muted);margin-top:8px;">${escapeHtml(result.error)}</div>
+                <div style="font-size:12px;color:var(--text-muted);margin-top:8px;">${escapeHtml(result.error)}</div>
                 <button class="btn btn-primary btn-sm" onclick="loadPendingSources()" style="margin-top:12px;">Retry</button>
             </div>`;
         return;
@@ -2627,9 +2512,8 @@ function renderPendingSources() {
     if (!pendingSources || pendingSources.length === 0) {
         container.innerHTML = `
             <div style="text-align:center;padding:30px;color:var(--text-muted);">
-                <div style="font-size:40px;margin-bottom:12px;">✓</div>
-                <div style="font-weight:700;font-size:18px;">No pending sources</div>
-                <div style="font-size:13px;margin-top:8px;">All your sources are active and verified.</div>
+                <div style="font-weight:700;font-size:16px;">No pending sources</div>
+                <div style="font-size:12px;margin-top:8px;">All your sources are active and verified.</div>
             </div>`;
         return;
     }
@@ -2638,7 +2522,6 @@ function renderPendingSources() {
         const statusLabel = getSourceStatusLabel(source);
         const statusClass = getSourceStatusClass(source);
         const sourceTypeLabel = getSourceTypeLabel(source);
-        const icon = getSourceIcon(source);
         const canDelete = ['pending_confirmation', 'pending', 'proposed', 'otp_pending', 'oauth_pending'].includes(source.status);
         const canRetry = ['cancelled', 'rejected', 'failed'].includes(source.status);
         const isExpiring = source.is_expiring || false;
@@ -2646,7 +2529,7 @@ function renderPendingSources() {
             <div class="source-card" style="border-left: 3px solid ${isExpiring ? 'var(--warning)' : 'var(--border)'};">
                 <div class="source-header">
                     <div>
-                        <div class="source-institution"><span style="margin-right:8px;">${icon}</span>${escapeHtml(source.institution_name || source.institution)}
+                        <div class="source-institution">${escapeHtml(source.institution_name || source.institution)}
                             <span style="font-size:11px;color:var(--text-muted);font-weight:400;margin-left:6px;">(${sourceTypeLabel})</span>
                         </div>
                         <div class="source-details" style="margin-top:4px;">
@@ -2685,10 +2568,6 @@ function getSourceTypeLabel(source) {
     const typeMap = { user_source: 'Source', agent_destination: 'Agent Destination', registration_attempt: 'Verification Attempt', agent_attempt: 'Agent Verification' };
     return typeMap[source.type] || source.type;
 }
-function getSourceIcon(source) {
-    const iconMap = { user_source: '🏦', agent_destination: '🏢', registration_attempt: '📱', agent_attempt: '📋' };
-    return iconMap[source.type] || '📌';
-}
 async function deletePendingSource(type, sourceId) {
     if (!confirm('Delete this pending source? It can be re-added later.')) return;
     const btn = document.querySelector(`[onclick*="deletePendingSource('${type}', ${sourceId})"]`);
@@ -2715,10 +2594,6 @@ async function retryPendingSource(type, sourceId) {
     loadPendingSources();
 }
 
-// ============================================================
-// TOOLBOX — grouped into sections
-// ============================================================
-
 async function openToolbox() {
     openModal('Toolbox', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading...</div>');
     await getCurrentUserRole();
@@ -2734,19 +2609,19 @@ function renderToolbox() {
         {
             title: 'Money',
             rows: [
-                { label: 'View balance', icon: '💰', action: 'viewWalletBalance()' },
-                { label: 'My sources', icon: '🔗', action: 'openMySourcesLegacy()' },
-                { label: 'Add source', icon: '➕', action: 'openAddSource()' },
-                { label: 'Pending sources', icon: '⏳', badge: pendingCount > 0 ? pendingCount : null, action: 'openPendingSources()' },
-                { label: 'Swap history', icon: '🕘', action: 'openSwapHistory()' },
-                { label: 'VouchMorph Card', icon: '💳', action: "quickSetSwapType('MULTI_SOURCE'); setTimeout(() => tabSetMultiDest('vmcard'), 100);" },
+                { label: 'View balance', action: 'viewWalletBalance()' },
+                { label: 'My sources', action: 'openMySourcesLegacy()' },
+                { label: 'Add source', action: 'openAddSource()' },
+                { label: 'Pending sources', badge: pendingCount > 0 ? pendingCount : null, action: 'openPendingSources()' },
+                { label: 'Swap history', action: 'openSwapHistory()' },
+                { label: 'VouchMorph Card', action: "quickSetSwapType('MULTI_SOURCE'); setTimeout(() => tabSetMultiDest('vmcard'), 100);" },
             ]
         },
         {
             title: 'Identity',
             rows: [
-                { label: 'Finalize identity swap', icon: '📩', badge: claimCount > 0 ? claimCount : null, action: isAgent ? 'openAgentFinalizeIdentityModal()' : 'openFinalizeIdentityModal()' },
-                { label: 'Register identity', icon: '🪪', action: 'openAddIdentityModal()' },
+                { label: 'Finalize identity swap', badge: claimCount > 0 ? claimCount : null, action: isAgent ? 'openAgentFinalizeIdentityModal()' : 'openFinalizeIdentityModal()' },
+                { label: 'Register identity', action: 'openAddIdentityModal()' },
             ]
         },
     ];
@@ -2755,8 +2630,8 @@ function renderToolbox() {
         groups.push({
             title: 'Agent',
             rows: [
-                { label: 'Agent tools', icon: '🕵️', action: 'openAgentToolsModal()' },
-                { label: 'Agent destinations', icon: '🏢', action: 'openAgentModal()' },
+                { label: 'Agent tools', action: 'openAgentToolsModal()' },
+                { label: 'Agent destinations', action: 'openAgentModal()' },
             ]
         });
     }
@@ -2764,9 +2639,9 @@ function renderToolbox() {
     groups.push({
         title: 'Account',
         rows: [
-            { label: 'My profile', icon: '👤', action: 'openProfileModal()' },
-            { label: 'Help', icon: '❓', action: 'openHelpModal()' },
-            { label: 'Terms & conditions', icon: '📄', action: 'openTermsModal()' },
+            { label: 'My profile', action: 'openProfileModal()' },
+            { label: 'Help', action: 'openHelpModal()' },
+            { label: 'Terms and conditions', action: 'openTermsModal()' },
         ]
     });
 
@@ -2775,9 +2650,8 @@ function renderToolbox() {
             <div class="toolbox-group-title">${g.title}</div>
             <div class="toolbox-list">${g.rows.map(r => `
                 <div class="toolbox-row" onclick="${r.action}">
-                    <span class="toolbox-row-icon">${r.icon || ''}</span>
                     <span class="toolbox-row-label">${r.label}</span>
-                    ${r.badge ? `<span class="toolbox-row-badge">${r.badge}</span>` : ''}
+                    ${r.badge ? `<span class="toolbox-badge" style="display:inline-flex;">${r.badge}</span>` : ''}
                 </div>`).join('')}</div>
         </div>`).join('');
 }
@@ -2789,12 +2663,8 @@ function updateToolboxBadge() {
     if (totalPending > 0) { badge.style.display = 'inline-flex'; badge.textContent = totalPending; } else { badge.style.display = 'none'; }
 }
 
-// ============================================================
-// FINALIZE IDENTITY SWAP (receiving money sent to you)
-// ============================================================
-
 function openFinalizeIdentityModal() {
-    openModal('Finalize Identity Swap', renderFinalizeIdentityModal());
+    openModal('Finalize identity swap', renderFinalizeIdentityModal());
 }
 
 function renderFinalizeIdentityModal() {
@@ -2808,16 +2678,16 @@ function renderFinalizeIdentityModal() {
             const hasCode = !!(code || pin || claimPin);
             const codeInlineHtml = hasCode ? `
                 <div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--border);display:flex;gap:16px;flex-wrap:wrap;">
-                    ${code ? `<div><div style="font-size:10px;color:var(--text-dim);">Code</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(code)}</div></div>` : ''}
-                    ${pin ? `<div><div style="font-size:10px;color:var(--text-dim);">PIN</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(pin)}</div></div>` : ''}
-                    ${claimPin ? `<div><div style="font-size:10px;color:var(--text-dim);">Claim PIN</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(claimPin)}</div></div>` : ''}
+                    ${code ? `<div><div style="font-size:10px;color:var(--text-dim);">Code</div><div style="font-family:var(--font-mono);font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(code)}</div></div>` : ''}
+                    ${pin ? `<div><div style="font-size:10px;color:var(--text-dim);">PIN</div><div style="font-family:var(--font-mono);font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(pin)}</div></div>` : ''}
+                    ${claimPin ? `<div><div style="font-size:10px;color:var(--text-dim);">Claim PIN</div><div style="font-family:var(--font-mono);font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(claimPin)}</div></div>` : ''}
                     ${c.voucher_expiry ? `<div><div style="font-size:10px;color:var(--text-dim);">Expires</div><div style="font-size:12px;color:var(--text-muted);">${new Date(c.voucher_expiry).toLocaleString()}</div></div>` : ''}
                 </div>` : '';
             return `
-            <div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px;background:#fff;">
+            <div style="border:1px solid var(--border);padding:13px;margin-bottom:8px;background:#fff;">
                 <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
                     <div style="flex:1;">
-                        <div style="font-weight:700;font-size:16px;color:var(--accent);">${formatMoney(c.amount, c.currency)}</div>
+                        <div style="font-weight:700;font-size:15px;color:var(--accent);font-family:var(--font-mono);">${formatMoney(c.amount, c.currency)}</div>
                         <div style="font-size:12px;color:var(--text-muted);">From ${escapeHtml(c.source_institution || 'Unknown')}</div>
                         <div style="font-size:11px;color:var(--text-dim);">Needs ${pinLabel} · Expires ${c.hold_expires_at ? new Date(c.hold_expires_at).toLocaleString() : 'soon'}</div>
                     </div>
@@ -2833,9 +2703,9 @@ function renderFinalizeIdentityModal() {
         <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:4px;">
             <div class="field-label" style="margin-bottom:6px;">Need to claim an identity swap?</div>
             <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">If you received a swap notification, enter the claim PIN below to complete the transaction.</div>
-            <div class="field-group"><label>Swap Reference</label><input id="directClaimRef" placeholder="e.g. SWAP_123456789"></div>
+            <div class="field-group"><label>Swap reference</label><input id="directClaimRef" placeholder="e.g. SWAP_123456789"></div>
             <div class="field-group"><label>Claim PIN</label><input type="password" id="directClaimPin" placeholder="Enter the PIN you received" maxlength="6"></div>
-            <div class="cta-row"><button class="btn btn-primary" onclick="submitDirectClaim()">Claim Swap</button></div>
+            <div class="cta-row"><button class="btn btn-primary" onclick="submitDirectClaim()">Claim swap</button></div>
         </div>
         <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px;font-size:11px;color:var(--text-dim);">
             <span class="quick-link muted" onclick="closeModal();openAddIdentityModal();">Need to register a new identity instead? Click here →</span>
@@ -2871,18 +2741,18 @@ function openClaimForm(idx) {
     if (!claim) return;
     const pinHint = claim.claim_type === 'otp_pin' ? 'Use the one-time PIN sent by SMS when this money was sent.' : 'Use your VouchMorph transaction PIN.';
     const body = `
-        <div style="background:var(--accent-soft);border-radius:var(--radius);padding:14px;margin-bottom:14px;">
-            <div style="font-size:20px;font-weight:700;color:var(--accent);">${formatMoney(claim.amount, claim.currency)}</div>
+        <div style="background:var(--accent-soft);padding:14px;margin-bottom:14px;">
+            <div style="font-size:20px;font-weight:600;color:var(--accent);font-family:var(--font-mono);">${formatMoney(claim.amount, claim.currency)}</div>
             <div style="font-size:12px;color:var(--text-muted);">From ${escapeHtml(claim.source_institution || 'Unknown')}</div>
         </div>
         <div class="field-group"><label>Claim PIN</label><input type="password" id="claimPin" inputmode="numeric" maxlength="6" placeholder="••••"><div class="help">${pinHint}</div></div>
         <div class="field-group"><label>Receive as</label><select id="claimDestType" onchange="toggleClaimDestFields(this.value)"><option value="CASHOUT">Cashout (ATM / Agent code)</option><option value="DEPOSIT">Deposit to an account/wallet</option></select></div>
         <div id="claimDepositFields" style="display:none;">
-            <div class="field-group"><label>Destination Institution</label><select id="claimDestInst"><option value="">Select institution</option>${Object.keys(PARTICIPANTS).map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('')}</select></div>
-            <div class="field-group"><label>Account / Wallet Number</label><input id="claimDestIdentifier" placeholder="Account number or phone"></div>
+            <div class="field-group"><label>Destination institution</label><select id="claimDestInst"><option value="">Select institution</option>${Object.keys(PARTICIPANTS).map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('')}</select></div>
+            <div class="field-group"><label>Account / wallet number</label><input id="claimDestIdentifier" placeholder="Account number or phone"></div>
         </div>
-        <div class="cta-row"><button class="btn btn-secondary" onclick="openFinalizeIdentityModal()">← Back</button><button class="btn btn-primary" onclick="submitClaim('${claim.swap_reference}')">Finalize</button></div>`;
-    openModal('Finalize Identity Swap', body);
+        <div class="cta-row"><button class="btn btn-secondary" onclick="openFinalizeIdentityModal()">Back</button><button class="btn btn-primary" onclick="submitClaim('${claim.swap_reference}')">Finalize</button></div>`;
+    openModal('Finalize identity swap', body);
 }
 
 function toggleClaimDestFields(type) { document.getElementById('claimDepositFields').style.display = type === 'DEPOSIT' ? 'block' : 'none'; }
@@ -2902,12 +2772,8 @@ async function submitClaim(swapReference) {
     closeModal(); showMessage('Funds claimed successfully!', 'success'); checkPendingClaims();
 }
 
-// ============================================================
-// REGISTER IDENTITY
-// ============================================================
-
 function openAddIdentityModal() {
-    openModal('Register Identity', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading...</div>');
+    openModal('Register identity', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading...</div>');
     getCurrentUserRole().then(session => {
         if (session.is_agent) {
             renderAgentIdentityForm();
@@ -2919,13 +2785,13 @@ function openAddIdentityModal() {
 
 function renderUserIdentityForm() {
     document.getElementById('modalBody').innerHTML = `
-        <div style="max-width:400px;">
-            <div style="font-weight:800;font-size:16px;margin-bottom:4px;">Add an identity to your account</div>
-            <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px;">Register a phone number, email, or ID so people can send swaps directly to you.</div>
+        <div>
+            <div style="font-weight:700;font-size:15px;margin-bottom:4px;">Add an identity to your account</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px;">Register a phone number, email, or ID so people can swap directly to you.</div>
             
             <div class="field-group">
-                <label>Identity Type</label>
-                <select id="userIdentityType" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;">
+                <label>Identity type</label>
+                <select id="userIdentityType">
                     <option value="phone">Phone Number</option>
                     <option value="email">Email</option>
                     <option value="national_id">National ID</option>
@@ -2935,12 +2801,12 @@ function renderUserIdentityForm() {
             </div>
             
             <div class="field-group">
-                <label>Identity Value</label>
-                <input type="text" id="userIdentityValue" placeholder="Enter the ID number, phone, or email" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;">
+                <label>Identity value</label>
+                <input type="text" id="userIdentityValue" placeholder="Enter the ID number, phone, or email">
             </div>
             
-            <div style="background:var(--accent-soft);border-left:3px solid var(--accent);padding:10px 14px;border-radius:6px;font-size:12px;margin-bottom:14px;">
-                💡 Phone numbers are verified instantly via SMS. National IDs and other documents require in-person verification by a VouchMorph agent.
+            <div style="background:var(--accent-soft);border-left:3px solid var(--accent);padding:10px 14px;font-size:12px;margin-bottom:14px;">
+                Phone numbers are verified instantly via SMS. National IDs and other documents require in-person verification by a VouchMorph agent.
             </div>
             
             <div id="regIdentityOtpFields" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
@@ -2953,7 +2819,7 @@ function renderUserIdentityForm() {
             
             <div class="cta-row">
                 <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-                <button class="btn btn-primary" onclick="submitRegisterIdentity()">Register Identity</button>
+                <button class="btn btn-primary" onclick="submitRegisterIdentity()">Register identity</button>
             </div>
             
             <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px;font-size:11px;color:var(--text-dim);">
@@ -2964,18 +2830,18 @@ function renderUserIdentityForm() {
 
 function renderAgentIdentityForm() {
     document.getElementById('modalBody').innerHTML = `
-        <div style="max-width:420px;">
-            <div style="font-weight:800;font-size:16px;margin-bottom:4px;">Register a verified identity (Agent)</div>
+        <div>
+            <div style="font-weight:700;font-size:15px;margin-bottom:4px;">Register a verified identity (Agent)</div>
             <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px;">Use this after physically verifying the person's document.</div>
             
             <div class="field-group">
                 <label>Account holder's phone or email</label>
-                <input type="text" id="agentTargetLookup" placeholder="Phone or email on their VouchMorph account" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;">
+                <input type="text" id="agentTargetLookup" placeholder="Phone or email on their VouchMorph account">
             </div>
             
             <div class="field-group">
-                <label>Identity Type</label>
-                <select id="agentIdentityType" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;">
+                <label>Identity type</label>
+                <select id="agentIdentityType">
                     <option value="national_id">National ID</option>
                     <option value="voters_id">Voter's ID</option>
                     <option value="drivers_license">Driver's License</option>
@@ -2985,19 +2851,19 @@ function renderAgentIdentityForm() {
             </div>
             
             <div class="field-group">
-                <label>ID Number</label>
-                <input type="text" id="agentIdentityValue" placeholder="Document number" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;">
+                <label>ID number</label>
+                <input type="text" id="agentIdentityValue" placeholder="Document number">
             </div>
             
             <div class="field-group">
                 <label style="display:flex;align-items:center;gap:8px;text-transform:none;font-weight:400;">
-                    <input type="checkbox" id="agentDocVerified"> I have physically verified this document
+                    <input type="checkbox" id="agentDocVerified" style="width:auto;"> I have physically verified this document
                 </label>
             </div>
             
             <div class="cta-row">
                 <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-                <button class="btn btn-primary" onclick="submitAgentIdentity()">Register Identity</button>
+                <button class="btn btn-primary" onclick="submitAgentIdentity()">Register identity</button>
             </div>
         </div>`;
 }
@@ -3084,10 +2950,6 @@ async function submitVerifyIdentityOtp() {
     setTimeout(() => closeModal(), 2000);
 }
 
-// ============================================================
-// AGENT FUNCTIONS
-// ============================================================
-
 async function getCurrentUserRole() {
     if (SessionUser) return SessionUser;
     const result = await callApi(CONFIG.API_BASE + '/user/whoami.php', {});
@@ -3111,7 +2973,7 @@ async function loadAgentStatus() {
 }
 
 async function openAgentModal() {
-    openModal('Agent Account', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading...</div>');
+    openModal('Agent account', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading...</div>');
     await getCurrentUserRole();
     const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/status.php', {});
     if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="color:var(--danger);">Failed to load agent status: ${escapeHtml(result.error)}</div>`; return; }
@@ -3126,11 +2988,10 @@ function renderAgentModal() {
         const isPending = d.status === 'pending_confirmation';
         const isRejected = d.status === 'rejected';
         const canCancel = isPending || isRejected;
-        const badge = d.status === 'active' ? '<span style="background:rgba(31,138,84,0.12);color:var(--success);padding:3px 10px;border-radius:0;font-size:11px;font-weight:700;">Active</span>'
-            : isPending ? '<span style="background:#fef3c7;color:#8a5a0b;padding:3px 10px;border-radius:0;font-size:11px;font-weight:700;">Pending approval</span>'
-            : isRejected ? '<span style="background:#fbeceb;color:var(--danger);padding:3px 10px;border-radius:0;font-size:11px;font-weight:700;">Rejected</span>'
-            : '<span style="background:#fbeceb;color:var(--danger);padding:3px 10px;border-radius:0;font-size:11px;font-weight:700;">' + (d.status || 'Unknown') + '</span>';
-        return `<div style="border:1px solid var(--border);border-radius:var(--radius);padding:12px;margin-bottom:8px;background:#fff;">
+        const badge = d.status === 'active' ? '<span style="background:rgba(31,138,84,0.1);color:var(--success);padding:2px 8px;font-size:10px;font-weight:700;">Active</span>'
+            : isPending ? '<span style="background:#fef3c7;color:#8a5a0b;padding:2px 8px;font-size:10px;font-weight:700;">Pending approval</span>'
+            : '<span style="background:#fbeceb;color:var(--danger);padding:2px 8px;font-size:10px;font-weight:700;">' + (d.status || 'Unknown') + '</span>';
+        return `<div style="border:1px solid var(--border);padding:12px;margin-bottom:8px;background:#fff;">
             <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
                 <div><div style="font-weight:700;">${escapeHtml(PARTICIPANTS[d.institution]?.name || d.institution)}</div><div style="font-size:12px;color:var(--text-muted);">${escapeHtml(d.identifier)} · ${escapeHtml(d.account_type || d.asset_type)}</div></div>
                 <div style="display:flex;align-items:center;gap:8px;">${badge}${canCancel ? `<button class="btn-danger-outline" onclick="cancelAgentDestination(${d.id})">Cancel</button>` : ''}</div>
@@ -3139,15 +3000,15 @@ function renderAgentModal() {
     }).join('') : '<div style="font-size:12px;color:var(--text-dim);">You have no agent destination accounts registered yet.</div>';
 
     return `
-        <div style="margin-bottom:16px;"><div class="field-label" style="margin-bottom:8px;">Your Agent Accounts</div>${statusRows}</div>
+        <div style="margin-bottom:16px;"><div class="field-label" style="margin-bottom:8px;">Your agent accounts</div>${statusRows}</div>
         <div style="border-top:1px solid var(--border);padding-top:16px;">
-            <div class="field-label" style="margin-bottom:8px;">Register a New Agent Destination</div>
+            <div class="field-label" style="margin-bottom:8px;">Register a new agent destination</div>
             <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Register a business/agent account you hold at a participating institution. Only business or agent-designated accounts are eligible. Approval required before activation.</div>
             <div class="field-group"><label>Institution</label><select id="agentInst" onchange="onAgentInstChange(this.value)"><option value="">Select institution</option>${Object.keys(PARTICIPANTS).map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('')}</select></div>
-            <div class="field-group" id="agentAssetTypeGroup" style="display:none;"><label>Account Type</label><select id="agentAssetType"></select><div class="help">Only Account, Wallet, or Card can be used — vouchers stay manual, never registered as a destination.</div></div>
-            <div class="field-group"><label>Account / Wallet / Card Number</label><input id="agentIdentifier" placeholder="Your business account number"></div>
-            <div class="field-group"><label>Account Name (optional)</label><input id="agentAccountName" placeholder="e.g. Thabo's General Store"></div>
-            <div class="cta-row"><button class="btn btn-primary" onclick="submitAgentDestination()">Register &amp; verify</button></div>
+            <div class="field-group" id="agentAssetTypeGroup" style="display:none;"><label>Account type</label><select id="agentAssetType"></select><div class="help">Only Account, Wallet, or Card can be used — vouchers stay manual, never registered as a destination.</div></div>
+            <div class="field-group"><label>Account / wallet / card number</label><input id="agentIdentifier" placeholder="Your business account number"></div>
+            <div class="field-group"><label>Account name (optional)</label><input id="agentAccountName" placeholder="e.g. Thabo's General Store"></div>
+            <div class="cta-row"><button class="btn btn-primary" onclick="submitAgentDestination()">Register and verify</button></div>
         </div>`;
 }
 
@@ -3176,12 +3037,12 @@ async function submitAgentDestination() {
 
 function renderAgentOtpStep(data) {
     return `
-        <div style="background:var(--accent-soft);border-radius:var(--radius);padding:14px;margin-bottom:16px;">
+        <div style="background:var(--accent-soft);padding:14px;margin-bottom:16px;">
             <div style="font-weight:700;margin-bottom:4px;">Verification code sent</div>
             <div style="font-size:12px;color:var(--text-muted);">${escapeHtml(data.message)}</div>
         </div>
         <div class="field-group"><label>Enter the code</label><input type="text" id="agentOtpCode" inputmode="numeric" maxlength="8" placeholder="Code from your bank"></div>
-        <div class="cta-row"><button class="btn btn-secondary" onclick="openAgentModal()">Cancel</button><button class="btn btn-primary" onclick="verifyAgentOtp(${data.attempt_id})">Verify &amp; register</button></div>`;
+        <div class="cta-row"><button class="btn btn-secondary" onclick="openAgentModal()">Cancel</button><button class="btn btn-primary" onclick="verifyAgentOtp(${data.attempt_id})">Verify and register</button></div>`;
 }
 
 async function verifyAgentOtp(attemptId) {
@@ -3207,19 +3068,15 @@ function onAgentInstChange(code) {
     group.style.display = 'block';
 }
 
-// ============================================================
-// AGENT FINALIZE IDENTITY SWAP
-// ============================================================
-
 function openAgentFinalizeIdentityModal() {
-    openModal('Finalize Identity Swap', renderAgentFinalizeIdentitySearch());
+    openModal('Finalize identity swap', renderAgentFinalizeIdentitySearch());
 }
 
 function renderAgentFinalizeIdentitySearch() {
     return `
         <div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">Search for a client's pending identity payment. You'll need to physically verify their document and have them tell you the OTP PIN texted to them — never their personal VouchMorph transaction PIN — before you can finalize.</div>
-        <div class="field-group"><label>Document Type</label><select id="agentSearchType"><option value="national_id">National ID</option><option value="birth_certificate">Birth Certificate</option><option value="voter_id">Voter ID</option></select></div>
-        <div class="field-group"><label>Document Number</label><input id="agentSearchValue" placeholder="Enter the client's ID number"></div>
+        <div class="field-group"><label>Document type</label><select id="agentSearchType"><option value="national_id">National ID</option><option value="birth_certificate">Birth Certificate</option><option value="voter_id">Voter ID</option></select></div>
+        <div class="field-group"><label>Document number</label><input id="agentSearchValue" placeholder="Enter the client's ID number"></div>
         <div class="cta-row"><button class="btn btn-primary" onclick="searchAgentClaim()">Search</button></div>
         <div id="agentSearchResults" style="margin-top:16px;"></div>
         <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:20px;">
@@ -3229,13 +3086,13 @@ function renderAgentFinalizeIdentitySearch() {
         </div>`;
 }
 
-function openAgentToolsModal() { openModal('Agent Tools', renderAgentToolsSearch()); }
+function openAgentToolsModal() { openModal('Agent tools', renderAgentToolsSearch()); }
 
 function renderAgentToolsSearch() {
     return `
         <div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">Search for a client's pending identity payment. You'll need to physically verify their document and have them tell you the OTP PIN texted to them — never their personal VouchMorph transaction PIN — before you can finalize.</div>
-        <div class="field-group"><label>Document Type</label><select id="agentSearchType"><option value="national_id">National ID</option><option value="birth_certificate">Birth Certificate</option><option value="voter_id">Voter ID</option></select></div>
-        <div class="field-group"><label>Document Number</label><input id="agentSearchValue" placeholder="Enter the client's ID number"></div>
+        <div class="field-group"><label>Document type</label><select id="agentSearchType"><option value="national_id">National ID</option><option value="birth_certificate">Birth Certificate</option><option value="voter_id">Voter ID</option></select></div>
+        <div class="field-group"><label>Document number</label><input id="agentSearchValue" placeholder="Enter the client's ID number"></div>
         <div class="cta-row"><button class="btn btn-primary" onclick="searchAgentClaim()">Search</button></div>
         <div id="agentSearchResults" style="margin-top:16px;"></div>`;
 }
@@ -3260,10 +3117,10 @@ async function searchAgentClaim() {
             const identityTypeEscaped = escapeHtml(data.identity_type);
             const identityValueEscaped = escapeHtml(data.identity_value);
             html += `
-                <div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px;background:#fff;">
+                <div style="border:1px solid var(--border);padding:13px;margin-bottom:8px;background:#fff;">
                     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
                         <div>
-                            <div style="font-weight:700;font-size:18px;color:var(--accent);">${formatMoney(totalAmount, currency)}</div>
+                            <div style="font-weight:700;font-size:16px;color:var(--accent);font-family:var(--font-mono);">${formatMoney(totalAmount, currency)}</div>
                             <div style="font-size:12px;color:var(--text-muted);">From ${swapCount} different source(s)</div>
                             <div style="font-size:11px;color:var(--text-dim);">Expires ${b.earliest_expires_at ? new Date(b.earliest_expires_at).toLocaleString() : 'soon'}</div>
                         </div>
@@ -3280,10 +3137,10 @@ async function searchAgentClaim() {
     const identityTypeEscaped = escapeHtml(data.identity_type);
     const identityValueEscaped = escapeHtml(data.identity_value);
     resultsBox.innerHTML = `
-        <div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px;background:#fff;">
+        <div style="border:1px solid var(--border);padding:13px;margin-bottom:8px;background:#fff;">
             <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
                 <div>
-                    <div style="font-weight:700;font-size:18px;color:var(--accent);">${formatMoney(totalAmount, currency)}</div>
+                    <div style="font-weight:700;font-size:16px;color:var(--accent);font-family:var(--font-mono);">${formatMoney(totalAmount, currency)}</div>
                     <div style="font-size:12px;color:var(--text-muted);">From ${swapCount} different source(s)</div>
                     <div style="font-size:11px;color:var(--text-dim);">Expires ${data.earliest_expires_at ? new Date(data.earliest_expires_at).toLocaleString() : 'soon'}</div>
                 </div>
@@ -3296,15 +3153,15 @@ function openAgentFinalizeFormAggregated(identityType, identityValue, currency, 
     const data = agentSearchData;
     if (!data) { showMessage('Search data not found. Please search again.', 'error'); return; }
     if (!agentStatus.approved_destinations || agentStatus.approved_destinations.length === 0) {
-        openModal('Agent Tools', '<div style="color:var(--danger);">You have no approved agent destination account. Register one first.</div>');
+        openModal('Agent tools', '<div style="color:var(--danger);">You have no approved agent destination account. Register one first.</div>');
         return;
     }
     const destOptions = agentStatus.approved_destinations.map(d => `<option value="${d.id}">${escapeHtml(PARTICIPANTS[d.institution]?.name || d.institution)} - ${escapeHtml(d.identifier)}</option>`).join('');
     const searchTypeLabel = IDENTITY_TYPE_LABELS[document.getElementById('agentSearchType')?.value] || 'document';
     const body = `
-        <div style="background:var(--accent-soft);border-radius:var(--radius);padding:14px;margin-bottom:14px;">
+        <div style="background:var(--accent-soft);padding:14px;margin-bottom:14px;">
             <div style="font-size:12px;color:var(--text-muted);">Client's total balance</div>
-            <div style="font-size:24px;font-weight:700;color:var(--accent);">${formatMoney(totalAmount, currency)}</div>
+            <div style="font-size:22px;font-weight:600;color:var(--accent);font-family:var(--font-mono);">${formatMoney(totalAmount, currency)}</div>
             <div style="font-size:11px;color:var(--text-dim);margin-top:4px;">This is an aggregated balance from ${swapCount} different source(s). The full amount deposits into your account. Whatever the client doesn't take as cash today is instantly sent back to their identity as a new claim.</div>
         </div>
         <div class="field-group"><label>Deposit into</label><select id="agentDestSelect">${destOptions}</select></div>
@@ -3318,17 +3175,17 @@ function openAgentFinalizeFormAggregated(identityType, identityValue, currency, 
             <span class="quick-link muted" onclick="document.getElementById('cashNowAmount').value=0">Give none now</span>
         </div>
         <div class="field-group"><label style="display:flex;align-items:center;gap:8px;text-transform:none;font-weight:400;">
-            <input type="checkbox" id="agentDocVerified"> I have physically verified the client's ${searchTypeLabel}
+            <input type="checkbox" id="agentDocVerified" style="width:auto;"> I have physically verified the client's ${searchTypeLabel}
         </label></div>
         <div class="field-group"><label>Client's OTP PIN</label>
             <input type="password" id="agentClaimPin" inputmode="numeric" maxlength="6" placeholder="Ask the client for the PIN texted to them">
             <div class="help">This is the OTP PIN sent by SMS — never a personal transaction PIN. The client must tell you this themselves; never accept a claim without it.</div>
         </div>
         <div class="cta-row">
-            <button class="btn btn-secondary" onclick="openAgentToolsModal()">← Back to Search</button>
+            <button class="btn btn-secondary" onclick="openAgentToolsModal()">Back to search</button>
             <button class="btn btn-primary" onclick="submitAgentFinalizeAggregated('${escapeHtml(identityType)}', '${escapeHtml(identityValue)}', ${totalAmount}, '${currency}')">Process</button>
         </div>`;
-    openModal('Confirm Deposit', body);
+    openModal('Confirm deposit', body);
 }
 
 async function submitAgentFinalizeAggregated(identityType, identityValue, totalAmount, currency) {
@@ -3361,14 +3218,10 @@ async function submitAgentFinalizeAggregated(identityType, identityValue, totalA
     agentSearchData = null;
 }
 
-// ============================================================
-// SWAP HISTORY
-// ============================================================
-
 async function openSwapHistory() {
-    openModal('Swap History', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading swaps...</div>');
+    openModal('Swap history', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading swaps...</div>');
     if (!CONFIG.USER_ID) {
-        document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:30px;color:var(--danger);"><div style="font-weight:700;">Could not identify your account</div><div style="font-size:13px;color:var(--text-muted);margin-top:8px;">Your session doesn't have a user ID attached. Try logging out and back in.</div></div>`;
+        document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:30px;color:var(--danger);"><div style="font-weight:700;">Could not identify your account</div><div style="font-size:12px;color:var(--text-muted);margin-top:8px;">Your session doesn't have a user ID attached. Try logging out and back in.</div></div>`;
         return;
     }
     const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/history.php', { user_id: CONFIG.USER_ID, limit: 50 });
@@ -3391,22 +3244,22 @@ function renderSwapHistory(data) {
         const hasCode = !!(code || pin || claimPin);
         const codeInlineHtml = hasCode ? `
             <div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);display:flex;gap:16px;flex-wrap:wrap;">
-                ${code ? `<div><div style="font-size:10px;color:var(--text-dim);">Code</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(code)}</div></div>` : ''}
-                ${pin ? `<div><div style="font-size:10px;color:var(--text-dim);">PIN</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(pin)}</div></div>` : ''}
-                ${claimPin ? `<div><div style="font-size:10px;color:var(--text-dim);">Claim PIN</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(claimPin)}</div></div>` : ''}
+                ${code ? `<div><div style="font-size:10px;color:var(--text-dim);">Code</div><div style="font-family:var(--font-mono);font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(code)}</div></div>` : ''}
+                ${pin ? `<div><div style="font-size:10px;color:var(--text-dim);">PIN</div><div style="font-family:var(--font-mono);font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(pin)}</div></div>` : ''}
+                ${claimPin ? `<div><div style="font-size:10px;color:var(--text-dim);">Claim PIN</div><div style="font-family:var(--font-mono);font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(claimPin)}</div></div>` : ''}
                 ${swap.voucher_expiry ? `<div><div style="font-size:10px;color:var(--text-dim);">Expires</div><div style="font-size:12px;color:var(--text-muted);">${new Date(swap.voucher_expiry).toLocaleString()}</div></div>` : ''}
             </div>` : '';
-        historyHtml += `<div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px;background:#fff;cursor:pointer;" onclick="viewSwapDetail('${swap.reference || swap.swap_reference || 'N/A'}')">
+        historyHtml += `<div style="border:1px solid var(--border);padding:13px;margin-bottom:8px;background:#fff;cursor:pointer;" onclick="viewSwapDetail('${swap.reference || swap.swap_reference || 'N/A'}')">
             <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
                 <div><div style="font-weight:700;">${swap.swap_type || 'SWAP'} <span style="font-size:11px;color:var(--text-muted);">${swap.reference || swap.swap_reference || ''}</span></div><div style="font-size:12px;color:var(--text-muted);">${swap.source_institution || 'Unknown'} → ${swap.destination_institution || 'Unknown'}</div></div>
-                <div style="text-align:right;"><div style="font-weight:700;color:var(--accent);">${formatMoney(swap.amount, swap.currency)}</div><div style="font-size:11px;color:${statusColor};">${swap.status || 'unknown'}</div></div>
+                <div style="text-align:right;"><div style="font-weight:700;color:var(--accent);font-family:var(--font-mono);">${formatMoney(swap.amount, swap.currency)}</div><div style="font-size:11px;color:${statusColor};">${swap.status || 'unknown'}</div></div>
             </div>${codeInlineHtml}</div>`;
     });
     historyHtml += `</div>`;
     document.getElementById('modalBody').innerHTML = historyHtml;
 }
 async function viewSwapDetail(reference) {
-    openModal('Swap Details', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading details...</div>');
+    openModal('Swap details', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading details...</div>');
     const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/details.php', { reference: reference });
     if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">Failed to load swap details: ${escapeHtml(result.error)}</div>`; return; }
     renderSwapDetail(result.body);
@@ -3424,26 +3277,22 @@ function renderSwapDetail(data) {
         </div>` : '';
     document.getElementById('modalBody').innerHTML = `
         <div style="max-height:70vh;overflow-y:auto;">
-            <div style="background:var(--accent-soft);border-radius:var(--radius);padding:16px;margin-bottom:12px;">
+            <div style="background:var(--accent-soft);padding:16px;margin-bottom:12px;">
                 <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
                     <div><div style="font-size:12px;color:var(--text-muted);">Reference</div><div style="font-weight:700;">${swap.reference || swap.swap_reference || 'N/A'}</div></div>
                     <div><div style="font-size:12px;color:var(--text-muted);">Status</div><div style="font-weight:700;">${swap.status || 'unknown'}</div></div>
                 </div>
             </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
-                <div style="background:var(--surface);border-radius:var(--radius);padding:12px;"><div style="font-size:11px;color:var(--text-muted);">Swap Type</div><div style="font-weight:700;">${swap.swap_type || 'N/A'}</div></div>
-                <div style="background:var(--surface);border-radius:var(--radius);padding:12px;"><div style="font-size:11px;color:var(--text-muted);">Amount</div><div style="font-weight:700;font-size:18px;color:var(--accent);">${formatMoney(swap.amount, swap.currency)}</div></div>
+                <div style="background:var(--surface);border:1px solid var(--border);padding:12px;"><div style="font-size:11px;color:var(--text-muted);">Swap type</div><div style="font-weight:700;">${swap.swap_type || 'N/A'}</div></div>
+                <div style="background:var(--surface);border:1px solid var(--border);padding:12px;"><div style="font-size:11px;color:var(--text-muted);">Amount</div><div style="font-weight:700;font-size:16px;color:var(--accent);font-family:var(--font-mono);">${formatMoney(swap.amount, swap.currency)}</div></div>
             </div>
             ${codeBox}
-            <div style="margin-top:12px;"><button class="btn btn-secondary" onclick="openSwapHistory()" style="width:100%;">← Back to History</button></div>
+            <div style="margin-top:12px;"><button class="btn btn-secondary" onclick="openSwapHistory()" style="width:100%;">Back to history</button></div>
         </div>`;
 }
 
-// ============================================================
-// PROFILE MODAL
-// ============================================================
-
-function openProfileModal() { openModal('My Profile', renderProfileModal()); }
+function openProfileModal() { openModal('My profile', renderProfileModal()); }
 
 function renderProfileModal() {
     const rows = savedIdentities.length ? savedIdentities.map((id, i) => `
@@ -3465,7 +3314,7 @@ function renderProfileModal() {
             <div class="cta-row"><button class="btn btn-primary" onclick="setTransactionPin()">Set PIN</button></div>
         </div>
         <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px;">
-            <span class="quick-link" onclick="closeModal();openAddIdentityModal();">+ Add a new identity</span>
+            <span class="quick-link" onclick="closeModal();openAddIdentityModal();">Add a new identity</span>
             <span class="quick-link muted" onclick="closeModal();openFinalizeIdentityModal();">Finalize an identity swap</span>
         </div>`;
 }
@@ -3507,27 +3356,23 @@ async function setTransactionPin() {
     closeModal();
 }
 
-// ============================================================
-// HELPERS & UTILITIES
-// ============================================================
-
 function openHelpModal() {
     openModal('Help', `
         <div style="font-size:13px;line-height:1.7;color:var(--text);">
-            <p style="font-weight:700;margin-bottom:6px;">Sending money</p>
+            <p style="font-weight:700;margin-bottom:6px;">Swapping money</p>
             <ol style="padding-left:18px;margin-bottom:16px;">
-                <li>Tap "Select Source" — choose Wallet/Account, Card, or Voucher.</li>
-                <li>Tap "Select Destination" — Deposit or Cashout.</li>
+                <li>Tap "Source" — choose Wallet/Account, Card, or Voucher.</li>
+                <li>Tap "Destination" — Deposit or Cashout.</li>
                 <li>Enter the amount at the top, review the fee, and confirm.</li>
             </ol>
-            <p style="font-weight:700;margin-bottom:6px;">Sending to an identity</p>
+            <p style="font-weight:700;margin-bottom:6px;">Swapping to an identity</p>
             <ol style="padding-left:18px;margin-bottom:16px;">
-                <li>Tap "Send to identity instead" below the selection chips.</li>
+                <li>Tap "Swap to identity" below the amount.</li>
                 <li>Enter their national ID, phone, or email.</li>
             </ol>
             <p style="font-weight:700;margin-bottom:6px;">Combining multiple sources</p>
             <ol style="padding-left:18px;margin-bottom:16px;">
-                <li>Tap "Combine multiple sources" below the selection chips.</li>
+                <li>Tap "Combine sources" below the amount.</li>
                 <li>Type the total amount — it splits evenly across your sources, or pick Ratio, Smart, or Manual.</li>
                 <li>Pick where it settles: an account/wallet/card, an identity, or a VouchMorph Card.</li>
             </ol>
@@ -3545,7 +3390,7 @@ function openHelpModal() {
 }
 
 function openTermsModal() {
-    openModal('Terms &amp; conditions', `
+    openModal('Terms and conditions', `
         <div style="font-size:13px;line-height:1.7;color:var(--text);">
             <p style="font-weight:700;margin-bottom:6px;">1. The service</p>
             <p style="margin-bottom:14px;">VouchMorph facilitates transfers, cashouts, and identity-based payments between participating institutions on your instruction. We act as an intermediary; the underlying funds remain with the institutions holding your linked sources until a swap completes.</p>
