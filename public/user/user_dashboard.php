@@ -176,41 +176,130 @@ foreach ($assets as $assetKey => $assetConfig) {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>VouchMorph – Move Money</title>
+<title>VouchMorph – Swap</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet" />
+<script id="tailwind-config">
+tailwind.config = {
+    darkMode: "class",
+    theme: {
+        extend: {
+            colors: {
+                "surface-tint": "#476459",
+                "inverse-on-surface": "#f3f0ef",
+                "outline-variant": "#c1c8c3",
+                "outline": "#727975",
+                "on-tertiary-container": "#5a9c56",
+                "surface-container-high": "#eae7e7",
+                "inverse-primary": "#adcec0",
+                "on-error-container": "#93000a",
+                "secondary-container": "#e1dfdb",
+                "background": "#fcf9f8",
+                "on-secondary-container": "#63635f",
+                "surface-dim": "#dcd9d9",
+                "on-background": "#1c1b1b",
+                "on-tertiary": "#ffffff",
+                "error": "#ba1a1a",
+                "secondary-fixed-dim": "#c8c6c2",
+                "primary-fixed-dim": "#adcec0",
+                "on-secondary": "#ffffff",
+                "on-error": "#ffffff",
+                "error-container": "#ffdad6",
+                "primary": "#00150e",
+                "surface-container-highest": "#e5e2e1",
+                "on-secondary-fixed-variant": "#474744",
+                "surface-container-lowest": "#ffffff",
+                "on-primary-container": "#759487",
+                "secondary-fixed": "#e4e2dd",
+                "on-primary-fixed-variant": "#2f4c42",
+                "tertiary": "#001602",
+                "on-surface": "#1c1b1b",
+                "surface-container": "#f0eded",
+                "inverse-surface": "#313030",
+                "surface-variant": "#e5e2e1",
+                "tertiary-container": "#002e06",
+                "primary-fixed": "#c9eadc",
+                "tertiary-fixed-dim": "#91d78a",
+                "primary-container": "#0d2b22",
+                "on-tertiary-fixed": "#002203",
+                "surface": "#fcf9f8",
+                "on-primary": "#ffffff",
+                "tertiary-fixed": "#acf4a4",
+                "secondary": "#5e5e5b",
+                "on-secondary-fixed": "#1b1c19",
+                "on-tertiary-fixed-variant": "#0c5216",
+                "surface-bright": "#fcf9f8",
+                "on-surface-variant": "#414845",
+                "on-primary-fixed": "#022018",
+                "surface-container-low": "#f6f3f2"
+            },
+            borderRadius: {
+                DEFAULT: "0.125rem",
+                lg: "0.25rem",
+                xl: "0.5rem",
+                full: "0.75rem"
+            },
+            spacing: {
+                "margin-mobile": "16px",
+                "container-max": "1200px",
+                unit: "8px",
+                "margin-desktop": "40px",
+                gutter: "24px",
+                "section-gap": "48px",
+                "component-gap": "16px"
+            },
+            fontFamily: {
+                "headline-lg-mobile": ["Inter"],
+                "display-lg": ["Inter"],
+                "label-sm": ["Inter"],
+                "title-md": ["Inter"],
+                "headline-lg": ["Inter"],
+                "body-md": ["Inter"],
+                "label-md": ["Inter"],
+                "body-lg": ["Inter"]
+            },
+            fontSize: {
+                "headline-lg-mobile": ["24px", { lineHeight: "32px", fontWeight: "600" }],
+                "display-lg": ["48px", { lineHeight: "56px", letterSpacing: "-0.02em", fontWeight: "700" }],
+                "label-sm": ["12px", { lineHeight: "16px", fontWeight: "600" }],
+                "title-md": ["20px", { lineHeight: "28px", fontWeight: "600" }],
+                "headline-lg": ["32px", { lineHeight: "40px", letterSpacing: "-0.01em", fontWeight: "600" }],
+                "body-md": ["16px", { lineHeight: "24px", fontWeight: "400" }],
+                "label-md": ["14px", { lineHeight: "20px", letterSpacing: "0.01em", fontWeight: "500" }],
+                "body-lg": ["18px", { lineHeight: "28px", fontWeight: "400" }]
+            }
+        }
+    }
+};
+</script>
 <style>
-/* ============================================================
-   ONE design system. Nothing else in this file defines colors,
-   radii, or type outside these variables — that's the whole point.
-   ============================================================ */
 :root {
-    --bg: #FAF9F6;
+    --bg: #F8F8F7;
     --surface: #FFFFFF;
-    --surface-muted: #F4F3EF;
-    --surface-hover: #EFEEE8;
-    --border: rgba(16,30,27,0.09);
-    --border-strong: rgba(16,30,27,0.16);
-    --border-active: rgba(0,168,120,0.4);
-    --text: #10201C;
-    --text-muted: #63706A;
-    --text-dim: #8A968F;
-    --primary: #10201C;
-    --primary-dark: #04120E;
-    --accent: #00A878;
-    --accent-2: #FF7A59;
-    --accent-soft: rgba(0,168,120,0.12);
-    --accent-2-soft: rgba(255,122,89,0.14);
-    --gradient: linear-gradient(135deg, #10201C 0%, #00695C 100%);
-    --success: #1F8A54;
+    --surface-muted: #F3F3F2;
+    --surface-hover: #EFEFED;
+    --border: rgba(0,0,0,0.08);
+    --border-strong: rgba(0,0,0,0.14);
+    --border-active: rgba(14,35,32,0.35);
+    --text: #0A0A0A;
+    --text-muted: #666666;
+    --text-dim: #888888;
+    --primary: #0E2320;
+    --primary-dark: #001A12;
+    --accent: #5A8A7A;
+    --accent-soft: rgba(90,138,122,0.12);
+    --gradient: linear-gradient(135deg, #0E2320 0%, #1a4038 100%);
+    --success: #2E7D52;
     --warning: #B8860B;
     --danger: #C62828;
-    --radius: 16px;
-    --radius-sm: 10px;
+    --radius: 12px;
+    --radius-sm: 8px;
     --radius-pill: 999px;
     --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     --transition: all 0.2s ease;
-    --shadow-sm: 0 1px 3px rgba(16,30,27,0.05);
-    --shadow-md: 0 10px 36px rgba(16,30,27,0.10);
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.04);
+    --shadow-md: 0 8px 32px rgba(0,0,0,0.08);
     --header-h: 72px;
     --max-w: 1040px;
 }
@@ -224,128 +313,416 @@ body {
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
 }
-input::-webkit-outer-spin-button,
-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
-input[type=number] { -moz-appearance: textfield; }
-
-.madlib-underline { position: relative; display: inline-block; }
-.madlib-underline::after {
-    content: ''; position: absolute; bottom: -4px; left: 0; width: 100%; height: 2px;
-    background-color: var(--accent); opacity: 0.35; transition: opacity 0.3s ease;
+.material-symbols-outlined {
+    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
 }
-.madlib-underline:hover::after { opacity: 1; }
-.fade-in-up { animation: fadeInUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-@keyframes fadeInUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+.glass-scrim {
+    backdrop-filter: blur(20px);
+    background-color: rgba(252, 249, 248, 0.8);
+}
+.madlib-underline {
+    position: relative;
+}
+.madlib-underline::after {
+    content: '';
+    position: absolute;
+    bottom: -4px;
+    left: 0;
+    width: 100%;
+    height: 2px;
+    background-color: #00150e;
+    opacity: 0.2;
+    transition: opacity 0.3s ease;
+}
+.madlib-underline:hover::after {
+    opacity: 1;
+}
+.madlib-button-filled::after {
+    opacity: 0.8;
+    height: 3px;
+}
+.fade-in-up {
+    animation: fadeInUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+@keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+input::-webkit-outer-spin-button,
+input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+input[type=number] {
+    -moz-appearance: textfield;
+}
 
-/* ── Badges ── */
-.role-badge { font-size: 9px; color: var(--primary); border: 1px solid var(--border-strong); padding: 3px 8px; border-radius: var(--radius-sm); text-transform: uppercase; font-weight: 700; letter-spacing: 0.04em; }
-.agent-badge { font-size: 9px; color: #fff; background: var(--accent-2); padding: 3px 8px; border-radius: var(--radius-sm); text-transform: uppercase; font-weight: 700; }
-.test-mode-badge { font-size: 9px; color: var(--danger); border: 1px solid rgba(198,40,40,0.35); background: rgba(198,40,40,0.06); padding: 3px 8px; border-radius: var(--radius-sm); text-transform: uppercase; font-weight: 700; }
-.toolbox-badge { min-width: 18px; height: 18px; padding: 0 5px; background: var(--accent-2); color: #fff; font-size: 10px; font-weight: 700; border-radius: var(--radius-pill); display: inline-flex; align-items: center; justify-content: center; }
+/* Additional custom styles */
+.role-badge {
+    font-size: 9px;
+    color: var(--primary);
+    border: 1px solid var(--border-strong);
+    padding: 3px 8px;
+    border-radius: var(--radius-sm);
+    text-transform: uppercase;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+}
+.agent-badge {
+    font-size: 9px;
+    color: #fff;
+    background: var(--primary);
+    padding: 3px 8px;
+    border-radius: var(--radius-sm);
+    text-transform: uppercase;
+    font-weight: 700;
+}
+.test-mode-badge {
+    font-size: 9px;
+    color: var(--danger);
+    border: 1px solid rgba(198,40,40,0.35);
+    background: rgba(198,40,40,0.06);
+    padding: 3px 8px;
+    border-radius: var(--radius-sm);
+    text-transform: uppercase;
+    font-weight: 700;
+}
+.toolbox-badge {
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    background: var(--danger);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    border-radius: var(--radius-pill);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
 
 /* ── Site header ── */
-.site-header { position: sticky; top: 0; z-index: 100; background: var(--surface); border-bottom: 1px solid var(--border); box-shadow: var(--shadow-sm); }
-.header-inner { max-width: var(--max-w); margin: 0 auto; padding: 0 24px; height: var(--header-h); display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.site-header {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    box-shadow: var(--shadow-sm);
+}
+.header-inner {
+    max-width: var(--max-w);
+    margin: 0 auto;
+    padding: 0 24px;
+    height: var(--header-h);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+}
 .brand { display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
 .brand-text { display: flex; flex-direction: column; gap: 1px; }
-.logo { font-size: 20px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.1; background: var(--gradient); -webkit-background-clip: text; background-clip: text; color: transparent; }
-.logo sup { font-size: 9px; font-weight: 700; vertical-align: super; -webkit-text-fill-color: var(--accent); }
-.tagline { font-size: 10px; font-weight: 600; color: var(--text-dim); letter-spacing: 0.06em; text-transform: uppercase; }
+.logo { font-size: 20px; font-weight: 800; color: var(--text); letter-spacing: -0.02em; line-height: 1.1; }
+.logo sup { font-size: 9px; font-weight: 700; vertical-align: super; }
+.tagline {
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--text-dim);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    font-style: italic;
+}
 .brand-divider { width: 1px; height: 28px; background: var(--border-strong); display: none; }
 @media (min-width: 640px) { .brand-divider { display: block; } }
 
-.main-nav { display: none; align-items: center; gap: 4px; background: var(--surface-muted); padding: 4px; border-radius: var(--radius-pill); border: 1px solid var(--border); }
+/* Restore missing CSS classes */
+.header-meta { display: none; align-items: center; gap: 10px; }
+@media (min-width: 900px) { .header-meta { display: flex; } }
+.user-chip-text { display: none; flex-direction: column; line-height: 1.2; }
+@media (min-width: 640px) { .user-chip-text { display: flex; } }
+.user-chip-name { font-size: 13px; font-weight: 700; color: var(--text); }
+.user-chip-role { font-size: 11px; color: var(--text-dim); }
+.user-avatar {
+    width: 34px; height: 34px;
+    border-radius: 50%;
+    background: var(--primary);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+/* Footer styles */
+.page-footer {
+    max-width: var(--max-w);
+    width: 100%;
+    margin: 0 auto;
+    padding: 24px 24px 32px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+.page-footer .footer-copy { font-size: 12px; color: var(--text-dim); }
+.page-footer .footer-links { display: flex; gap: 20px; font-size: 12px; }
+.page-footer .footer-links span { color: var(--text-muted); font-weight: 600; cursor: pointer; transition: var(--transition); }
+.page-footer .footer-links span:hover { color: var(--text); }
+.page-footer .footer-desc { display: none; }
+
+/* Enhanced footer styling for light theme */
+.page-footer .footer-links span:hover {
+    color: var(--primary);
+    text-decoration: underline;
+}
+
+.main-nav {
+    display: none;
+    align-items: center;
+    gap: 4px;
+    background: var(--surface-muted);
+    padding: 4px;
+    border-radius: var(--radius-pill);
+    border: 1px solid var(--border);
+}
 @media (min-width: 768px) { .main-nav { display: flex; } }
 .nav-pill, .nav-link {
-    display: inline-flex; align-items: center; gap: 7px; padding: 9px 16px; border-radius: var(--radius-pill);
-    font-size: 13px; font-weight: 600; font-family: var(--font); border: none; background: transparent;
-    color: var(--text-muted); cursor: pointer; text-decoration: none; transition: var(--transition); white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 9px 16px;
+    border-radius: var(--radius-pill);
+    font-size: 13px;
+    font-weight: 600;
+    font-family: var(--font);
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    text-decoration: none;
+    transition: var(--transition);
+    white-space: nowrap;
 }
 .nav-pill.active, .nav-pill:hover { background: var(--primary); color: #fff; }
 .nav-link:hover { color: var(--text); background: rgba(255,255,255,0.7); }
 .nav-icon { font-size: 14px; opacity: 0.85; }
 
-.header-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.header-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
 .header-meta { display: none; align-items: center; gap: 10px; }
 @media (min-width: 900px) { .header-meta { display: flex; } }
-.country-selector { background: var(--surface-muted); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 12px; color: var(--text-muted); font-size: 12px; cursor: pointer; font-family: var(--font); line-height: 1; }
-.toolbox-btn {
-    position: relative; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700;
-    color: var(--text); background: var(--surface-muted); border: 1px solid var(--border); padding: 8px 14px;
-    border-radius: var(--radius-sm); cursor: pointer; font-family: var(--font); transition: var(--transition);
+.country-selector {
+    background: var(--surface-muted);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 8px 12px;
+    color: var(--text-muted);
+    font-size: 12px;
+    cursor: pointer;
+    font-family: var(--font);
+    line-height: 1;
 }
-.toolbox-btn:hover { background: var(--surface-hover); border-color: var(--border-strong); transform: translateY(-1px); }
+.toolbox-btn {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+    background: var(--surface-muted);
+    border: 1px solid var(--border);
+    padding: 8px 14px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-family: var(--font);
+    transition: var(--transition);
+}
+.toolbox-btn:hover { background: var(--surface-hover); border-color: var(--border-strong); }
 .toolbox-btn:active { transform: scale(0.98); }
 
-.user-chip { display: flex; align-items: center; gap: 10px; }
-.user-chip-text { display: none; flex-direction: column; line-height: 1.2; }
-@media (min-width: 640px) { .user-chip-text { display: flex; } }
-.user-chip-name { font-size: 13px; font-weight: 700; color: var(--text); }
-.user-chip-role { font-size: 11px; color: var(--text-dim); }
-.user-avatar { width: 34px; height: 34px; border-radius: 50%; background: var(--gradient); color: #fff; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-.logout-btn { font-size: 12px; font-weight: 600; color: var(--text-dim); text-decoration: none; padding: 8px 6px; }
-.logout-btn:hover { color: var(--danger); }
+/* ── Main layout ── */
+.container {
+    width: 100%;
+    max-width: var(--max-w);
+    margin: 0 auto;
+    padding: 32px 24px 48px;
+    position: relative;
+    z-index: 1;
+}
 
-/* ── Layout ── */
-.container { width: 100%; max-width: var(--max-w); margin: 0 auto; padding: 32px 24px 48px; position: relative; z-index: 1; }
-.message { padding: 12px 16px; border-radius: var(--radius-sm); margin: 0 0 20px; font-size: 13px; display: none; font-weight: 500; }
+/* Tailwind-style container */
+.container-tailwind {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 16px;
+}
+@media (min-width: 768px) {
+    .container-tailwind {
+        padding: 0 40px;
+    }
+}
+.message {
+    padding: 12px 16px;
+    border-radius: var(--radius-sm);
+    margin: 0 0 20px;
+    font-size: 13px;
+    display: none;
+    font-weight: 500;
+}
 .message.show { display: block; }
 .message.info { background: var(--accent-soft); border-left: 3px solid var(--accent); color: var(--primary); }
-.message.success { background: rgba(31,138,84,0.10); border-left: 3px solid var(--success); color: var(--success); }
+.message.success { background: rgba(46,125,82,0.10); border-left: 3px solid var(--success); color: var(--success); }
 .message.error { background: rgba(198,40,40,0.08); border-left: 3px solid var(--danger); color: var(--danger); }
 .message.warning { background: rgba(184,134,11,0.10); border-left: 3px solid var(--warning); color: #8a6508; }
 
-/* ── Hero ── */
-.hero-section { text-align: center; margin-bottom: 22px; padding: 8px 0 4px; animation: fadeInUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-.hero-eyebrow {
-    display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700;
-    text-transform: uppercase; letter-spacing: 0.08em; color: var(--accent); background: var(--accent-soft);
-    padding: 5px 14px; border-radius: var(--radius-pill); margin-bottom: 14px;
+/* ── Hero sentence ── */
+.hero-section {
+    text-align: center;
+    margin-bottom: 28px;
+    padding: 8px 0 4px;
+    animation: fadeInUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
-.hero-sentence { font-size: clamp(26px, 4.5vw, 38px); font-weight: 700; line-height: 1.35; color: var(--text); letter-spacing: -0.02em; max-width: 720px; margin: 0 auto; }
-.hero-word { display: inline; }
-.hero-amount-wrap { display: inline-flex; align-items: baseline; vertical-align: baseline; margin: 0 4px; }
+.hero-sentence {
+    font-size: clamp(26px, 4.5vw, 38px);
+    font-weight: 700;
+    line-height: 1.35;
+    color: var(--text);
+    letter-spacing: -0.02em;
+    max-width: 720px;
+    margin: 0 auto;
+}
+.hero-sentence .hero-word { display: inline; }
+.hero-amount-wrap {
+    display: inline-flex;
+    align-items: baseline;
+    vertical-align: baseline;
+    margin: 0 4px;
+}
 .hero-amount-wrap .amount-field { display: inline-flex; align-items: baseline; }
 .hero-amount-wrap .amount-field input {
-    width: clamp(120px, 22vw, 200px); border: none; border-bottom: 2px solid var(--accent); background: transparent;
-    font-size: inherit; font-weight: 700; font-family: var(--font); color: var(--accent); text-align: center; padding: 0 4px 2px;
+    width: clamp(120px, 22vw, 200px);
+    border: none;
+    border-bottom: 2px solid var(--accent);
+    background: transparent;
+    font-size: inherit;
+    font-weight: 700;
+    font-family: var(--font);
+    color: var(--accent);
+    text-align: center;
+    padding: 0 4px 2px;
     -moz-appearance: textfield;
 }
-.hero-amount-wrap .amount-field input::-webkit-outer-spin-button, .hero-amount-wrap .amount-field input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.hero-amount-wrap .amount-field input::-webkit-outer-spin-button,
+.hero-amount-wrap .amount-field input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .hero-amount-wrap .amount-field input:focus { outline: none; border-bottom-color: var(--primary); color: var(--primary); }
-.hero-amount-wrap .currency-suffix { font-size: 0.65em; font-weight: 700; color: var(--accent); margin-left: 4px; }
-.hero-jump { color: var(--accent); text-decoration: none; border-bottom: 2px solid var(--accent); cursor: pointer; transition: var(--transition); }
+.hero-amount-wrap .currency-suffix {
+    position: static;
+    transform: none;
+    font-size: 0.65em;
+    font-weight: 700;
+    color: var(--accent);
+    margin-left: 4px;
+}
+.hero-jump {
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: 2px solid var(--accent);
+    cursor: pointer;
+    transition: var(--transition);
+}
 .hero-jump:hover { color: var(--primary); border-bottom-color: var(--primary); }
-.hero-send-note { margin-top: 12px; font-size: 14px; color: var(--text-muted); font-weight: 500; }
+.hero-send-note {
+    margin-top: 12px;
+    font-size: 14px;
+    color: var(--text-muted);
+    font-weight: 500;
+}
 
-/* ── Progress dots — purely visual, mirrors real state via refreshUI() ── */
-.progress-dots { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 22px; }
-.dot { display: flex; flex-direction: column; align-items: center; gap: 6px; font-size: 10.5px; font-weight: 700; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.03em; }
-.dot span { width: 26px; height: 26px; border-radius: 50%; background: var(--surface-muted); border: 1.5px solid var(--border-strong); display: flex; align-items: center; justify-content: center; font-size: 12px; color: var(--text-dim); transition: var(--transition); }
-.dot.done span { background: var(--accent); border-color: var(--accent); color: #fff; }
-.dot.done { color: var(--accent); }
-.dot-line { width: 36px; height: 2px; background: var(--border-strong); margin-bottom: 16px; border-radius: 2px; }
+/* Mad Libs styling from reference */
+.madlib-underline {
+    position: relative;
+    display: inline-block;
+}
+.madlib-underline::after {
+    content: '';
+    position: absolute;
+    bottom: -4px;
+    left: 0;
+    width: 100%;
+    height: 2px;
+    background-color: #00150e;
+    opacity: 0.2;
+    transition: opacity 0.3s ease;
+}
+.madlib-underline:hover::after {
+    opacity: 1;
+}
 
-/* ── Balance chip (replaces the old bulky balance card) ── */
-.balance-chip {
-    display: inline-flex; align-items: center; gap: 8px; margin: 18px auto 30px; padding: 10px 18px;
-    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-pill);
-    font-size: 13px; font-weight: 600; color: var(--text); cursor: pointer; transition: var(--transition);
+.balance-card {
+    max-width: 420px;
+    margin: 24px auto 36px;
+    padding: 20px 24px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    text-align: center;
+    cursor: pointer;
+    transition: var(--transition);
     box-shadow: var(--shadow-sm);
 }
-.balance-chip-wrap { text-align: center; }
-.balance-chip:hover { border-color: var(--border-active); box-shadow: var(--shadow-md); transform: translateY(-1px); }
-.balance-chip-arrow { color: var(--accent); font-weight: 700; }
+.balance-card:hover { border-color: var(--border-strong); box-shadow: var(--shadow-md); transform: translateY(-1px); }
+.balance-card-label { font-size: 12px; color: var(--text-dim); font-weight: 500; margin-bottom: 6px; }
+.balance-card-hint { font-size: 11px; color: var(--accent); font-weight: 600; }
+.balance-card-amount { font-size: 32px; font-weight: 800; color: var(--primary); margin-bottom: 4px; }
 
 /* ── Swap workspace ── */
 .card { background: transparent; border: none; padding: 0; }
-.swap-columns { display: grid; grid-template-columns: 1fr; gap: 20px; }
-@media (min-width: 900px) { .swap-columns { grid-template-columns: 1fr 1fr; gap: 24px; } }
+.swap-columns {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 20px;
+}
+@media (min-width: 900px) {
+    .swap-columns { grid-template-columns: 1fr 1fr; gap: 24px; }
+}
 .swap-divider { display: none !important; }
-.section.split-box { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; box-shadow: var(--shadow-sm); transition: var(--transition); }
-.section.split-box:hover { box-shadow: var(--shadow-md); }
-.section-title { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 6px; color: var(--text); }
-.section-title .n { width: 36px; height: 36px; border-radius: var(--radius-sm); background: var(--accent-soft); border: 1px solid var(--border); color: var(--accent); font-size: 16px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.section.split-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+    box-shadow: var(--shadow-sm);
+}
+.section-title {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    margin-bottom: 6px;
+    color: var(--text);
+}
+.section-title .n {
+    width: 36px; height: 36px;
+    border-radius: var(--radius-sm);
+    background: var(--surface-muted);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 16px;
+    font-weight: 400;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
 .section-heading { flex: 1; }
 .section-heading h2 { font-size: 18px; font-weight: 700; letter-spacing: -0.01em; margin-bottom: 4px; }
 .section-heading p { font-size: 13px; color: var(--text-muted); font-weight: 400; line-height: 1.45; }
@@ -354,10 +731,17 @@ input[type=number] { -moz-appearance: textfield; }
 .field-group { margin-bottom: 14px; }
 .field-group label { display: block; font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--text-dim); margin-bottom: 6px; letter-spacing: 0.05em; }
 .field-group input, .field-group select {
-    width: 100%; padding: 12px 14px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
-    color: var(--text); font-size: 15px; font-family: var(--font); transition: var(--transition);
+    width: 100%;
+    padding: 12px 14px;
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-size: 15px;
+    font-family: var(--font);
+    transition: var(--transition);
 }
-.field-group input:focus, .field-group select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.field-group input:focus, .field-group select:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(14,35,32,0.08); }
 .field-group input.invalid { border-color: var(--danger); }
 .field-group .help { font-size: 12px; color: var(--text-dim); margin-top: 5px; }
 .from-amount-hidden { display: none !important; }
@@ -366,18 +750,41 @@ input[type=number] { -moz-appearance: textfield; }
 
 .cta-row { display: flex; justify-content: center; margin-top: 28px; gap: 12px; }
 .cta-row .btn, .cta-row .btn-secondary { flex: 1 1 0; max-width: 360px; }
-.btn { padding: 14px 28px; border: none; border-radius: var(--radius-sm); font-size: 13px; font-weight: 700; font-family: var(--font); cursor: pointer; letter-spacing: 0.04em; text-transform: uppercase; transition: var(--transition); }
-.btn-primary { background: var(--gradient); color: #fff; box-shadow: var(--shadow-sm); }
-.btn-primary:hover:not(:disabled) { transform: translateY(-1px); box-shadow: var(--shadow-md); }
-.btn-primary:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+.btn {
+    padding: 14px 28px;
+    border: none;
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    font-weight: 700;
+    font-family: var(--font);
+    cursor: pointer;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    transition: var(--transition);
+}
+.btn-primary { background: var(--primary); color: #fff; }
+.btn-primary:hover:not(:disabled) { background: var(--primary-dark); }
+.btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
 .btn-secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border-strong); font-weight: 600; text-transform: none; letter-spacing: 0; }
 .btn-secondary:hover { background: var(--surface-muted); }
 .btn-danger-outline { background: transparent; color: var(--danger); border: 1px solid rgba(198,40,40,0.35); padding: 6px 14px; border-radius: var(--radius-sm); font-size: 11px; cursor: pointer; font-weight: 600; }
 .btn-sm { padding: 10px 18px !important; font-size: 12px; text-transform: none; letter-spacing: 0; }
 .btn-link { background: none; border: none; padding: 0; cursor: pointer; color: var(--accent); font-size: 12px; font-weight: 600; }
 
+/* Tailwind-style button classes */
+
 .quick-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
-.quick-link { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600; color: var(--text-muted); background: var(--surface-muted); border: 1px solid var(--border); padding: 7px 12px; border-radius: var(--radius-sm); cursor: pointer; transition: var(--transition); }
+.quick-link {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 12px; font-weight: 600;
+    color: var(--text-muted);
+    background: var(--surface-muted);
+    border: 1px solid var(--border);
+    padding: 7px 12px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: var(--transition);
+}
 .quick-link:hover { border-color: var(--border-strong); color: var(--text); }
 .quick-link:active { transform: scale(0.95); }
 .quick-link.muted { color: var(--text-dim); }
@@ -391,20 +798,97 @@ input[type=number] { -moz-appearance: textfield; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ── Modals ── */
-.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(4,18,14,0.45); backdrop-filter: blur(4px); z-index: 1000; align-items: center; justify-content: center; padding: 20px; }
+.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); backdrop-filter: blur(4px); z-index: 1000; align-items: center; justify-content: center; padding: 20px; }
 .modal-overlay.active { display: flex; }
-.modal { background: var(--surface); border-radius: var(--radius); max-width: 520px; width: 100%; max-height: 90vh; overflow-y: auto; border: 1px solid var(--border); box-shadow: var(--shadow-md); }
-.modal-header { display: flex; justify-content: space-between; align-items: center; padding: 18px 24px; background: var(--surface-muted); border-bottom: 1px solid var(--border); margin-bottom: 0; }
+.modal {
+    background: var(--surface);
+    border-radius: var(--radius);
+    max-width: 520px;
+    width: 100%;
+    max-height: 90vh;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-md);
+}
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 18px 24px;
+    background: #F3EFEF;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 0;
+}
 .modal-header h2 { font-size: 13px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text); }
 .modal-close { background: none; border: none; color: var(--text-muted); font-size: 22px; cursor: pointer; line-height: 1; padding: 4px; }
-.modal-content { background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow-md); max-width: 520px; width: 100%; max-height: 90vh; overflow-y: auto; border-radius: var(--radius); }
-#modalBody { padding: 24px; }
 
-.tab-hero { text-align: center; padding: 24px 10px; background: var(--gradient); border-radius: var(--radius-sm); color: #fff; margin-bottom: 14px; }
-.tab-hero-label { font-size: 10px; opacity: 0.85; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 700; }
-.tab-hero-input { background: transparent; border: none; text-align: center; font-size: 34px; font-weight: 800; width: 100%; color: inherit; font-family: var(--font); }
-.tab-hero-input:focus { outline: none; }
-.tab-hero-sub { font-size: 12px; opacity: 0.85; margin-top: 4px; }
+/* Glass morphism effect for modals */
+.modal-glass {
+    background: rgba(252, 249, 248, 0.95);
+    backdrop-filter: blur(20px);
+}
+
+/* Enhanced modal styling for light theme */
+.modal-content {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-md);
+    max-width: 520px;
+    width: 100%;
+    max-height: 90vh;
+    overflow-y: auto;
+    border-radius: var(--radius);
+}
+
+/* Ensure modal header has proper contrast */
+.modal-header {
+    background: var(--surface-muted);
+    border-bottom: 1px solid var(--border);
+    padding: 18px 24px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+/* Ensure modal body has proper spacing */
+#modalBody {
+    padding: 24px;
+}
+
+/* Tab builder styling enhancements */
+.tab-hero {
+    text-align: center;
+    padding: 24px 10px;
+    background: var(--gradient);
+    border-radius: var(--radius-sm);
+    color: #fff;
+    margin-bottom: 14px;
+}
+.tab-hero-label {
+    font-size: 10px;
+    opacity: 0.85;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-weight: 700;
+}
+.tab-hero-input {
+    background: transparent;
+    border: none;
+    text-align: center;
+    font-size: 34px;
+    font-weight: 800;
+    width: 100%;
+    color: inherit;
+    font-family: var(--font);
+}
+.tab-hero-input:focus {
+    outline: none;
+}
+.tab-hero-sub {
+    font-size: 12px;
+    opacity: 0.85;
+    margin-top: 4px;
+}
 
 .review-hero { text-align: center; padding: 8px 0 20px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
 .review-hero-label { font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-dim); margin-bottom: 8px; }
@@ -413,35 +897,72 @@ input[type=number] { -moz-appearance: textfield; }
 .review-hero-note::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
 
 .preview-box { background: transparent; border: none; border-radius: 0; padding: 0; margin: 0; }
-.preview-row { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; gap: 12px; font-size: 13px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.preview-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 16px;
+    gap: 12px;
+    font-size: 13px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+}
 .preview-row:nth-child(even) { background: var(--surface-muted); }
 .preview-row span:first-child { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-dim); }
 .preview-row .value { font-weight: 700; color: var(--text); text-align: right; }
-.preview-row .value.highlight { color: var(--accent); font-size: 22px; font-weight: 800; }
-.preview-security { display: flex; gap: 14px; align-items: flex-start; padding: 16px; background: var(--surface-muted); border-radius: var(--radius-sm); margin: 16px 0; border: 1px solid var(--border); }
-.preview-security-icon { width: 36px; height: 36px; background: var(--gradient); border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center; color: #fff; font-size: 16px; flex-shrink: 0; }
+.preview-row .value.highlight { color: var(--primary); font-size: 22px; font-weight: 800; }
+.preview-security {
+    display: flex; gap: 14px; align-items: flex-start;
+    padding: 16px;
+    background: var(--surface-muted);
+    border-radius: var(--radius-sm);
+    margin: 16px 0;
+    border: 1px solid var(--border);
+}
+.preview-security-icon {
+    width: 36px; height: 36px;
+    background: var(--primary);
+    border-radius: var(--radius-sm);
+    display: flex; align-items: center; justify-content: center;
+    color: #fff; font-size: 16px; flex-shrink: 0;
+}
 .preview-security-text strong { display: block; font-size: 13px; margin-bottom: 4px; }
 .preview-security-text p { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
 .modal-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 20px; padding-top: 4px; }
 .modal-actions .btn-secondary { flex: 0 0 auto; text-transform: none; border: none; background: transparent; color: var(--text-muted); font-size: 13px; }
 .modal-actions .btn-primary { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
 
+#modalBody { padding: 24px; }
+
 .result-box { text-align: center; padding: 12px 0; }
-.result-box .icon { font-size: 48px; color: var(--success); margin-bottom: 8px; filter: brightness(1.15); }
+.result-box .icon { font-size: 48px; color: var(--success); margin-bottom: 8px; filter: brightness(1.2); }
 .result-box .result-title { font-size: 22px; font-weight: 800; margin-bottom: 8px; letter-spacing: -0.02em; }
 .result-box .result-sub { font-size: 13px; color: var(--text-muted); margin-bottom: 16px; line-height: 1.5; }
 .result-box .atm-code { margin: 16px 0; padding: 20px; background: var(--surface-muted); border: 1px solid var(--border); border-radius: var(--radius-sm); }
-.result-box .atm-code .code { font-size: 26px; font-weight: 700; font-family: monospace; letter-spacing: 4px; color: var(--accent); }
+.result-box .atm-code .code { font-size: 26px; font-weight: 700; font-family: monospace; letter-spacing: 4px; color: var(--primary); }
 .raw-json { text-align: left; font-size: 11px; background: var(--surface-muted); border-radius: var(--radius-sm); padding: 10px; white-space: pre-wrap; word-break: break-all; color: var(--text-dim); margin-top: 12px; max-height: 200px; overflow-y: auto; }
 
 /* ── Source type cards ── */
 .source-type-buttons { display: flex; flex-direction: column; gap: 10px; }
-.source-type-btn { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 14px 16px; font-size: 15px; font-weight: 600; text-align: left; background: var(--surface); color: var(--text); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); cursor: pointer; font-family: var(--font); transition: var(--transition); }
-.source-type-btn:hover { border-color: var(--accent); background: var(--surface-muted); }
-.source-type-btn.active { background: var(--gradient); color: #fff; border-color: transparent; }
+.source-type-btn {
+    display: flex; align-items: center; justify-content: space-between;
+    width: 100%; padding: 14px 16px;
+    font-size: 15px; font-weight: 600; text-align: left;
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-family: var(--font);
+    transition: var(--transition);
+}
+.source-type-btn:hover { border-color: var(--primary); background: var(--surface-muted); }
+.source-type-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+
+/* Add active scale effect */
 .source-type-btn:active { transform: scale(0.98); }
 .source-type-btn .btn-label { display: flex; align-items: center; gap: 10px; }
-.source-type-btn .count { background: var(--accent-2); color: #fff; border-radius: var(--radius-pill); font-size: 10px; font-weight: 800; padding: 2px 8px; }
+.source-type-btn .count { background: var(--accent); color: #fff; border-radius: var(--radius-pill); font-size: 10px; font-weight: 800; padding: 2px 8px; }
 .source-type-btn.active .count { background: rgba(255,255,255,0.25); color: #fff; }
 .source-type-btn .chevron { font-size: 11px; opacity: 0.45; }
 .source-type-btn.active .chevron { color: #fff; opacity: 0.8; }
@@ -455,7 +976,7 @@ input[type=number] { -moz-appearance: textfield; }
 .source-card .source-institution { font-weight: 700; font-size: 15px; }
 .source-card .source-details { font-size: 13px; color: var(--text-muted); }
 .source-card .source-status { font-size: 10px; padding: 3px 10px; border-radius: var(--radius-pill); font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
-.source-status.active { background: rgba(31,138,84,0.12); color: var(--success); }
+.source-status.active { background: rgba(46,125,82,0.12); color: var(--success); }
 .source-status.pending { background: rgba(184,134,11,0.12); color: var(--warning); }
 .source-status.inactive { background: rgba(198,40,40,0.08); color: var(--danger); }
 .otp-input-group { display: flex; gap: 8px; margin: 12px 0; }
@@ -466,7 +987,7 @@ input[type=number] { -moz-appearance: textfield; }
 .saved-source-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 13px 14px; cursor: pointer; border-bottom: 1px solid var(--border); transition: var(--transition); }
 .saved-source-row:last-child { border-bottom: none; }
 .saved-source-row:hover { background: var(--surface-muted); }
-.saved-source-row.active { background: var(--gradient); color: #fff; }
+.saved-source-row.active { background: var(--primary); color: #fff; }
 .saved-source-row .row-icon { font-size: 16px; flex-shrink: 0; }
 .saved-source-row .row-main { flex: 1; min-width: 0; }
 .saved-source-row .row-inst { font-weight: 700; font-size: 13px; }
@@ -475,24 +996,29 @@ input[type=number] { -moz-appearance: textfield; }
 .saved-source-row .row-check { font-size: 14px; opacity: 0; }
 .saved-source-row.active .row-check { opacity: 1; }
 
-/* ── Toolbox — grouped into sections, not one flat junk-drawer list ── */
-.toolbox-group { margin-bottom: 18px; }
-.toolbox-group:last-child { margin-bottom: 0; }
-.toolbox-group-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); margin-bottom: 8px; padding-left: 2px; }
 .toolbox-list { display: flex; flex-direction: column; gap: 6px; }
-.toolbox-row { display: flex; align-items: center; gap: 12px; padding: 14px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer; background: var(--surface); transition: var(--transition); }
+.toolbox-row {
+    display: flex; align-items: center; gap: 12px;
+    padding: 14px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    background: var(--surface);
+    transition: var(--transition);
+}
 .toolbox-row:hover { background: var(--surface-muted); border-color: var(--border-strong); transform: translateY(-1px); }
 .toolbox-row:active { transform: scale(0.98); }
 .toolbox-row-icon { width: 22px; text-align: center; font-size: 15px; }
 .toolbox-row-label { flex: 1; font-size: 14px; font-weight: 600; color: var(--text); }
-.toolbox-row-badge { min-width: 18px; height: 18px; padding: 0 5px; background: var(--accent-2); color: #fff; font-size: 10px; font-weight: 700; border-radius: var(--radius-pill); display: inline-flex; align-items: center; justify-content: center; }
+.toolbox-row-badge { min-width: 18px; height: 18px; padding: 0 5px; background: var(--danger); color: #fff; font-size: 10px; font-weight: 700; border-radius: var(--radius-pill); display: inline-flex; align-items: center; justify-content: center; }
 
 #identitySwapHint { display: none; background: var(--accent-soft); border-left: 3px solid var(--accent); padding: 12px 14px; border-radius: var(--radius-sm); font-size: 13px; margin-top: 8px; color: var(--text-muted); }
 #swapReadinessHint { text-align: center; font-size: 13px; color: var(--text-muted); margin-top: 12px; display: none; max-width: 560px; margin-left: auto; margin-right: auto; }
 #swapReadinessHint.show { display: block; }
 #swapReadinessHint.warning { background: rgba(184,134,11,0.08); border-left: 3px solid var(--warning); padding: 12px 16px; border-radius: var(--radius-sm); }
-#swapReadinessHint.success { background: rgba(31,138,84,0.08); border-left: 3px solid var(--success); padding: 12px 16px; border-radius: var(--radius-sm); color: var(--success); }
+#swapReadinessHint.success { background: rgba(46,125,82,0.08); border-left: 3px solid var(--success); padding: 12px 16px; border-radius: var(--radius-sm); color: var(--success); }
 
+/* ── Tab builder ── */
 .tab-launcher { display: flex; align-items: center; gap: 14px; padding: 18px; background: var(--gradient); border-radius: var(--radius-sm); cursor: pointer; color: #fff; transition: var(--transition); }
 .tab-launcher:hover { opacity: 0.95; transform: translateY(-1px); }
 .tab-launcher-icon { font-size: 26px; }
@@ -500,8 +1026,18 @@ input[type=number] { -moz-appearance: textfield; }
 .tab-launcher-title { font-weight: 800; font-size: 15px; }
 .tab-launcher-sub { font-size: 12px; opacity: 0.85; margin-top: 2px; }
 .tab-launcher-total { font-size: 18px; font-weight: 800; }
+.tab-hero { text-align: center; padding: 24px 10px; background: var(--gradient); border-radius: var(--radius-sm); color: #fff; margin-bottom: 14px; }
+.tab-hero-label { font-size: 10px; opacity: 0.85; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 700; }
+.tab-hero-input { background: transparent; border: none; text-align: center; font-size: 34px; font-weight: 800; width: 100%; color: inherit; font-family: var(--font); }
+.tab-hero-input:focus { outline: none; }
+.tab-hero-sub { font-size: 12px; opacity: 0.85; margin-top: 4px; }
+.tab-hero { text-align: center; padding: 24px 10px; background: var(--gradient); border-radius: var(--radius-sm); color: #fff; margin-bottom: 14px; }
+.tab-hero-label { font-size: 10px; opacity: 0.85; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 700; }
+.tab-hero-input { background: transparent; border: none; text-align: center; font-size: 34px; font-weight: 800; width: 100%; color: inherit; font-family: var(--font); }
+.tab-hero-input:focus { outline: none; }
+.tab-hero-sub { font-size: 12px; opacity: 0.85; margin-top: 4px; }
 .tab-status-line { text-align: center; font-size: 12px; margin-bottom: 14px; padding: 10px; border-radius: var(--radius-sm); font-weight: 600; }
-.tab-status-line.ok { background: rgba(31,138,84,0.10); color: var(--success); }
+.tab-status-line.ok { background: rgba(46,125,82,0.10); color: var(--success); }
 .tab-status-line.warn { background: rgba(184,134,11,0.10); color: #8a6508; }
 .tab-status-line.bad { background: rgba(198,40,40,0.08); color: var(--danger); }
 .tab-strategy-row { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }
@@ -516,12 +1052,24 @@ input[type=number] { -moz-appearance: textfield; }
 .tab-invite-sub { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
 .vm-card-note { font-size: 12px; color: var(--text-muted); background: var(--accent-soft); border-left: 3px solid var(--accent); padding: 12px 14px; border-radius: var(--radius-sm); margin-top: 10px; }
 
-/* ── Footer — legal links only, not a second nav bar ── */
-.page-footer { max-width: var(--max-w); width: 100%; margin: 0 auto; padding: 24px 24px 32px; border-top: 1px solid var(--border); display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+/* ── Footer ── */
+.page-footer {
+    max-width: var(--max-w);
+    width: 100%;
+    margin: 0 auto;
+    padding: 24px 24px 32px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
 .page-footer .footer-copy { font-size: 12px; color: var(--text-dim); }
 .page-footer .footer-links { display: flex; gap: 20px; font-size: 12px; }
 .page-footer .footer-links span { color: var(--text-muted); font-weight: 600; cursor: pointer; transition: var(--transition); }
-.page-footer .footer-links span:hover { color: var(--accent); text-decoration: underline; }
+.page-footer .footer-links span:hover { color: var(--text); }
+.page-footer .footer-desc { display: none; }
 
 @media (max-width: 768px) {
     .header-inner { padding: 0 16px; height: auto; min-height: var(--header-h); flex-wrap: wrap; padding-top: 12px; padding-bottom: 12px; }
@@ -545,13 +1093,14 @@ input[type=number] { -moz-appearance: textfield; }
         <div class="brand">
             <div class="brand-text">
                 <div class="logo">VouchMorph<sup>TM</sup></div>
-                <div class="tagline">Money, moved simply</div>
+                <div class="tagline">The Quiet Professional</div>
             </div>
             <div class="brand-divider"></div>
         </div>
         <nav class="main-nav" aria-label="Main">
             <span class="nav-pill active"><span class="nav-icon">⇄</span> Move Money</span>
             <button type="button" class="nav-link" onclick="openSwapHistory()"><span class="nav-icon">◷</span> Activity</button>
+            <button type="button" class="nav-link" onclick="openMySourcesFromHeader()"><span class="nav-icon">▭</span> My Wallets</button>
         </nav>
         <div class="header-actions">
             <div class="header-meta">
@@ -580,12 +1129,11 @@ input[type=number] { -moz-appearance: textfield; }
     </div>
 </header>
 
-<div class="container">
+<div class="container container-tailwind">
 <div id="mainMessage" class="message"></div>
 
 <div id="moveMoneyHero">
 <section class="hero-section fade-in-up" id="heroSection">
-    <div class="hero-eyebrow">✨ Move money in seconds</div>
     <div class="hero-sentence">
         <span class="hero-word">I want to send</span>
         <span class="hero-amount-wrap">
@@ -595,33 +1143,24 @@ input[type=number] { -moz-appearance: textfield; }
             </span>
         </span>
         <span class="hero-word">from my</span><br>
-        <a class="hero-jump" href="#fromSection" onclick="document.getElementById('sourceTypeButtons')?.scrollIntoView({behavior:'smooth',block:'center'});return false;">Select Source</a>
+        <a class="hero-jump" href="#" onclick="openSourceSelectionModal();return false;">Select Source</a>
         <span class="hero-word"> to </span>
-        <a class="hero-jump" href="#toSection" onclick="document.getElementById('toSection')?.scrollIntoView({behavior:'smooth',block:'center'});return false;">Select Destination</a><span class="hero-word">.</span>
+        <a class="hero-jump" href="#" onclick="openDestinationSelectionModal();return false;">Select Destination</a><span class="hero-word">.</span>
     </div>
     <div class="hero-send-note">You'll send <strong id="amountPreview">0.00</strong></div>
-
-    <div class="progress-dots" id="progressDots">
-        <div class="dot" id="dot1"><span>1</span>Amount</div>
-        <div class="dot-line"></div>
-        <div class="dot" id="dot2"><span>2</span>Source</div>
-        <div class="dot-line"></div>
-        <div class="dot" id="dot3"><span>3</span>Destination</div>
-    </div>
 </section>
 
-<div class="balance-chip-wrap">
-    <span class="balance-chip" onclick="viewWalletBalance()" onkeydown="if(event.key==='Enter'||event.key===' '){viewWalletBalance();}" role="button" tabindex="0" aria-label="View total balance">
-        <span>💰</span><span>View my balance</span><span class="balance-chip-arrow">→</span>
-    </span>
+<div class="balance-card" onclick="viewWalletBalance()" onkeydown="if(event.key==='Enter'||event.key===' '){viewWalletBalance();}" role="button" tabindex="0" aria-label="View total balance">
+    <div class="balance-card-label">Total Balance across all sources</div>
+    <div class="balance-card-hint">Tap to view balances</div>
 </div>
 </div>
 
-<div class="card">
+<div class="card" id="fullFormCard" style="display:none;">
     <div class="swap-columns">
     <div class="section split-box" id="fromSection">
         <div class="section-title">
-            <span class="n">1</span>
+            <span class="n">🏛</span>
             <div class="section-heading">
                 <h2>Select a Source</h2>
                 <p>Where are we moving money from?</p>
@@ -680,7 +1219,7 @@ input[type=number] { -moz-appearance: textfield; }
     <div class="swap-divider"><span>&#8645;</span></div>
     <div class="section split-box" id="toSection">
         <div class="section-title">
-            <span class="n">2</span>
+            <span class="n">→</span>
             <div class="section-heading">
                 <h2>Select a Destination</h2>
                 <p>Where should this money go?</p>
@@ -776,16 +1315,17 @@ input[type=number] { -moz-appearance: textfield; }
 </div>
 </div>
 
-<footer class="page-footer">
+<<<footer class="page-footer">
     <div class="footer-copy">&copy; 2026 VouchMorph Financial. All rights reserved.</div>
     <div class="footer-links">
         <span onclick="openHelpModal()">Help</span>
         <span onclick="openTermsModal()">Terms &amp; Conditions</span>
+        <span onclick="openMySourcesLegacy()">My Sources</span>
     </div>
 </footer>
 
 <div class="modal-overlay" id="modal" onclick="if(event.target===this)closeModal()">
-    <div class="modal" id="modalContent">
+    <div class="modal modal-glass" id="modalContent">
         <div class="modal-header">
             <h2 id="modalTitle">Swap Preview</h2>
             <button class="modal-close" onclick="closeModal()" aria-label="Close">&times;</button>
@@ -850,10 +1390,11 @@ let state = {
     deliveryMethod: 'ATM', beneficiaryPhone: '',
     toIdentityType: 'national_id', toIdentityValue: '', toIdentitySms: '',
     multiSources: [], lastPreview: null, swapPayload: null,
-    multiDestMode: 'institution',
+    // NEW — Tab Builder state
+    multiDestMode: 'institution', // 'institution' | 'identity' | 'vmcard'
     tabTotalAmount: 0,
-    tabAllocationMode: 'even',
-    contributionStrategy: 'SMART',
+    tabAllocationMode: 'even', // 'even' | 'custom' — only meaningful while EQUAL/USER_SPECIFIED
+    contributionStrategy: 'SMART', // 'EQUAL' | 'RATIO' | 'SMART' | 'USER_SPECIFIED' — real backend enum values
 };
 let savedIdentities = [];
 let userSources = [];
@@ -904,7 +1445,7 @@ async function refreshSourceCount() {
 document.addEventListener('DOMContentLoaded', refreshSourceCount);
 
 // ============================================================
-// MAIN buildPayload()
+// MAIN buildPayload() - UPDATED with proper fields
 // ============================================================
 function buildPayload() {
     const reference = 'SWAP_' + Date.now();
@@ -941,6 +1482,10 @@ function buildPayload() {
             sources,
         };
 
+        // USER_SPECIFIED reads amounts from payload.user_amounts, keyed by
+        // institution code — confirmed against the real ContributionCalculator.
+        // Not from sources[].amount (that field is still sent for other
+        // callers/logging, but the calculator itself ignores it for this strategy).
         if (state.contributionStrategy === 'USER_SPECIFIED') {
             payload.user_amounts = buildUserAmountsPayload();
         }
@@ -953,6 +1498,8 @@ function buildPayload() {
             return payload;
         }
 
+        // 'institution' or 'vmcard' — both settle through state.toInst/state.toAsset,
+        // which tabSetMultiDest('vmcard') already points at the vouchmorph participant.
         const destFields = { ...state.toFields };
         if (assetHasAmountField(state.toAsset)) destFields.amount = totalAmount;
         const destIdField = (ASSETS[state.toAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
@@ -976,6 +1523,7 @@ function buildPayload() {
     if (assetHasAmountField(state.fromAsset)) sourceAssetFields.amount = state.fromAmount;
     const sourceCurrency = PARTICIPANTS[state.fromInst]?.limits?.currency;
     
+    // Build proper source identifier and type
     const sourceIdField = (ASSETS[state.fromAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
     const sourceIdentifier = sourceIdField ? state.fromFields[sourceIdField.name] : null;
     const sourceIdentifierType = sourceIdField ? (sourceIdField.name === 'phone' || sourceIdField.name === 'phone_number' ? 'phone' : 'account_number') : 'auto';
@@ -998,6 +1546,7 @@ function buildPayload() {
         source_identifier_type: sourceIdentifierType
     };
     
+    // IDENTITY SWAP
     if (state.swapType === 'IDENTITY') {
         payload.identity_type = state.toIdentityType;
         payload.identity_value = state.toIdentityValue;
@@ -1006,18 +1555,21 @@ function buildPayload() {
         return payload;
     }
     
+    // CASHOUT - Fix: Add beneficiary_phone and client_phone
     if (state.swapType === 'CASHOUT') {
         payload.to_institution = state.toInst;
         payload.destination_institution = state.toInst;
         payload.delivery_method = state.deliveryMethod || 'ATM';
         payload.destination_currency = PARTICIPANTS[state.toInst]?.limits?.currency || sourceCurrency;
         
+        // beneficiary_phone and client_phone are REQUIRED by ZuruBank
         const beneficiaryPhone = state.beneficiaryPhone || state.toFields?.phone || state.toFields?.recipient_phone || null;
         if (beneficiaryPhone) {
             payload.beneficiary_phone = beneficiaryPhone;
             payload.client_phone = beneficiaryPhone;
         }
         
+        // Destination asset fields based on destination_asset_type
         const destIdField = (ASSETS[state.toAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
         
         if (state.toAsset === 'VOUCHER') {
@@ -1030,6 +1582,7 @@ function buildPayload() {
             payload.destination_identifier = beneficiaryPhone || state.toFields?.recipient_phone || state.toFields?.phone || null;
             payload.destination_identifier_type = 'phone';
         } else {
+            // WALLET (ATM/Agent cashout)
             payload.destination_asset_type = 'WALLET';
             const phone = state.toFields?.phone || state.toFields?.recipient_phone || beneficiaryPhone || null;
             payload.destination_asset_fields = { phone: phone };
@@ -1045,6 +1598,7 @@ function buildPayload() {
         return payload;
     }
     
+    // DEPOSIT - Fix destination_identifier_type
     payload.to_institution = state.toInst;
     payload.destination_institution = state.toInst;
     payload.destination_asset_type = state.toAsset;
@@ -1056,6 +1610,7 @@ function buildPayload() {
     for (const [key, value] of Object.entries(destFields)) payload[`destination_${key}`] = value;
     payload.amount = state.fromAmount;
     
+    // Set proper destination identifier type based on asset type
     const destIdField = (ASSETS[state.toAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
     if (destIdField) {
         payload.destination_identifier = state.toFields[destIdField.name];
@@ -1111,7 +1666,7 @@ async function viewWalletBalance() {
             <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">Your total balance across all linked sources</div>`;
     
     if (Object.keys(totals).length > 0) {
-        html += `<div style="background:var(--gradient);color:#fff;padding:16px;border-radius:var(--radius);margin-bottom:12px;">`;
+        html += `<div style="background:var(--text);color:#fff;padding:16px;border-radius:var(--radius);margin-bottom:12px;">`;
         Object.keys(totals).forEach(cur => {
             html += `
                 <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -1412,6 +1967,8 @@ function fieldsValidForAsset(assetType, values, includePin) {
     
     const requiredFields = fields.filter(f => f.required === true);
     
+    console.log('Validating required fields for asset:', assetType, requiredFields.map(f => f.name));
+    
     let failedField = null;
     let failedReason = null;
     
@@ -1420,6 +1977,7 @@ function fieldsValidForAsset(assetType, values, includePin) {
         if (!val || String(val).trim().length === 0) {
             failedField = f.name;
             failedReason = 'required but empty';
+            console.log(`  ${f.name} - ❌ required but empty`);
             return false;
         }
         if (f.pattern) {
@@ -1429,29 +1987,41 @@ function fieldsValidForAsset(assetType, values, includePin) {
                 const regex = new RegExp(pattern);
                 const matches = regex.test(String(val));
                 if (!matches) {
+                    console.log(`  ${f.name} - ❌ pattern mismatch (${pattern}) against "${val}"`);
                     if (f.name === 'phone' || f.name === 'phone_number') {
                         const simpleMatch = /^\+?[0-9]{10,15}$/.test(String(val));
-                        if (simpleMatch) return true;
+                        if (simpleMatch) {
+                            console.log(`  ${f.name} - ✅ matched simple phone validation`);
+                            return true;
+                        }
                     }
                     if (f.name === 'account_number' || f.name === 'account') {
                         const alphanumericMatch = /^[A-Z0-9]{8,16}$/i.test(String(val));
-                        if (alphanumericMatch) return true;
+                        if (alphanumericMatch) {
+                            console.log(`  ${f.name} - ✅ matched alphanumeric fallback`);
+                            return true;
+                        }
                     }
                     failedField = f.name;
                     failedReason = `pattern mismatch (value: "${val}", pattern: ${pattern})`;
                     return false;
                 }
+                console.log(`  ${f.name} - ✅ pattern matches`);
             } catch (e) {
+                console.warn(`  ${f.name} - pattern error:`, e.message);
                 return true;
             }
         }
+        console.log(`  ${f.name} - ✅ valid (value: "${val}")`);
         return true;
     });
     
     if (!result) {
+        console.log('fieldsValidForAsset result: false - Failed field:', failedField, 'Reason:', failedReason);
         return { valid: false, field: failedField, reason: failedReason };
     }
     
+    console.log('fieldsValidForAsset result: true');
     return { valid: true };
 }
 function extractPinFromFields(assetType, values) {
@@ -1531,6 +2101,8 @@ let multiSourceSeq = 0;
 function addMultiSourceRow() { state.multiSources.push({ id: ++multiSourceSeq, institution: null, assetType: null, fields: {}, amount: 0 }); renderMultiSourceRows(); refreshTabBuilderIfOpen(); }
 function removeMultiSourceRow(id) { state.multiSources = state.multiSources.filter(s => s.id !== id); renderMultiSourceRows(); refreshTabBuilderIfOpen(); }
 function renderMultiSourceRows() {
+    // Kept purely for back-compat (writes into the hidden #multiSourceList).
+    // The visible experience lives in the Tab Builder modal below.
     const container = document.getElementById('multiSourceList');
     if (container) {
         container.innerHTML = state.multiSources.map((src, idx) => `<div class="source-row" data-idx="${idx}"></div>`).join('');
@@ -1553,6 +2125,9 @@ function updateMultiTotal() {
     }
 }
 
+// ============================================================
+// NEW — Fixed-asset / voucher handling, matching ContributionCalculator
+// ============================================================
 function isFixedAssetType(assetType) {
     return ['VOUCHER', 'CASHOUT-VOUCHER'].includes(String(assetType).toUpperCase());
 }
@@ -1565,6 +2140,9 @@ function hasDuplicateInstitution() {
     return new Set(insts).size !== insts.length;
 }
 function buildUserAmountsPayload() {
+    // Keyed by institution — the real backend limitation: two sources at
+    // the same institution collide here. hasDuplicateInstitution() blocks
+    // that combination before this ever runs in USER_SPECIFIED mode.
     const amounts = {};
     state.multiSources.forEach(s => {
         if (s.institution && !isFixedAssetType(s.assetType)) amounts[s.institution] = s.amount;
@@ -1572,6 +2150,9 @@ function buildUserAmountsPayload() {
     return amounts;
 }
 
+// ============================================================
+// NEW — Total-first amount entry: type the total once, sources split
+// ============================================================
 function round2(n) { return Math.round(n * 100) / 100; }
 
 function setTabTotalAmount(value) {
@@ -1605,6 +2186,10 @@ function tabSourceAmountEdited(rowId, value) {
     reopenTabBuilder();
 }
 
+// ============================================================
+// NEW — Ratio preview (advisory only — real split happens server-side
+// against live balances at execution time)
+// ============================================================
 async function previewRatioSplit() {
     const rows = state.multiSources.filter(s => s.institution && s.assetType && !isFixedAssetType(s.assetType));
     if (rows.length === 0) return;
@@ -1627,10 +2212,13 @@ async function previewRatioSplit() {
 function setContributionStrategy(strategy) {
     state.contributionStrategy = strategy;
     if (strategy === 'EQUAL') autoSplitEven();
-    if (strategy === 'RATIO') { previewRatioSplit(); return; }
+    if (strategy === 'RATIO') { previewRatioSplit(); return; } // async, re-renders itself
     reopenTabBuilder();
 }
 
+// ============================================================
+// NEW — Destination mode: Account/Wallet/Card vs Identity vs VouchMorph Card
+// ============================================================
 function tabSetMultiDest(mode) {
     state.multiDestMode = mode;
     const vmNote = document.getElementById('vmCardNote');
@@ -1664,6 +2252,10 @@ function tabSetMultiDest(mode) {
     refreshUI();
 }
 
+// ============================================================
+// TAB BUILDER — modal experience for sources only. Destination
+// lives on the page (see #multiDestModeRow / #toInstSection above).
+// ============================================================
 function openTabBuilder() {
     if (state.multiSources.length === 0) { addMultiSourceRow(); addMultiSourceRow(); }
     openModal('🎟️ Build Your Tab', renderTabBuilder());
@@ -1952,25 +2544,6 @@ function isSwapReady() {
     return getSwapReadiness().ready;
 }
 
-// ============================================================
-// Live progress dots — purely cosmetic reflection of real state,
-// guarded so it never errors if the markup isn't present.
-// ============================================================
-function updateProgressDots() {
-    const d1 = document.getElementById('dot1');
-    const d2 = document.getElementById('dot2');
-    const d3 = document.getElementById('dot3');
-    if (d1) d1.classList.toggle('done', state.fromAmount > 0);
-    if (d2) d2.classList.toggle('done', !!(state.fromInst && state.fromAsset) || !!selectedSourceId);
-    if (d3) {
-        let destOk = false;
-        if (state.swapType === 'IDENTITY') destOk = !!state.toIdentityValue;
-        else if (state.swapType === 'MULTI_SOURCE') destOk = state.multiDestMode === 'identity' ? !!state.toIdentityValue : !!(state.toInst && state.toAsset);
-        else destOk = !!(state.toInst && (state.swapType === 'CASHOUT' || state.toAsset));
-        d3.classList.toggle('done', destOk);
-    }
-}
-
 function refreshUI() {
     const readiness = getSwapReadiness();
     const btn = document.getElementById('reviewBtn');
@@ -1995,8 +2568,11 @@ function refreshUI() {
     }
     updateMultiTotal();
     updateToolboxBadge();
-    updateProgressDots();
 }
+
+// ============================================================
+// REST OF JAVASCRIPT - All other functions remain the same
+// ============================================================
 
 async function previewSwap() {
     const readiness = getSwapReadiness();
@@ -2076,16 +2652,16 @@ function showResultModal(response) {
     const reference = response.swap_reference || data.reference || '—';
     let inner = '';
     if (swapType === 'CASHOUT') {
-        inner = `<div class="icon">&#127881;</div><div style="font-size:18px;font-weight:700;">Cashout Code Generated</div><div style="color:var(--text-muted);">Reference: ${escapeHtml(reference)}</div>${data.atm_code || data.voucher_number ? `<div class="atm-code"><div class="code">${escapeHtml(data.atm_code || data.voucher_number || '')}</div></div>` : ''}<div style="margin-top:12px;"><div style="font-size:24px;font-weight:700;">${formatMoney(data.amount ?? state.swapPayload.amount, state.swapPayload.currency)}</div></div>`;
+        inner = `<div class="icon">&#9679;</div><div style="font-size:18px;font-weight:700;">Cashout Code Generated</div><div style="color:var(--text-muted);">Reference: ${escapeHtml(reference)}</div>${data.atm_code || data.voucher_number ? `<div class="atm-code"><div class="code">${escapeHtml(data.atm_code || data.voucher_number || '')}</div></div>` : ''}<div style="margin-top:12px;"><div style="font-size:24px;font-weight:700;">${formatMoney(data.amount ?? state.swapPayload.amount, state.swapPayload.currency)}</div></div>`;
     } else if (swapType === 'IDENTITY') {
         const claimPinBox = data.claim_pin ? `
             <div class="atm-code" style="margin-top:12px;">
                 <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Backup PIN — only share this if the recipient doesn't get the SMS</div>
                 <div class="code">${escapeHtml(data.claim_pin)}</div>
             </div>` : '';
-        inner = `<div class="icon">&#127881;</div><div style="font-size:18px;font-weight:700;">Identity Swap Initiated</div><div style="color:var(--text-muted);">Reference: ${escapeHtml(reference)}</div><div style="margin:12px 0;"><strong>${escapeHtml(data.identity_type || state.swapPayload.identity_type)}: ${escapeHtml(data.identity_value || state.swapPayload.identity_value)}</strong></div><div style="font-size:24px;font-weight:700;">${formatMoney(data.amount ?? state.swapPayload.amount, data.currency || state.swapPayload.currency)}</div>${claimPinBox}`;
+        inner = `<div class="icon">&#9679;</div><div style="font-size:18px;font-weight:700;">Identity Swap Initiated</div><div style="color:var(--text-muted);">Reference: ${escapeHtml(reference)}</div><div style="margin:12px 0;"><strong>${escapeHtml(data.identity_type || state.swapPayload.identity_type)}: ${escapeHtml(data.identity_value || state.swapPayload.identity_value)}</strong></div><div style="font-size:24px;font-weight:700;">${formatMoney(data.amount ?? state.swapPayload.amount, data.currency || state.swapPayload.currency)}</div>${claimPinBox}`;
     } else {
-        inner = `<div class="icon">&#127881;</div><div style="font-size:18px;font-weight:700;">Swap Completed</div><div style="color:var(--text-muted);">Reference: ${escapeHtml(reference)}</div><div style="font-size:24px;font-weight:700;margin-top:12px;">${formatMoney(data.amount ?? state.swapPayload.amount, data.currency || data.destination_currency || state.swapPayload.destination_currency || state.swapPayload.currency)}</div>`;
+        inner = `<div class="icon">&#9679;</div><div style="font-size:18px;font-weight:700;">Swap Completed</div><div style="color:var(--text-muted);">Reference: ${escapeHtml(reference)}</div><div style="font-size:24px;font-weight:700;margin-top:12px;">${formatMoney(data.amount ?? state.swapPayload.amount, data.currency || data.destination_currency || state.swapPayload.destination_currency || state.swapPayload.currency)}</div>`;
     }
     openModal('Swap Result', `<div class="result-box">${inner}<div class="cta-row"><button class="btn btn-primary" onclick="closeModal(); location.reload();">Done</button></div></div>`);
 }
@@ -2196,7 +2772,10 @@ function selectSavedSource(sourceId) {
 
     setTimeout(() => {
         const assetConfig = getAssetConfig(source.asset_type);
-        if (!assetConfig) return;
+        if (!assetConfig) {
+            console.warn('No asset config for type:', source.asset_type);
+            return;
+        }
         
         const fields = assetConfig.fields || [];
         const identifier = source.identifier || source.source_identifier || '';
@@ -2237,7 +2816,7 @@ function selectSavedSource(sourceId) {
                 let helpText = input.parentElement?.querySelector('.help');
                 if (helpText) { 
                     helpText.textContent = 'Auto-filled from your saved source'; 
-                    helpText.style.color = 'var(--accent)';
+                    helpText.style.color = 'var(--primary-dark)';
                 }
             } else {
                 newFields[identifierField.name] = identifier;
@@ -2267,7 +2846,24 @@ function selectSavedSource(sourceId) {
         }
 
         state.fromFields = newFields;
+        
+        console.log('Filled fields for source:', source.asset_type, state.fromFields);
+        
         refreshUI();
+        
+        const isValid = fieldsValidForAsset(state.fromAsset, state.fromFields, true);
+        console.log('fieldsValidForAsset result after fill:', isValid);
+        
+        if (!isValid) {
+            const config = getAssetConfig(state.fromAsset);
+            if (config) {
+                const requiredFields = config.fields.filter(f => f.required && f.name !== 'amount' && f.vault_field !== 'pin');
+                requiredFields.forEach(f => {
+                    const hasValue = state.fromFields[f.name] && String(state.fromFields[f.name]).trim().length > 0;
+                    console.log(`  ${f.name}: ${hasValue ? '✅' : '❌'} (value: "${state.fromFields[f.name] || 'empty'}")`);
+                });
+            }
+        }
     }, 200);
 
     const helpEl = document.getElementById('sourceSelectedHelp');
@@ -2591,8 +3187,7 @@ async function retryPendingSource(type, sourceId) {
 }
 
 // ============================================================
-// TOOLBOX — grouped into sections (Money / Identity / Agent / Account)
-// instead of one flat list, so it reads as organized, not sprawling.
+// TOOLBOX - Clean separation of functions
 // ============================================================
 
 async function openToolbox() {
@@ -2605,57 +3200,31 @@ function renderToolbox() {
     const pendingCount = pendingSources.length;
     const claimCount = pendingClaims.length;
     const isAgent = !!(SessionUser && SessionUser.is_agent);
-
-    const groups = [
-        {
-            title: 'Money',
-            rows: [
-                { label: 'View balance', icon: '💰', action: 'viewWalletBalance()' },
-                { label: 'My sources', icon: '🔗', action: 'openMySourcesLegacy()' },
-                { label: 'Add source', icon: '➕', action: 'openAddSource()' },
-                { label: 'Pending sources', icon: '⏳', badge: pendingCount > 0 ? pendingCount : null, action: 'openPendingSources()' },
-                { label: 'Swap history', icon: '🕘', action: 'openSwapHistory()' },
-                { label: 'VouchMorph Card', icon: '💳', action: "quickSetSwapType('MULTI_SOURCE'); setTimeout(() => tabSetMultiDest('vmcard'), 100);" },
-            ]
-        },
-        {
-            title: 'Identity',
-            rows: [
-                { label: 'Finalize identity swap', icon: '📩', badge: claimCount > 0 ? claimCount : null, action: isAgent ? 'openAgentFinalizeIdentityModal()' : 'openFinalizeIdentityModal()' },
-                { label: 'Register identity', icon: '🪪', action: 'openAddIdentityModal()' },
-            ]
-        },
+    const rows = [
+        { label: 'View balance', icon: '💰', action: 'viewWalletBalance()' },
+        { label: 'Select a saved source', icon: '🔗', action: 'openMySourcesFromHeader()' },
+        { label: 'Add source', icon: '➕', action: 'openAddSource()' },
+        { label: 'Finalize identity swap', icon: '📩', badge: claimCount > 0 ? claimCount : null, action: isAgent ? 'openAgentFinalizeIdentityModal()' : 'openFinalizeIdentityModal()' },
+        { label: 'Pending sources', icon: '⏳', badge: pendingCount > 0 ? pendingCount : null, action: 'openPendingSources()' },
+        { label: 'My sources', icon: '📋', action: 'openMySourcesLegacy()' },
+        { label: 'Swap history', icon: '🕘', action: 'openSwapHistory()' },
+        { label: 'Register identity', icon: '🪪', action: 'openAddIdentityModal()' },
     ];
-
     if (isAgent) {
-        groups.push({
-            title: 'Agent',
-            rows: [
-                { label: 'Agent tools', icon: '🕵️', action: 'openAgentToolsModal()' },
-                { label: 'Agent destinations', icon: '🏢', action: 'openAgentModal()' },
-            ]
-        });
+        rows.push({ label: 'Agent tools', icon: '🕵️', action: 'openAgentToolsModal()' });
+        rows.push({ label: 'Agent destinations', icon: '🏢', action: 'openAgentModal()' });
     }
-
-    groups.push({
-        title: 'Account',
-        rows: [
-            { label: 'My profile', icon: '👤', action: 'openProfileModal()' },
-            { label: 'Help', icon: '❓', action: 'openHelpModal()' },
-            { label: 'Terms & conditions', icon: '📄', action: 'openTermsModal()' },
-        ]
-    });
-
-    return groups.map(g => `
-        <div class="toolbox-group">
-            <div class="toolbox-group-title">${g.title}</div>
-            <div class="toolbox-list">${g.rows.map(r => `
-                <div class="toolbox-row" onclick="${r.action}">
-                    <span class="toolbox-row-icon">${r.icon || ''}</span>
-                    <span class="toolbox-row-label">${r.label}</span>
-                    ${r.badge ? `<span class="toolbox-row-badge">${r.badge}</span>` : ''}
-                </div>`).join('')}</div>
-        </div>`).join('');
+    rows.push({ label: 'VouchMorph Card', icon: '💳', action: "quickSetSwapType('MULTI_SOURCE'); setTimeout(() => tabSetMultiDest('vmcard'), 100);" });
+    rows.push({ label: 'My profile', icon: '👤', action: 'openProfileModal()' });
+    rows.push({ label: 'Help', icon: '❓', action: 'openHelpModal()' });
+    rows.push({ label: 'Terms & conditions', icon: '📄', action: 'openTermsModal()' });
+    
+    return `<div class="toolbox-list">${rows.map(r => `
+        <div class="toolbox-row" onclick="${r.action}">
+            <span class="toolbox-row-icon">${r.icon || ''}</span>
+            <span class="toolbox-row-label">${r.label}</span>
+            ${r.badge ? `<span class="toolbox-row-badge">${r.badge}</span>` : ''}
+        </div>`).join('')}</div>`;
 }
 
 function updateToolboxBadge() {
@@ -2665,7 +3234,7 @@ function updateToolboxBadge() {
 }
 
 // ============================================================
-// FINALIZE IDENTITY SWAP
+// FINALIZE IDENTITY SWAP - For claiming money sent to your identity
 // ============================================================
 
 function openFinalizeIdentityModal() {
@@ -2683,16 +3252,16 @@ function renderFinalizeIdentityModal() {
             const hasCode = !!(code || pin || claimPin);
             const codeInlineHtml = hasCode ? `
                 <div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--border);display:flex;gap:16px;flex-wrap:wrap;">
-                    ${code ? `<div><div style="font-size:10px;color:var(--text-dim);">Code</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(code)}</div></div>` : ''}
-                    ${pin ? `<div><div style="font-size:10px;color:var(--text-dim);">PIN</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(pin)}</div></div>` : ''}
-                    ${claimPin ? `<div><div style="font-size:10px;color:var(--text-dim);">Claim PIN</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(claimPin)}</div></div>` : ''}
+                    ${code ? `<div><div style="font-size:10px;color:var(--text-dim);">Code</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--primary-dark);">${escapeHtml(code)}</div></div>` : ''}
+                    ${pin ? `<div><div style="font-size:10px;color:var(--text-dim);">PIN</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--primary-dark);">${escapeHtml(pin)}</div></div>` : ''}
+                    ${claimPin ? `<div><div style="font-size:10px;color:var(--text-dim);">Claim PIN</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--primary-dark);">${escapeHtml(claimPin)}</div></div>` : ''}
                     ${c.voucher_expiry ? `<div><div style="font-size:10px;color:var(--text-dim);">Expires</div><div style="font-size:12px;color:var(--text-muted);">${new Date(c.voucher_expiry).toLocaleString()}</div></div>` : ''}
                 </div>` : '';
             return `
             <div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px;background:#fff;">
                 <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
                     <div style="flex:1;">
-                        <div style="font-weight:700;font-size:16px;color:var(--accent);">${formatMoney(c.amount, c.currency)}</div>
+                        <div style="font-weight:700;font-size:16px;color:var(--primary-dark);">${formatMoney(c.amount, c.currency)}</div>
                         <div style="font-size:12px;color:var(--text-muted);">From ${escapeHtml(c.source_institution || 'Unknown')}</div>
                         <div style="font-size:11px;color:var(--text-dim);">Needs ${pinLabel} · Expires ${c.hold_expires_at ? new Date(c.hold_expires_at).toLocaleString() : 'soon'}</div>
                     </div>
@@ -2746,8 +3315,8 @@ function openClaimForm(idx) {
     if (!claim) return;
     const pinHint = claim.claim_type === 'otp_pin' ? 'Use the one-time PIN sent by SMS when this money was sent.' : 'Use your VouchMorph transaction PIN.';
     const body = `
-        <div style="background:var(--accent-soft);border-radius:var(--radius);padding:14px;margin-bottom:14px;">
-            <div style="font-size:20px;font-weight:700;color:var(--accent);">${formatMoney(claim.amount, claim.currency)}</div>
+        <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius);padding:14px;margin-bottom:14px;">
+            <div style="font-size:20px;font-weight:700;color:var(--primary-dark);">${formatMoney(claim.amount, claim.currency)}</div>
             <div style="font-size:12px;color:var(--text-muted);">From ${escapeHtml(claim.source_institution || 'Unknown')}</div>
         </div>
         <div class="field-group"><label>Claim PIN</label><input type="password" id="claimPin" inputmode="numeric" maxlength="6" placeholder="••••"><div class="help">${pinHint}</div></div>
@@ -2778,7 +3347,7 @@ async function submitClaim(swapReference) {
 }
 
 // ============================================================
-// REGISTER IDENTITY
+// REGISTER IDENTITY - For adding a new identity to your account
 // ============================================================
 
 function openAddIdentityModal() {
@@ -2814,7 +3383,7 @@ function renderUserIdentityForm() {
                 <input type="text" id="userIdentityValue" placeholder="Enter the ID number, phone, or email" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;">
             </div>
             
-            <div style="background:var(--accent-soft);border-left:3px solid var(--accent);padding:10px 14px;border-radius:6px;font-size:12px;margin-bottom:14px;">
+            <div style="background:rgba(0,160,173,0.08);border-left:3px solid var(--primary);padding:10px 14px;border-radius:6px;font-size:12px;margin-bottom:14px;">
                 💡 Phone numbers are verified instantly via SMS. National IDs and other documents require in-person verification by a VouchMorph agent.
             </div>
             
@@ -3001,7 +3570,7 @@ function renderAgentModal() {
         const isPending = d.status === 'pending_confirmation';
         const isRejected = d.status === 'rejected';
         const canCancel = isPending || isRejected;
-        const badge = d.status === 'active' ? '<span style="background:rgba(31,138,84,0.12);color:var(--success);padding:3px 10px;border-radius:0;font-size:11px;font-weight:700;">Active</span>'
+        const badge = d.status === 'active' ? '<span style="background:#dcfce7;color:#166534;padding:3px 10px;border-radius:0;font-size:11px;font-weight:700;">Active</span>'
             : isPending ? '<span style="background:#fef3c7;color:#8a5a0b;padding:3px 10px;border-radius:0;font-size:11px;font-weight:700;">Pending approval</span>'
             : isRejected ? '<span style="background:#fbeceb;color:var(--danger);padding:3px 10px;border-radius:0;font-size:11px;font-weight:700;">Rejected</span>'
             : '<span style="background:#fbeceb;color:var(--danger);padding:3px 10px;border-radius:0;font-size:11px;font-weight:700;">' + (d.status || 'Unknown') + '</span>';
@@ -3051,7 +3620,7 @@ async function submitAgentDestination() {
 
 function renderAgentOtpStep(data) {
     return `
-        <div style="background:var(--accent-soft);border-radius:var(--radius);padding:14px;margin-bottom:16px;">
+        <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius);padding:14px;margin-bottom:16px;">
             <div style="font-weight:700;margin-bottom:4px;">Verification code sent</div>
             <div style="font-size:12px;color:var(--text-muted);">${escapeHtml(data.message)}</div>
         </div>
@@ -3083,7 +3652,7 @@ function onAgentInstChange(code) {
 }
 
 // ============================================================
-// AGENT FINALIZE IDENTITY SWAP
+// AGENT FINALIZE IDENTITY SWAP — SEARCH + FINALIZE
 // ============================================================
 
 function openAgentFinalizeIdentityModal() {
@@ -3103,6 +3672,10 @@ function renderAgentFinalizeIdentitySearch() {
             <span class="quick-link muted" onclick="closeModal();openAddIdentityModal();">Register identity to client's account →</span>
         </div>`;
 }
+
+// ============================================================
+// AGENT TOOLS — Legacy search (kept for reference)
+// ============================================================
 
 function openAgentToolsModal() { openModal('Agent Tools', renderAgentToolsSearch()); }
 
@@ -3138,7 +3711,7 @@ async function searchAgentClaim() {
                 <div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px;background:#fff;">
                     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
                         <div>
-                            <div style="font-weight:700;font-size:18px;color:var(--accent);">${formatMoney(totalAmount, currency)}</div>
+                            <div style="font-weight:700;font-size:18px;color:var(--primary-dark);">${formatMoney(totalAmount, currency)}</div>
                             <div style="font-size:12px;color:var(--text-muted);">From ${swapCount} different source(s)</div>
                             <div style="font-size:11px;color:var(--text-dim);">Expires ${b.earliest_expires_at ? new Date(b.earliest_expires_at).toLocaleString() : 'soon'}</div>
                         </div>
@@ -3158,7 +3731,7 @@ async function searchAgentClaim() {
         <div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px;background:#fff;">
             <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
                 <div>
-                    <div style="font-weight:700;font-size:18px;color:var(--accent);">${formatMoney(totalAmount, currency)}</div>
+                    <div style="font-weight:700;font-size:18px;color:var(--primary-dark);">${formatMoney(totalAmount, currency)}</div>
                     <div style="font-size:12px;color:var(--text-muted);">From ${swapCount} different source(s)</div>
                     <div style="font-size:11px;color:var(--text-dim);">Expires ${data.earliest_expires_at ? new Date(data.earliest_expires_at).toLocaleString() : 'soon'}</div>
                 </div>
@@ -3177,9 +3750,9 @@ function openAgentFinalizeFormAggregated(identityType, identityValue, currency, 
     const destOptions = agentStatus.approved_destinations.map(d => `<option value="${d.id}">${escapeHtml(PARTICIPANTS[d.institution]?.name || d.institution)} - ${escapeHtml(d.identifier)}</option>`).join('');
     const searchTypeLabel = IDENTITY_TYPE_LABELS[document.getElementById('agentSearchType')?.value] || 'document';
     const body = `
-        <div style="background:var(--accent-soft);border-radius:var(--radius);padding:14px;margin-bottom:14px;">
+        <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius);padding:14px;margin-bottom:14px;">
             <div style="font-size:12px;color:var(--text-muted);">Client's total balance</div>
-            <div style="font-size:24px;font-weight:700;color:var(--accent);">${formatMoney(totalAmount, currency)}</div>
+            <div style="font-size:24px;font-weight:700;color:var(--primary-dark);">${formatMoney(totalAmount, currency)}</div>
             <div style="font-size:11px;color:var(--text-dim);margin-top:4px;">This is an aggregated balance from ${swapCount} different source(s). The full amount deposits into your account. Whatever the client doesn't take as cash today is instantly sent back to their identity as a new claim.</div>
         </div>
         <div class="field-group"><label>Deposit into</label><select id="agentDestSelect">${destOptions}</select></div>
@@ -3262,19 +3835,19 @@ function renderSwapHistory(data) {
         const statusColor = swap.status === 'completed' || swap.status === 'success' ? 'var(--success)' : swap.status === 'pending' ? 'var(--warning)' : 'var(--danger)';
         const code = swap.voucher_number || null;
         const pin = swap.atm_pin || null;
-        const claimPin = swap.claim_pin || null;
+        const claimPin = swap.claim_pin || null; // NEW
         const hasCode = !!(code || pin || claimPin);
         const codeInlineHtml = hasCode ? `
             <div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);display:flex;gap:16px;flex-wrap:wrap;">
-                ${code ? `<div><div style="font-size:10px;color:var(--text-dim);">Code</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(code)}</div></div>` : ''}
-                ${pin ? `<div><div style="font-size:10px;color:var(--text-dim);">PIN</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(pin)}</div></div>` : ''}
-                ${claimPin ? `<div><div style="font-size:10px;color:var(--text-dim);">Claim PIN</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(claimPin)}</div></div>` : ''}
+                ${code ? `<div><div style="font-size:10px;color:var(--text-dim);">Code</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--primary-dark);">${escapeHtml(code)}</div></div>` : ''}
+                ${pin ? `<div><div style="font-size:10px;color:var(--text-dim);">PIN</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--primary-dark);">${escapeHtml(pin)}</div></div>` : ''}
+                ${claimPin ? `<div><div style="font-size:10px;color:var(--text-dim);">Claim PIN</div><div style="font-family:monospace;font-weight:700;font-size:14px;color:var(--primary-dark);">${escapeHtml(claimPin)}</div></div>` : ''}
                 ${swap.voucher_expiry ? `<div><div style="font-size:10px;color:var(--text-dim);">Expires</div><div style="font-size:12px;color:var(--text-muted);">${new Date(swap.voucher_expiry).toLocaleString()}</div></div>` : ''}
             </div>` : '';
         historyHtml += `<div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px;background:#fff;cursor:pointer;" onclick="viewSwapDetail('${swap.reference || swap.swap_reference || 'N/A'}')">
             <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
                 <div><div style="font-weight:700;">${swap.swap_type || 'SWAP'} <span style="font-size:11px;color:var(--text-muted);">${swap.reference || swap.swap_reference || ''}</span></div><div style="font-size:12px;color:var(--text-muted);">${swap.source_institution || 'Unknown'} → ${swap.destination_institution || 'Unknown'}</div></div>
-                <div style="text-align:right;"><div style="font-weight:700;color:var(--accent);">${formatMoney(swap.amount, swap.currency)}</div><div style="font-size:11px;color:${statusColor};">${swap.status || 'unknown'}</div></div>
+                <div style="text-align:right;"><div style="font-weight:700;color:var(--primary-dark);">${formatMoney(swap.amount, swap.currency)}</div><div style="font-size:11px;color:${statusColor};">${swap.status || 'unknown'}</div></div>
             </div>${codeInlineHtml}</div>`;
     });
     historyHtml += `</div>`;
@@ -3299,7 +3872,7 @@ function renderSwapDetail(data) {
         </div>` : '';
     document.getElementById('modalBody').innerHTML = `
         <div style="max-height:70vh;overflow-y:auto;">
-            <div style="background:var(--accent-soft);border-radius:var(--radius);padding:16px;margin-bottom:12px;">
+            <div style="background:rgba(0,160,173,0.06);border-radius:var(--radius);padding:16px;margin-bottom:12px;">
                 <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
                     <div><div style="font-size:12px;color:var(--text-muted);">Reference</div><div style="font-weight:700;">${swap.reference || swap.swap_reference || 'N/A'}</div></div>
                     <div><div style="font-size:12px;color:var(--text-muted);">Status</div><div style="font-weight:700;">${swap.status || 'unknown'}</div></div>
@@ -3307,7 +3880,7 @@ function renderSwapDetail(data) {
             </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
                 <div style="background:var(--surface);border-radius:var(--radius);padding:12px;"><div style="font-size:11px;color:var(--text-muted);">Swap Type</div><div style="font-weight:700;">${swap.swap_type || 'N/A'}</div></div>
-                <div style="background:var(--surface);border-radius:var(--radius);padding:12px;"><div style="font-size:11px;color:var(--text-muted);">Amount</div><div style="font-weight:700;font-size:18px;color:var(--accent);">${formatMoney(swap.amount, swap.currency)}</div></div>
+                <div style="background:var(--surface);border-radius:var(--radius);padding:12px;"><div style="font-size:11px;color:var(--text-muted);">Amount</div><div style="font-weight:700;font-size:18px;color:var(--primary-dark);">${formatMoney(swap.amount, swap.currency)}</div></div>
             </div>
             ${codeBox}
             <div style="margin-top:12px;"><button class="btn btn-secondary" onclick="openSwapHistory()" style="width:100%;">← Back to History</button></div>
@@ -3444,6 +4017,72 @@ function openModal(title, bodyHtml) {
     if (modalTitle) modalTitle.textContent = title;
     if (modalBody) modalBody.innerHTML = bodyHtml;
     if (modal) modal.classList.add('active');
+}
+
+function openSourceSelectionModal() {
+    const body = `
+        <div style="margin-bottom:16px;">
+            <div style="font-size:14px;font-weight:700;margin-bottom:4px;">Select Source Type</div>
+            <div style="font-size:12px;color:var(--text-muted);">Choose where you want to send money from</div>
+        </div>
+        <div class="source-type-buttons">
+            <button type="button" class="source-type-btn" onclick="selectSourceType('WALLET')">
+                <span class="btn-label">💳 Wallet / Account</span>
+                <span class="chevron">▾</span>
+            </button>
+            <button type="button" class="source-type-btn" onclick="selectSourceType('CARD')">
+                <span class="btn-label">🏦 Card</span>
+                <span class="chevron">▾</span>
+            </button>
+            <button type="button" class="source-type-btn" onclick="selectSourceType('VOUCHER')">
+                <span class="btn-label">🎟️ Voucher</span>
+                <span class="chevron">▾</span>
+            </button>
+        </div>
+    `;
+    openModal('Select Source', body);
+}
+
+function openDestinationSelectionModal() {
+    const body = `
+        <div style="margin-bottom:16px;">
+            <div style="font-size:14px;font-weight:700;margin-bottom:4px;">Select Destination Type</div>
+            <div style="font-size:12px;color:var(--text-muted);">Choose where you want to send money to</div>
+        </div>
+        <div class="source-type-buttons">
+            <button type="button" class="source-type-btn" onclick="selectDestinationType('DEPOSIT')">
+                <span class="btn-label">🏦 Deposit to Bank / Institution</span>
+                <span class="chevron">▾</span>
+            </button>
+            <button type="button" class="source-type-btn" onclick="selectDestinationType('CASHOUT')">
+                <span class="btn-label">💵 Cashout</span>
+                <span class="chevron">▾</span>
+            </button>
+            <button type="button" class="source-type-btn" onclick="selectDestinationType('IDENTITY')">
+                <span class="btn-label">🪪 Send to ID Card</span>
+                <span class="chevron">▾</span>
+            </button>
+            <button type="button" class="source-type-btn" onclick="selectDestinationType('MULTI_SOURCE')">
+                <span class="btn-label">🎟️ Combine Funds</span>
+                <span class="chevron">▾</span>
+            </button>
+        </div>
+    `;
+    openModal('Select Destination', body);
+}
+
+function selectSourceType(type) {
+    closeModal();
+    toggleSourcePanel(type);
+    document.getElementById('fullFormCard').style.display = 'block';
+    document.getElementById('fromSection').scrollIntoView({behavior:'smooth',block:'center'});
+}
+
+function selectDestinationType(type) {
+    closeModal();
+    setSwapType(type);
+    document.getElementById('fullFormCard').style.display = 'block';
+    document.getElementById('toSection').scrollIntoView({behavior:'smooth',block:'center'});
 }
 
 function closeModal() { document.getElementById('modal').classList.remove('active'); }
