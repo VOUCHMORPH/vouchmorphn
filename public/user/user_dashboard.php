@@ -1194,9 +1194,9 @@ input[type=number] {
             </div>
         </div>
 
-        <div class="field-group">
+        <div class="field-group" style="display:none;">
             <label>Source Type</label>
-            <div class="source-type-buttons" id="sourceTypeButtons">
+            <div class="source-type-buttons" id="sourceTypeButtons" style="display:none;">
                 <button type="button" class="source-type-btn" data-cat="WALLET" onclick="toggleSourcePanel('WALLET')">
                     <span class="btn-label">💳 Wallet / Account <span class="count" id="walletBtnCount" style="display:none;">0</span></span>
                     <span class="chevron">▾</span>
@@ -1426,6 +1426,7 @@ let state = {
     selectedSourceType: null,
     selectedDestinationType: null,
 };
+let ledgerState = { allSwaps: [], filters: { status: 'all', query: '' } };
 let savedIdentities = [];
 let userSources = [];
 let agentSearchData = null;
@@ -3890,6 +3891,9 @@ async function openSwapHistory() {
     }
     const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/history.php', { user_id: CONFIG.USER_ID, limit: 50 });
     if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">Failed to load transaction ledger: ${escapeHtml(result.error)}</div>`; return; }
+    const swaps = result.body.data || result.body.swaps || [];
+    ledgerState.allSwaps = swaps;
+    ledgerState.filters = { status: 'all', query: '' };
     renderSwapHistory(result.body);
 }
 
@@ -3920,9 +3924,31 @@ function transactionIconForSwap(swap) {
 }
 
 function renderSwapHistory(data) {
-    const swaps = data.data || data.swaps || [];
-    if (swaps.length === 0) {
+    ledgerState.allSwaps = data.data || data.swaps || ledgerState.allSwaps || [];
+    const allSwaps = ledgerState.allSwaps;
+    const filteredSwaps = allSwaps.filter(swap => transactionMatchesFilter(swap, ledgerState.filters));
+
+    if (allSwaps.length === 0) {
         document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:30px;color:var(--text-muted);"><div style="font-weight:700;">No transactions found</div></div>`;
+        return;
+    }
+
+    if (filteredSwaps.length === 0) {
+        document.getElementById('modalBody').innerHTML = `
+            <div class="transaction-ledger-toolbar">
+                <div>
+                    <div class="toolbar-title">Transaction Ledger</div>
+                    <div class="toolbar-subtitle">Review your historical and pending fund movements.</div>
+                </div>
+                <div class="toolbar-actions">
+                    <button class="btn btn-secondary btn-sm" onclick="filterLedger()">Filter</button>
+                    <button class="btn btn-secondary btn-sm" onclick="exportLedger()">Export</button>
+                </div>
+            </div>
+            <div style="text-align:center;padding:40px;color:var(--text-muted);">
+                <div style="font-weight:700;font-size:16px;">No transactions match this filter</div>
+                <div style="margin-top:8px;">Try clearing filters or choosing another status.</div>
+            </div>`;
         return;
     }
     let historyHtml = `
@@ -3944,7 +3970,7 @@ function renderSwapHistory(data) {
         </div>
         <div style="max-height:60vh;overflow-y:auto;">`;
 
-    swaps.forEach((swap) => {
+    filteredSwaps.forEach((swap) => {
         const status = String(swap.status || swap.state || '').toLowerCase();
         const badgeClass = status === 'completed' || status === 'success' ? 'completed' : status === 'pending' ? 'pending' : 'failed';
         const badgeLabel = swap.status || swap.state || 'Unknown';
@@ -3969,17 +3995,134 @@ function renderSwapHistory(data) {
             </div>`;
     });
 
-    historyHtml += `</div><div class="ledger-footer">Showing ${swaps.length} transaction(s)</div>`;
+    historyHtml += `</div><div class="ledger-footer">Showing ${filteredSwaps.length} of ${totalCount} transaction(s)</div>`;
     document.getElementById('modalBody').innerHTML = historyHtml;
 }
 
+function transactionMatchesFilter(swap, filters) {
+    const statusFilter = filters?.status || 'all';
+    const queryFilter = String(filters?.query || '').trim().toLowerCase();
+    const status = String(swap.status || swap.state || '').toLowerCase();
+    if (statusFilter !== 'all') {
+        const matching = statusFilter === 'completed'
+            ? ['completed', 'success'].includes(status)
+            : statusFilter === 'pending'
+                ? status === 'pending'
+                : ['failed', 'cancelled', 'rejected', 'error'].some(tag => status.includes(tag));
+        if (!matching) return false;
+    }
+    if (queryFilter.length > 0) {
+        const haystack = [
+            swap.reference,
+            swap.swap_reference,
+            swap.source_institution,
+            swap.destination_institution,
+            swap.destination_name,
+            swap.destination_asset_type,
+            swap.swap_type,
+            swap.amount,
+            swap.currency,
+            swap.status
+        ].filter(Boolean).join(' ').toLowerCase();
+        if (!haystack.includes(queryFilter)) return false;
+    }
+    return true;
+}
+
 function filterLedger() {
-    showMessage('Filter is not available in this preview.', 'info');
+    const selectedStatus = ledgerState.filters.status || 'all';
+    const currentQuery = ledgerState.filters.query || '';
+    const body = `
+        <div style="margin-bottom:16px;">
+            <div style="font-size:14px;font-weight:700;margin-bottom:4px;">Filter Transaction Ledger</div>
+            <div style="font-size:12px;color:var(--text-muted);">Filter transactions by status or search text.</div>
+        </div>
+        <div class="field-group">
+            <label>Status</label>
+            <select id="ledgerFilterStatus">
+                <option value="all"${selectedStatus === 'all' ? ' selected' : ''}>All statuses</option>
+                <option value="completed"${selectedStatus === 'completed' ? ' selected' : ''}>Completed</option>
+                <option value="pending"${selectedStatus === 'pending' ? ' selected' : ''}>Pending</option>
+                <option value="failed"${selectedStatus === 'failed' ? ' selected' : ''}>Failed / Other</option>
+            </select>
+        </div>
+        <div class="field-group">
+            <label>Search</label>
+            <input id="ledgerFilterQuery" placeholder="Reference, destination, amount..." value="${escapeHtml(currentQuery)}">
+        </div>
+        <div class="cta-row" style="margin-top:16px;gap:8px;flex-wrap:wrap;">
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-secondary" onclick="resetLedgerFilters()">Clear</button>
+            <button class="btn btn-primary" onclick="applyLedgerFilters()">Apply</button>
+        </div>`;
+    openModal('Filter Ledger', body);
+}
+
+function applyLedgerFilters() {
+    ledgerState.filters.status = document.getElementById('ledgerFilterStatus').value;
+    ledgerState.filters.query = document.getElementById('ledgerFilterQuery').value.trim();
+    closeModal();
+    renderSwapHistory({ data: ledgerState.allSwaps });
+    showMessage('Transaction ledger updated.', 'success');
+}
+
+function resetLedgerFilters() {
+    ledgerState.filters.status = 'all';
+    ledgerState.filters.query = '';
+    closeModal();
+    renderSwapHistory({ data: ledgerState.allSwaps });
+    showMessage('Filters cleared.', 'success');
+}
+
+function escapeCsv(value) {
+    if (value == null) return '""';
+    const text = String(value).replace(/"/g, '""');
+    return `"${text}"`;
 }
 
 function exportLedger() {
-    showMessage('Export is not available in this preview.', 'info');
+    if (!ledgerState.allSwaps.length) {
+        showMessage('No transactions loaded to export.', 'warning');
+        return;
+    }
+    const rows = ledgerState.allSwaps.filter(swap => transactionMatchesFilter(swap, ledgerState.filters));
+    if (rows.length === 0) {
+        showMessage('No transactions match the current filters.', 'warning');
+        return;
+    }
+    const csvRows = [
+        ['Date', 'Reference', 'Destination', 'Type', 'Amount', 'Currency', 'Status']
+    ];
+    rows.forEach(swap => {
+        const dateInfo = formatLedgerDate(swap.created_at || swap.date || swap.timestamp || swap.inserted_at || '');
+        const dateString = `${dateInfo.primary}${dateInfo.secondary ? ' ' + dateInfo.secondary : ''}`;
+        const destination = transactionDestinationSummary(swap);
+        const amountValue = parseFloat(swap.amount || swap.total_amount || 0);
+        const amountText = `${amountValue >= 0 ? '+' : '-'}${formatMoney(Math.abs(amountValue), swap.currency || swap.destination_currency || swap.source_currency || '')}`;
+        csvRows.push([
+            dateString,
+            swap.reference || swap.swap_reference || '',
+            destination.title,
+            swap.swap_type || swap.destination_asset_type || '',
+            amountText,
+            swap.currency || swap.destination_currency || swap.source_currency || '',
+            swap.status || swap.state || ''
+        ]);
+    });
+    const csvText = csvRows.map(row => row.map(escapeCsv).join(',')).join('\r\n');
+    const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const filename = `transaction_ledger_${new Date().toISOString().slice(0,10)}.csv`;
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', filename);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    showMessage('Current ledger view exported.', 'success');
 }
+
 async function viewSwapDetail(reference) {
     openModal('Swap Details', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading details...</div>');
     const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/details.php', { reference: reference });
@@ -4213,8 +4356,7 @@ function selectSourceType(type) {
     state.fromCategory = type;
     // Show the full form card for entering details
     document.getElementById('fullFormCard').style.display = 'block';
-    // Don't auto-expand the panel in the form - let user click if they want to change
-    // Don't scroll - keep it centered
+    toggleSourcePanel(type);
 }
 
 function selectDestinationType(type) {
