@@ -41,7 +41,13 @@ class UserManagementService
     private PDO $db;
 
     private const MANAGER_ROLES = ['owner', 'it_manager_enterprise', 'it_officer_enterprise'];
-
+    // Roles that can only be granted by an existing Owner. Anyone who
+    // could hand these out freely could mint their own checker for
+    // add_source.php's maker-checker confirmation, or simply promote
+    // themselves — so this is checked independently of MANAGER_ROLES
+    // above, which only gates "can touch the user list at all."
+    private const OWNER_ONLY_GRANTABLE_ROLES = ['owner', 'it_manager_enterprise'];
+    
     public const ROLE_CATALOG = [
         'owner' => [
             'label' => 'Owner',
@@ -124,6 +130,15 @@ class UserManagementService
     {
         if (!in_array($role, self::MANAGER_ROLES, true)) {
             throw new RuntimeException("Only Owner, IT Manager, or IT Officer can manage users.");
+        }
+    }
+
+    private function assertCanAssignRole(string $actorRole, string $targetRole): void
+    {
+        if (in_array($targetRole, self::OWNER_ONLY_GRANTABLE_ROLES, true) && $actorRole !== 'owner') {
+            throw new RuntimeException(
+                "Only an Owner can assign the " . self::ROLE_CATALOG[$targetRole]['label'] . " role."
+            );
         }
     }
 
@@ -380,6 +395,7 @@ class UserManagementService
             throw new RuntimeException("A valid email is required.");
         }
         $this->assertValidRole($role);
+        $this->assertCanAssignRole($creatorRole, $role);   // <-- add this line
         $departmentId = $this->normalizeDepartmentForRole($role, $departmentId);
         if ($departmentId !== null) {
             $this->assertDepartmentBelongsToOrg($organizationId, $departmentId);
@@ -460,14 +476,24 @@ class UserManagementService
     ): void {
         $this->assertCanManageUsers($updaterRole);
         $this->assertValidRole($newRole);
+        $this->assertCanAssignRole($updaterRole, $newRole);  
         $departmentId = $this->normalizeDepartmentForRole($newRole, $departmentId);
 
         $stmt = $this->db->prepare("SELECT role FROM organization_users WHERE user_id = :uid AND organization_id = :org_id");
         $stmt->execute([':uid' => $targetUserId, ':org_id' => $organizationId]);
         $existing = $stmt->fetch(PDO::FETCH_ASSOC);
-        if (!$existing) {
+if (!$existing) {
             throw new RuntimeException("User not found in this organization.");
         }
+        // Mirrors setActive()'s self-deactivation block: nobody edits
+        // their own role, even an Owner. Otherwise "only an Owner can
+        // grant Owner" (above) is trivially bypassed by an Owner just
+        // never needing to — but an IT Manager granting themselves
+        // Owner would still be one self-call away without this.
+        if ($targetUserId === $updatedBy) {
+            throw new RuntimeException("You can't change your own role. Ask another Owner to do it.");
+        }
+        if ($existing['role'] === 'owner' && $newRole !== 'owner') {
         if ($existing['role'] === 'owner' && $newRole !== 'owner') {
             $this->assertNotLastActiveOwner($organizationId, $targetUserId);
         }
