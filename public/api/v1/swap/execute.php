@@ -18,13 +18,21 @@ declare(strict_types=1);
  *    semantic content when the caller doesn't supply one, so a
  *    retried/duplicated POST within the same short window collapses
  *    to a single processed swap instead of placing a second hold.
- *    Confirmed in production: two structurally-identical IDENTITY
- *    swap requests, three seconds apart, each opened its own hold
- *    and sent its own OTP because neither carried an idempotency key.
+ *  - NEW: routes execution through RouteResolver -> ExecutionPlan
+ *    instead of calling SwapService::executeAtomicSwap() directly.
+ *    Today this always resolves to DIRECT (no routing_policy.php
+ *    exists yet for any country), so behavior is IDENTICAL to before -
+ *    this only becomes active once a country gets a routing policy
+ *    file with a real switch listed in it.
  */
 require_once __DIR__ . '/../../../../vendor/autoload.php';
 
 use Core\Database\DBConnection;
+use Domain\Services\Routing\RoutingPolicyConfig;
+use Domain\Services\Routing\RouteResolver;
+use Domain\Services\Routing\ExecutionPlan;
+use Domain\Services\Routing\DirectExecutionStrategy;
+use Domain\Services\Routing\SwitchExecutionStrategy;
 
 // ============================================
 // 1. BOOTSTRAP
@@ -149,6 +157,96 @@ function generateDeterministicIdempotencyKey(array $input): string {
         (string)floor(time() / 60),
     ];
     return 'AUTO_' . hash('sha256', implode('|', $keyParts));
+}
+
+// ============================================
+// 2c. ROUTING DISPATCH
+// ============================================
+
+/**
+ * Resolves an ExecutionPlan and runs the swap through the appropriate
+ * strategy, falling back to DIRECT if a SWITCH strategy isn't
+ * implemented yet or fails and the plan allows a fallback.
+ *
+ * If the Routing\* classes aren't present (e.g. not yet deployed to
+ * this environment), falls straight through to the exact behavior
+ * this endpoint had before routing existed — calling
+ * SwapService::executeAtomicSwap() directly. This means dropping this
+ * file into an environment that doesn't yet have the Routing/ classes
+ * deployed does NOT break anything.
+ */
+function executeWithRouting(
+    \Domain\Services\SwapService $swapService,
+    array $input,
+    string $countryName
+): array {
+    $routingClassesExist = class_exists(RouteResolver::class)
+        && class_exists(RoutingPolicyConfig::class)
+        && class_exists(ExecutionPlan::class)
+        && class_exists(DirectExecutionStrategy::class);
+
+    if (!$routingClassesExist) {
+        error_log("[EXECUTE] Routing classes not found — calling SwapService::executeAtomicSwap() directly (pre-routing behavior)");
+        return $swapService->executeAtomicSwap($input);
+    }
+
+    $countryDir = ROOT_PATH . "/src/Core/Config/Countries/{$countryName}";
+
+    try {
+        $policy = RoutingPolicyConfig::load($countryDir);
+        $resolver = new RouteResolver($policy);
+
+        $operation = strtoupper($input['swap_type'] ?? 'STANDARD');
+        $sourceInstitution = $input['from_institution'] ?? $input['source_institution'] ?? '';
+        $destinationInstitution = $input['to_institution']
+            ?? $input['destination_institution']
+            ?? $sourceInstitution; // IDENTITY-type payloads may not have a destination yet
+
+        $plan = $resolver->resolve($sourceInstitution, $destinationInstitution, $operation);
+
+        error_log("[EXECUTE] RouteResolver plan: " . json_encode($plan->toArray()));
+
+        if ($plan->mode === ExecutionPlan::MODE_UNROUTABLE) {
+            throw new Exception($plan->reason ?: 'No compatible payment rail exists.', 422);
+        }
+
+    } catch (Throwable $routingSetupError) {
+        // Routing itself blew up (bad policy file, resolver bug, etc.) —
+        // never let a routing-layer failure block a swap that the old
+        // direct-call code path could still process. Fail open to DIRECT.
+        error_log("[EXECUTE] Routing resolution failed, falling back to DIRECT: " . $routingSetupError->getMessage());
+        $result = $swapService->executeAtomicSwap($input);
+        $result['_routing'] = [
+            'mode' => 'DIRECT',
+            'reason' => 'Routing resolution error, forced DIRECT: ' . $routingSetupError->getMessage(),
+        ];
+        return $result;
+    }
+
+    $strategy = match ($plan->mode) {
+        ExecutionPlan::MODE_DIRECT => new DirectExecutionStrategy($swapService),
+        ExecutionPlan::MODE_SWITCH => new SwitchExecutionStrategy($plan->rail),
+        default => new DirectExecutionStrategy($swapService), // defensive; UNROUTABLE already thrown above
+    };
+
+    try {
+        $result = $strategy->execute($input, $plan);
+    } catch (Throwable $executionError) {
+        if ($plan->fallbackMode === ExecutionPlan::MODE_DIRECT && $plan->mode !== ExecutionPlan::MODE_DIRECT) {
+            error_log("[EXECUTE] {$plan->mode} execution failed ({$executionError->getMessage()}), falling back to DIRECT per plan.fallbackMode");
+            $result = (new DirectExecutionStrategy($swapService))->execute($input, $plan);
+            $result['_routing_fallback'] = [
+                'original_mode' => $plan->mode,
+                'original_rail' => $plan->rail,
+                'fallback_reason' => $executionError->getMessage(),
+            ];
+        } else {
+            throw $executionError;
+        }
+    }
+
+    $result['_routing'] = $plan->toArray();
+    return $result;
 }
 
 // ============================================
@@ -287,7 +385,7 @@ try {
         $countryName            // string country (name, not code)
     );
 
-    $result = $swapService->executeAtomicSwap($input);
+    $result = executeWithRouting($swapService, $input, $countryName);
 
     echo json_encode([
         'success' => true,
