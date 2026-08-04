@@ -703,8 +703,6 @@ const ASSET_TYPE_ALIASES = {
     'CRYPTO': 'CRYPTO'
 };
 
-const COMPOSITION_PALETTE = ['#00A878', '#FF7A59', '#3B82F6', '#8B5CF6', '#F59E0B', '#EC4899'];
-
 function getAssetConfig(type) {
     if (!type) return null;
     if (ASSETS[type]) return ASSETS[type];
@@ -1710,6 +1708,110 @@ function refreshTabBuilderIfOpen() {
     if (document.getElementById('tabBuilderGenerated')) reopenTabBuilder();
 }
 
+function institutionInitials(code) {
+    const name = PARTICIPANTS[code]?.name || code || '';
+    const parts = name.trim().split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+    return name.slice(0, 2).toUpperCase() || '??';
+}
+
+// ============================================================
+// Circuit-board diagram — sharp rectangles only, no circles.
+// Each source is a chip whose width scales with its share of the
+// total; right-angle traces route into a hub chip showing the
+// total, which routes onward to the destination chip once one is
+// set. A small square "packet" loops along each trace to suggest
+// money actually moving. Strictly monochrome: every fill/stroke
+// here is var(--primary)/var(--surface)/var(--border-*) — no hex,
+// no COMPOSITION_PALETTE. Rebuilt fresh on every render, so the
+// draw-in and packet-loop animations replay every time a source,
+// amount, or destination changes.
+// ============================================================
+function renderCircuitDiagram() {
+    const total = state.tabTotalAmount || state.multiSources.reduce((s, r) => s + (r.amount || 0), 0);
+    const maxAmt = Math.max(...state.multiSources.map(s => s.amount || 0), 1);
+    const n = state.multiSources.length || 1;
+
+    const hubX = 230, hubY = 60, hubW = 100, hubH = 90;
+    const chipX = 20, chipH = 26;
+    const destX = 420, destW = 46, destH = 36;
+
+    function layoutY(count, r0, r1) {
+        const usable = r1 - r0;
+        return Array.from({ length: count }, (_, i) => r0 + ((i + 0.5) * usable) / count);
+    }
+    const srcYs = layoutY(n, 12, 228);
+    const pinYs = layoutY(n, hubY + 12, hubY + hubH - 12);
+
+    let html = '';
+
+    state.multiSources.forEach((s, i) => {
+        const has = !!s.institution;
+        const amt = s.amount || 0;
+        const w = has ? 34 + Math.round((amt / maxAmt) * 40) : 30;
+        const y = srcYs[i];
+        const pinY = pinYs[i];
+        const midX = 145 + i * 7;
+        if (has) {
+            html += `<path d="M${chipX + w},${y} H${midX} V${pinY} H${hubX}" fill="none" stroke="var(--border-strong)" stroke-width="1.5" opacity="0.75" stroke-dasharray="400" stroke-dashoffset="400" id="bcTrace${i}"><animate attributeName="stroke-dashoffset" from="400" to="0" dur="0.5s" begin="${i * 0.08}s" fill="freeze" /></path>`;
+        }
+        html += `<rect x="${hubX - 4}" y="${pinY - 2}" width="4" height="4" fill="var(--border-strong)" />`;
+    });
+
+    state.multiSources.forEach((s, i) => {
+        const has = !!s.institution;
+        const amt = s.amount || 0;
+        const w = has ? 34 + Math.round((amt / maxAmt) * 40) : 30;
+        const y = srcYs[i];
+        const pct = total > 0 ? amt / total : 0;
+        if (has) {
+            const label = institutionInitials(s.institution);
+            html += `
+                <rect x="${chipX}" y="${y - chipH / 2}" width="0" height="${chipH}" fill="var(--primary)"><animate attributeName="width" from="0" to="${w}" dur="0.35s" begin="${0.25 + i * 0.08}s" fill="freeze" /></rect>
+                <text x="${chipX + w / 2}" y="${y - 3}" text-anchor="middle" font-size="10" fill="var(--surface)" font-weight="700" font-family="var(--font-mono)">${escapeHtml(label)}</text>
+                <text x="${chipX + w / 2}" y="${y + 10}" text-anchor="middle" font-size="8" fill="var(--surface)" opacity="0.75">${amt.toFixed(0)}</text>
+                <rect x="${chipX}" y="${y + chipH / 2 + 3}" width="${w}" height="3" fill="var(--surface-muted)" />
+                <rect x="${chipX}" y="${y + chipH / 2 + 3}" width="0" height="3" fill="var(--primary)"><animate attributeName="width" from="0" to="${(w * pct).toFixed(1)}" dur="0.4s" begin="${0.5 + i * 0.08}s" fill="freeze" /></rect>
+                <rect width="5" height="5" fill="var(--primary)"><animateMotion dur="${1.6 + i * 0.3}s" repeatCount="indefinite" begin="${1 + i * 0.15}s"><mpath href="#bcTrace${i}" /></animateMotion></rect>`;
+        } else {
+            html += `
+                <rect x="${chipX}" y="${y - chipH / 2}" width="${w}" height="${chipH}" fill="none" stroke="var(--border-strong)" stroke-width="1.5" stroke-dasharray="4 3" />
+                <text x="${chipX + w / 2}" y="${y + 4}" text-anchor="middle" font-size="12" fill="var(--text-dim)">?</text>`;
+        }
+    });
+
+    html += `
+        <rect x="${hubX}" y="${hubY}" width="${hubW}" height="${hubH}" fill="var(--surface)" stroke="var(--border-strong)" stroke-width="1.5" />
+        <rect x="${hubX + 6}" y="${hubY + 6}" width="${hubW - 12}" height="2" fill="var(--border)"><animate attributeName="opacity" values="1;0.2;1" dur="2.2s" repeatCount="indefinite" /></rect>
+        <text x="${hubX + hubW / 2}" y="${hubY + hubH / 2 - 2}" text-anchor="middle" font-size="17" font-weight="700" fill="var(--text)" font-family="var(--font-mono)">${total.toFixed(0)}</text>
+        <text x="${hubX + hubW / 2}" y="${hubY + hubH / 2 + 15}" text-anchor="middle" font-size="8" fill="var(--text-dim)">total</text>`;
+
+    const hubPinY = hubY + hubH / 2;
+    let destLabel = null;
+    if (state.multiDestMode === 'identity' && state.toIdentityValue) {
+        destLabel = maskIdentifier(state.toIdentityValue).replace(/[^A-Za-z0-9]/g, '').slice(0, 2).toUpperCase() || 'ID';
+    } else if (state.multiDestMode !== 'identity' && state.toInst) {
+        destLabel = institutionInitials(state.toInst);
+    }
+
+    if (destLabel) {
+        const midX = hubX + hubW + 60;
+        html += `
+            <rect x="${hubX + hubW}" y="${hubPinY - 2}" width="4" height="4" fill="var(--border-strong)" />
+            <path d="M${hubX + hubW},${hubPinY} H${midX} V${hubPinY} H${destX}" fill="none" stroke="var(--border-strong)" stroke-width="1.5" opacity="0.75" stroke-dasharray="260" stroke-dashoffset="260" id="bcDestTrace"><animate attributeName="stroke-dashoffset" from="260" to="0" dur="0.5s" fill="freeze" /></path>
+            <rect x="${destX}" y="${hubPinY - destH / 2}" width="${destW}" height="${destH}" fill="var(--primary)" />
+            <text x="${destX + destW / 2}" y="${hubPinY - 2}" text-anchor="middle" font-size="10" fill="var(--surface)" font-weight="700" font-family="var(--font-mono)">${escapeHtml(destLabel)}</text>
+            <text x="${destX + destW / 2}" y="${hubPinY + 12}" text-anchor="middle" font-size="7" fill="var(--surface)" opacity="0.75">dest</text>
+            <rect width="5" height="5" fill="var(--text-dim)"><animateMotion dur="1.3s" repeatCount="indefinite" begin="1.5s"><mpath href="#bcDestTrace" /></animateMotion></rect>`;
+    } else {
+        html += `
+            <rect x="${destX}" y="${hubPinY - destH / 2}" width="${destW}" height="${destH}" fill="none" stroke="var(--border-strong)" stroke-width="1.5" stroke-dasharray="4 3" />
+            <text x="${destX + destW / 2}" y="${hubPinY + 4}" text-anchor="middle" font-size="14" fill="var(--text-dim)">?</text>`;
+    }
+
+    return `<svg width="100%" height="240" viewBox="0 0 480 240" style="margin-bottom:14px;overflow:visible;">${html}</svg>`;
+}
+
 function renderTabBuilder() {
     const cur = getInstitutionCurrency(state.toInst) || '';
     const remaining = tabRemaining();
@@ -1734,21 +1836,16 @@ function renderTabBuilder() {
         statusHtml += `<div class="tab-status-line bad">Manual mode needs one source per institution — remove the duplicate</div>`;
     }
 
-    const activeForBar = state.multiSources.filter(s => s.institution && s.amount > 0);
-    const barTotal = activeForBar.reduce((s, r) => s + r.amount, 0) || 1;
-    const barHtml = activeForBar.length
-        ? activeForBar.map((s, i) => `<div class="comp-bar-seg" data-target="${(s.amount / barTotal * 100).toFixed(2)}" style="width:0%;background:${COMPOSITION_PALETTE[i % COMPOSITION_PALETTE.length]};"></div>`).join('')
-        : `<div class="comp-bar-seg" data-target="0" style="width:0%;background:var(--border-strong);"></div>`;
-
+    const activeCount = state.multiSources.filter(s => s.institution && s.amount > 0).length;
     const cards = state.multiSources.map((s, i) => renderTabSourceCard(s, i)).join('');
 
     return `
         <div class="tab-hero">
             <div class="tab-hero-label">Amount to swap</div>
             <input type="number" step="0.01" class="tab-hero-input" value="${state.tabTotalAmount || ''}" placeholder="0.00" oninput="setTabTotalAmount(this.value)">
-            <div class="tab-hero-sub">${activeForBar.length} source(s) added</div>
+            <div class="tab-hero-sub">${activeCount} source(s) added</div>
         </div>
-        <div class="comp-bar-track" id="tabCompBar">${barHtml}</div>
+        ${renderCircuitDiagram()}
         ${statusHtml}
         <div class="tab-strategy-row">
             <button class="quick-link ${strategy==='EQUAL'?'selected':''}" onclick="setContributionStrategy('EQUAL')">Equal</button>
@@ -1801,11 +1898,10 @@ function renderTabSourceCard(src, idx) {
         amountHtml = `<div class="field-group" style="margin-top:8px;"><label>Amount from this source</label><input type="number" min="0.01" step="0.01" value="${src.amount || ''}" placeholder="0.00" oninput="tabSourceAmountEdited(${src.id}, this.value)"></div>`;
     }
 
-    const swatch = COMPOSITION_PALETTE[idx % COMPOSITION_PALETTE.length];
     return `<div class="tab-source-card">
         <div style="display:flex;justify-content:space-between;align-items:center;">
             <div style="display:flex;align-items:center;gap:8px;">
-                <span style="width:10px;height:10px;background:${swatch};flex-shrink:0;"></span>
+                <span style="width:10px;height:10px;background:var(--primary);flex-shrink:0;"></span>
                 <div><div style="font-weight:700;font-size:13px;">${escapeHtml(instName)}</div><div style="font-size:11px;color:var(--text-dim);">${escapeHtml(getAssetConfig(src.assetType)?.label || src.assetType || '')}</div></div>
             </div>
             ${state.multiSources.length > 2 ? `<button class="btn-danger-outline" onclick="removeMultiSourceRow(${src.id}); reopenTabBuilder();">Remove</button>` : ''}
