@@ -1,12 +1,7 @@
 # ============================================
 # PARTICIPANT REGISTRY
 # ============================================
-# This file lists every participant in the network.
-# No connection details, no endpoints, no secrets.
-# Just identity and what assets they support.
-# ============================================
-
-version: "3.1.0"
+version: "3.2.0"
 
 participants:
   # ----------------------------------------------------------
@@ -20,32 +15,65 @@ participants:
     country: BW
     status: ACTIVE
     swift_bic: ZURUBWXX
-    
+
     asset_types:
       - ACCOUNT
       - VOUCHER
-    
+
     routing:
       priority: 10
       cost_score: 5
       reliability_score: 9
       region: africa_south
-    
+
     limits:
       min_amount: 10
       max_amount: 500000
       currency: BWP
-    
+
     cross_border:
       enabled: true
-      supported_currencies:
-        - BWP
-        - ZAR
-        - USD
-      settlement_cycles:
-        BWP: "T+0"
-        ZAR: "T+1"
-        USD: "T+2"
+      supported_currencies: [BWP, ZAR, USD]
+      settlement_cycles: { BWP: "T+0", ZAR: "T+1", USD: "T+2" }
+
+  # ----------------------------------------------------------
+  # ABSA - Commercial bank, independent DIRECT participant,
+  # technically hosted on Zurubank's infrastructure (see
+  # endpoints.yaml — shares Zurubank's base_url, own API key).
+  # Also reachable via CENTRALSWITCH.
+  # ----------------------------------------------------------
+  ABSA:
+    provider_code: ABSA
+    id: ABSABWXX
+    name: "ABSA Bank"
+    type: BANK
+    country: BW
+    status: ACTIVE
+    swift_bic: ABSABWXX
+    technical_host: ZURUBANK   # infra note only — does not affect routing/settlement
+
+    asset_types:
+      - ACCOUNT
+      - VOUCHER
+
+    switch_participant_ids:
+      CENTRALSWITCH: "122e2314-8ec0-42dd-baf6-aaed8fcb6605"
+
+    routing:
+      priority: 10
+      cost_score: 5
+      reliability_score: 9
+      region: africa_south
+
+    limits:
+      min_amount: 10
+      max_amount: 500000
+      currency: BWP
+
+    cross_border:
+      enabled: true
+      supported_currencies: [BWP, ZAR, USD]
+      settlement_cycles: { BWP: "T+0", ZAR: "T+1", USD: "T+2" }
 
   # ----------------------------------------------------------
   # SACCUSSALIS - Commercial bank
@@ -58,34 +86,27 @@ participants:
     country: BW
     status: ACTIVE
     swift_bic: SACCUBWXX
-    
+
     asset_types:
       - ACCOUNT
       - VOUCHER
       - WALLET
-    
+
     routing:
       priority: 15
       cost_score: 4
       reliability_score: 8
       region: africa_south
-    
+
     limits:
       min_amount: 10
       max_amount: 500000
       currency: BWP
-    
+
     cross_border:
       enabled: true
-      supported_currencies:
-        - BWP
-        - ZAR
-        - EUR
-        - USD
-      settlement_cycles:
-        BWP: "T+0"
-        ZAR: "T+1"
-        EUR: "T+2"
+      supported_currencies: [BWP, ZAR, EUR, USD]
+      settlement_cycles: { BWP: "T+0", ZAR: "T+1", EUR: "T+2" }
 
   # ----------------------------------------------------------
   # CAZACOM - Mobile network operator
@@ -97,45 +118,93 @@ participants:
     type: MNO
     country: BW
     status: ACTIVE
-    
+
     asset_types:
       - WALLET
       - VOUCHER
-    
+
+    switch_participant_ids:
+      CENTRALSWITCH: "72439d1d-4544-41fd-9576-8e9404a18cfc"
+
     routing:
       priority: 5
       cost_score: 3
       reliability_score: 7
       region: africa_south
-    
+
     limits:
       min_amount: 1
       max_amount: 100000
       currency: BWP
-    
+
     cross_border:
       enabled: true
-      supported_currencies:
-        - BWP
-        - ZAR
-      settlement_cycles:
-        BWP: "T+0"
-        ZAR: "T+1"
-    
+      supported_currencies: [BWP, ZAR]
+      settlement_cycles: { BWP: "T+0", ZAR: "T+1" }
+
     wallet_config:
       max_balance: 100000
       daily_transaction_limit: 50000
       per_transaction_limit: 10000
       kyc_tiers:
-        - tier: 1
-          max_balance: 5000
-          daily_limit: 2000
-        - tier: 2
-          max_balance: 50000
-          daily_limit: 10000
-        - tier: 3
-          max_balance: 100000
-          daily_limit: 50000
+        - { tier: 1, max_balance: 5000,  daily_limit: 2000 }
+        - { tier: 2, max_balance: 50000, daily_limit: 10000 }
+        - { tier: 3, max_balance: 100000, daily_limit: 50000 }
+
+  # ----------------------------------------------------------
+  # MTN - Mobile money operator, independent DIRECT participant,
+  # technically hosted on Cazacom's infrastructure. No ATM
+  # network — cashout is agent-based (see mtn_agent_cashouts).
+  # Also reachable via CENTRALSWITCH.
+  # ----------------------------------------------------------
+  MTN:
+    provider_code: MTN
+    id: MTNBWX1
+    name: "MTN Mobile Money"
+    type: MNO
+    country: BW
+    status: ACTIVE
+    technical_host: CAZACOM   # infra note only — does not affect routing/settlement
+
+    asset_types:
+      - WALLET
+      - VOUCHER
+
+    switch_participant_ids:
+      CENTRALSWITCH: "8f05724f-e93b-4ad8-b874-aab32e0fa9bd"
+
+    routing:
+      priority: 5
+      cost_score: 3
+      reliability_score: 7
+      region: africa_south
+
+    limits:
+      min_amount: 1
+      max_amount: 100000
+      currency: BWP
+
+    cross_border:
+      enabled: true
+      supported_currencies: [BWP, ZAR]
+      settlement_cycles: { BWP: "T+0", ZAR: "T+1" }
+
+    wallet_config:
+      max_balance: 100000
+      daily_transaction_limit: 50000
+      per_transaction_limit: 10000
+      kyc_tiers:
+        - { tier: 1, max_balance: 5000,  daily_limit: 2000 }
+        - { tier: 2, max_balance: 50000, daily_limit: 10000 }
+        - { tier: 3, max_balance: 100000, daily_limit: 50000 }
+
+    # No ATM cashout — physical cash handoff happens via MTN's own
+    # agent network (mtn_agent_cashouts table), entirely outside
+    # VouchMorph/switch visibility. routing_policy.php sets
+    # cashout=>false for MTN accordingly.
+    agent_cashout:
+      enabled: true
+      code_expiry_minutes: 30
 
   # ----------------------------------------------------------
   # VOUCHMORPH - Orchestration layer
@@ -147,33 +216,26 @@ participants:
     type: ORCHESTRATOR
     country: BW
     status: ACTIVE
-    
+
     asset_types:
       - CARD
       - VOUCHER
-    
+
+    switch_participant_ids:
+      CENTRALSWITCH: "cbcdd2a7-b3a3-4420-b034-a7ac03082ee1"
+
     routing:
       priority: 1
       cost_score: 1
       reliability_score: 10
       region: global
-    
+
     limits:
       min_amount: 1
       max_amount: 1000000
       currency: BWP
-    
+
     cross_border:
       enabled: true
-      supported_currencies:
-        - BWP
-        - ZAR
-        - EUR
-        - USD
-        - GBP
-      settlement_cycles:
-        BWP: "T+0"
-        ZAR: "T+1"
-        EUR: "T+2"
-        USD: "T+2"
-        GBP: "T+2"
+      supported_currencies: [BWP, ZAR, EUR, USD, GBP]
+      settlement_cycles: { BWP: "T+0", ZAR: "T+1", EUR: "T+2", USD: "T+2", GBP: "T+2" }
