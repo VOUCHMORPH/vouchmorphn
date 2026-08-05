@@ -335,6 +335,9 @@ CAZACOM:
 # routes rather than Cazacom's own MNO endpoints, since MTN's
 # deposit/cashout logic is its own file (mtn_wallets/mtn_transfers),
 # not shared state with Cazacom's own MobileMoneyAdapter backend.
+# Collection (requesttopay) now implemented — placeHold() may
+# take several seconds to resolve via customer phone approval
+# and can time out under real MTN Collection load.
 # ------------------------------------------------------------
 MTN:
   base_url: "https://cazacom-production.up.railway.app"
@@ -347,7 +350,7 @@ MTN:
     header_name: "X-API-KEY"
     secret_source:
       type: env_var
-      name: "MTN_API_KEY"
+      name: "MTN_VOUCHMORPH_API_KEY"
 
   source_linking:
     initiate: "/mtn_momo_participant.php?action=initiate_link"
@@ -359,8 +362,8 @@ MTN:
   endpoints:
     source:
       verify_asset: "/mtn_momo_participant.php?action=wallet_balance"
-      place_hold: "/mtn_momo_participant.php?action=hold"
-      debit_funds: "/mtn_momo_participant.php?action=debit"
+      place_hold: "/mtn_momo_participant.php?action=place_hold"
+      debit_funds: "/mtn_momo_participant.php?action=debit_funds"
       release_hold: "/mtn_momo_participant.php?action=release_hold"
       get_balance: "/mtn_momo_participant.php?action=wallet_balance"
       get_transactions: "/mtn_momo_participant.php?action=transactions"
@@ -374,12 +377,12 @@ MTN:
       verify_token: "/mtn_momo_participant.php?action=confirm_cashout"
       confirm_cashout: "/mtn_momo_participant.php?action=confirm_cashout"
     destination_deposit:
-      process_deposit: "/mtn_momo_participant.php?action=switch_webhook"
+      process_deposit: "/mtn_momo_participant.php?action=process_deposit"
       verify_account: "/mtn_momo_participant.php?action=wallet_balance"
     common:
-      transfer: "/mtn_momo_participant.php?action=switch_webhook"
+      transfer: "/mtn_momo_participant.php?action=process_deposit"
       reverse: "/mtn_momo_participant.php?action=reverse"
-      status: "/mtn_momo_participant.php?action=transfer_status"
+      status: "/mtn_momo_participant.php?action=check_status"
       health: "/health"
 
   callbacks:
