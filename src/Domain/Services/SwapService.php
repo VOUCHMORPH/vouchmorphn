@@ -1609,20 +1609,21 @@ private function writeAuditFallback(string $swapRef, string $swapType, string $r
     /**
      * Get numeric swap_request_id from swap_uuid
      */
-    private function getSwapRequestId(string $swapRef): ?int
-    {
-$sql = "SELECT swap_id FROM swap_requests WHERE swap_uuid = :swap_uuid";
-     try {
-            $stmt = $this->swapDB->prepare($sql);
-            $stmt->execute([':swap_uuid' => $swapRef]);
-            $row = $stmt->fetch(PDO::FETCH_ASSOC);
-            return $row ? (int)$row['swap_request_id'] : null;
-        } catch (PDOException $e) {
-            $this->logger->error("Failed to get swap_request_id", ['error' => $e->getMessage(), 'swap_ref' => $swapRef]);
-            return null;
-        }
+   private function getSwapRequestId(string $swapRef): ?int
+{
+    $sql = "SELECT swap_id FROM swap_requests WHERE swap_uuid = :swap_uuid";
+    try {
+        $stmt = $this->swapDB->prepare($sql);
+        $stmt->execute([':swap_uuid' => $swapRef]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ? (int)$row['swap_id'] : null;   // FIXED
+    } catch (PDOException $e) {
+        $this->logger->error("Failed to get swap_request_id", ['error' => $e->getMessage(), 'swap_ref' => $swapRef]);
+        return null;
     }
+}
 
+ 
     private function populateSwapRequest(string $swapRef, array $swapData, array $details, ?int $userId = null): ?int
     {
         // Extract forex data from feeCalculationDetails
