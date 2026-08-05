@@ -418,17 +418,49 @@ if (!empty($commConfig)) {
                null;
     }
 
-    private function validateInstitutions(array $payload, bool $requireDestination = true): void
-    {
-        $source = $this->extractSourceInstitution($payload);
-        error_log("[SwapService] Source institution validated: {$source}");
-        
-        if ($requireDestination) {
-            $dest = $this->extractDestinationInstitution($payload);
-            error_log("[SwapService] Destination institution validated: {$dest}");
-        }
+   private function validateInstitutions(array $payload, bool $requireDestination = true): void
+{
+    $source = $this->extractSourceInstitution($payload);
+    $this->assertCanBeSource($source);
+    error_log("[SwapService] Source institution validated: {$source}");
+    
+    if ($requireDestination) {
+        $dest = $this->extractDestinationInstitution($payload);
+        error_log("[SwapService] Destination institution validated: {$dest}");
+    }
+}
+
+/**
+ * Rejects institutions that cannot be used as a swap source, at the
+ * earliest possible point — before any verify/hold/debit attempt is
+ * made. Driven by participants.yaml's capabilities.source flag, so
+ * this is a config change, not a code change, when an institution's
+ * real API capability changes (e.g. if MTN later integrates
+ * Collection API and becomes debit-capable).
+ */
+private function assertCanBeSource(string $institution): void
+{
+    $participant = $this->participants[$institution]
+        ?? $this->participants[strtoupper($institution)]
+        ?? null;
+
+    if ($participant === null) {
+        // Unknown institution — let the existing downstream "Participant
+        // not found" handling in getParticipant()/adapter resolution
+        // catch this; not this method's job to guess.
+        return;
     }
 
+    $canBeSource = $participant['capabilities']['source'] ?? true; // default true: don't silently block institutions that haven't been given a capabilities block yet
+
+    if ($canBeSource === false) {
+        throw new RuntimeException(
+            "{$institution} cannot be used as a source for this swap — " .
+            "it only supports receiving funds (deposit), not being debited. " .
+            "Choose a different source institution."
+        );
+    }
+}
     // ============================================================================
     // SOURCE LINKING METHODS (Hooking)
     // ============================================================================
