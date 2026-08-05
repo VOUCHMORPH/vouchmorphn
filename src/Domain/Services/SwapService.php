@@ -237,6 +237,22 @@ if (!empty($commConfig)) {
         $this->logger->info("Signed SwapService initialized (multi-source " . ($this->multiSourceOrchestrator ? 'ENABLED' : 'DISABLED') . ")", ['country' => $country]);
     }
 
+private function extractOriginatorPartyData(array $payload): array
+{
+    return [
+        'name' => $payload['originator_name'] ?? null,
+        'id_number' => $payload['originator_id_number'] ?? null,
+    ];
+}
+
+private function extractBeneficiaryPartyData(array $payload): array
+{
+    return [
+        'name' => $payload['beneficiary_name'] ?? null,
+        'id_number' => $payload['beneficiary_id_number'] ?? null,
+    ];
+}
+ 
     // ============================================================================
     // INSTITUTION EXTRACTION - NO HARDCODING
     // ============================================================================
