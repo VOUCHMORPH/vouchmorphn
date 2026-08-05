@@ -81,6 +81,9 @@ interface InstitutionAdapterInterface
      * NOT part of swap flow
      */
     public function getTransactions(array $payload, array $context): array;
+
+
+    public function checkSettlementStatus(array $payload, array $context): array
     
     /**
      * Get list of accounts for dashboard display
