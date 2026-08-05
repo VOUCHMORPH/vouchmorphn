@@ -1,11 +1,11 @@
 # ============================================
 # PARTICIPANT ENDPOINTS
+# Connection details, auth, and URL mappings only.
+# Capability facts (hold_model, settlement_confirmation,
+# source/deposit/cashout) live in participants.yaml.
 # ============================================
-version: "3.2.0"
+version: "3.3.0"
 
-# ------------------------------------------------------------
-# ZURUBANK - Traditional bank (also technical host for ABSA)
-# ------------------------------------------------------------
 ZURUBANK:
   base_url: "https://zurubank-production.up.railway.app/Backend"
   timeout_ms: 5000
@@ -15,27 +15,7 @@ ZURUBANK:
   auth:
     type: API_KEY
     header_name: "X-API-KEY"
-    secret_source:
-      type: env_var
-      name: "ZURUBANK_API_KEY"
-
-  oauth:
-    client_id: "VOUCHMORPH_APP_ID"
-    client_secret: "YOUR_BANK_SECRET"
-    redirect_uri: "https://vouchmorphn-production.up.railway.app/api/v1/agent/oauth_callback.php"
-    authorization_url: "/api/v1/oauth/authorize.php"
-    token_url: "/api/v1/oauth/token.php"
-    refresh_url: "/api/v1/oauth/refresh.php"
-    revoke_url: "/api/v1/oauth/revoke.php"
-    userinfo_url: "/api/v1/oauth/userinfo.php"
-    scopes: ["balance", "transactions", "payments"]
-
-  source_linking:
-    initiate: "/api/v1/oauth/authorize.php"
-    verify: "/api/v1/oauth/token.php"
-    refresh: "/api/v1/oauth/refresh.php"
-    revoke: "/api/v1/oauth/revoke.php"
-    use: "/api/v1/verify_asset.php"
+    secret_source: { type: env_var, name: "ZURUBANK_VOUCHMORPH_API_KEY" }
 
   endpoints:
     source:
@@ -53,30 +33,15 @@ ZURUBANK:
       process_deposit: "/api/v1/deposit/direct.php"
       verify_account: "/api/v1/verify_asset.php"
     common:
-      transfer: "/api/v1/transfer.php"
+      transferWithProof: "/api/v1/transfer.php"
       reverse: "/api/v1/hold.php"
       status: "/api/v1/status"
+      check_settlement: "/api/v1/settlement/check.php"
       health: "/health"
 
-  callbacks:
-    hold_confirmed: "/api/v1/callbacks/hold-confirmed"
-    hold_released: "/api/v1/callbacks/hold-released"
-    debit_confirmed: "/api/v1/callbacks/debit-confirmed"
-    deposit_confirmed: "/api/v1/callbacks/deposit-confirmed"
-    reversal_confirmed: "/api/v1/callbacks/reversal-confirmed"
-    cashout_confirmed: "/api/v1/callbacks/cashout-confirmed"
-
-  phone_format:
-    prefix: "+"
-    country_code: "267"
-    expected_length: 11
-    supported_networks: ["mascom", "orange", "btc"]
-
   message_profile:
-    correlation_id_header: "X-Correlation-ID"
-    idempotency_key_header: "X-Idempotency-Key"
-    signature_header: "X-Signature"
     timestamp_header: "X-Timestamp"
+    signature_header: "X-Signature"
     trace_id_prefix: "ZURUBANK"
 
   retry_policy:
@@ -85,15 +50,8 @@ ZURUBANK:
     retry_on: [timeout, 5xx, network_error]
 
 # ------------------------------------------------------------
-# ABSA - Independent DIRECT bank participant, technically
-# hosted on Zurubank's infrastructure (same base_url as
-# ZURUBANK above), but with its OWN API key so requests are
-# attributed to ABSA specifically, not to Zurubank. Zurubank's
-# receiving endpoints must recognize the ABSA_API_KEY and
-# resolve it to ABSA's own accounts/ledger, not Zurubank's own.
-# ------------------------------------------------------------
 ABSA:
-  base_url: "https://zurubank-production.up.railway.app/Backend"
+  base_url: "https://zurubank-production.up.railway.app/Backend/api"
   timeout_ms: 5000
   sandbox_mode: true
   adapter_class: "GenericFinancialInstitutionAdapter"
@@ -101,66 +59,31 @@ ABSA:
   auth:
     type: API_KEY
     header_name: "X-API-KEY"
-    secret_source:
-      type: env_var
-      name: "ABSA_API_KEY"
-
-  oauth:
-    client_id: "VOUCHMORPH_APP_ID"
-    client_secret: "YOUR_BANK_SECRET"
-    redirect_uri: "https://vouchmorphn-production.up.railway.app/api/v1/agent/oauth_callback.php"
-    authorization_url: "/api/v1/oauth/authorize.php"
-    token_url: "/api/v1/oauth/token.php"
-    refresh_url: "/api/v1/oauth/refresh.php"
-    revoke_url: "/api/v1/oauth/revoke.php"
-    userinfo_url: "/api/v1/oauth/userinfo.php"
-    scopes: ["balance", "transactions", "payments"]
-
-  source_linking:
-    initiate: "/api/v1/oauth/authorize.php"
-    verify: "/api/v1/oauth/token.php"
-    refresh: "/api/v1/oauth/refresh.php"
-    revoke: "/api/v1/oauth/revoke.php"
-    use: "/api/v1/verify_asset.php"
+    secret_source: { type: env_var, name: "ABSA_VOUCHMORPH_API_KEY" }
 
   endpoints:
     source:
-      verify_asset: "/api/absa_participant.php?action=verify_asset"
-      place_hold: "/api/absa_participant.php?action=place_hold"
-      debit_funds: "/api/absa_participant.php?action=debit_funds"
-      release_hold: "/api/absa_participant.php?action=release_hold"
-      get_balance: "/api/absa_participant.php?action=account_balance"
+      verify_asset: "/absa_participant.php?action=verify_asset"
+      place_hold: "/absa_participant.php?action=place_hold"
+      debit_funds: "/absa_participant.php?action=debit_funds"
+      release_hold: "/absa_participant.php?action=release_hold"
+      get_balance: "/absa_participant.php?action=account_balance"
     destination_cashout:
-      generate_token: "/api/absa_participant.php?action=generate_token"
-      verify_token: "/api/absa_participant.php?action=verify_token"
-      confirm_cashout: "/api/absa_participant.php?action=confirm_cashout"
+      generate_token: "/absa_participant.php?action=generate_token"
+      verify_token: "/absa_participant.php?action=verify_token"
+      confirm_cashout: "/absa_participant.php?action=confirm_cashout"
     destination_deposit:
-      process_deposit: "/api/absa_participant.php?action=process_deposit"
-      verify_account: "/api/absa_participant.php?action=verify_account"
+      process_deposit: "/absa_participant.php?action=process_deposit"
+      verify_account: "/absa_participant.php?action=verify_account"
     common:
-      transfer: "/api/absa_participant.php?action=process_deposit"
-      status: "/api/absa_participant.php?action=check_status"
+      transferWithProof: "/absa_participant.php?action=process_deposit"
+      status: "/absa_participant.php?action=check_status"
+      check_settlement: "/absa_participant.php?action=check_settlement"
       health: "/health"
 
-  callbacks:
-    hold_confirmed: "/api/v1/callbacks/hold-confirmed"
-    hold_released: "/api/v1/callbacks/hold-released"
-    debit_confirmed: "/api/v1/callbacks/debit-confirmed"
-    deposit_confirmed: "/api/v1/callbacks/deposit-confirmed"
-    reversal_confirmed: "/api/v1/callbacks/reversal-confirmed"
-    cashout_confirmed: "/api/v1/callbacks/cashout-confirmed"
-
-  phone_format:
-    prefix: "+"
-    country_code: "267"
-    expected_length: 11
-    supported_networks: ["mascom", "orange", "btc"]
-
   message_profile:
-    correlation_id_header: "X-Correlation-ID"
-    idempotency_key_header: "X-Idempotency-Key"
-    signature_header: "X-Signature"
-    timestamp_header: "X-Timestamp"
+    timestamp_header: "X-Api-Timestamp"
+    signature_header: "X-Api-Signature"
     trace_id_prefix: "ABSA"
 
   retry_policy:
@@ -168,8 +91,6 @@ ABSA:
     retry_delay_ms: 1000
     retry_on: [timeout, 5xx, network_error]
 
-# ------------------------------------------------------------
-# SACCUSSALIS - Commercial bank
 # ------------------------------------------------------------
 SACCUSSALIS:
   base_url: "https://saccussalis-production.up.railway.app/backend"
@@ -180,24 +101,7 @@ SACCUSSALIS:
   auth:
     type: API_KEY
     header_name: "X-API-KEY"
-    secret_source:
-      type: env_var
-      name: "SACCUSSALIS_API_KEY"
-
-  source_linking:
-    initiate: "/api/v1/auth/initiate.php"
-    verify: "/api/v1/auth/verify.php"
-    refresh: "/api/v1/auth/refresh.php"
-    revoke: "/api/v1/auth/revoke.php"
-    use: "/api/v1/verify_asset.php"
-
-  oauth:
-    authorization_url: "/oauth/authorize"
-    token_url: "/oauth/token"
-    refresh_url: "/oauth/refresh"
-    revoke_url: "/oauth/revoke"
-    userinfo_url: "/oauth/userinfo"
-    scopes: ["balance", "transactions", "payments"]
+    secret_source: { type: env_var, name: "SACCUSSALIS_VOUCHMORPH_API_KEY" }
 
   endpoints:
     source:
@@ -215,24 +119,14 @@ SACCUSSALIS:
       process_deposit: "/api/v1/transaction/credit_funds.php"
       verify_account: "/api/v1/verify_account.php"
     common:
-      transfer: "/api/v1/transfer.php"
+      transferWithProof: "/api/v1/transfer.php"
       reverse: "/api/v1/hold.php"
       status: "/api/v1/status"
+      check_settlement: "/api/v1/settlement/check.php"
       health: "/health"
 
   callbacks:
-    hold_confirmed: "/api/v1/callbacks/hold-confirmed"
-    hold_released: "/api/v1/callbacks/hold-released"
-    debit_confirmed: "/api/v1/callbacks/debit-confirmed"
-    deposit_confirmed: "/api/v1/callbacks/deposit-confirmed"
-    reversal_confirmed: "/api/v1/callbacks/reversal-confirmed"
-    cashout_confirmed: "/api/v1/callbacks/cashout-confirmed"
-
-  phone_format:
-    prefix: "+"
-    country_code: "267"
-    expected_length: 11
-    supported_networks: ["mascom", "orange", "btc"]
+    settlement_confirmed: "https://vouchmorphn-production.up.railway.app/api/v1/callbacks/settlement_confirmed.php"
 
   message_profile:
     correlation_id_header: "X-Correlation-ID"
@@ -247,8 +141,6 @@ SACCUSSALIS:
     retry_on: [timeout, 5xx, network_error]
 
 # ------------------------------------------------------------
-# CAZACOM - Mobile network operator (also technical host for MTN)
-# ------------------------------------------------------------
 CAZACOM:
   base_url: "https://cazacom-production.up.railway.app/backend"
   timeout_ms: 5000
@@ -258,24 +150,7 @@ CAZACOM:
   auth:
     type: API_KEY
     header_name: "X-API-KEY"
-    secret_source:
-      type: env_var
-      name: "CAZACOM_API_KEY"
-
-  source_linking:
-    initiate: "/api/v1/mno/initiate_link"
-    verify: "/api/v1/mno/verify_link"
-    refresh: "/api/v1/mno/refresh"
-    revoke: "/api/v1/mno/revoke"
-    use: "/api/v1/mno/verify_wallet"
-
-  oauth:
-    authorization_url: "/oauth/authorize"
-    token_url: "/oauth/token"
-    refresh_url: "/oauth/refresh"
-    revoke_url: "/oauth/revoke"
-    userinfo_url: "/oauth/userinfo"
-    scopes: ["wallet_balance", "wallet_transactions", "wallet_payments"]
+    secret_source: { type: env_var, name: "CAZACOM_VOUCHMORPH_API_KEY" }
 
   endpoints:
     source:
@@ -293,25 +168,11 @@ CAZACOM:
       process_deposit: "/api/v1/mno/credit"
       verify_account: "/api/v1/mno/verify_wallet"
     common:
-      transfer: "/api/v1/mno/transfer"
+      transferWithProof: "/api/v1/mno/transfer"
       reverse: "/api/v1/mno/reverse"
       status: "/api/v1/status"
+      check_settlement: "/api/v1/mno/check_settlement"
       health: "/health"
-
-  callbacks:
-    hold_confirmed: "/api/v1/callbacks/hold-confirmed"
-    hold_released: "/api/v1/callbacks/hold-released"
-    debit_confirmed: "/api/v1/callbacks/debit-confirmed"
-    deposit_confirmed: "/api/v1/callbacks/deposit-confirmed"
-    reversal_confirmed: "/api/v1/callbacks/reversal-confirmed"
-    cashout_confirmed: "/api/v1/callbacks/cashout-confirmed"
-
-  phone_format:
-    prefix: "+"
-    country_code: "267"
-    expected_length: 11
-    mno_prefixes: ["71", "72", "73", "74", "75", "76"]
-    default_network: "mascom"
 
   message_profile:
     correlation_id_header: "X-Correlation-ID"
@@ -326,17 +187,6 @@ CAZACOM:
     retry_on: [timeout, 5xx, network_error]
 
 # ------------------------------------------------------------
-# MTN - Independent DIRECT MNO participant, technically hosted
-# on Cazacom's infrastructure (same base_url as CAZACOM above),
-# own API key so requests are attributed to MTN's wallet ledger
-# specifically. Points at mtn_momo_participant.php's action
-# routes rather than Cazacom's own MNO endpoints, since MTN's
-# deposit/cashout logic is its own file (mtn_wallets/mtn_transfers),
-# not shared state with Cazacom's own MobileMoneyAdapter backend.
-# Collection (requesttopay) now implemented — placeHold() may
-# take several seconds to resolve via customer phone approval
-# and can time out under real MTN Collection load.
-# ------------------------------------------------------------
 MTN:
   base_url: "https://cazacom-production.up.railway.app"
   timeout_ms: 5000
@@ -346,57 +196,26 @@ MTN:
   auth:
     type: API_KEY
     header_name: "X-API-KEY"
-    secret_source:
-      type: env_var
-      name: "MTN_VOUCHMORPH_API_KEY"
-
-  source_linking:
-    initiate: "/mtn_momo_participant.php?action=initiate_link"
-    verify: "/mtn_momo_participant.php?action=verify_link"
-    refresh: "/mtn_momo_participant.php?action=refresh"
-    revoke: "/mtn_momo_participant.php?action=revoke"
-    use: "/mtn_momo_participant.php?action=wallet_balance"
+    secret_source: { type: env_var, name: "MTN_VOUCHMORPH_API_KEY" }
 
   endpoints:
     source:
-      verify_asset: "/mtn_momo_participant.php?action=wallet_balance"
+      verify_asset: "/mtn_momo_participant.php?action=verify_asset"
       place_hold: "/mtn_momo_participant.php?action=place_hold"
       debit_funds: "/mtn_momo_participant.php?action=debit_funds"
       release_hold: "/mtn_momo_participant.php?action=release_hold"
       get_balance: "/mtn_momo_participant.php?action=wallet_balance"
-      get_transactions: "/mtn_momo_participant.php?action=transactions"
-    destination_cashout:
-      # No ATM network for MTN — cashout goes through the agent
-      # network instead. See destination_deposit + initiate_cashout
-      # below; VouchMorph's routing_policy.php sets cashout=>false
-      # for MTN so this section is never actually invoked, kept
-      # here only for interface-shape consistency across adapters.
-      generate_token: "/mtn_momo_participant.php?action=initiate_cashout"
-      verify_token: "/mtn_momo_participant.php?action=confirm_cashout"
-      confirm_cashout: "/mtn_momo_participant.php?action=confirm_cashout"
     destination_deposit:
       process_deposit: "/mtn_momo_participant.php?action=process_deposit"
       verify_account: "/mtn_momo_participant.php?action=wallet_balance"
     common:
-      transfer: "/mtn_momo_participant.php?action=process_deposit"
-      reverse: "/mtn_momo_participant.php?action=reverse"
+      transferWithProof: "/mtn_momo_participant.php?action=process_deposit"
       status: "/mtn_momo_participant.php?action=check_status"
+      check_settlement: "/mtn_momo_participant.php?action=check_settlement"
       health: "/health"
 
   callbacks:
-    hold_confirmed: "/api/v1/callbacks/hold-confirmed"
-    hold_released: "/api/v1/callbacks/hold-released"
-    debit_confirmed: "/api/v1/callbacks/debit-confirmed"
-    deposit_confirmed: "/api/v1/callbacks/deposit-confirmed"
-    reversal_confirmed: "/api/v1/callbacks/reversal-confirmed"
-    cashout_confirmed: "/api/v1/callbacks/cashout-confirmed"
-
-  phone_format:
-    prefix: "+"
-    country_code: "267"
-    expected_length: 11
-    mno_prefixes: ["71", "72", "73", "74", "75", "76"]
-    default_network: "mtn"
+    settlement_confirmed: "https://vouchmorphn-production.up.railway.app/api/v1/callbacks/settlement_confirmed.php"
 
   message_profile:
     correlation_id_header: "X-Correlation-ID"
@@ -411,12 +230,6 @@ MTN:
     retry_on: [timeout, 5xx, network_error]
 
 # ------------------------------------------------------------
-# CENTRALSWITCH - National payment switch rail (not an
-# institution itself — a routing target selected by
-# RouteResolver when routing_policy.php prefers it for a
-# given operation/participant pair). Uses HMAC shared-secret
-# auth, not API_KEY, matching HMACAuth on the switch side.
-# ------------------------------------------------------------
 CENTRALSWITCH:
   base_url: "https://centralswitch-production.up.railway.app"
   timeout_ms: 10000
@@ -427,12 +240,8 @@ CENTRALSWITCH:
     type: HMAC_SHARED_SECRET
     timestamp_header: "X-Api-Timestamp"
     signature_header: "X-Api-Signature"
-    secret_source:
-      type: env_var
-      name: "CENTRALSWITCH_VOUCHMORPH_SECRET"
+    secret_source: { type: env_var, name: "CENTRALSWITCH_VOUCHMORPH_SECRET" }
 
-  # VouchMorph's own participant_id as registered on the switch
-  # (switch_participants.participant_id for the VOUCHMORPH row).
   self_participant_id_source:
     type: env_var
     name: "CENTRALSWITCH_VOUCHMORPH_PARTICIPANT_ID"
@@ -452,13 +261,11 @@ CENTRALSWITCH:
   retry_policy:
     max_retries: 2
     retry_delay_ms: 500
-    retry_on: [timeout, network_error]   # NOT on 4xx/5xx — those are authoritative rejections, not transient
+    retry_on: [timeout, network_error]   # never on 4xx/5xx — those are authoritative rejections
 
 # ------------------------------------------------------------
-# VOUCHMORPH - Orchestration layer (internal)
-# ------------------------------------------------------------
 VOUCHMORPH:
-  base_url: "https://vouchmorph.up.railway.app"
+  base_url: "https://vouchmorphn-production.up.railway.app"
   timeout_ms: 5000
   sandbox_mode: true
   adapter_class: "VouchMorphOrchestrationAdapter"
@@ -466,54 +273,15 @@ VOUCHMORPH:
   auth:
     type: API_KEY
     header_name: "X-API-KEY"
-    secret_source:
-      type: env_var
-      name: "VOUCHMORPH_API_KEY"
-
-  oauth:
-    authorization_url: "/oauth/authorize"
-    token_url: "/oauth/token"
-    refresh_url: "/oauth/refresh"
-    revoke_url: "/oauth/revoke"
-    userinfo_url: "/oauth/userinfo"
-    scopes: ["swaps", "cards", "settlements", "reports"]
+    secret_source: { type: env_var, name: "VOUCHMORPH_API_KEY" }
 
   endpoints:
-    source:
-      verify_asset: "/api/v1/cards/verify.php"
-      place_hold: "/api/v1/cards/authorize.php"
-      debit_funds: "/api/v1/cards/load.php"
-      release_hold: "/api/v1/cards/void.php"
-      get_balance: "/api/v1/cards/balance.php"
-      get_transactions: "/api/v1/cards/transactions.php"
-    destination_cashout:
-      generate_token: "/api/v1/cards/atm/generate.php"
-      verify_token: "/api/v1/cards/atm/verify.php"
-      confirm_cashout: "/api/v1/cards/atm/confirm.php"
-    destination_deposit:
-      process_deposit: "/api/v1/cards/load.php"
-      verify_account: "/api/v1/cards/verify.php"
     common:
       transfer: "/api/v1/swap/execute.php"
       reverse: "/api/v1/swap/cancel.php"
       status: "/api/v1/swap/status.php"
       health: "/health"
       regulatory_report: "/api/regulatory/report"
-
-  callbacks:
-    hold_confirmed: "/api/v1/callbacks/hold-confirmed"
-    hold_released: "/api/v1/callbacks/hold-released"
-    debit_confirmed: "/api/v1/callbacks/debit-confirmed"
-    deposit_confirmed: "/api/v1/callbacks/deposit-confirmed"
-    reversal_confirmed: "/api/v1/callbacks/reversal-confirmed"
-    swap_completed: "/api/v1/callbacks/swap-completed"
-    cashout_confirmed: "/api/v1/callbacks/cashout-confirmed"
-
-  phone_format:
-    prefix: "+"
-    country_code: "267"
-    expected_length: 11
-    supported_networks: ["mascom", "orange", "btc"]
 
   message_profile:
     correlation_id_header: "X-Correlation-ID"
