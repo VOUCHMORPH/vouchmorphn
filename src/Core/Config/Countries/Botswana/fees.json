@@ -9,7 +9,7 @@
       },
       "F7": {
         "amount": 1.00,
-        "description": "Swap levy (government regulatory fee)"
+        "description": "VouchMorph swap levy (internal fee, owned and retained by VouchMorph -- NOT a government-mandated levy, despite the name)"
       }
     },
     "multi_source": {
@@ -76,7 +76,7 @@
       },
       "F7": {
         "amount": 1.00,
-        "description": "Swap levy (government regulatory fee)"
+        "description": "VouchMorph swap levy (internal fee, owned and retained by VouchMorph -- NOT a government-mandated levy, despite the name)"
       }
     },
     "multi_source": {
@@ -116,7 +116,7 @@
       },
       "F7": {
         "amount": 1.00,
-        "description": "Swap levy"
+        "description": "VouchMorph swap levy (internal fee, owned and retained by VouchMorph -- NOT a government-mandated levy, despite the name)"
       }
     },
     "distribution": {
@@ -150,19 +150,55 @@
     "billing_cycle": "calendar_month_end",
     "settlement_description": "F23 is computed and recorded on every switch-routed transaction at swap time (so each institution's true net share is visible immediately in fee_calculation_details), but no separate cash movement happens per swap. VouchMorph accrues the F23 liability per institution, then nets and settles/invoices the switch operator in a single batch at each calendar month end \u2014 consistent with standard EFT/RTC-style clearing (gross recording, netted deferred settlement) rather than per-transaction gross settlement.",
 
-    "example_calculation_deposit_via_switch": {
-      "client_pays": 6.00,
-      "F7_levy": 1.00,
-      "distributable_pool": 5.00,
-      "platform_share_35%_unaffected": 1.75,
-      "source_gross_share_15%": 0.75,
-      "destination_gross_share_50%": 2.50,
-      "switch_fee_F23_total": 0.50,
-      "source_switch_fee_allocation_15/65_of_F23": 0.1154,
-      "destination_switch_fee_allocation_50/65_of_F23": 0.3846,
-      "source_net_share": 0.6346,
-      "destination_net_share": 2.1154,
-      "check_platform_plus_source_net_plus_dest_net_plus_F23_equals_pool": "1.75 + 0.6346 + 2.1154 + 0.50 = 5.00"
+    "switch_fee_share": {
+      "example_calculation_deposit_via_switch": {
+        "client_pays": 6.00,
+        "F7_levy": 1.00,
+        "distributable_pool": 5.00,
+        "platform_share_35%_unaffected": 1.75,
+        "source_gross_share_15%": 0.75,
+        "destination_gross_share_50%": 2.50,
+        "switch_fee_F23_total": 0.50,
+        "source_switch_fee_allocation_15/65_of_F23": 0.1154,
+        "destination_switch_fee_allocation_50/65_of_F23": 0.3846,
+        "source_net_share": 0.6346,
+        "destination_net_share": 2.1154,
+        "check_platform_plus_source_net_plus_dest_net_plus_F23_equals_pool": "1.75 + 0.6346 + 2.1154 + 0.50 = 5.00"
+      }
+    }
+  },
+
+  "regulatory": {
+    "F7": {
+      "name": "Swap Levy",
+      "owner": "VOUCHMORPH",
+      "type": "flat",
+      "description": "VouchMorph's own internal swap levy. NOT a government-mandated fee -- despite the name 'levy', this is retained by VouchMorph, not remitted to any regulator. (Confirmed 2026-08-05; master fee_types.php registry previously said owner=REGULATORY -- that file needs the same correction, see fee_types_CORRECTED.php.)"
+    },
+    "F8": {
+      "name": "Multi-Source Fee",
+      "owner": "VOUCHMORPH",
+      "type": "flat_per_extra_source",
+      "description": "Extra fee per additional source account beyond the first, in a multi-source swap"
+    },
+    "F10": {
+      "name": "Retry Fee",
+      "owner": "VOUCHMORPH",
+      "type": "flat",
+      "description": "Reduced fee charged on a retried swap attempt (generate-code fee only)"
+    },
+    "F23": {
+      "name": "National Switch Fee",
+      "owner": "SWITCH",
+      "type": "flat",
+      "description": "Fee charged by the national switch when a swap could not settle DIRECT. See switch_routing section above for allocation rules."
+    },
+    "F81": {
+      "name": "VAT",
+      "owner": "TAX",
+      "rate": 14,
+      "applies_to_fees": ["F1"],
+      "description": "Value Added Tax on fees"
     }
   }
 }
