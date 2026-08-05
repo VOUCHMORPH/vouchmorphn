@@ -20,6 +20,11 @@ participants:
       - ACCOUNT
       - VOUCHER
 
+    capabilities:
+      source: true
+      deposit: true
+      cashout: true
+
     routing:
       priority: 10
       cost_score: 5
@@ -55,6 +60,11 @@ participants:
     asset_types:
       - ACCOUNT
       - VOUCHER
+
+    capabilities:
+      source: true      # full bank, real hold/debit API once its own endpoints are live on Zurubank's infra
+      deposit: true
+      cashout: true
 
     switch_participant_ids:
       CENTRALSWITCH: "122e2314-8ec0-42dd-baf6-aaed8fcb6605"
@@ -92,6 +102,11 @@ participants:
       - VOUCHER
       - WALLET
 
+    capabilities:
+      source: true
+      deposit: true
+      cashout: true
+
     routing:
       priority: 15
       cost_score: 4
@@ -122,6 +137,11 @@ participants:
     asset_types:
       - WALLET
       - VOUCHER
+
+    capabilities:
+      source: true
+      deposit: true
+      cashout: false     # no ATM network — agent cash-out only
 
     switch_participant_ids:
       CENTRALSWITCH: "72439d1d-4544-41fd-9576-8e9404a18cfc"
@@ -169,6 +189,14 @@ participants:
     asset_types:
       - WALLET
       - VOUCHER
+
+    capabilities:
+      source: false      # MTN MoMo's real public API is Disbursement (push) only —
+                         # VouchMorph has no way to debit an arbitrary customer's
+                         # wallet without a Collection-API integration, which
+                         # doesn't exist yet. MTN can only ever be a destination.
+      deposit: true
+      cashout: false      # no ATM network — agent cash-out via mtn_agent_cashouts
 
     switch_participant_ids:
       CENTRALSWITCH: "8f05724f-e93b-4ad8-b874-aab32e0fa9bd"
@@ -220,6 +248,11 @@ participants:
     asset_types:
       - CARD
       - VOUCHER
+
+    capabilities:
+      source: true
+      deposit: true
+      cashout: true
 
     switch_participant_ids:
       CENTRALSWITCH: "cbcdd2a7-b3a3-4420-b034-a7ac03082ee1"
