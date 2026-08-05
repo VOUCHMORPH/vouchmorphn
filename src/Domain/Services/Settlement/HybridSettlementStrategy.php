@@ -28,6 +28,7 @@ class HybridSettlementStrategy
     private PDO $db;
     private string $defaultCurrency = 'BWP';
     private array $vouchmorphCorridorAccounts = [];
+    private array $participants = [];   // NEW
     
     private const VOUCHMORPH_FEE_ACCOUNT = 'VOUCHMORPH_OPERATIONS';
     private const VOUCHMORPH_FEE_ACCOUNT_NUMBER = 'VM-OP-001';
@@ -51,6 +52,7 @@ class HybridSettlementStrategy
     {
         $this->db = $db;
         $this->vouchmorphCorridorAccounts = $vouchmorphCorridorAccounts;
+        $this->participants = $participants;   // NEW
         $this->ensureTablesExist();
     }
     
@@ -1129,19 +1131,108 @@ class HybridSettlementStrategy
     // HELPER METHODS
     // ============================================================
     
-    private function deliverToParticipant(string $institutionName, array $message): void
-    {
-        error_log("[SETTLEMENT] Message delivered to $institutionName: " . json_encode($message));
-        
-        if (isset($message['instruction_id'])) {
-            $stmt = $this->db->prepare("
-                UPDATE settlement_outbox 
-                SET status = 'SENT', sent_at = NOW()
-                WHERE message_uuid = ?
-            ");
-            $stmt->execute([$message['instruction_id']]);
+    /**
+ * Actually delivers a settlement message to a participant institution,
+ * via a simple webhook POST, instead of only logging locally.
+ *
+ * Deliberately fail-open: a delivery failure here must never throw back
+ * into updateNetPosition()/invoiceFee() and block the swap or the fee
+ * invoice from being recorded locally. The settlement_outbox row stays
+ * PENDING (not SENT) on failure, so a future retry sweep can pick it up
+ * -- see redeliverPendingSettlements() below.
+ */
+private function deliverToParticipant(string $institutionName, array $message): void
+{
+    $webhookUrl = $this->participants[$institutionName]['settlement_webhook_url']
+        ?? $this->participants[strtoupper($institutionName)]['settlement_webhook_url']
+        ?? null;
+
+    if (!$webhookUrl) {
+        error_log("[SETTLEMENT] No settlement_webhook_url configured for {$institutionName} -- message recorded locally only, not delivered. Add 'settlement_webhook_url' to this institution's participant config.");
+        return;
+    }
+
+    $payload = json_encode($message);
+
+    $ch = curl_init($webhookUrl);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => $payload,
+        CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'Accept: application/json'],
+        CURLOPT_TIMEOUT => 15,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
+    ]);
+
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlError = curl_error($ch);
+    curl_close($ch);
+
+    $delivered = $httpCode >= 200 && $httpCode < 300 && !$curlError;
+
+    if ($delivered) {
+        error_log("[SETTLEMENT] Message delivered to {$institutionName} via webhook (HTTP {$httpCode})");
+    } else {
+        error_log("[SETTLEMENT] FAILED to deliver message to {$institutionName}: HTTP {$httpCode}, curl_error=" . ($curlError ?: 'none') . ". Will remain PENDING for retry.");
+    }
+
+    if (isset($message['instruction_id'])) {
+        $stmt = $this->db->prepare("
+            UPDATE settlement_outbox
+            SET status = :status, sent_at = CASE WHEN :status2 = 'SENT' THEN NOW() ELSE sent_at END,
+                delivery_attempts = COALESCE(delivery_attempts, 0) + 1,
+                last_delivery_error = :error
+            WHERE message_uuid = ?
+        ");
+        $stmt->execute([
+            ':status' => $delivered ? 'SENT' : 'PENDING',
+            ':status2' => $delivered ? 'SENT' : 'PENDING',
+            ':error' => $delivered ? null : ($curlError ?: "HTTP {$httpCode}"),
+            $message['instruction_id'],
+        ]);
+    }
+}
+
+/**
+ * Retry sweep for messages that failed delivery. Call this on a schedule
+ * (same cron/worker pattern as settlement_confirmation_worker.php),
+ * separately from the main swap flow.
+ */
+public function redeliverPendingSettlements(int $maxAttempts = 10, int $limit = 100): array
+{
+    $stmt = $this->db->prepare("
+        SELECT * FROM settlement_outbox
+        WHERE status = 'PENDING'
+        AND COALESCE(delivery_attempts, 0) < :max_attempts
+        ORDER BY created_at ASC
+        LIMIT :limit
+    ");
+    $stmt->bindValue(':max_attempts', $maxAttempts, PDO::PARAM_INT);
+    $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+    $stmt->execute();
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    $results = ['attempted' => count($rows), 'delivered' => 0];
+
+    foreach ($rows as $row) {
+        $message = json_decode($row['message_payload'], true) ?? [];
+        $message['instruction_id'] = $row['message_uuid'];
+
+        $beforeStatus = $row['status'];
+        $this->deliverToParticipant($row['destination_institution'], $message);
+        $this->deliverToParticipant($row['source_institution'], $message);
+
+        $checkStmt = $this->db->prepare("SELECT status FROM settlement_outbox WHERE message_uuid = ?");
+        $checkStmt->execute([$row['message_uuid']]);
+        if ($checkStmt->fetchColumn() === 'SENT') {
+            $results['delivered']++;
         }
     }
+
+    return $results;
+}
     
     private function clearNetPosition(string $debtor, string $creditor, string $currency): void
     {
