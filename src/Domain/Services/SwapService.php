@@ -1667,7 +1667,9 @@ $completedAt = (strtolower($status) === 'completed') ? date('Y-m-d H:i:s') : nul
         'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? null
     ]),
     ':original_swap_ref' => $swapData['original_swap_ref'] ?? null,
-    ':user_id' => $userId
+    ':user_id' => $userId,
+    ':execution_rail' => $details['execution_rail'] ?? 'DIRECT',
+    ':execution_rail_reference' => $details['execution_rail_reference'] ?? null
 ]);
         
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
