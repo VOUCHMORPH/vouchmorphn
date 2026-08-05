@@ -78,13 +78,12 @@ class TransfersHandler
         try {
             $swapResult = $this->swapService->executeAtomicSwap($payload);
         } catch (\Throwable $e) {
+            // Was: MojaloopErrorMapper::map(['status' => 'error', 'message' => $e->getMessage()])
+            // which always hit the generic 5000 bucket regardless of cause.
             $errorResult = [
                 'status' => 'error',
                 'transferId' => $request->transferId,
-                'errorInformation' => MojaloopErrorMapper::map([
-                    'status' => 'error',
-                    'message' => $e->getMessage(),
-                ])['errorInformation'],
+                'errorInformation' => MojaloopErrorMapper::classifyException($e->getMessage())['errorInformation'],
             ];
             IdempotencyService::store($this->db, $idempotencyKey, $errorResult);
             return $errorResult;
