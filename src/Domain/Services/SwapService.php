@@ -2064,7 +2064,50 @@ private function populateMessageOutbox(string $swapRef, array $swapData, array $
     $this->logger->debug("message_outbox populated", ['message_id' => $messageId, 'destination' => $phone, 'swap_ref' => $swapRef, 'user_id' => $userId]);
 }
  
- 
+ /**
+ * Records a swap that was executed via an external rail (e.g. a
+ * national switch), not through this class's own verify/hold/debit
+ * pipeline. Switch-executed swaps never call executeAtomicSwap() -
+ * SwitchExecutionStrategy calls the switch adapter directly - so
+ * without this, they'd leave zero trace in swap_requests, breaking
+ * every admin report that queries it (Transaction Certificate,
+ * Institution Settlement Summary, etc.).
+ *
+ * Reuses the same tracking-table population already used by the
+ * DIRECT path, so both rails end up in the same reportable shape.
+ */
+public function recordExternalRailExecution(array $payload, array $railResult, string $railName): array
+{
+    $ref = $payload['reference'] ?? $this->generateReference();
+    $this->currentSwapRef = $ref;
+    $this->currentHoldId = null; // no local hold exists for switch-executed swaps
+
+    $sourceInstitution = $payload['from_institution'] ?? $payload['source_institution'] ?? null;
+    $destInstitution = $payload['to_institution'] ?? $payload['destination_institution'] ?? null;
+
+    $swapData = [
+        'swap_type' => $payload['swap_type'] ?? 'STANDARD',
+        'reference' => $ref,
+        'amount' => $payload['amount'] ?? 0,
+        'currency' => $payload['currency'] ?? 'BWP',
+        'status' => ($railResult['status'] ?? 'completed'),
+        'from_institution' => $sourceInstitution,
+        'to_institution' => $destInstitution,
+        'user_id' => $payload['user_id'] ?? null,
+    ];
+
+    $details = array_merge($payload, [
+        'source_institution' => $sourceInstitution,
+        'destination_institution' => $destInstitution,
+        'status' => $swapData['status'],
+        'execution_rail' => $railName,
+        'execution_rail_reference' => $railResult['reference'] ?? null,
+    ]);
+
+    $this->populateTrackingTables($swapData, $details, $railResult);
+
+    return ['reference' => $ref, 'status' => $swapData['status']];
+}
 
 
     public function executeAtomicSwap(array $payload): array
