@@ -3,26 +3,37 @@ declare(strict_types=1);
 
 /**
  * VOUCHMORPH UNIVERSAL FEE TYPE REGISTRY
- * 
+ *
  * PURPOSE:
- * -------  
+ * -------
  * Standardize fee classifications across all countries,
  * banks, mobile money operators and future participants.
- * 
+ *
  * Fee codes NEVER change.
  * Fee names MAY be overridden by countries or participants.
- * 
+ *
  * RANGES:
  * ------
  * F1-F20     = VouchMorph Core Fees
- * F21-F30    = Banking Industry Standard Fees  
+ * F21-F30    = Banking Industry Standard Fees
  * F31-F50    = Country Specific Fees
  * F51-F80    = Participant Specific Fees
  * F81-F90    = Tax Fees
  * F91-F100   = Reserved Future Use
- * 
+ *
  * This file is the MASTER DICTIONARY.
  * Country fees.json only REFERENCE these codes.
+ *
+ * CORRECTION (2026-08-05): F7 'owner' was previously 'REGULATORY',
+ * implying it was a government-mandated levy remitted to a regulator.
+ * Confirmed with VouchMorph: F7 is VouchMorph's own internal fee --
+ * "levy" is just its name, not its legal character. Owner corrected
+ * to 'VOUCHMORPH' to match reality and the country config
+ * (Countries/Botswana/fees.json's 'regulatory' section, which already
+ * had this right). Description corrected to stop implying government
+ * mandate. If this is ever presented to a central bank or auditor,
+ * this correction matters: the previous wording could have been read
+ * as VouchMorph retaining money legally owed to a regulator.
  */
 
 return [
@@ -75,10 +86,10 @@ return [
     ],
     'F7' => [
         'name' => 'Swap Levy',
-        'owner' => 'REGULATORY',
+        'owner' => 'VOUCHMORPH',  // CORRECTED: was 'REGULATORY'
         'type' => 'flat',
         'mandatory' => false,
-        'description' => 'Government-mandated transaction levy'
+        'description' => "VouchMorph's own internal swap levy. NOT government-mandated -- retained by VouchMorph, not remitted to a regulator, despite the name."
     ],
     'F8' => [
         'name' => 'Multi Source Fee',
@@ -119,7 +130,13 @@ return [
     */
     'F21' => ['name' => 'Regulatory Fee', 'owner' => 'BANKING'],
     'F22' => ['name' => 'Central Bank Levy', 'owner' => 'BANKING'],
-    'F23' => ['name' => 'National Switch Fee', 'owner' => 'BANKING'],
+    'F23' => [
+        'name' => 'National Switch Fee',
+        'owner' => 'SWITCH',  // was implicitly 'BANKING' with no real definition; now used, see switch_routing section
+        'type' => 'flat',
+        'mandatory' => false,
+        'description' => 'Fee charged by the national switch when a swap could not settle DIRECT and had to route through it. Allocated between source/destination institutions, never VouchMorph -- see country fees.json switch_routing block.'
+    ],
     'F24' => ['name' => 'AML Screening Fee', 'owner' => 'BANKING'],
     'F25' => ['name' => 'Sanctions Screening Fee', 'owner' => 'BANKING'],
     'F26' => ['name' => 'Interchange Fee', 'owner' => 'BANKING'],
