@@ -9083,6 +9083,24 @@ private function updateHoldExpiry(?int $holdId, string $expiresAt): void
         throw new RuntimeException("Participant not found: {$institution}");
     }
 
+ /**
+ * Exposes the already-constructed, already-wired FeeService instance
+ * for read-only fee previews by external protocol adapters (Mojaloop
+ * QuotesHandler, etc.) that need a fee estimate without executing a
+ * real swap. This is the SAME FeeService instance used internally by
+ * calculateFeesWithDetails() — already has setParticipants() called,
+ * already has the real ForexService wired in via the constructor.
+ *
+ * Safe to call from outside: FeeService::calculateFees() only mutates
+ * FeeService's OWN internal $context/$calculatedFees state, never
+ * touches SwapService's atomic-swap state ($currentSwapRef,
+ * $currentHoldId, $inAtomicSwap, etc.) — so calling this mid-swap or
+ * standalone cannot corrupt an in-progress transaction.
+ */
+public function getFeeService(): FeeService
+{
+    return $this->feeService;
+}
     public function getParticipantId(string $institution): int
     {
         foreach ($this->participants as $code => $participant) {
