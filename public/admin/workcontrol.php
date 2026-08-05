@@ -78,7 +78,7 @@ function discoverCountries() {
                 $countries[$item] = [
                     'name' => $item,
                     'path' => $countryPath,
-                    'has_participants' => file_exists($countryPath . '/participants.json'),
+                    'has_participants' => file_exists($countryPath . '/participants.yaml'),
                     'has_fees' => file_exists($countryPath . '/fees.json'),
                     'has_config' => file_exists($countryPath . '/config.php'),
                     'has_env' => file_exists($countryPath . '/.env'),
@@ -92,7 +92,7 @@ function discoverCountries() {
 }
 
 function loadParticipantsForCountry($countryPath) {
-    $participantsFile = $countryPath . '/participants.json';
+    $participantsFile = $countryPath . '/participants.yaml';
     if (!file_exists($participantsFile)) return [];
     
     $data = json_decode(file_get_contents($participantsFile), true);
@@ -256,7 +256,7 @@ function scanMissingIncludes($files) {
 
 function scanJsonConfigs($files) {
     $issues = [];
-    $jsonFiles = ['participants.json', 'fees.json', 'banks.json', 'cards.json', 'communication.json', 'countries_registry.json'];
+    $jsonFiles = ['participants.yaml', 'fees.json', 'banks.json', 'cards.json', 'communication.json', 'countries_registry.json'];
     
     foreach ($files as $file) {
         if (in_array(basename($file), $jsonFiles)) {
@@ -623,7 +623,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
                 <strong>📍 <?php echo htmlspecialchars($countryName); ?></strong><br>
                 <span style="font-size: 10px;"><?php echo htmlspecialchars($info['path']); ?></span><br>
                 <span style="font-size: 10px;">
-                    <?php echo $info['has_participants'] ? '✅ participants.json' : '❌ participants.json'; ?> |
+                    <?php echo $info['has_participants'] ? '✅ participants.yaml' : '❌ participants.yaml'; ?> |
                     <?php echo $info['has_fees'] ? '✅ fees.json' : '❌ fees.json'; ?> |
                     <?php echo $info['has_env'] ? '✅ .env' : '❌ .env'; ?>
                 </span>
