@@ -3876,6 +3876,18 @@ public function cancelExpiredCashouts(int $bufferHours = 6): array
     }
     
     $this->updateHoldStatus($this->currentHoldId, 'DEBITED');
+
+ // NEW: start settlement confirmation tracking — destination already
+// attested delivery via processDepositWithProof() above; now confirm
+// they were actually paid.
+$this->recordSettlementPending(
+    $this->currentSwapRef,
+    $destinationInstitution,
+    $debitResult['transaction_reference'] ?? $this->currentSwapRef,
+    $netAmount,
+    $payload['currency'] ?? 'BWP'
+);
+
     
     // Post ledger legs
     $sourceIdentifier = $this->extractSourceIdentifier($payload);
@@ -7287,6 +7299,59 @@ public function isApprovedAgent(int $userId): bool
         'raw_response' => $result['raw_response'] ?? null,
         'data' => $result['data'] ?? []
     ];
+}
+
+ /**
+ * Called after debitSource() succeeds in ANY DIRECT flow (deposit,
+ * cashout, identity finalization). At this point the destination
+ * institution has ALREADY attested it delivered value to the customer
+ * (processDeposit succeeded, or confirmCashout said cash was dispensed)
+ * — they are now genuinely owed money, and VouchMorph's debitSource()
+ * call was VouchMorph's attempt to pay them. This method starts
+ * tracking whether that payment actually landed, per the destination
+ * institution's configured confirmation mode.
+ *
+ * Switch-executed swaps never call this — the switch's own
+ * submitTransfer() response already atomically confirms both legs,
+ * so settlement_status stays NOT_APPLICABLE for those.
+ */
+private function recordSettlementPending(
+    string $swapRef,
+    string $destinationInstitution,
+    string $settlementReference,
+    float $amount,
+    string $currency
+): void {
+    $destParticipant = $this->participants[$destinationInstitution] ?? [];
+    $confirmationConfig = $destParticipant['settlement_confirmation'] ?? ['mode' => 'POLL'];
+    $mode = strtoupper($confirmationConfig['mode'] ?? 'POLL');
+
+    try {
+        $this->runInSavepoint('settlement_pending_' . $swapRef, function () use (
+            $swapRef, $destinationInstitution, $settlementReference, $amount, $currency, $mode
+        ) {
+            $stmt = $this->swapDB->prepare("
+                INSERT INTO settlement_confirmations (
+                    swap_reference, destination_institution, settlement_reference,
+                    amount, currency, confirmation_mode, status
+                ) VALUES (?, ?, ?, ?, ?, ?, 'PENDING')
+                ON CONFLICT (swap_reference) DO NOTHING
+            ");
+            $stmt->execute([$swapRef, $destinationInstitution, $settlementReference, $amount, $currency, $mode]);
+
+            $stmt = $this->swapDB->prepare("
+                UPDATE swap_requests SET settlement_status = 'UNCONFIRMED' WHERE swap_uuid = ?
+            ");
+            $stmt->execute([$swapRef]);
+        });
+
+        error_log("[SwapService] Settlement confirmation tracking started: swap={$swapRef}, destination={$destinationInstitution}, mode={$mode}");
+    } catch (\Throwable $e) {
+        error_log("[SwapService] Failed to record settlement pending for {$swapRef}: " . $e->getMessage());
+        // Non-fatal — the customer already has their money. This is a
+        // tracking failure, not a swap failure. Same discipline as
+        // every other tracking-table write in this class.
+    }
 }
     /**
      * Release hold
