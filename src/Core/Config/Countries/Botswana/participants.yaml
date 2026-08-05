@@ -1,7 +1,10 @@
 # ============================================
 # PARTICIPANT REGISTRY
+# Identity, capabilities, and institutional facts only.
+# No connection details, no endpoints, no secrets — those
+# live in endpoints.yaml.
 # ============================================
-version: "3.2.0"
+version: "3.3.0"
 
 participants:
   # ----------------------------------------------------------
@@ -25,6 +28,13 @@ participants:
       deposit: true
       cashout: true
 
+    hold_model: NATIVE          # real hold/authorization API
+
+    settlement_confirmation:
+      mode: POLL
+      poll_delay_seconds: 30
+      poll_max_attempts: 20
+
     routing:
       priority: 10
       cost_score: 5
@@ -42,10 +52,8 @@ participants:
       settlement_cycles: { BWP: "T+0", ZAR: "T+1", USD: "T+2" }
 
   # ----------------------------------------------------------
-  # ABSA - Commercial bank, independent DIRECT participant,
-  # technically hosted on Zurubank's infrastructure (see
-  # endpoints.yaml — shares Zurubank's base_url, own API key).
-  # Also reachable via CENTRALSWITCH.
+  # ABSA - Independent DIRECT bank, technically hosted on
+  # Zurubank's infrastructure. Also reachable via CENTRALSWITCH.
   # ----------------------------------------------------------
   ABSA:
     provider_code: ABSA
@@ -55,16 +63,23 @@ participants:
     country: BW
     status: ACTIVE
     swift_bic: ABSABWXX
-    technical_host: ZURUBANK   # infra note only — does not affect routing/settlement
+    technical_host: ZURUBANK     # infra note only — does not affect routing/settlement
 
     asset_types:
       - ACCOUNT
       - VOUCHER
 
     capabilities:
-      source: true      # full bank, real hold/debit API once its own endpoints are live on Zurubank's infra
+      source: true
       deposit: true
       cashout: true
+
+    hold_model: NATIVE
+
+    settlement_confirmation:
+      mode: POLL
+      poll_delay_seconds: 20
+      poll_max_attempts: 15
 
     switch_participant_ids:
       CENTRALSWITCH: "122e2314-8ec0-42dd-baf6-aaed8fcb6605"
@@ -107,6 +122,11 @@ participants:
       deposit: true
       cashout: true
 
+    hold_model: NATIVE
+
+    settlement_confirmation:
+      mode: PUSH                 # calls VouchMorph's settlement_confirmed.php webhook
+
     routing:
       priority: 15
       cost_score: 4
@@ -124,7 +144,7 @@ participants:
       settlement_cycles: { BWP: "T+0", ZAR: "T+1", EUR: "T+2" }
 
   # ----------------------------------------------------------
-  # CAZACOM - Mobile network operator
+  # CAZACOM - Mobile network operator, also technical host for MTN
   # ----------------------------------------------------------
   CAZACOM:
     provider_code: CAZACOM
@@ -141,7 +161,14 @@ participants:
     capabilities:
       source: true
       deposit: true
-      cashout: false     # no ATM network — agent cash-out only
+      cashout: false             # no ATM network
+
+    hold_model: NATIVE
+
+    settlement_confirmation:
+      mode: POLL
+      poll_delay_seconds: 15
+      poll_max_attempts: 20
 
     switch_participant_ids:
       CENTRALSWITCH: "72439d1d-4544-41fd-9576-8e9404a18cfc"
@@ -172,10 +199,9 @@ participants:
         - { tier: 3, max_balance: 100000, daily_limit: 50000 }
 
   # ----------------------------------------------------------
-  # MTN - Mobile money operator, independent DIRECT participant,
-  # technically hosted on Cazacom's infrastructure. No ATM
-  # network — cashout is agent-based (see mtn_agent_cashouts).
-  # Also reachable via CENTRALSWITCH.
+  # MTN - Mobile money, technically hosted on Cazacom's infra.
+  # Collection (source/pull) implemented — see mtn_momo_participant.php.
+  # No ATM network — agent cash-out only.
   # ----------------------------------------------------------
   MTN:
     provider_code: MTN
@@ -184,20 +210,28 @@ participants:
     type: MNO
     country: BW
     status: ACTIVE
-    technical_host: CAZACOM   # infra note only — does not affect routing/settlement
+    technical_host: CAZACOM
 
     asset_types:
       - WALLET
       - VOUCHER
 
     capabilities:
-      source: true          # Collection (requesttopay) now implemented — see note
+      source: true               # Collection (requesttopay) implemented
       deposit: true
-      cashout: false        # no ATM network — agent cash-out via mtn_agent_cashouts
-      source_is_async: true # placeHold() may take several seconds to resolve
-                            # via customer phone approval, and can time out
-                            # under real MTN Collection load — see
-                            # mtn_momo_participant.php's class docblock.
+      cashout: false
+
+    hold_model: NATIVE            # MTN Collection approximates a real hold via
+                                   # requesttopay approval — see class docblock
+                                   # in mtn_momo_participant.php for the async
+                                   # timing caveat this implies.
+
+    source_is_async: true         # placeHold() may take several seconds to
+                                   # resolve via customer phone approval, and
+                                   # can time out under real Collection load.
+
+    settlement_confirmation:
+      mode: PUSH                  # MTN pushes via switch_webhook-style callback
 
     switch_participant_ids:
       CENTRALSWITCH: "8f05724f-e93b-4ad8-b874-aab32e0fa9bd"
@@ -227,13 +261,34 @@ participants:
         - { tier: 2, max_balance: 50000, daily_limit: 10000 }
         - { tier: 3, max_balance: 100000, daily_limit: 50000 }
 
-    # No ATM cashout — physical cash handoff happens via MTN's own
-    # agent network (mtn_agent_cashouts table), entirely outside
-    # VouchMorph/switch visibility. routing_policy.php sets
-    # cashout=>false for MTN accordingly.
     agent_cashout:
       enabled: true
       code_expiry_minutes: 30
+
+  # ----------------------------------------------------------
+  # CENTRALSWITCH - National payment switch rail (not an
+  # institution — a routing target). No hold_model or
+  # settlement_confirmation: the switch settles atomically in
+  # one call, so neither concept applies.
+  # ----------------------------------------------------------
+  CENTRALSWITCH:
+    provider_code: CENTRALSWITCH
+    id: VMPHCSW1
+    name: "Central Switch"
+    type: SWITCH
+    country: BW
+    status: ACTIVE
+
+    capabilities:
+      source: false               # not a debitable participant itself
+      deposit: false
+      cashout: false
+
+    routing:
+      priority: 1
+      cost_score: 1
+      reliability_score: 9
+      region: local
 
   # ----------------------------------------------------------
   # VOUCHMORPH - Orchestration layer
@@ -249,11 +304,6 @@ participants:
     asset_types:
       - CARD
       - VOUCHER
-
-    capabilities:
-      source: true
-      deposit: true
-      cashout: true
 
     switch_participant_ids:
       CENTRALSWITCH: "cbcdd2a7-b3a3-4420-b034-a7ac03082ee1"
