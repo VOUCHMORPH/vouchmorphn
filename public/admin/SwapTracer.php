@@ -2,13 +2,13 @@
 declare(strict_types=1);
 
 /**
- * SwapTracer
- * ----------
+ * SwapTracer (PostgreSQL)
+ * -----------------------
  * Records a step-by-step trace of a single swap's execution to the
  * swap_traces / swap_trace_summary tables, so WorkControl (or any other
- * tool) can reconstruct exactly what happened -- currency resolution,
- * routing decision, adapter calls, signature verification, hold
- * placement, settlement, atomic commit -- for any given swap reference.
+ * tool) can reconstruct exactly what happened -- validation, country
+ * resolution, routing decision, adapter calls, signature verification,
+ * hold placement, settlement, atomic commit -- for any given swap.
  *
  * DESIGN PRINCIPLES:
  * - Tracing must NEVER break or slow the actual swap in a meaningful way.
@@ -16,13 +16,20 @@ declare(strict_types=1);
  *   step is logged via error_log() and swallowed, never thrown.
  * - Each step captures how long it took since the previous step
  *   (duration_ms), so slow steps are visible without extra instrumentation.
- * - finish() must be called exactly once, in a finally block, so
- *   swap_trace_summary always reaches a terminal state (success/failed)
- *   even when an exception is thrown mid-swap.
+ * - finish() must be called exactly once per logical swap attempt (it's
+ *   idempotent if called twice), ideally from a finally/catch path, so
+ *   swap_trace_summary always reaches a terminal state even when an
+ *   exception is thrown mid-swap.
+ * - A swap's real reference is often not known until partway through
+ *   execution (e.g. it's generated inside SwapService). Start the
+ *   tracer under a temporary identifier -- the derived idempotency_key
+ *   works well, since it's already deterministic and known immediately
+ *   after the request is parsed -- and call rekey() once the real
+ *   swap_reference exists.
  *
- * USAGE (see SWAP_TRACER_INTEGRATION_GUIDE.md for a full walkthrough):
+ * USAGE:
  *
- *   $tracer = new SwapTracer($pdo, $swapReference);
+ *   $tracer = new SwapTracer($pdo, $input['idempotency_key']);
  *   $tracer->setSummary([
  *       'swap_type' => $swapType,
  *       'source_institution' => $fromInstitution,
@@ -33,7 +40,8 @@ declare(strict_types=1);
  *
  *   try {
  *       $tracer->success('VALIDATION', 'Input validated');
- *       // ... swap logic, calling $tracer->success()/error()/warning() at each step ...
+ *       // ... swap logic ...
+ *       $tracer->rekey($result['reference']); // once the real reference exists
  *       $tracer->finish(true);
  *   } catch (\Throwable $e) {
  *       $tracer->error('EXCEPTION', get_class($e), $e->getMessage());
@@ -62,8 +70,9 @@ class SwapTracer
         $this->safely(function () {
             $stmt = $this->db->prepare(
                 "INSERT INTO swap_trace_summary (swap_reference, overall_status, started_at)
-                 VALUES (:ref, 'in_progress', NOW(3))
-                 ON DUPLICATE KEY UPDATE overall_status = 'in_progress', started_at = NOW(3)"
+                 VALUES (:ref, 'in_progress', clock_timestamp())
+                 ON CONFLICT (swap_reference) DO UPDATE
+                     SET overall_status = 'in_progress', started_at = clock_timestamp()"
             );
             $stmt->execute(['ref' => $this->swapReference]);
         });
@@ -90,7 +99,7 @@ class SwapTracer
             $stmt = $this->db->prepare(
                 "INSERT INTO swap_traces
                     (swap_reference, step_index, category, step_name, status, message, details, institution, duration_ms)
-                 VALUES (:ref, :idx, :cat, :name, :status, :msg, :details, :inst, :dur)"
+                 VALUES (:ref, :idx, :cat, :name, :status, :msg, :details::jsonb, :inst, :dur)"
             );
             $stmt->execute([
                 'ref'     => $this->swapReference,
@@ -131,11 +140,11 @@ class SwapTracer
     }
 
     /**
-     * Attach/replace top-level summary fields (swap_type, institutions,
-     * routing_mode, amount, currency). Call as many times as needed --
-     * later calls overwrite matching keys. Recognized keys map directly
-     * to swap_trace_summary columns: swap_type, source_institution,
-     * destination_institution, routing_mode, amount, currency.
+     * Attach/replace top-level summary fields. Call as many times as
+     * needed -- later calls overwrite matching keys. Recognized keys
+     * map directly to swap_trace_summary columns: swap_type,
+     * source_institution, destination_institution, routing_mode,
+     * amount, currency.
      */
     public function setSummary(array $fields): void
     {
@@ -143,13 +152,64 @@ class SwapTracer
     }
 
     /**
-     * Call exactly once, at the very end of the swap -- success or
-     * failure -- ideally from a finally block so it always runs.
+     * Rename this trace from its current identifier to the real swap
+     * reference, once one exists. Safe to call multiple times or with
+     * the same value (no-op). If a summary row already exists under
+     * the new reference (e.g. a genuine idempotent retry landed on the
+     * same final reference), the temporary row is merged away rather
+     * than colliding on the primary key.
+     */
+    public function rekey(string $newReference): void
+    {
+        if ($newReference === $this->swapReference || $newReference === '') {
+            return;
+        }
+        $old = $this->swapReference;
+
+        $this->safely(function () use ($old, $newReference) {
+            $this->db->beginTransaction();
+            try {
+                $stmt = $this->db->prepare(
+                    "UPDATE swap_traces SET swap_reference = :new WHERE swap_reference = :old"
+                );
+                $stmt->execute(['new' => $newReference, 'old' => $old]);
+
+                $check = $this->db->prepare(
+                    "SELECT 1 FROM swap_trace_summary WHERE swap_reference = :new"
+                );
+                $check->execute(['new' => $newReference]);
+
+                if ($check->fetchColumn()) {
+                    $del = $this->db->prepare(
+                        "DELETE FROM swap_trace_summary WHERE swap_reference = :old"
+                    );
+                    $del->execute(['old' => $old]);
+                } else {
+                    $upd = $this->db->prepare(
+                        "UPDATE swap_trace_summary SET swap_reference = :new WHERE swap_reference = :old"
+                    );
+                    $upd->execute(['new' => $newReference, 'old' => $old]);
+                }
+
+                $this->db->commit();
+            } catch (\Throwable $e) {
+                $this->db->rollBack();
+                throw $e;
+            }
+        });
+
+        $this->swapReference = $newReference;
+    }
+
+    /**
+     * Call once at the very end of the swap -- success or failure.
+     * Idempotent: safe to call more than once (e.g. once at a specific
+     * failure point, once again from an outer catch-all).
      */
     public function finish(bool $success): void
     {
         if ($this->finished) {
-            return; // idempotent guard against double-finish
+            return;
         }
         $this->finished = true;
 
@@ -162,7 +222,7 @@ class SwapTracer
                 'first_error_step'  => $this->firstErrorStep,
                 'total_steps'       => $this->stepIndex,
                 'total_duration_ms' => $totalMs,
-                'completed_at'      => (new DateTime())->format('Y-m-d H:i:s.v'),
+                'completed_at'      => (new DateTime())->format('Y-m-d H:i:s.u'),
             ]);
 
             $setClauses = [];
@@ -172,7 +232,7 @@ class SwapTracer
                 if (!preg_match('/^[a-z_]+$/', $key)) {
                     continue;
                 }
-                $setClauses[] = "`$key` = :$key";
+                $setClauses[] = "$key = :$key";
                 $params[$key] = $value;
             }
 
