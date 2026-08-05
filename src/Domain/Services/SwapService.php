@@ -418,6 +418,11 @@ if (!empty($commConfig)) {
                null;
     }
 
+public function assertCanBeSourcePublic(string $institution): void
+{
+    $this->assertCanBeSource($institution);
+}
+ 
    private function validateInstitutions(array $payload, bool $requireDestination = true): void
 {
     $source = $this->extractSourceInstitution($payload);
