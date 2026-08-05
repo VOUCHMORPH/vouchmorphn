@@ -125,23 +125,21 @@ ABSA:
 
   endpoints:
     source:
-      verify_asset: "/api/v1/verify_asset.php"
-      place_hold: "/api/v1/hold.php"
-      debit_funds: "/api/v1/settlement/notify_debit.php"
-      release_hold: "/api/v1/hold.php"
-      get_balance: "/api/v1/accounts/balance.php"
-      get_transactions: "/api/v1/transactions.php"
+      verify_asset: "/absa_participant.php?action=verify_asset"
+      place_hold: "/absa_participant.php?action=place_hold"
+      debit_funds: "/absa_participant.php?action=debit_funds"
+      release_hold: "/absa_participant.php?action=release_hold"
+      get_balance: "/absa_participant.php?action=account_balance"
     destination_cashout:
-      generate_token: "/api/v1/atm/generate_code.php"
-      verify_token: "/api/v1/atm/atm_cashout.php"
-      confirm_cashout: "/api/v1/atm_cashout.php"
+      generate_token: "/absa_participant.php?action=generate_token"
+      verify_token: "/absa_participant.php?action=verify_token"
+      confirm_cashout: "/absa_participant.php?action=confirm_cashout"
     destination_deposit:
-      process_deposit: "/api/v1/deposit/direct.php"
-      verify_account: "/api/v1/verify_asset.php"
+      process_deposit: "/absa_participant.php?action=process_deposit"
+      verify_account: "/absa_participant.php?action=verify_account"
     common:
-      transfer: "/api/v1/transfer.php"
-      reverse: "/api/v1/hold.php"
-      status: "/api/v1/status"
+      transfer: "/absa_participant.php?action=process_deposit"
+      status: "/absa_participant.php?action=check_status"
       health: "/health"
 
   callbacks:
