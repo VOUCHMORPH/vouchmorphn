@@ -3,22 +3,53 @@ declare(strict_types=1);
 
 namespace Domain\Services\Routing;
 
-/**
- * STUB. Not wired to anything real. Exists so the interface shape is
- * settled before the Kwik meeting - fill in submit()/status() once
- * EMIS confirms whether it's one call or quote->transfer->commit.
- */
+use Infrastructure\Adapters\InstitutionAdapterFactory;
+
 final class SwitchExecutionStrategy implements ExecutionStrategyInterface
 {
-    public function __construct(private string $railName) {}
+    public function __construct(
+        private string $railName,                      // e.g. 'CENTRALSWITCH'
+        private InstitutionAdapterFactory $adapterFactory,
+        private array $countryParticipants,             // from participants.yaml for this country
+    ) {}
 
     public function execute(array $payload, ExecutionPlan $plan): array
     {
-        throw new \RuntimeException(
-            "SwitchExecutionStrategy for rail '{$this->railName}' is not yet implemented. " .
-            "This plan should have had fallbackMode=DIRECT set - the caller " .
-            "(not this class) is responsible for catching this and retrying " .
-            "via DirectExecutionStrategy."
-        );
+        // Resolve the switch's own adapter the SAME way any bank/MNO
+        // adapter is resolved — no special-cased HTTP client, no
+        // hardcoded URL. The adapter for CENTRALSWITCH reads its
+        // base_url/auth from endpoints.yaml, exactly like ZURUBANK's does.
+        $switchAdapter = $this->adapterFactory->getAdapter($this->railName);
+
+        $originCode = $payload['from_institution'];
+        $destCode = $payload['to_institution'] ?? $payload['destination_institution'];
+
+        $originSwitchId = $this->countryParticipants[$originCode]['switch_participant_ids'][$this->railName] ?? null;
+        $destSwitchId = $this->countryParticipants[$destCode]['switch_participant_ids'][$this->railName] ?? null;
+
+        if (!$originSwitchId || !$destSwitchId) {
+            throw new \RuntimeException("{$originCode} or {$destCode} has no switch_participant_ids entry for rail {$this->railName}");
+        }
+
+        $result = $switchAdapter->submitTransfer([
+            'method' => 'PUSH',
+            'origin_participant_id' => $originSwitchId,
+            'destination_participant_id' => $destSwitchId,
+            'origin_account_number' => $payload['source_identifier'] ?? $payload['source_account'] ?? '',
+            'destination_account_number' => $payload['destination_identifier'] ?? '',
+            'amount' => $payload['amount'],
+            'currency' => $payload['currency'] ?? 'BWP',
+            'idempotency_key' => $payload['idempotency_key'] ?? null,
+        ]);
+
+        if (!($result['success'] ?? false)) {
+            throw new \RuntimeException("Switch rejected transfer: " . ($result['message'] ?? 'unknown error'));
+        }
+
+        return [
+            'status' => $result['data']['status'] ?? 'COMPLETED',
+            'reference' => $result['data']['transaction_reference'] ?? null,
+            'rail' => $this->railName,
+        ];
     }
 }
