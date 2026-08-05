@@ -274,6 +274,11 @@ class PoolCoordinator
         foreach ($contributions as $index => $contribution) {
             $institution = $contribution['institution'];
             $amount = $contribution['amount'];
+
+             // NEW: reject non-source-capable institutions before attempting
+        // verification.
+        $this->swapService->assertCanBeSourcePublic($institution);
+        
             
             // Create verification payload
             $verifyPayload = [
