@@ -2120,6 +2120,8 @@ public function recordExternalRailExecution(array $payload, array $railResult, s
     $ref = $payload['reference'] ?? $this->generateReference();
     $this->currentSwapRef = $ref;
     $this->currentHoldId = null; // no local hold exists for switch-executed swaps
+    $this->swapDB->prepare("UPDATE swap_requests SET settlement_status = 'NOT_APPLICABLE' WHERE swap_uuid = ?")
+    ->execute([$ref]);
 
     $sourceInstitution = $payload['from_institution'] ?? $payload['source_institution'] ?? null;
     $destInstitution = $payload['to_institution'] ?? $payload['destination_institution'] ?? null;
