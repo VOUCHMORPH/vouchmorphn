@@ -2250,6 +2250,7 @@ public function recordExternalRailExecution(array $payload, array $railResult, s
                 'CARD_ISSUE' => $this->executeCardIssuance($payload),
                 'VERIFY_CASHOUT' => $this->verifyCashout($payload),
                 'CONFIRM_CASHOUT' => $this->confirmCashout($payload),
+                'STANDARD' => $this->resolveStandardSwapDeliveryMethod($payload),
                 default => $this->executeSignedStandardSwap($payload),
             };
             
@@ -6674,6 +6675,25 @@ public function isApprovedAgent(int $userId): bool
             throw new RuntimeException("Multi-source swap failed: " . $e->getMessage());
         }
     }
+
+ private function resolveStandardSwapDeliveryMethod(array $payload): array
+{
+    $deliveryMethod = strtoupper(
+        $payload['delivery_method']
+        ?? ($payload['destination_asset_type'] ?? null)
+        ?? 'DEPOSIT'
+    );
+
+    if (in_array($deliveryMethod, ['CASHOUT', 'ATM', 'AGENT', 'VOUCHER'], true)) {
+        error_log("[SwapService] STANDARD swap resolved to CASHOUT (delivery_method={$deliveryMethod})");
+        $payload['swap_type'] = 'CASHOUT';
+        return $this->executeSignedCashout($payload);
+    }
+
+    error_log("[SwapService] STANDARD swap resolved to DEPOSIT (delivery_method={$deliveryMethod})");
+    $payload['swap_type'] = 'DEPOSIT';
+    return $this->executeSignedDeposit($payload);
+}
 
     // ============================================================================
     // EXECUTE SIGNED STANDARD SWAP
