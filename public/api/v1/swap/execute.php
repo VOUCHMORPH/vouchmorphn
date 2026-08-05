@@ -231,6 +231,14 @@ function executeWithRouting(
 
     try {
         $result = $strategy->execute($input, $plan);
+
+        // NEW: SwitchExecutionStrategy doesn't create a swap_requests row
+        // itself (no bank-adapter pipeline to hook into) - record it here.
+        if ($plan->mode === ExecutionPlan::MODE_SWITCH) {
+            $tracked = $swapService->recordExternalRailExecution($input, $result, $plan->rail);
+            $result['reference'] = $result['reference'] ?? $tracked['reference'];
+        }
+
     } catch (Throwable $executionError) {
         if ($plan->fallbackMode === ExecutionPlan::MODE_DIRECT && $plan->mode !== ExecutionPlan::MODE_DIRECT) {
             error_log("[EXECUTE] {$plan->mode} execution failed ({$executionError->getMessage()}), falling back to DIRECT per plan.fallbackMode");
