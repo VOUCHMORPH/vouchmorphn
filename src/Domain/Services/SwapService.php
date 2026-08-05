@@ -155,8 +155,8 @@ class SwapService
         $this->signatureVerifier = new SignatureVerifier($this->swapDB);
         
         if (class_exists('Infrastructure\Crypto\CertificateManager')) {
-            $this->certificateManager = new CertificateManager('VOUCHMORPH');
-            if ($this->certificateManager->isConfigured()) {
+$this->certificateManager = \Infrastructure\Crypto\CertificateManagerFactory::get('VOUCHMORPH');
+         if ($this->certificateManager->isConfigured()) {
                 $this->logger->info("CertificateManager initialized for VOUCHMORPH (CA trust model)");
             } else {
                 $this->logger->warning("CertificateManager not fully configured - falling back to legacy signatures");
