@@ -24,6 +24,9 @@ declare(strict_types=1);
  *    exists yet for any country), so behavior is IDENTICAL to before -
  *    this only becomes active once a country gets a routing policy
  *    file with a real switch listed in it.
+ *  - NEW: Records settlement obligations when a switch execution
+ *    falls back to DIRECT, so the switch can be notified once it
+ *    comes back online.
  */
 require_once __DIR__ . '/../../../../vendor/autoload.php';
 
@@ -33,6 +36,7 @@ use Domain\Services\Routing\RouteResolver;
 use Domain\Services\Routing\ExecutionPlan;
 use Domain\Services\Routing\DirectExecutionStrategy;
 use Domain\Services\Routing\SwitchExecutionStrategy;
+use Domain\Services\Routing\Exceptions\SwitchUnavailableException;
 
 // ============================================
 // 1. BOOTSTRAP
@@ -178,7 +182,8 @@ function generateDeterministicIdempotencyKey(array $input): string {
 function executeWithRouting(
     \Domain\Services\SwapService $swapService,
     array $input,
-    string $countryName
+    string $countryName,
+    PDO $db
 ): array {
     $routingClassesExist = class_exists(RouteResolver::class)
         && class_exists(RoutingPolicyConfig::class)
@@ -237,6 +242,42 @@ function executeWithRouting(
         if ($plan->mode === ExecutionPlan::MODE_SWITCH) {
             $tracked = $swapService->recordExternalRailExecution($input, $result, $plan->rail);
             $result['reference'] = $result['reference'] ?? $tracked['reference'];
+        }
+
+    } catch (SwitchUnavailableException $executionError) {
+        if ($plan->fallbackMode === ExecutionPlan::MODE_DIRECT) {
+            error_log("[EXECUTE] Switch unreachable, falling back to DIRECT: " . $executionError->getMessage());
+            $result = (new DirectExecutionStrategy($swapService))->execute($input, $plan);
+            $result['_routing_fallback'] = [
+                'original_mode' => $plan->mode,
+                'reason' => 'switch_unavailable',
+            ];
+
+            // NEW: record that this obligation was intended for the switch
+            // but executed bilaterally, so it can be reported to the switch
+            // once it's back up.
+            try {
+                $stmt = $db->prepare("
+                    INSERT INTO settlement_obligations (
+                        vouchmorph_swap_reference, origin_institution, destination_institution,
+                        amount, currency, intended_rail, executed_via, status
+                    ) VALUES (?, ?, ?, ?, ?, ?, 'DIRECT', 'PENDING_NOTIFY')
+                    ON CONFLICT (vouchmorph_swap_reference) DO NOTHING
+                ");
+                $stmt->execute([
+                    $result['reference'] ?? $input['reference'] ?? uniqid('OBL_'),
+                    $input['from_institution'] ?? $input['source_institution'] ?? '',
+                    $input['to_institution'] ?? $input['destination_institution'] ?? '',
+                    $input['amount'] ?? 0,
+                    $input['currency'] ?? 'BWP',
+                    $plan->rail,
+                ]);
+                error_log("[EXECUTE] Recorded settlement_obligation for fallback execution");
+            } catch (Throwable $obligationError) {
+                error_log("[EXECUTE] Failed to record settlement_obligation: " . $obligationError->getMessage());
+            }
+        } else {
+            throw $executionError;
         }
 
     } catch (Throwable $executionError) {
@@ -393,7 +434,7 @@ try {
         $countryName            // string country (name, not code)
     );
 
-    $result = executeWithRouting($swapService, $input, $countryName);
+    $result = executeWithRouting($swapService, $input, $countryName, $db);
 
     echo json_encode([
         'success' => true,
