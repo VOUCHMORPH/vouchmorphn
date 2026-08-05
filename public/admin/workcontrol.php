@@ -17,20 +17,22 @@ define('MAX_SCAN_FILES', 500);
 // SWAP TRACE DB CONNECTION
 // ============================================================
 // TODO: point this at your actual platform-level DB connection.
-// If you already have a shared PDO bootstrap elsewhere in the project,
-// require/use that instead of building a new connection here.
+// If you already have a shared PDO bootstrap elsewhere in the project
+// (e.g. Core\Database\DBConnection, used in swap/execute.php), prefer
+// requiring and using that instead of building a second connection here.
 function getTraceDb(): ?PDO {
     static $pdo = null;
     if ($pdo !== null) return $pdo;
 
     try {
         $host = getenv('TRACE_DB_HOST') ?: '127.0.0.1';
+        $port = getenv('TRACE_DB_PORT') ?: '5432';
         $name = getenv('TRACE_DB_NAME') ?: 'vouchmorph';
-        $user = getenv('TRACE_DB_USER') ?: 'root';
+        $user = getenv('TRACE_DB_USER') ?: 'postgres';
         $pass = getenv('TRACE_DB_PASS') ?: '';
 
         $pdo = new PDO(
-            "mysql:host={$host};dbname={$name};charset=utf8mb4",
+            "pgsql:host={$host};port={$port};dbname={$name}",
             $user,
             $pass,
             [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
