@@ -27,6 +27,14 @@ declare(strict_types=1);
  *  - NEW: Records settlement obligations when a switch execution
  *    falls back to DIRECT, so the switch can be notified once it
  *    comes back online.
+ *  - NEW (TRACER): Every swap attempt is recorded step-by-step to
+ *    swap_traces / swap_trace_summary via SwapTracer, so WorkControl's
+ *    Swap Tracker tab can show exactly what happened -- validation,
+ *    country resolution, bootstrap, routing decision, strategy
+ *    execution, fallback, settlement obligations -- for any swap.
+ *    Tracing is best-effort: a tracer failure is logged and swallowed,
+ *    never allowed to affect the swap itself. Search "TRACER:" for
+ *    every line this introduced.
  */
 require_once __DIR__ . '/../../../../vendor/autoload.php';
 
@@ -42,6 +50,11 @@ use Domain\Services\Routing\Exceptions\SwitchUnavailableException;
 // 1. BOOTSTRAP
 // ============================================
 define('ROOT_PATH', dirname(__DIR__, 4));
+
+// TRACER: SwapTracer has no dependencies beyond PDO, safe to require
+// this early. Adjust the path if you place it somewhere other than
+// src/Core/Tracing/.
+require_once ROOT_PATH . '/src/Core/Tracing/SwapTracer.php';
 
 header("Access-Control-Allow-Origin: *");
 header("Content-Type: application/json; charset=UTF-8");
@@ -178,12 +191,17 @@ function generateDeterministicIdempotencyKey(array $input): string {
  * SwapService::executeAtomicSwap() directly. This means dropping this
  * file into an environment that doesn't yet have the Routing/ classes
  * deployed does NOT break anything.
+ *
+ * TRACER: $tracer records every branch this function takes -- which
+ * strategy was selected and why, whether a fallback occurred and why,
+ * and the outcome of the settlement_obligations insert on fallback.
  */
 function executeWithRouting(
     \Domain\Services\SwapService $swapService,
     array $input,
     string $countryName,
-    PDO $db
+    PDO $db,
+    SwapTracer $tracer
 ): array {
     $routingClassesExist = class_exists(RouteResolver::class)
         && class_exists(RoutingPolicyConfig::class)
@@ -192,12 +210,20 @@ function executeWithRouting(
 
     if (!$routingClassesExist) {
         error_log("[EXECUTE] Routing classes not found — calling SwapService::executeAtomicSwap() directly (pre-routing behavior)");
-        return $swapService->executeAtomicSwap($input);
+        $tracer->info('ROUTING', 'Routing classes not deployed', 'Falling straight through to legacy direct execution');
+        $tracer->info('ADAPTER', 'Calling SwapService::executeAtomicSwap()', 'Legacy path — no fine-grained adapter/currency steps visible from execute.php');
+        $result = $swapService->executeAtomicSwap($input);
+        $tracer->success('ADAPTER', 'SwapService::executeAtomicSwap() completed', null, [
+            'reference' => $result['reference'] ?? $result['swap_reference'] ?? null,
+            'status' => $result['status'] ?? null,
+        ]);
+        return $result;
     }
 
     $countryDir = ROOT_PATH . "/src/Core/Config/Countries/{$countryName}";
 
     try {
+        $tracer->info('ROUTING', 'Loading routing policy', null, ['country' => $countryName]);
         $policy = RoutingPolicyConfig::load($countryDir);
         $resolver = new RouteResolver($policy);
 
@@ -210,8 +236,10 @@ function executeWithRouting(
         $plan = $resolver->resolve($sourceInstitution, $destinationInstitution, $operation);
 
         error_log("[EXECUTE] RouteResolver plan: " . json_encode($plan->toArray()));
+        $tracer->success('ROUTING', "Routing plan resolved: {$plan->mode}", $plan->reason ?? null, $plan->toArray());
 
         if ($plan->mode === ExecutionPlan::MODE_UNROUTABLE) {
+            $tracer->error('ROUTING', 'No compatible payment rail', $plan->reason ?: 'No compatible payment rail exists.');
             throw new Exception($plan->reason ?: 'No compatible payment rail exists.', 422);
         }
 
@@ -220,11 +248,16 @@ function executeWithRouting(
         // never let a routing-layer failure block a swap that the old
         // direct-call code path could still process. Fail open to DIRECT.
         error_log("[EXECUTE] Routing resolution failed, falling back to DIRECT: " . $routingSetupError->getMessage());
+        $tracer->warning('ROUTING', 'Routing resolution failed — forcing DIRECT', $routingSetupError->getMessage());
+        $tracer->info('ADAPTER', 'Calling SwapService::executeAtomicSwap() (forced DIRECT)');
         $result = $swapService->executeAtomicSwap($input);
         $result['_routing'] = [
             'mode' => 'DIRECT',
             'reason' => 'Routing resolution error, forced DIRECT: ' . $routingSetupError->getMessage(),
         ];
+        $tracer->success('ADAPTER', 'Forced-DIRECT execution completed', null, [
+            'reference' => $result['reference'] ?? $result['swap_reference'] ?? null,
+        ]);
         return $result;
     }
 
@@ -234,24 +267,45 @@ function executeWithRouting(
         default => new DirectExecutionStrategy($swapService), // defensive; UNROUTABLE already thrown above
     };
 
+    $tracer->info(
+        'ADAPTER',
+        "Dispatching via " . ($plan->mode === ExecutionPlan::MODE_SWITCH ? "SwitchExecutionStrategy (rail: {$plan->rail})" : 'DirectExecutionStrategy'),
+        null,
+        [],
+        $plan->mode === ExecutionPlan::MODE_SWITCH ? $plan->rail : null
+    );
+
     try {
         $result = $strategy->execute($input, $plan);
+        $tracer->success('ADAPTER', "{$plan->mode} strategy execution completed", null, [
+            'reference' => $result['reference'] ?? $result['swap_reference'] ?? null,
+            'status' => $result['status'] ?? null,
+        ]);
 
         // NEW: SwitchExecutionStrategy doesn't create a swap_requests row
         // itself (no bank-adapter pipeline to hook into) - record it here.
         if ($plan->mode === ExecutionPlan::MODE_SWITCH) {
+            $tracer->info('SETTLEMENT', 'Recording external rail execution', null, [], $plan->rail);
             $tracked = $swapService->recordExternalRailExecution($input, $result, $plan->rail);
             $result['reference'] = $result['reference'] ?? $tracked['reference'];
+            $tracer->success('SETTLEMENT', 'External rail execution recorded', null, [
+                'reference' => $tracked['reference'] ?? null,
+            ], $plan->rail);
         }
 
     } catch (SwitchUnavailableException $executionError) {
         if ($plan->fallbackMode === ExecutionPlan::MODE_DIRECT) {
             error_log("[EXECUTE] Switch unreachable, falling back to DIRECT: " . $executionError->getMessage());
+            $tracer->warning('ROUTING', 'Switch unavailable — falling back to DIRECT per plan.fallbackMode', $executionError->getMessage(), [], $plan->rail);
+
             $result = (new DirectExecutionStrategy($swapService))->execute($input, $plan);
             $result['_routing_fallback'] = [
                 'original_mode' => $plan->mode,
                 'reason' => 'switch_unavailable',
             ];
+            $tracer->success('ADAPTER', 'DIRECT fallback execution completed', null, [
+                'reference' => $result['reference'] ?? $result['swap_reference'] ?? null,
+            ]);
 
             // NEW: record that this obligation was intended for the switch
             // but executed bilaterally, so it can be reported to the switch
@@ -264,8 +318,9 @@ function executeWithRouting(
                     ) VALUES (?, ?, ?, ?, ?, ?, 'DIRECT', 'PENDING_NOTIFY')
                     ON CONFLICT (vouchmorph_swap_reference) DO NOTHING
                 ");
+                $obligationReference = $result['reference'] ?? $input['reference'] ?? uniqid('OBL_');
                 $stmt->execute([
-                    $result['reference'] ?? $input['reference'] ?? uniqid('OBL_'),
+                    $obligationReference,
                     $input['from_institution'] ?? $input['source_institution'] ?? '',
                     $input['to_institution'] ?? $input['destination_institution'] ?? '',
                     $input['amount'] ?? 0,
@@ -273,23 +328,35 @@ function executeWithRouting(
                     $plan->rail,
                 ]);
                 error_log("[EXECUTE] Recorded settlement_obligation for fallback execution");
+                $tracer->success('OBLIGATION', 'settlement_obligations recorded', null, [
+                    'reference' => $obligationReference,
+                    'intended_rail' => $plan->rail,
+                ], $plan->rail);
             } catch (Throwable $obligationError) {
                 error_log("[EXECUTE] Failed to record settlement_obligation: " . $obligationError->getMessage());
+                $tracer->warning('OBLIGATION', 'Failed to record settlement_obligations', $obligationError->getMessage(), [], $plan->rail);
             }
         } else {
+            $tracer->error('ROUTING', 'Switch unavailable, no fallback permitted by plan', $executionError->getMessage(), [], $plan->rail);
             throw $executionError;
         }
 
     } catch (Throwable $executionError) {
         if ($plan->fallbackMode === ExecutionPlan::MODE_DIRECT && $plan->mode !== ExecutionPlan::MODE_DIRECT) {
             error_log("[EXECUTE] {$plan->mode} execution failed ({$executionError->getMessage()}), falling back to DIRECT per plan.fallbackMode");
+            $tracer->warning('ADAPTER', "{$plan->mode} execution failed — falling back to DIRECT", $executionError->getMessage(), [], $plan->rail ?? null);
+
             $result = (new DirectExecutionStrategy($swapService))->execute($input, $plan);
             $result['_routing_fallback'] = [
                 'original_mode' => $plan->mode,
                 'original_rail' => $plan->rail,
                 'fallback_reason' => $executionError->getMessage(),
             ];
+            $tracer->success('ADAPTER', 'DIRECT fallback execution completed', null, [
+                'reference' => $result['reference'] ?? $result['swap_reference'] ?? null,
+            ]);
         } else {
+            $tracer->error('ADAPTER', "{$plan->mode} execution failed, no fallback permitted", $executionError->getMessage(), [], $plan->rail ?? null);
             throw $executionError;
         }
     }
@@ -301,6 +368,12 @@ function executeWithRouting(
 // ============================================
 // 3. MAIN EXECUTION
 // ============================================
+
+// TRACER: declared here (nullable) so the outer catch block can check
+// isset($tracer) — a failure before the DB connects (bad method, bad
+// API key, bad JSON) never gets a tracer instance, and that's fine;
+// there's no swap attempt to trace yet at that point.
+$tracer = null;
 
 try {
     if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -339,12 +412,54 @@ try {
         error_log("[EXECUTE] No idempotency_key supplied by caller - derived: {$input['idempotency_key']}");
     }
 
+    // ============================================================
+    // DATABASE CONNECTION - Using DBConnection class
+    // TRACER: moved earlier (was originally after country resolution)
+    // so tracing can start immediately and cover country-resolution
+    // and bootstrap failures too, not just routing/execution.
+    // ============================================================
+    require_once ROOT_PATH . '/src/Core/Database/DBConnection.php';
+
+    try {
+        $db = DBConnection::getConnection();
+
+        if (!$db) {
+            throw new Exception("Database connection failed - DATABASE_URL not set or invalid");
+        }
+
+        $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        error_log("[EXECUTE] Database connected successfully via DBConnection");
+
+    } catch (Throwable $e) {
+        error_log("[EXECUTE] DB ERROR: " . $e->getMessage());
+        throw new Exception("Database connection failed: " . $e->getMessage());
+    }
+
+    // TRACER: start tracing now. Uses the idempotency key as a
+    // temporary identifier since the real swap_reference doesn't
+    // exist yet — rekeyed once executeWithRouting() returns one.
+    $tracer = new SwapTracer($db, $input['idempotency_key']);
+    $tracer->setSummary([
+        'swap_type'               => strtoupper($input['swap_type'] ?? 'STANDARD'),
+        'source_institution'      => $input['from_institution'] ?? $input['source_institution'] ?? null,
+        'destination_institution' => $input['to_institution'] ?? $input['destination_institution'] ?? null,
+        'amount'                  => $input['amount'] ?? null,
+        'currency'                => $input['currency'] ?? null,
+    ]);
+    $tracer->success('VALIDATION', 'Request parsed and authenticated', null, [
+        'idempotency_key' => $input['idempotency_key'],
+    ]);
+
     $headers = getallheaders();
     $headersLower = array_change_key_case($headers ?: [], CASE_LOWER);
     $countryCode = $headersLower['x-country-code'] ?? $headersLower['x-country'] ?? $input['country'] ?? null;
 
+    $tracer->info('COUNTRY_RESOLUTION', 'Resolving country from request', null, ['country_code' => $countryCode]);
+
     $registryFile = ROOT_PATH . '/src/Core/Config/countries_registry.json';
     if (!file_exists($registryFile)) {
+        $tracer->error('COUNTRY_RESOLUTION', 'Country registry file missing', $registryFile);
+        $tracer->finish(false);
         throw new Exception('Country registry not found', 500);
     }
 
@@ -369,6 +484,8 @@ try {
         // execute a swap under the wrong country's rules entirely.
         // This must be a hard error, not a silent substitution.
         error_log("[EXECUTE] CRITICAL: Could not resolve country for code '" . ($countryCode ?? 'null') . "' — refusing to fall back to a default");
+        $tracer->error('COUNTRY_RESOLUTION', 'Country code did not resolve', $countryCode ?? '(missing header)');
+        $tracer->finish(false);
         throw new Exception(
             $countryCode
                 ? "Unknown country code: {$countryCode}"
@@ -377,25 +494,9 @@ try {
         );
     }
 
-    // ============================================================
-    // DATABASE CONNECTION - Using DBConnection class
-    // ============================================================
-    require_once ROOT_PATH . '/src/Core/Database/DBConnection.php';
-
-    try {
-        $db = DBConnection::getConnection();
-
-        if (!$db) {
-            throw new Exception("Database connection failed - DATABASE_URL not set or invalid");
-        }
-
-        $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-        error_log("[EXECUTE] Database connected successfully via DBConnection");
-
-    } catch (Throwable $e) {
-        error_log("[EXECUTE] DB ERROR: " . $e->getMessage());
-        throw new Exception("Database connection failed: " . $e->getMessage());
-    }
+    $tracer->success('COUNTRY_RESOLUTION', "Resolved country: {$countryConfig['name']}", null, [
+        'country_code' => $countryCode,
+    ]);
 
     $composerPath = ROOT_PATH . '/vendor/autoload.php';
     if (file_exists($composerPath)) {
@@ -409,8 +510,11 @@ try {
     // completed while moving zero funds. This is now a hard failure.
     if (!class_exists('Domain\Services\SwapService')) {
         error_log("[EXECUTE] CRITICAL: Domain\\Services\\SwapService class not found — refusing to fabricate a success response");
+        $tracer->error('BOOTSTRAP', 'SwapService class not found', 'Refusing to fabricate a success response — no funds moved');
+        $tracer->finish(false);
         throw new Exception('Swap execution service unavailable. No funds were moved.', 503);
     }
+    $tracer->success('BOOTSTRAP', 'SwapService class available');
 
     // ============================================================
     // LOAD FULL COUNTRY CONFIG USING LoadCountry
@@ -422,11 +526,16 @@ try {
         // Do not silently default to "Botswana" here either — this
         // must match whatever country was actually resolved above.
         error_log("[EXECUTE] CRITICAL: Resolved country config has no 'name' field: " . json_encode($countryConfig));
+        $tracer->error('BOOTSTRAP', 'Country config missing name field', json_encode($countryConfig));
+        $tracer->finish(false);
         throw new Exception('Country configuration is missing a name field', 500);
     }
 
     error_log("[EXECUTE] Using country name: {$countryName}");
     error_log("[EXECUTE] Country config keys: " . implode(', ', array_keys($fullCountryConfig)));
+    $tracer->success('BOOTSTRAP', "Country config loaded: {$countryName}", null, [
+        'config_keys' => array_keys($fullCountryConfig),
+    ]);
 
     $swapService = new \Domain\Services\SwapService(
         $db,                    // PDO
@@ -434,7 +543,17 @@ try {
         $countryName            // string country (name, not code)
     );
 
-    $result = executeWithRouting($swapService, $input, $countryName, $db);
+    $result = executeWithRouting($swapService, $input, $countryName, $db, $tracer);
+
+    // TRACER: now that SwapService/strategy execution has assigned a
+    // real swap reference, move this trace from the temporary
+    // idempotency-key identifier onto it, then close out the trace.
+    $finalReference = $result['reference'] ?? $result['swap_reference'] ?? null;
+    if ($finalReference) {
+        $tracer->rekey((string)$finalReference);
+    }
+    $tracer->setSummary(['routing_mode' => $result['_routing']['mode'] ?? null]);
+    $tracer->finish(true);
 
     echo json_encode([
         'success' => true,
@@ -453,4 +572,15 @@ try {
     ]);
 
     error_log("[Execute] Error: " . $e->getMessage());
+
+    // TRACER: catch-all safety net. Most failure paths above already
+    // recorded a specific error step and called finish(false); this
+    // just guarantees no exception ever leaves a trace stuck at
+    // 'in_progress' forever, even one this file didn't anticipate.
+    // finish() is idempotent, so this never double-closes a trace
+    // that already finished above.
+    if (isset($tracer)) {
+        $tracer->error('EXCEPTION', get_class($e), $e->getMessage());
+        $tracer->finish(false);
+    }
 }
