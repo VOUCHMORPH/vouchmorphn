@@ -5,14 +5,19 @@ namespace Core\Config;
 
 final class LoadCountry
 {
-    public static function getConfig(): array
+    public static function getConfig(?string $countryOverride = null): array
     {
         $countryMeta = require __DIR__ . '/SystemCountry.php';
 
-        $countryName = defined('SYSTEM_COUNTRY')
-            ? SYSTEM_COUNTRY
-            : ($countryMeta['name'] ?? 'Botswana');
-        
+        // Existing zero-arg callers (SwapService's own constructor, and
+        // every other call site in the codebase) keep working exactly as
+        // before — $countryOverride defaults to null, falling through to
+        // the same SYSTEM_COUNTRY/SystemCountry.php resolution as always.
+        // New callers (Mojaloop's index.php, ParticipantsHandler,
+        // PartiesHandler) can now pass an explicit country instead.
+        $countryName = $countryOverride
+            ?? (defined('SYSTEM_COUNTRY') ? SYSTEM_COUNTRY : ($countryMeta['name'] ?? 'Botswana'));
+
         $countryCode = defined('SYSTEM_COUNTRY_CODE')
             ? SYSTEM_COUNTRY_CODE
             : ($countryMeta['code'] ?? 'BW');
@@ -183,9 +188,9 @@ final class LoadCountry
 }
 
 if (!function_exists('loadCountryConfig')) {
-    function loadCountryConfig(): array
+    function loadCountryConfig(?string $countryOverride = null): array
     {
-        return \Core\Config\LoadCountry::getConfig();
+        return \Core\Config\LoadCountry::getConfig($countryOverride);
     }
 }
 
