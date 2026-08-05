@@ -191,12 +191,13 @@ participants:
       - VOUCHER
 
     capabilities:
-      source: false      # MTN MoMo's real public API is Disbursement (push) only —
-                         # VouchMorph has no way to debit an arbitrary customer's
-                         # wallet without a Collection-API integration, which
-                         # doesn't exist yet. MTN can only ever be a destination.
+      source: true          # Collection (requesttopay) now implemented — see note
       deposit: true
-      cashout: false      # no ATM network — agent cash-out via mtn_agent_cashouts
+      cashout: false        # no ATM network — agent cash-out via mtn_agent_cashouts
+      source_is_async: true # placeHold() may take several seconds to resolve
+                            # via customer phone approval, and can time out
+                            # under real MTN Collection load — see
+                            # mtn_momo_participant.php's class docblock.
 
     switch_participant_ids:
       CENTRALSWITCH: "8f05724f-e93b-4ad8-b874-aab32e0fa9bd"
