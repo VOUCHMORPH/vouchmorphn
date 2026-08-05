@@ -14,6 +14,35 @@ define('PROJECT_ROOT', dirname(__DIR__, 2));
 define('MAX_SCAN_FILES', 500);
 
 // ============================================================
+// SWAP TRACE DB CONNECTION
+// ============================================================
+// TODO: point this at your actual platform-level DB connection.
+// If you already have a shared PDO bootstrap elsewhere in the project,
+// require/use that instead of building a new connection here.
+function getTraceDb(): ?PDO {
+    static $pdo = null;
+    if ($pdo !== null) return $pdo;
+
+    try {
+        $host = getenv('TRACE_DB_HOST') ?: '127.0.0.1';
+        $name = getenv('TRACE_DB_NAME') ?: 'vouchmorph';
+        $user = getenv('TRACE_DB_USER') ?: 'root';
+        $pass = getenv('TRACE_DB_PASS') ?: '';
+
+        $pdo = new PDO(
+            "mysql:host={$host};dbname={$name};charset=utf8mb4",
+            $user,
+            $pass,
+            [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+        );
+        return $pdo;
+    } catch (\Throwable $e) {
+        error_log('[WorkControl] Trace DB connection failed: ' . $e->getMessage());
+        return null;
+    }
+}
+
+// ============================================================
 // PATH SANITIZATION (Security)
 // ============================================================
 function sanitizePath($path) {
@@ -388,6 +417,86 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         exit;
     }
     
+    // ============================================================
+    // SWAP TRACKER
+    // ============================================================
+
+    // Recent swaps, with optional status filter
+    if ($action === 'get_recent_swaps') {
+        $db = getTraceDb();
+        if (!$db) {
+            echo json_encode(['status' => 'error', 'message' => 'Trace database unavailable']);
+            exit;
+        }
+
+        $statusFilter = $_POST['status'] ?? 'all'; // all | success | failed | in_progress
+        $limit = min((int)($_POST['limit'] ?? 50), 200);
+
+        $where = '';
+        $params = [];
+        if (in_array($statusFilter, ['success', 'failed', 'in_progress'], true)) {
+            $where = 'WHERE overall_status = :status';
+            $params['status'] = $statusFilter;
+        }
+
+        $stmt = $db->prepare(
+            "SELECT swap_reference, swap_type, source_institution, destination_institution,
+                    routing_mode, overall_status, first_error_step, total_steps,
+                    total_duration_ms, amount, currency, started_at, completed_at
+             FROM swap_trace_summary
+             $where
+             ORDER BY started_at DESC
+             LIMIT :limit"
+        );
+        foreach ($params as $k => $v) $stmt->bindValue(":$k", $v);
+        $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $stmt->execute();
+
+        echo json_encode(['status' => 'success', 'swaps' => $stmt->fetchAll(PDO::FETCH_ASSOC)]);
+        exit;
+    }
+
+    // Full step-by-step trace for one swap
+    if ($action === 'get_swap_trace') {
+        $db = getTraceDb();
+        if (!$db) {
+            echo json_encode(['status' => 'error', 'message' => 'Trace database unavailable']);
+            exit;
+        }
+
+        $reference = $_POST['reference'] ?? '';
+        if ($reference === '') {
+            echo json_encode(['status' => 'error', 'message' => 'Missing swap reference']);
+            exit;
+        }
+
+        $summaryStmt = $db->prepare("SELECT * FROM swap_trace_summary WHERE swap_reference = :ref");
+        $summaryStmt->execute(['ref' => $reference]);
+        $summary = $summaryStmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$summary) {
+            echo json_encode(['status' => 'error', 'message' => 'No trace found for that reference']);
+            exit;
+        }
+
+        $stepsStmt = $db->prepare(
+            "SELECT step_index, category, step_name, status, message, details, institution, duration_ms, created_at
+             FROM swap_traces
+             WHERE swap_reference = :ref
+             ORDER BY step_index ASC"
+        );
+        $stepsStmt->execute(['ref' => $reference]);
+        $steps = $stepsStmt->fetchAll(PDO::FETCH_ASSOC);
+        foreach ($steps as &$step) {
+            if ($step['details']) {
+                $step['details'] = json_decode($step['details'], true);
+            }
+        }
+
+        echo json_encode(['status' => 'success', 'summary' => $summary, 'steps' => $steps]);
+        exit;
+    }
+
     echo json_encode(['status' => 'error', 'message' => 'Unknown action']);
     exit;
 }
@@ -464,6 +573,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         <button class="tab" data-panel="participants">🏦 PARTICIPANTS</button>
         <button class="tab" data-panel="health">🏥 HEALTH</button>
         <button class="tab" data-panel="env">📋 ENV</button>
+        <button class="tab" data-panel="tracker">🔬 SWAP TRACKER</button>
     </div>
     
     <!-- DASHBOARD PANEL -->
@@ -551,6 +661,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         <div class="card">
             <div class="card-header" onclick="toggleCard(this)">📋 ENVIRONMENT VARIABLES</div>
             <div class="card-body expanded" id="envList"></div>
+        </div>
+    </div>
+
+    <!-- SWAP TRACKER PANEL -->
+    <div id="panel-tracker" class="panel">
+        <div class="card">
+            <div class="card-header" onclick="toggleCard(this)">🔎 LOOKUP BY REFERENCE</div>
+            <div class="card-body expanded">
+                <input type="text" id="traceRefInput" placeholder="SWAP_1785960245_e61c491ceadde6fd"
+                       style="background:#0a0a0a; border:1px solid #333; color:#e0e0e0; padding:8px 12px; font-family:monospace; font-size:12px; width:340px; border-radius:4px;">
+                <button class="btn btn-primary" onclick="lookupSwapTrace()">TRACE</button>
+            </div>
+        </div>
+
+        <div class="grid-2">
+            <div class="card">
+                <div class="card-header" onclick="toggleCard(this)">📜 RECENT SWAPS</div>
+                <div class="card-body expanded">
+                    <div style="margin-bottom: 12px;">
+                        <button class="btn btn-primary" data-status="all" onclick="loadRecentSwaps('all', this)">ALL</button>
+                        <button class="btn" data-status="failed" onclick="loadRecentSwaps('failed', this)">FAILED</button>
+                        <button class="btn" data-status="success" onclick="loadRecentSwaps('success', this)">SUCCESS</button>
+                        <button class="btn" data-status="in_progress" onclick="loadRecentSwaps('in_progress', this)">IN PROGRESS</button>
+                        <button class="btn" onclick="loadRecentSwaps(currentSwapFilter)">🔄</button>
+                    </div>
+                    <div id="recentSwapsList"></div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header" onclick="toggleCard(this)">🧬 SWAP DETAIL</div>
+                <div class="card-body expanded" id="swapTraceDetail">
+                    <div class="trace-step info">Select a swap from the list, or paste a reference above.</div>
+                </div>
+            </div>
         </div>
     </div>
 </div>
@@ -707,6 +852,109 @@ async function loadEnvironment() {
         }
         container.innerHTML = html || '<div class="trace-step info">No environment variables found</div>';
     }
+}
+
+// ============================================================
+// SWAP TRACKER
+// ============================================================
+let currentSwapFilter = 'all';
+
+function fmtDuration(ms) {
+    if (ms === null || ms === undefined) return '';
+    if (ms < 1000) return `${Number(ms).toFixed(1)}ms`;
+    return `${(ms / 1000).toFixed(2)}s`;
+}
+
+function statusBadge(status) {
+    const colors = { success: '#10b981', failed: '#ef4444', in_progress: '#f59e0b' };
+    const labels = { success: 'SUCCESS', failed: 'FAILED', in_progress: 'IN PROGRESS' };
+    const c = colors[status] || '#888';
+    return `<span style="color:${c}; font-weight:700;">${labels[status] || status}</span>`;
+}
+
+async function loadRecentSwaps(status = 'all', btn = null) {
+    currentSwapFilter = status;
+    if (btn) {
+        document.querySelectorAll('#panel-tracker .card:nth-child(2) .btn[data-status]').forEach(b => b.classList.remove('btn-primary'));
+        btn.classList.add('btn-primary');
+    }
+
+    const container = document.getElementById('recentSwapsList');
+    container.innerHTML = '<div class="trace-step info">⏳ Loading...</div>';
+
+    const result = await apiCall('get_recent_swaps', { status, limit: 50 });
+    if (result.status !== 'success') {
+        container.innerHTML = `<div class="trace-step error">❌ ${result.message || 'Failed to load'}</div>`;
+        return;
+    }
+
+    if (result.swaps.length === 0) {
+        container.innerHTML = '<div class="trace-step info">No swaps found for this filter.</div>';
+        return;
+    }
+
+    let html = '';
+    result.swaps.forEach(s => {
+        html += `<div class="trace-step ${s.overall_status === 'failed' ? 'error' : (s.overall_status === 'success' ? 'success' : 'warning')}"
+                      style="cursor:pointer;" onclick="loadSwapTrace('${s.swap_reference}')">
+            <strong>${s.swap_reference}</strong> ${statusBadge(s.overall_status)}<br>
+            <span style="font-size:10px; color:#888;">
+                ${s.swap_type || '-'} · ${s.source_institution || '?'} → ${s.destination_institution || '?'}
+                · ${s.routing_mode || '-'} · ${s.amount ?? '-'} ${s.currency || ''}
+                · ${s.total_steps} steps${s.total_duration_ms ? ' · ' + fmtDuration(s.total_duration_ms) : ''}
+            </span>
+            ${s.first_error_step ? `<br><span style="font-size:10px; color:#ef4444;">First error: ${s.first_error_step}</span>` : ''}
+        </div>`;
+    });
+    container.innerHTML = html;
+}
+
+function lookupSwapTrace() {
+    const ref = document.getElementById('traceRefInput').value.trim();
+    if (!ref) return;
+    loadSwapTrace(ref);
+}
+
+async function loadSwapTrace(reference) {
+    const container = document.getElementById('swapTraceDetail');
+    container.innerHTML = '<div class="trace-step info">⏳ Loading trace...</div>';
+    document.getElementById('traceRefInput').value = reference;
+
+    const result = await apiCall('get_swap_trace', { reference });
+    if (result.status !== 'success') {
+        container.innerHTML = `<div class="trace-step error">❌ ${result.message || 'Failed to load trace'}</div>`;
+        return;
+    }
+
+    const s = result.summary;
+    let html = `<div class="trace-step info" style="margin-bottom:12px;">
+        <strong>${s.swap_reference}</strong> ${statusBadge(s.overall_status)}<br>
+        <span style="font-size:10px; color:#888;">
+            ${s.swap_type || '-'} · ${s.source_institution || '?'} → ${s.destination_institution || '?'}
+            · routing: ${s.routing_mode || '-'} · ${s.amount ?? '-'} ${s.currency || ''}<br>
+            started: ${s.started_at || '-'} · completed: ${s.completed_at || '-'}
+            · total: ${fmtDuration(s.total_duration_ms)} · ${s.total_steps} steps
+        </span>
+    </div>`;
+
+    if (result.steps.length === 0) {
+        html += '<div class="trace-step warning">No individual steps recorded for this swap.</div>';
+    } else {
+        result.steps.forEach(step => {
+            const detailsHtml = step.details
+                ? `<div class="json-viewer" style="margin-top:6px;">${JSON.stringify(step.details, null, 2)}</div>`
+                : '';
+            html += `<div class="trace-step ${step.status}">
+                <strong>#${step.step_index} [${step.category}] ${step.step_name}</strong>
+                ${step.institution ? `<span style="font-size:10px; color:#888;"> · ${step.institution}</span>` : ''}
+                <span style="font-size:10px; color:#888; float:right;">${fmtDuration(step.duration_ms)}</span>
+                ${step.message ? `<br><span style="font-size:11px;">${step.message}</span>` : ''}
+                ${detailsHtml}
+            </div>`;
+        });
+    }
+
+    container.innerHTML = html;
 }
 
 // ============================================================
