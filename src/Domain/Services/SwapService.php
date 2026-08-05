@@ -180,8 +180,8 @@ $this->certificateManager = \Infrastructure\Crypto\CertificateManagerFactory::ge
         );
         $this->logger->info("InstitutionAdapterFactory initialized");
         
-        $this->settlement = new HybridSettlementStrategy($this->swapDB);
-        $this->forexService = new ForexService(
+$this->settlement = new HybridSettlementStrategy($this->swapDB, [], $this->participants);
+     $this->forexService = new ForexService(
             $this->swapDB, 
             $countryConfig,
             $this->participants
