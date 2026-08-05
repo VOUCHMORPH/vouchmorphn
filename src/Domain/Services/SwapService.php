@@ -5114,6 +5114,19 @@ public function confirmCashout(array $payload): array
         }
 
         $this->updateCashoutAuthorizationStatus($authId, 'COMPLETED', $cashoutPoint);
+        $this->updateCashoutAuthorizationStatus($authId, 'COMPLETED', $cashoutPoint);
+$this->updateHoldForSwap($swapRef, 'DEBITED');
+$this->updateSwapRequestStatus($swapRef, 'completed');
+
+// NEW: destination already attested cash dispensed (confirmCashout
+// succeeded above); now confirm the source-side debit actually paid them.
+$this->recordSettlementPending(
+    $swapRef,
+    $destinationInstitution,
+    $debitResult['transaction_reference'] ?? $swapRef,
+    $amountToSend,
+    $currency
+);
         $this->updateHoldForSwap($swapRef, 'DEBITED');
         $this->updateSwapRequestStatus($swapRef, 'completed');
 
