@@ -129,31 +129,40 @@
       }
     }
   },
-  "regulatory": {
-    "F7": {
-      "name": "Swap Levy",
-      "owner": "VOUCHMORPH",
-      "type": "flat",
-      "description": "Government-mandated transaction levy collected by VouchMorph"
-    },
-    "F8": {
-      "name": "Multi-Source Fee",
-      "owner": "VOUCHMORPH",
-      "type": "flat_per_extra_source",
-      "description": "Extra fee per additional source account beyond the first, in a multi-source swap"
-    },
-    "F10": {
-      "name": "Retry Fee",
-      "owner": "VOUCHMORPH",
-      "type": "flat",
-      "description": "Reduced fee charged on a retried swap attempt (generate-code fee only)"
-    },
-    "F81": {
-      "name": "VAT",
-      "owner": "TAX",
-      "rate": 14,
-      "applies_to_fees": ["F1"],
-      "description": "Value Added Tax on fees"
+
+  "switch_routing": {
+    "fee_code": "F23",
+    "fee_name": "National Switch Fee",
+    "owner": "SWITCH",
+    "applies_when": "_routing.mode == \"SWITCH\"",
+    "description": "Charged only when a swap could not settle DIRECT and had to route through the national switch. Not charged on DIRECT-mode swaps.",
+
+    "amount_type": "flat",
+    "amount": 0.50,
+    "currency": "BWP",
+    "amount_note": "PLACEHOLDER \u2014 replace with the actual per-transaction tariff from your switch operator agreement. Change amount_type to 'percentage' + 'rate' if the switch charges a % of Amount_1 instead of a flat fee.",
+
+    "deducted_from": ["source_institution_share", "destination_institution_share"],
+    "deduction_method": "proportional_to_existing_split_percent",
+    "deduction_note": "F23 is NOT split 50/50 flat. It is allocated between source and destination in proportion to their normal revenue_split percentages for this swap type (e.g. DEPOSIT: source=15%, destination=50% of the pool \u2192 source absorbs 15/65 of F23, destination absorbs 50/65 of F23). Platform's share is never reduced by F23.",
+
+    "settlement_model": "MONTHLY_BATCH",
+    "billing_cycle": "calendar_month_end",
+    "settlement_description": "F23 is computed and recorded on every switch-routed transaction at swap time (so each institution's true net share is visible immediately in fee_calculation_details), but no separate cash movement happens per swap. VouchMorph accrues the F23 liability per institution, then nets and settles/invoices the switch operator in a single batch at each calendar month end \u2014 consistent with standard EFT/RTC-style clearing (gross recording, netted deferred settlement) rather than per-transaction gross settlement.",
+
+    "example_calculation_deposit_via_switch": {
+      "client_pays": 6.00,
+      "F7_levy": 1.00,
+      "distributable_pool": 5.00,
+      "platform_share_35%_unaffected": 1.75,
+      "source_gross_share_15%": 0.75,
+      "destination_gross_share_50%": 2.50,
+      "switch_fee_F23_total": 0.50,
+      "source_switch_fee_allocation_15/65_of_F23": 0.1154,
+      "destination_switch_fee_allocation_50/65_of_F23": 0.3846,
+      "source_net_share": 0.6346,
+      "destination_net_share": 2.1154,
+      "check_platform_plus_source_net_plus_dest_net_plus_F23_equals_pool": "1.75 + 0.6346 + 2.1154 + 0.50 = 5.00"
     }
   }
 }
