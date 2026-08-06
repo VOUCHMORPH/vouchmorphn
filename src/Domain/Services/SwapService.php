@@ -109,6 +109,7 @@ class SwapService
     private array $stepResults = [];
     private array $signedPayloads = [];
     private array $pendingRemainder = [];
+    private bool $postDeliveryDebitFailure = false;   // NEW
 
     public function __construct(
         PDO $swapDB, 
@@ -2329,321 +2330,345 @@ public function recordExternalRailExecution(array $payload, array $railResult, s
             throw new RuntimeException("Swap failed: " . $e->getMessage(), 0, $e);
         }
     }
-
-    public function executeMultiDestinationSwap(array $payload): array
-    {
-        error_log("[SwapService] ===== executeMultiDestinationSwap START =====");
-        
-        $sourceInstitution = $this->extractSourceInstitution($payload);
-        
-        $destinations = $payload['destinations'] ?? [];
-        if (empty($destinations)) {
-            throw new RuntimeException("At least 1 destination required for multi-destination swap");
+public function executeMultiDestinationSwap(array $payload): array
+{
+    error_log("[SwapService] ===== executeMultiDestinationSwap START =====");
+    
+    $sourceInstitution = $this->extractSourceInstitution($payload);
+    
+    $destinations = $payload['destinations'] ?? [];
+    if (empty($destinations)) {
+        throw new RuntimeException("At least 1 destination required for multi-destination swap");
+    }
+    
+    $currency = $payload['currency'] ?? $this->config['currency'] ?? 'BWP';
+    $sourceIdentifier = $this->extractSourceIdentifier($payload);
+    $multiDestRef = $payload['reference'] ?? $this->generateReference();
+    
+    $identityDestinations = [];
+    $bankDestinations = [];
+    
+    foreach ($destinations as $idx => $dest) {
+        $amount = (float)($dest['amount'] ?? 0);
+        if ($amount <= 0) {
+            throw new RuntimeException("Amount must be greater than 0 for destination " . ($idx + 1));
         }
         
-        $currency = $payload['currency'] ?? $this->config['currency'] ?? 'BWP';
-        $sourceIdentifier = $this->extractSourceIdentifier($payload);
-        $multiDestRef = $payload['reference'] ?? $this->generateReference();
+        $isIdentity = isset($dest['identity_type']) && !empty($dest['identity_value']);
         
-        $identityDestinations = [];
-        $bankDestinations = [];
-        
-        foreach ($destinations as $idx => $dest) {
-            $amount = (float)($dest['amount'] ?? 0);
-            if ($amount <= 0) {
-                throw new RuntimeException("Amount must be greater than 0 for destination " . ($idx + 1));
+        if ($isIdentity) {
+            $identityType = strtolower($dest['identity_type']);
+            if (!$this->isValidIdentityType($identityType)) {
+                throw new RuntimeException("Invalid identity_type for destination " . ($idx + 1) . ". Must be one of: " . $this->validIdentityTypesLabel());
+            }
+
+            $dest['destination_currency'] = $dest['destination_currency'] ?? $dest['currency'] ?? $currency;
+
+            $identityDestinations[] = [
+                'index' => $idx,
+                'amount' => $amount,
+                'identity_type' => $identityType,
+                'identity_value' => $dest['identity_value'],
+                'beneficiary_phone' => $dest['beneficiary_phone'] ?? null,
+                'delivery_method' => $dest['delivery_method'] ?? 'DEPOSIT',
+                'currency' => $dest['destination_currency'],
+                'original' => $dest
+            ];
+
+            error_log("[SwapService] Identity destination detected: {$identityType}={$dest['identity_value']}, amount={$amount}");
+            
+        } else {
+            $institution = $dest['to_institution'] ?? $dest['destination_institution'] ?? $dest['institution'];
+            if (empty($institution)) {
+                throw new RuntimeException("Destination institution required for destination " . ($idx + 1));
             }
             
-            $isIdentity = isset($dest['identity_type']) && !empty($dest['identity_value']);
-            
-            if ($isIdentity) {
-                $identityType = strtolower($dest['identity_type']);
-                if (!$this->isValidIdentityType($identityType)) {
-                    throw new RuntimeException("Invalid identity_type for destination " . ($idx + 1) . ". Must be one of: " . $this->validIdentityTypesLabel());
-                }
-
-                $dest['destination_currency'] = $dest['destination_currency'] ?? $dest['currency'] ?? $currency;
-
-                $identityDestinations[] = [
-                    'index' => $idx,
-                    'amount' => $amount,
-                    'identity_type' => $identityType,
-                    'identity_value' => $dest['identity_value'],
-                    'beneficiary_phone' => $dest['beneficiary_phone'] ?? null,
-                    'delivery_method' => $dest['delivery_method'] ?? 'DEPOSIT',
-                    'currency' => $dest['destination_currency'],
-                    'original' => $dest
-                ];
-
-                error_log("[SwapService] Identity destination detected: {$identityType}={$dest['identity_value']}, amount={$amount}");
-                
-            } else {
-                $institution = $dest['to_institution'] ?? $dest['destination_institution'] ?? $dest['institution'];
-                if (empty($institution)) {
-                    throw new RuntimeException("Destination institution required for destination " . ($idx + 1));
-                }
-                
-                $identifier = $this->extractDestinationIdentifier($dest);
-                if (!$identifier['has_value']) {
-                    throw new RuntimeException("Destination identifier required for destination " . ($idx + 1));
-                }
-                
-                $deliveryMethod = strtoupper($dest['delivery_method'] ?? 'DEPOSIT');
-                if (!in_array($deliveryMethod, ['DEPOSIT', 'CASHOUT', 'VOUCHER', 'AGENT', 'WALLET', 'CARD', 'ATM'])) {
-                    throw new RuntimeException("Invalid delivery_method for destination " . ($idx + 1) . ": {$deliveryMethod}");
-                }
-                
-                $dest['currency'] = $dest['currency'] ?? $currency;
-                $dest['delivery_method'] = $deliveryMethod;
-                $dest['_destination_index'] = $idx;
-                $dest['_sub_reference'] = $multiDestRef . '_DEST_' . $idx;
-                $bankDestinations[] = $dest;
+            $identifier = $this->extractDestinationIdentifier($dest);
+            if (!$identifier['has_value']) {
+                throw new RuntimeException("Destination identifier required for destination " . ($idx + 1));
             }
+            
+            $deliveryMethod = strtoupper($dest['delivery_method'] ?? 'DEPOSIT');
+            if (!in_array($deliveryMethod, ['DEPOSIT', 'CASHOUT', 'VOUCHER', 'AGENT', 'WALLET', 'CARD', 'ATM'])) {
+                throw new RuntimeException("Invalid delivery_method for destination " . ($idx + 1) . ": {$deliveryMethod}");
+            }
+            
+            $dest['currency'] = $dest['currency'] ?? $currency;
+            $dest['delivery_method'] = $deliveryMethod;
+            $dest['_destination_index'] = $idx;
+            $dest['_sub_reference'] = $multiDestRef . '_DEST_' . $idx;
+            $bankDestinations[] = $dest;
         }
+    }
+    
+    error_log("[SwapService] Multi-destination: " . count($bankDestinations) . " bank destinations, " . count($identityDestinations) . " identity destinations");
+    error_log("[SwapService] Source institution: {$sourceInstitution}");
+    
+    $verificationResult = $this->executeStep('VERIFY_ASSET_SIGNED', function() use ($payload, $sourceInstitution) {
+        return $this->verifyAssetSigned($payload, $sourceInstitution);
+    });
+    
+    if (!($verificationResult['verified'] ?? false)) {
+        throw new RuntimeException("Asset verification failed: " . ($verificationResult['message'] ?? 'Unknown error'));
+    }
+    
+    $this->signedPayloads['verification'] = [
+        'payload' => $verificationResult['original_payload'],
+        'signature' => $verificationResult['signature'],
+        'source' => $sourceInstitution,
+        'timestamp' => $verificationResult['timestamp']
+    ];
+    
+    $destinationResults = [];
+    $successfulDestinations = [];
+    $failedDestinations = [];
+    $totalFees = 0;
+    $totalDelivered = 0;
+    $totalHeld = 0;
+    
+    // BANK DESTINATIONS LOOP
+    foreach ($bankDestinations as $idx => $dest) {
+        $destAmount = (float)$dest['amount'];
+        $destInstitution = $dest['to_institution'] ?? $dest['destination_institution'] ?? $dest['institution'];
+        $deliveryMethod = $dest['delivery_method'];
+        $destIdentifier = $this->extractDestinationIdentifier($dest);
+        $subRef = $dest['_sub_reference'];
         
-        error_log("[SwapService] Multi-destination: " . count($bankDestinations) . " bank destinations, " . count($identityDestinations) . " identity destinations");
-        error_log("[SwapService] Source institution: {$sourceInstitution}");
+        error_log("[SwapService] Processing destination " . ($idx + 1) . ": {$destInstitution} - {$destAmount} via {$deliveryMethod}");
         
-        $verificationResult = $this->executeStep('VERIFY_ASSET_SIGNED', function() use ($payload, $sourceInstitution) {
-            return $this->verifyAssetSigned($payload, $sourceInstitution);
-        });
+        $destHoldRef = null;
+        $destHoldId = null;
+        $deliverySucceededForThisDest = false;  // NEW - reset per iteration
         
-        if (!($verificationResult['verified'] ?? false)) {
-            throw new RuntimeException("Asset verification failed: " . ($verificationResult['message'] ?? 'Unknown error'));
-        }
-        
-        $this->signedPayloads['verification'] = [
-            'payload' => $verificationResult['original_payload'],
-            'signature' => $verificationResult['signature'],
-            'source' => $sourceInstitution,
-            'timestamp' => $verificationResult['timestamp']
-        ];
-        
-        $destinationResults = [];
-        $successfulDestinations = [];
-        $failedDestinations = [];
-        $totalFees = 0;
-        $totalDelivered = 0;
-        $totalHeld = 0;
-        
-        foreach ($bankDestinations as $idx => $dest) {
-            $destAmount = (float)$dest['amount'];
-            $destInstitution = $dest['to_institution'] ?? $dest['destination_institution'] ?? $dest['institution'];
-            $deliveryMethod = $dest['delivery_method'];
-            $destIdentifier = $this->extractDestinationIdentifier($dest);
-            $subRef = $dest['_sub_reference'];
+        try {
+            $feeType = 'DEPOSIT';
             
-            error_log("[SwapService] Processing destination " . ($idx + 1) . ": {$destInstitution} - {$destAmount} via {$deliveryMethod}");
-            
-            $destHoldRef = null;
-            $destHoldId = null;
-            
-            try {
+            if ($deliveryMethod === 'ATM' || $deliveryMethod === 'AGENT' || $deliveryMethod === 'CASHOUT') {
+                $feeType = 'CASHOUT';
+            } elseif (isset($dest['identity_type']) || isset($dest['identity_value'])) {
                 $feeType = 'DEPOSIT';
-                
-                if ($deliveryMethod === 'ATM' || $deliveryMethod === 'AGENT' || $deliveryMethod === 'CASHOUT') {
-                    $feeType = 'CASHOUT';
-                } elseif (isset($dest['identity_type']) || isset($dest['identity_value'])) {
-                    $feeType = 'DEPOSIT';
-                } elseif ($dest['destination_asset_type'] === 'CARD') {
-                    $feeType = 'CARD_LOAD';
-                }
-                
-                $feeBreakdown = $this->calculateFeesWithDetails($feeType, $destAmount, array_merge($payload, $dest));
-                $netAmount = $feeBreakdown['net_amount'] ?? $destAmount;
-                $feeAmount = $feeBreakdown['total_fee'] ?? 0;
-                
-                $adjustment = $this->adjustAmountForDelivery($netAmount, $deliveryMethod, $dest['currency'] ?? $currency);
-                $deliverableAmount = $adjustment['deliverable_amount'];
-                $remainderAtSource = $adjustment['remainder_at_source'] ?? 0;
-                
-                if ($deliverableAmount <= 0) {
-                    throw new RuntimeException("Deliverable amount is zero for destination " . ($idx + 1));
-                }
-                
-                $holdPayload = $payload;
-                $holdPayload['amount'] = $destAmount;
-                $holdPayload['hold_reason'] = 'MULTI_DESTINATION_DEST_' . $idx;
-                $holdPayload['reference'] = $subRef;
-                $holdPayload['to_institution'] = $destInstitution;
-                $holdPayload['destination_institution'] = $destInstitution;
-                $holdPayload['destination_identifier'] = $destIdentifier['identifier'];
-                $holdPayload['destination_identifier_type'] = $destIdentifier['type'];
-                $holdPayload['from_institution'] = $sourceInstitution;
-                $holdPayload['source_institution'] = $sourceInstitution;
-                
-                $originalSwapRef = $this->currentSwapRef;
-                $this->currentSwapRef = $subRef;
-                
-                $holdResult = $this->executeStep('PLACE_HOLD_SIGNED_DEST_' . $idx, function() use ($holdPayload, $sourceInstitution, $verificationResult) {
-                    return $this->placeHoldSigned($holdPayload, $sourceInstitution, $verificationResult);
-                });
-                
-                $this->currentSwapRef = $originalSwapRef;
-                
-                if (!($holdResult['hold_placed'] ?? false)) {
-                    throw new RuntimeException("Hold failed for destination " . ($idx + 1) . ": " . ($holdResult['message'] ?? 'Unknown error'));
-                }
-                
-                $this->assertStepIntegrity(
-                    $holdResult,
-                    'hold_placed',
-                    ['hold_reference', 'signature'],
-                    'PLACE_HOLD_SIGNED_DEST_' . $idx
-                );
-                
-                $destHoldRef = $holdResult['hold_reference'];
-                $destHoldId = $holdResult['local_hold_id'];
-                $totalHeld += ($destAmount);
-                
-                error_log("[SwapService] Hold placed for destination " . ($idx + 1) . ": {$destHoldRef}");
-                
-                $originalHoldRef = $this->currentHoldReference;
-                $originalHoldId = $this->currentHoldId;
-                $this->currentHoldReference = $destHoldRef;
-                $this->currentHoldId = $destHoldId;
-                
-                $destResult = match($deliveryMethod) {
-                    'CASHOUT', 'AGENT', 'ATM' => $this->processMultiDestinationCashout(
-                        $payload, 
-                        $dest, 
-                        $destInstitution, 
-                        $deliverableAmount,
-                        $destIdentifier
-                    ),
-                    'DEPOSIT', 'WALLET', 'CARD' => $this->processMultiDestinationDeposit(
-                        $payload,
-                        $dest,
-                        $destInstitution,
-                        $deliverableAmount,
-                        $destIdentifier
-                    ),
-                    'VOUCHER' => $this->processMultiDestinationVoucher(
-                        $payload,
-                        $dest,
-                        $destInstitution,
-                        $deliverableAmount,
-                        $destIdentifier
-                    ),
-                    default => throw new RuntimeException("Unsupported delivery method: {$deliveryMethod}")
-                };
-                
-                $this->currentHoldReference = $originalHoldRef;
-                $this->currentHoldId = $originalHoldId;
-                
-                if (!($destResult['success'] ?? false)) {
-                    throw new RuntimeException("Destination processing failed: " . ($destResult['message'] ?? 'Unknown error'));
-                }
-                
-                error_log("[SwapService] Debiting hold for destination " . ($idx + 1) . ": {$destHoldRef}");
-                
-                $this->currentHoldReference = $destHoldRef;
-                $this->currentHoldId = $destHoldId;
-                
-                $debitPayload = [
+            } elseif ($dest['destination_asset_type'] === 'CARD') {
+                $feeType = 'CARD_LOAD';
+            }
+            
+            $feeBreakdown = $this->calculateFeesWithDetails($feeType, $destAmount, array_merge($payload, $dest));
+            $netAmount = $feeBreakdown['net_amount'] ?? $destAmount;
+            $feeAmount = $feeBreakdown['total_fee'] ?? 0;
+            
+            $adjustment = $this->adjustAmountForDelivery($netAmount, $deliveryMethod, $dest['currency'] ?? $currency);
+            $deliverableAmount = $adjustment['deliverable_amount'];
+            $remainderAtSource = $adjustment['remainder_at_source'] ?? 0;
+            
+            if ($deliverableAmount <= 0) {
+                throw new RuntimeException("Deliverable amount is zero for destination " . ($idx + 1));
+            }
+            
+            $holdPayload = $payload;
+            $holdPayload['amount'] = $destAmount;
+            $holdPayload['hold_reason'] = 'MULTI_DESTINATION_DEST_' . $idx;
+            $holdPayload['reference'] = $subRef;
+            $holdPayload['to_institution'] = $destInstitution;
+            $holdPayload['destination_institution'] = $destInstitution;
+            $holdPayload['destination_identifier'] = $destIdentifier['identifier'];
+            $holdPayload['destination_identifier_type'] = $destIdentifier['type'];
+            $holdPayload['from_institution'] = $sourceInstitution;
+            $holdPayload['source_institution'] = $sourceInstitution;
+            
+            $originalSwapRef = $this->currentSwapRef;
+            $this->currentSwapRef = $subRef;
+            
+            $holdResult = $this->executeStep('PLACE_HOLD_SIGNED_DEST_' . $idx, function() use ($holdPayload, $sourceInstitution, $verificationResult) {
+                return $this->placeHoldSigned($holdPayload, $sourceInstitution, $verificationResult);
+            });
+            
+            $this->currentSwapRef = $originalSwapRef;
+            
+            if (!($holdResult['hold_placed'] ?? false)) {
+                throw new RuntimeException("Hold failed for destination " . ($idx + 1) . ": " . ($holdResult['message'] ?? 'Unknown error'));
+            }
+            
+            $this->assertStepIntegrity(
+                $holdResult,
+                'hold_placed',
+                ['hold_reference', 'signature'],
+                'PLACE_HOLD_SIGNED_DEST_' . $idx
+            );
+            
+            $destHoldRef = $holdResult['hold_reference'];
+            $destHoldId = $holdResult['local_hold_id'];
+            $totalHeld += ($destAmount);
+            
+            error_log("[SwapService] Hold placed for destination " . ($idx + 1) . ": {$destHoldRef}");
+            
+            $originalHoldRef = $this->currentHoldReference;
+            $originalHoldId = $this->currentHoldId;
+            $this->currentHoldReference = $destHoldRef;
+            $this->currentHoldId = $destHoldId;
+            
+            $destResult = match($deliveryMethod) {
+                'CASHOUT', 'AGENT', 'ATM' => $this->processMultiDestinationCashout(
+                    $payload, 
+                    $dest, 
+                    $destInstitution, 
+                    $deliverableAmount,
+                    $destIdentifier
+                ),
+                'DEPOSIT', 'WALLET', 'CARD' => $this->processMultiDestinationDeposit(
+                    $payload,
+                    $dest,
+                    $destInstitution,
+                    $deliverableAmount,
+                    $destIdentifier
+                ),
+                'VOUCHER' => $this->processMultiDestinationVoucher(
+                    $payload,
+                    $dest,
+                    $destInstitution,
+                    $deliverableAmount,
+                    $destIdentifier
+                ),
+                default => throw new RuntimeException("Unsupported delivery method: {$deliveryMethod}")
+            };
+            
+            $this->currentHoldReference = $originalHoldRef;
+            $this->currentHoldId = $originalHoldId;
+            
+            if (!($destResult['success'] ?? false)) {
+                throw new RuntimeException("Destination processing failed: " . ($destResult['message'] ?? 'Unknown error'));
+            }
+            
+            // NEW: Delivery succeeded - mark flag BEFORE debit attempt
+            $deliverySucceededForThisDest = true;
+            
+            error_log("[SwapService] Debiting hold for destination " . ($idx + 1) . ": {$destHoldRef}");
+            
+            $this->currentHoldReference = $destHoldRef;
+            $this->currentHoldId = $destHoldId;
+            
+            $debitPayload = [
+                'reference' => $subRef,
+                'hold_reference' => $destHoldRef,
+                'amount' => $destAmount,
+                'reason' => 'Multi-destination swap - destination ' . ($idx + 1),
+                'from_institution' => $sourceInstitution,
+                'source_institution' => $sourceInstitution
+            ];
+            
+            $debitResult = $this->executeStep('DEBIT_SOURCE_DEST_' . $idx, function() use ($debitPayload, $sourceInstitution) {
+                return $this->debitSource($debitPayload, $sourceInstitution);
+            });
+            
+            $this->currentHoldReference = $originalHoldRef;
+            $this->currentHoldId = $originalHoldId;
+            
+            if (!($debitResult['debited'] ?? false)) {
+                throw new RuntimeException("Debit failed for destination " . ($idx + 1) . ": " . ($debitResult['message'] ?? 'Unknown error'));
+            }
+            
+            $this->updateHoldStatus($destHoldId, 'DEBITED');
+
+            // Persist swap_requests row
+            $childSwapType = in_array($deliveryMethod, ['CASHOUT', 'AGENT', 'ATM'], true) ? 'CASHOUT' : 'DEPOSIT';
+
+            $this->postLedgerLegs(
+                $subRef,
+                $sourceInstitution,
+                $payload['asset_type'] ?? 'ACCOUNT',
+                $sourceIdentifier['identifier'] ?? null,
+                $destAmount,
+                $destInstitution,
+                $dest['destination_asset_type'] ?? 'ACCOUNT',
+                $destIdentifier['identifier'] ?? null,
+                $deliverableAmount,
+                $feeAmount,
+                $dest['currency'] ?? $currency,
+                $destHoldRef
+            );
+
+            $this->populateTrackingTables(
+                [
+                    'swap_type' => $childSwapType,
                     'reference' => $subRef,
-                    'hold_reference' => $destHoldRef,
                     'amount' => $destAmount,
-                    'reason' => 'Multi-destination swap - destination ' . ($idx + 1),
+                    'currency' => $dest['currency'] ?? $currency,
+                    'status' => 'completed',
                     'from_institution' => $sourceInstitution,
-                    'source_institution' => $sourceInstitution
-                ];
-                
-                $debitResult = $this->executeStep('DEBIT_SOURCE_DEST_' . $idx, function() use ($debitPayload, $sourceInstitution) {
-                    return $this->debitSource($debitPayload, $sourceInstitution);
-                });
-                
-                $this->currentHoldReference = $originalHoldRef;
-                $this->currentHoldId = $originalHoldId;
-                
-                if (!($debitResult['debited'] ?? false)) {
-                    throw new RuntimeException("Debit failed for destination " . ($idx + 1) . ": " . ($debitResult['message'] ?? 'Unknown error'));
-                }
-                
-                $this->updateHoldStatus($destHoldId, 'DEBITED');
-
-             // Persist a swap_requests row for this specific batch destination.
-// Previously nothing in this loop ever wrote here - only the single
-// aggregate multi_destination_swaps row was stored at the end of the
-// whole batch - which is exactly why every _DEST_N / _ID_N reference
-// showed up as "Debited Holds With No Matching Swap Record" in the
-// integrity check. Note: for CASHOUT-type destinations, populateMessageOutbox()
-// expects $destResponse['cashout_code'], but processMultiDestinationCashout()
-// returns 'voucher_code'/'atm_pin' instead - so message_outbox population
-// will silently no-op here for cashouts (SMS delivery itself is unaffected,
-// it's already handled separately inside processMultiDestinationCashout).
-$childSwapType = in_array($deliveryMethod, ['CASHOUT', 'AGENT', 'ATM'], true) ? 'CASHOUT' : 'DEPOSIT';
-
-// Post ledger legs for this child swap
-$this->postLedgerLegs(
-    $subRef,
-    $sourceInstitution,
-    $payload['asset_type'] ?? 'ACCOUNT',
-    $sourceIdentifier['identifier'] ?? null,
-    $destAmount,
-    $destInstitution,
-    $dest['destination_asset_type'] ?? 'ACCOUNT',
-    $destIdentifier['identifier'] ?? null,
-    $deliverableAmount,
-    $feeAmount,
-    $dest['currency'] ?? $currency,
-    $destHoldRef
-);
-
-$this->populateTrackingTables(
-    [
-        'swap_type' => $childSwapType,
-        'reference' => $subRef,
-        'amount' => $destAmount,
-        'currency' => $dest['currency'] ?? $currency,
-        'status' => 'completed',
-        'from_institution' => $sourceInstitution,
-        'to_institution' => $destInstitution,
-        'user_id' => $payload['user_id'] ?? null,
-    ],
-    array_merge($payload, $dest, [
-        'source_institution' => $sourceInstitution,
-        'destination_institution' => $destInstitution,
-        'destination_identifier' => $destIdentifier['identifier'] ?? null,
-        'destination_identifier_type' => $destIdentifier['type'] ?? null,
-        'fee_amount' => $feeAmount,
-        'status' => 'completed',
-    ]),
-    $destResult
-);
-                
-                $successResult = [
-                    'index' => $idx,
-                    'sub_reference' => $subRef,
+                    'to_institution' => $destInstitution,
+                    'user_id' => $payload['user_id'] ?? null,
+                ],
+                array_merge($payload, $dest, [
+                    'source_institution' => $sourceInstitution,
                     'destination_institution' => $destInstitution,
-                    'destination_identifier' => $destIdentifier['identifier'],
-                    'destination_identifier_type' => $destIdentifier['type'],
-                    'delivery_method' => $deliveryMethod,
-                    'requested_amount' => $destAmount,
-                    'fee' => $feeAmount,
-                    'net_amount' => $netAmount,
-                    'deliverable_amount' => $deliverableAmount,
-                    'remainder_at_source' => $remainderAtSource,
-                    'hold_reference' => $destHoldRef,
-                    'hold_id' => $destHoldId,
-                    'fee_breakdown' => $feeBreakdown,
-                    'adjustment' => $adjustment,
-                    'transaction_reference' => $destResult['transaction_reference'] ?? null,
-                    'voucher_code' => $destResult['voucher_code'] ?? null,
-                    'status' => 'success',
-                    'result' => $destResult,
-                    'type' => 'bank'
-                ];
-                
-                $destinationResults[] = $successResult;
-                $successfulDestinations[] = $successResult;
-                $totalFees += $feeAmount;
-                $totalDelivered += $deliverableAmount;
-                
-            } catch (Exception $e) {
-                error_log("[SwapService] Destination " . ($idx + 1) . " FAILED: " . $e->getMessage());
-                
-                if (isset($destHoldRef) && isset($destHoldId)) {
+                    'destination_identifier' => $destIdentifier['identifier'] ?? null,
+                    'destination_identifier_type' => $destIdentifier['type'] ?? null,
+                    'fee_amount' => $feeAmount,
+                    'status' => 'completed',
+                ]),
+                $destResult
+            );
+            
+            $successResult = [
+                'index' => $idx,
+                'sub_reference' => $subRef,
+                'destination_institution' => $destInstitution,
+                'destination_identifier' => $destIdentifier['identifier'],
+                'destination_identifier_type' => $destIdentifier['type'],
+                'delivery_method' => $deliveryMethod,
+                'requested_amount' => $destAmount,
+                'fee' => $feeAmount,
+                'net_amount' => $netAmount,
+                'deliverable_amount' => $deliverableAmount,
+                'remainder_at_source' => $remainderAtSource,
+                'hold_reference' => $destHoldRef,
+                'hold_id' => $destHoldId,
+                'fee_breakdown' => $feeBreakdown,
+                'adjustment' => $adjustment,
+                'transaction_reference' => $destResult['transaction_reference'] ?? null,
+                'voucher_code' => $destResult['voucher_code'] ?? null,
+                'status' => 'success',
+                'result' => $destResult,
+                'type' => 'bank'
+            ];
+            
+            $destinationResults[] = $successResult;
+            $successfulDestinations[] = $successResult;
+            $totalFees += $feeAmount;
+            $totalDelivered += $deliverableAmount;
+            
+        } catch (Exception $e) {
+            error_log("[SwapService] Destination " . ($idx + 1) . " FAILED: " . $e->getMessage());
+            
+            // NEW: Check if delivery already succeeded before debit failed
+            $deliveryAlreadySucceeded = $deliverySucceededForThisDest;
+            
+            if (isset($destHoldRef) && isset($destHoldId)) {
+                if ($deliveryAlreadySucceeded) {
+                    // NEW: Destination already has real money - do NOT release hold
+                    // Flag for manual reconciliation
+                    $this->logger->critical("HOLD NOT RELEASED - destination already delivered before debit failed", [
+                        'sub_reference' => $subRef,
+                        'hold_reference' => $destHoldRef,
+                        'source_institution' => $sourceInstitution,
+                        'destination_institution' => $destInstitution ?? 'unknown',
+                        'amount' => $destAmount ?? 0,
+                        'currency' => $dest['currency'] ?? $currency,
+                        'error' => $e->getMessage()
+                    ]);
+                    
+                    $this->recordManualReconciliationRequired(
+                        $subRef ?? 'UNKNOWN',
+                        $destHoldRef,
+                        $sourceInstitution,
+                        $destInstitution ?? null,
+                        $destAmount ?? 0,
+                        $dest['currency'] ?? $currency,
+                        $e->getMessage()
+                    );
+                    
+                    $this->updateHoldStatus($destHoldId, 'DEBIT_FAILED');
+                    
+                } else {
+                    // Normal rollback - release the hold
                     try {
                         error_log("[SwapService] Releasing hold for failed destination: {$destHoldRef}");
                         
@@ -2660,240 +2685,269 @@ $this->populateTrackingTables(
                         error_log("[SwapService] Failed to release hold: " . $releaseError->getMessage());
                     }
                 }
-
-             // Trace the failure too - a debited-then-nothing hold is dangerous,
-// but a failed attempt with zero trace in swap_requests is also a
-// reconciliation blind spot. This gives the regulator visibility into
-// attempts that didn't complete, not just the ones that did.
-if (isset($subRef)) {
-    $this->populateTrackingTables(
-        [
-            'swap_type' => 'DEPOSIT',
-            'reference' => $subRef,
-            'amount' => $destAmount ?? 0,
-            'currency' => $dest['currency'] ?? $currency,
-            'status' => 'failed',
-            'from_institution' => $sourceInstitution,
-            'to_institution' => $destInstitution ?? null,
-            'user_id' => $payload['user_id'] ?? null,
-        ],
-        array_merge($payload, $dest ?? [], [
-            'source_institution' => $sourceInstitution,
-            'destination_institution' => $destInstitution ?? null,
-            'error_message' => $e->getMessage(),
-            'status' => 'failed',
-        ]),
-        null
-    );
-}
-                
-                $failedResult = [
-                    'index' => $idx,
-                    'sub_reference' => $subRef ?? null,
-                    'destination_institution' => $destInstitution ?? 'unknown',
-                    'destination_identifier' => $destIdentifier['identifier'] ?? null,
-                    'delivery_method' => $deliveryMethod ?? 'unknown',
-                    'requested_amount' => $destAmount ?? 0,
-                    'hold_reference' => $destHoldRef ?? null,
-                    'hold_id' => $destHoldId ?? null,
-                    'status' => 'failed',
-                    'error' => $e->getMessage(),
-                    'can_retry' => true,
-                    'type' => 'bank'
-                ];
-                
-                $destinationResults[] = $failedResult;
-                $failedDestinations[] = $failedResult;
             }
-        }
-        
-        foreach ($identityDestinations as $identityDest) {
-            $idx = $identityDest['index'];
-            $amount = $identityDest['amount'];
-            $identityType = $identityDest['identity_type'];
-            $identityValue = $identityDest['identity_value'];
-            $beneficiaryPhone = $identityDest['beneficiary_phone'];
-            $deliveryMethod = $identityDest['delivery_method'];
-            $subRef = $multiDestRef . '_ID_' . $idx;
-            
-            error_log("[SwapService] Processing identity destination " . ($idx + 1) . ": {$identityType}={$identityValue}, amount={$amount}"); 
-            
-            $destHoldRef = null;
-            $destHoldId = null;
-            
-            try {
-                $feeType = 'DEPOSIT';
-                
-                if ($deliveryMethod === 'ATM' || $deliveryMethod === 'AGENT' || $deliveryMethod === 'CASHOUT') {
-                    $feeType = 'CASHOUT';
-                }
-                
-                $feeBreakdown = $this->calculateFeesWithDetails($feeType, $amount, array_merge($payload, $identityDest['original']));
-                $netAmount = $feeBreakdown['net_amount'] ?? $amount;
-                $feeAmount = $feeBreakdown['total_fee'] ?? 0;
-                
-                $holdPayload = $payload;
-                $holdPayload['amount'] = $amount;
-                $holdPayload['hold_reason'] = 'MULTI_DESTINATION_IDENTITY_' . $idx;
-                $holdPayload['reference'] = $subRef;
-                $holdPayload['from_institution'] = $sourceInstitution;
-                $holdPayload['source_institution'] = $sourceInstitution;
-                
-                $originalSwapRef = $this->currentSwapRef;
-                $this->currentSwapRef = $subRef;
-                
-                $holdResult = $this->executeStep('PLACE_HOLD_IDENTITY_' . $idx, function() use ($holdPayload, $sourceInstitution, $verificationResult) {
-                    return $this->placeHoldSigned($holdPayload, $sourceInstitution, $verificationResult);
-                });
-                
-                $this->currentSwapRef = $originalSwapRef;
-                
-                if (!($holdResult['hold_placed'] ?? false)) {
-                    throw new RuntimeException("Hold failed for identity " . ($idx + 1) . ": " . ($holdResult['message'] ?? 'Unknown error'));
-                }
-                
-                $this->assertStepIntegrity(
-                    $holdResult,
-                    'hold_placed',
-                    ['hold_reference', 'signature'],
-                    'PLACE_HOLD_IDENTITY_' . $idx
+
+            // Trace the failure
+            if (isset($subRef)) {
+                $this->populateTrackingTables(
+                    [
+                        'swap_type' => 'DEPOSIT',
+                        'reference' => $subRef,
+                        'amount' => $destAmount ?? 0,
+                        'currency' => $dest['currency'] ?? $currency,
+                        'status' => 'failed',
+                        'from_institution' => $sourceInstitution,
+                        'to_institution' => $destInstitution ?? null,
+                        'user_id' => $payload['user_id'] ?? null,
+                    ],
+                    array_merge($payload, $dest ?? [], [
+                        'source_institution' => $sourceInstitution,
+                        'destination_institution' => $destInstitution ?? null,
+                        'error_message' => $e->getMessage(),
+                        'status' => 'failed',
+                        'delivery_succeeded' => $deliveryAlreadySucceeded ? 'true' : 'false'
+                    ]),
+                    null
                 );
-                
-                $destHoldRef = $holdResult['hold_reference'];
-                $destHoldId = $holdResult['local_hold_id'];
-                $totalHeld += ($amount);
-                
-                error_log("[SwapService] Hold placed for identity " . ($idx + 1) . ": {$destHoldRef}");
-                
-                $identityPayload = $payload;
-                $identityPayload['swap_type'] = 'IDENTITY';
-                $identityPayload['amount'] = $amount;
-                $identityPayload['identity_type'] = $identityType;
-                $identityPayload['identity_value'] = $identityValue;
-                $identityPayload['beneficiary_phone'] = $beneficiaryPhone;
-                $identityPayload['currency'] = $currency;
-                $identityPayload['reference'] = $subRef;
-                $identityPayload['delivery_method'] = $deliveryMethod;
-                $identityPayload['from_institution'] = $sourceInstitution;
-                $identityPayload['source_institution'] = $sourceInstitution;
-                $identityPayload['_skip_hold'] = true;
-                $identityPayload['hold_reference'] = $destHoldRef;
-                
-                $originalHoldRef = $this->currentHoldReference;
-                $originalHoldId = $this->currentHoldId;
-                $this->currentHoldReference = $destHoldRef;
-                $this->currentHoldId = $destHoldId;
-                
-                $identityResult = $this->initiateSwapToIdentity($identityPayload);
-                
-                $this->currentHoldReference = $originalHoldRef;
-                $this->currentHoldId = $originalHoldId;
-                
-                if (!($identityResult['status'] ?? false)) {
-                    throw new RuntimeException("Identity processing failed: " . ($identityResult['message'] ?? 'Unknown error'));
-                }
-                
-                error_log("[SwapService] Debiting hold for identity " . ($idx + 1) . ": {$destHoldRef}");
-                
-                $this->currentHoldReference = $destHoldRef;
-                $this->currentHoldId = $destHoldId;
-                
-                $debitPayload = [
+            }
+            
+            $failedResult = [
+                'index' => $idx,
+                'sub_reference' => $subRef ?? null,
+                'destination_institution' => $destInstitution ?? 'unknown',
+                'destination_identifier' => $destIdentifier['identifier'] ?? null,
+                'delivery_method' => $deliveryMethod ?? 'unknown',
+                'requested_amount' => $destAmount ?? 0,
+                'hold_reference' => $destHoldRef ?? null,
+                'hold_id' => $destHoldId ?? null,
+                'status' => 'failed',
+                'error' => $e->getMessage(),
+                'can_retry' => true,
+                'type' => 'bank',
+                'delivery_succeeded' => $deliveryAlreadySucceeded
+            ];
+            
+            $destinationResults[] = $failedResult;
+            $failedDestinations[] = $failedResult;
+        }
+    }
+    
+    // IDENTITY DESTINATIONS LOOP
+    foreach ($identityDestinations as $identityDest) {
+        $idx = $identityDest['index'];
+        $amount = $identityDest['amount'];
+        $identityType = $identityDest['identity_type'];
+        $identityValue = $identityDest['identity_value'];
+        $beneficiaryPhone = $identityDest['beneficiary_phone'];
+        $deliveryMethod = $identityDest['delivery_method'];
+        $subRef = $multiDestRef . '_ID_' . $idx;
+        
+        error_log("[SwapService] Processing identity destination " . ($idx + 1) . ": {$identityType}={$identityValue}, amount={$amount}"); 
+        
+        $destHoldRef = null;
+        $destHoldId = null;
+        $deliverySucceededForThisDest = false;  // NEW - reset per iteration
+        
+        try {
+            $feeType = 'DEPOSIT';
+            
+            if ($deliveryMethod === 'ATM' || $deliveryMethod === 'AGENT' || $deliveryMethod === 'CASHOUT') {
+                $feeType = 'CASHOUT';
+            }
+            
+            $feeBreakdown = $this->calculateFeesWithDetails($feeType, $amount, array_merge($payload, $identityDest['original']));
+            $netAmount = $feeBreakdown['net_amount'] ?? $amount;
+            $feeAmount = $feeBreakdown['total_fee'] ?? 0;
+            
+            $holdPayload = $payload;
+            $holdPayload['amount'] = $amount;
+            $holdPayload['hold_reason'] = 'MULTI_DESTINATION_IDENTITY_' . $idx;
+            $holdPayload['reference'] = $subRef;
+            $holdPayload['from_institution'] = $sourceInstitution;
+            $holdPayload['source_institution'] = $sourceInstitution;
+            
+            $originalSwapRef = $this->currentSwapRef;
+            $this->currentSwapRef = $subRef;
+            
+            $holdResult = $this->executeStep('PLACE_HOLD_IDENTITY_' . $idx, function() use ($holdPayload, $sourceInstitution, $verificationResult) {
+                return $this->placeHoldSigned($holdPayload, $sourceInstitution, $verificationResult);
+            });
+            
+            $this->currentSwapRef = $originalSwapRef;
+            
+            if (!($holdResult['hold_placed'] ?? false)) {
+                throw new RuntimeException("Hold failed for identity " . ($idx + 1) . ": " . ($holdResult['message'] ?? 'Unknown error'));
+            }
+            
+            $this->assertStepIntegrity(
+                $holdResult,
+                'hold_placed',
+                ['hold_reference', 'signature'],
+                'PLACE_HOLD_IDENTITY_' . $idx
+            );
+            
+            $destHoldRef = $holdResult['hold_reference'];
+            $destHoldId = $holdResult['local_hold_id'];
+            $totalHeld += ($amount);
+            
+            error_log("[SwapService] Hold placed for identity " . ($idx + 1) . ": {$destHoldRef}");
+            
+            $identityPayload = $payload;
+            $identityPayload['swap_type'] = 'IDENTITY';
+            $identityPayload['amount'] = $amount;
+            $identityPayload['identity_type'] = $identityType;
+            $identityPayload['identity_value'] = $identityValue;
+            $identityPayload['beneficiary_phone'] = $beneficiaryPhone;
+            $identityPayload['currency'] = $currency;
+            $identityPayload['reference'] = $subRef;
+            $identityPayload['delivery_method'] = $deliveryMethod;
+            $identityPayload['from_institution'] = $sourceInstitution;
+            $identityPayload['source_institution'] = $sourceInstitution;
+            $identityPayload['_skip_hold'] = true;
+            $identityPayload['hold_reference'] = $destHoldRef;
+            
+            $originalHoldRef = $this->currentHoldReference;
+            $originalHoldId = $this->currentHoldId;
+            $this->currentHoldReference = $destHoldRef;
+            $this->currentHoldId = $destHoldId;
+            
+            $identityResult = $this->initiateSwapToIdentity($identityPayload);
+            
+            $this->currentHoldReference = $originalHoldRef;
+            $this->currentHoldId = $originalHoldId;
+            
+            if (!($identityResult['status'] ?? false)) {
+                throw new RuntimeException("Identity processing failed: " . ($identityResult['message'] ?? 'Unknown error'));
+            }
+            
+            // NEW: Delivery succeeded - mark flag BEFORE debit attempt
+            $deliverySucceededForThisDest = true;
+            
+            error_log("[SwapService] Debiting hold for identity " . ($idx + 1) . ": {$destHoldRef}");
+            
+            $this->currentHoldReference = $destHoldRef;
+            $this->currentHoldId = $destHoldId;
+            
+            $debitPayload = [
+                'reference' => $subRef,
+                'hold_reference' => $destHoldRef,
+                'amount' => $amount,
+                'reason' => 'Multi-destination identity - ' . ($idx + 1),
+                'from_institution' => $sourceInstitution,
+                'source_institution' => $sourceInstitution
+            ];
+            
+            $debitResult = $this->executeStep('DEBIT_IDENTITY_' . $idx, function() use ($debitPayload, $sourceInstitution) {
+                return $this->debitSource($debitPayload, $sourceInstitution);
+            });
+            
+            $this->currentHoldReference = $originalHoldRef;
+            $this->currentHoldId = $originalHoldId;
+            
+            if (!($debitResult['debited'] ?? false)) {
+                throw new RuntimeException("Debit failed for identity " . ($idx + 1) . ": " . ($debitResult['message'] ?? 'Unknown error'));
+            }
+            
+            $this->updateHoldStatus($destHoldId, 'DEBITED');
+
+            // Post ledger legs for this identity child swap
+            $this->postLedgerLegs(
+                $subRef,
+                $sourceInstitution,
+                $payload['asset_type'] ?? 'ACCOUNT',
+                $sourceIdentifier['identifier'] ?? null,
+                $amount,
+                null,
+                null,
+                null,
+                0,
+                $feeAmount,
+                $identityDest['currency'] ?? $currency,
+                $destHoldRef
+            );
+
+            $this->populateTrackingTables(
+                [
+                    'swap_type' => 'IDENTITY',
                     'reference' => $subRef,
-                    'hold_reference' => $destHoldRef,
                     'amount' => $amount,
-                    'reason' => 'Multi-destination identity - ' . ($idx + 1),
+                    'currency' => $identityDest['currency'] ?? $currency,
+                    'status' => 'pending_identity_confirmation',
                     'from_institution' => $sourceInstitution,
-                    'source_institution' => $sourceInstitution
-                ];
-                
-                $debitResult = $this->executeStep('DEBIT_IDENTITY_' . $idx, function() use ($debitPayload, $sourceInstitution) {
-                    return $this->debitSource($debitPayload, $sourceInstitution);
-                });
-                
-                $this->currentHoldReference = $originalHoldRef;
-                $this->currentHoldId = $originalHoldId;
-                
-                if (!($debitResult['debited'] ?? false)) {
-                    throw new RuntimeException("Debit failed for identity " . ($idx + 1) . ": " . ($debitResult['message'] ?? 'Unknown error'));
-                }
-                
-                $this->updateHoldStatus($destHoldId, 'DEBITED');
-
-             // Same fix for identity-destination children. Note this reference
-// (MULTI_DESTINATION_ID_N pattern) is separate from whatever reference
-// the eventual claim/finalization flow uses later (confirmAndFinalizeIdentitySwap
-// creates its own tracking under identitySwap['swap_reference']) - this
-// row specifically documents that the SOURCE side was debited now,
-// regardless of whether/when the recipient claims it.
-
-// Post ledger legs for this identity child swap
-$this->postLedgerLegs(
-    $subRef,
-    $sourceInstitution,
-    $payload['asset_type'] ?? 'ACCOUNT',
-    $sourceIdentifier['identifier'] ?? null,
-    $amount,
-    null,  // No destination institution - identity holds don't credit a bank account yet
-    null,
-    null,
-    0,    // No net credited yet (identity holds are pending)
-    $feeAmount,
-    $identityDest['currency'] ?? $currency,
-    $destHoldRef
-);
-
-$this->populateTrackingTables(
-    [
-        'swap_type' => 'IDENTITY',
-        'reference' => $subRef,
-        'amount' => $amount,
-        'currency' => $identityDest['currency'] ?? $currency,
-        'status' => 'pending_identity_confirmation',
-        'from_institution' => $sourceInstitution,
-        'to_institution' => null,
-        'user_id' => $payload['user_id'] ?? null,
-    ],
-    array_merge($payload, $identityDest['original'] ?? [], [
-        'source_institution' => $sourceInstitution,
-        'identity_type' => $identityType,
-        'identity_value' => $identityValue,
-        'fee_amount' => $feeAmount,
-        'status' => 'pending_identity_confirmation',
-    ]),
-    $identityResult
-);
-                
-                $successResult = [
-                    'index' => $idx,
-                    'type' => 'identity',
+                    'to_institution' => null,
+                    'user_id' => $payload['user_id'] ?? null,
+                ],
+                array_merge($payload, $identityDest['original'] ?? [], [
+                    'source_institution' => $sourceInstitution,
                     'identity_type' => $identityType,
                     'identity_value' => $identityValue,
-                    'amount' => $amount,
-                    'beneficiary_phone' => $beneficiaryPhone,
-                    'delivery_method' => $deliveryMethod,
-                    'fee' => $feeAmount,
-                    'net_amount' => $netAmount,
-                    'hold_reference' => $destHoldRef,
-                    'hold_id' => $destHoldId,
-                    'swap_reference' => $identityResult['swap_reference'] ?? null,
-                    'expires_at' => $identityResult['expires_at'] ?? null,
+                    'fee_amount' => $feeAmount,
                     'status' => 'pending_identity_confirmation',
-                    'message' => $identityResult['message'] ?? 'Identity swap initiated - recipient must confirm identity within 24 hours',
-                    'fee_breakdown' => $feeBreakdown,
-                    'result' => $identityResult
-                ];
-                
-                $destinationResults[] = $successResult;
-                $successfulDestinations[] = $successResult;
-                $totalFees += $feeAmount;
-                
-                error_log("[SwapService] Identity swap initiated: {$identityType}={$identityValue}, reference={$identityResult['swap_reference']}");
-                
-            } catch (Exception $e) {
-                error_log("[SwapService] Identity destination " . ($idx + 1) . " FAILED: " . $e->getMessage());
-                
-                if (isset($destHoldRef) && isset($destHoldId)) {
+                ]),
+                $identityResult
+            );
+            
+            $successResult = [
+                'index' => $idx,
+                'type' => 'identity',
+                'identity_type' => $identityType,
+                'identity_value' => $identityValue,
+                'amount' => $amount,
+                'beneficiary_phone' => $beneficiaryPhone,
+                'delivery_method' => $deliveryMethod,
+                'fee' => $feeAmount,
+                'net_amount' => $netAmount,
+                'hold_reference' => $destHoldRef,
+                'hold_id' => $destHoldId,
+                'swap_reference' => $identityResult['swap_reference'] ?? null,
+                'expires_at' => $identityResult['expires_at'] ?? null,
+                'status' => 'pending_identity_confirmation',
+                'message' => $identityResult['message'] ?? 'Identity swap initiated - recipient must confirm identity within 24 hours',
+                'fee_breakdown' => $feeBreakdown,
+                'result' => $identityResult
+            ];
+            
+            $destinationResults[] = $successResult;
+            $successfulDestinations[] = $successResult;
+            $totalFees += $feeAmount;
+            
+            error_log("[SwapService] Identity swap initiated: {$identityType}={$identityValue}, reference={$identityResult['swap_reference']}");
+            
+        } catch (Exception $e) {
+            error_log("[SwapService] Identity destination " . ($idx + 1) . " FAILED: " . $e->getMessage());
+            
+            // NEW: Check if delivery already succeeded before debit failed
+            $deliveryAlreadySucceeded = $deliverySucceededForThisDest;
+            
+            if (isset($destHoldRef) && isset($destHoldId)) {
+                if ($deliveryAlreadySucceeded) {
+                    // NEW: Identity already initiated - do NOT release hold
+                    // Flag for manual reconciliation
+                    $this->logger->critical("HOLD NOT RELEASED - identity already initiated before debit failed", [
+                        'sub_reference' => $subRef,
+                        'hold_reference' => $destHoldRef,
+                        'source_institution' => $sourceInstitution,
+                        'identity_type' => $identityType ?? 'unknown',
+                        'identity_value' => $identityValue ?? 'unknown',
+                        'amount' => $amount ?? 0,
+                        'currency' => $identityDest['currency'] ?? $currency,
+                        'error' => $e->getMessage()
+                    ]);
+                    
+                    $this->recordManualReconciliationRequired(
+                        $subRef ?? 'UNKNOWN',
+                        $destHoldRef,
+                        $sourceInstitution,
+                        null,  // No destination institution for identity
+                        $amount ?? 0,
+                        $identityDest['currency'] ?? $currency,
+                        $e->getMessage()
+                    );
+                    
+                    $this->updateHoldStatus($destHoldId, 'DEBIT_FAILED');
+                    
+                } else {
+                    // Normal rollback - release the hold
                     try {
                         error_log("[SwapService] Releasing hold for failed identity: {$destHoldRef}");
                         
@@ -2910,109 +2964,112 @@ $this->populateTrackingTables(
                         error_log("[SwapService] Failed to release hold: " . $releaseError->getMessage());
                     }
                 }
-
-              if (isset($subRef)) {
-    $this->populateTrackingTables(
-        [
-            'swap_type' => 'IDENTITY',
-            'reference' => $subRef,
-            'amount' => $amount ?? 0,
-            'currency' => $identityDest['currency'] ?? $currency,
-            'status' => 'failed',
-            'from_institution' => $sourceInstitution,
-            'to_institution' => null,
-            'user_id' => $payload['user_id'] ?? null,
-        ],
-        array_merge($payload, $identityDest['original'] ?? [], [
-            'source_institution' => $sourceInstitution,
-            'identity_type' => $identityType ?? null,
-            'identity_value' => $identityValue ?? null,
-            'error_message' => $e->getMessage(),
-            'status' => 'failed',
-        ]),
-        null
-    );
-}
-             
-                $failedResult = [
-                    'index' => $idx,
-                    'type' => 'identity',
-                    'identity_type' => $identityType,
-                    'identity_value' => $identityValue,
-                    'amount' => $amount,
-                    'status' => 'failed',
-                    'error' => $e->getMessage(),
-                    'can_retry' => true
-                ];
-                
-                $destinationResults[] = $failedResult;
-                $failedDestinations[] = $failedResult;
             }
+
+            if (isset($subRef)) {
+                $this->populateTrackingTables(
+                    [
+                        'swap_type' => 'IDENTITY',
+                        'reference' => $subRef,
+                        'amount' => $amount ?? 0,
+                        'currency' => $identityDest['currency'] ?? $currency,
+                        'status' => 'failed',
+                        'from_institution' => $sourceInstitution,
+                        'to_institution' => null,
+                        'user_id' => $payload['user_id'] ?? null,
+                    ],
+                    array_merge($payload, $identityDest['original'] ?? [], [
+                        'source_institution' => $sourceInstitution,
+                        'identity_type' => $identityType ?? null,
+                        'identity_value' => $identityValue ?? null,
+                        'error_message' => $e->getMessage(),
+                        'status' => 'failed',
+                        'delivery_succeeded' => $deliveryAlreadySucceeded ? 'true' : 'false'
+                    ]),
+                    null
+                );
+            }
+         
+            $failedResult = [
+                'index' => $idx,
+                'type' => 'identity',
+                'identity_type' => $identityType,
+                'identity_value' => $identityValue,
+                'amount' => $amount,
+                'status' => 'failed',
+                'error' => $e->getMessage(),
+                'can_retry' => true,
+                'delivery_succeeded' => $deliveryAlreadySucceeded
+            ];
+            
+            $destinationResults[] = $failedResult;
+            $failedDestinations[] = $failedResult;
         }
-        
-        $multiDestId = $this->storeMultiDestinationRecord(
-            $multiDestRef,
-            $sourceInstitution,
-            $destinations,
-            $destinationResults,
-            $totalFees,
-            $totalDelivered,
-            count($successfulDestinations),
-            count($failedDestinations)
-        );
-        
-        $settlementResults = [];
-        foreach ($successfulDestinations as $destResult) {
-            if (isset($destResult['type']) && $destResult['type'] === 'bank' && isset($destResult['destination_institution'])) {
-                $settlement = $this->settlement->updateNetPosition(
+    }
+    
+    $multiDestId = $this->storeMultiDestinationRecord(
+        $multiDestRef,
+        $sourceInstitution,
+        $destinations,
+        $destinationResults,
+        $totalFees,
+        $totalDelivered,
+        count($successfulDestinations),
+        count($failedDestinations)
+    );
+    
+    $settlementResults = [];
+    foreach ($successfulDestinations as $destResult) {
+        if (isset($destResult['type']) && $destResult['type'] === 'bank' && isset($destResult['destination_institution'])) {
+            $settlement = $this->settlement->updateNetPosition(
+                $multiDestRef,
+                $sourceInstitution,
+                $destResult['destination_institution'],
+                $destResult['deliverable_amount'],
+                'MULTI_DESTINATION_COMPLETED',
+                $currency
+            );
+            
+            if ($destResult['fee'] > 0) {
+                $this->settlement->invoiceFee(
                     $multiDestRef,
                     $sourceInstitution,
-                    $destResult['destination_institution'],
-                    $destResult['deliverable_amount'],
-                    'MULTI_DESTINATION_COMPLETED',
+                    $this->getParticipantId($sourceInstitution),
+                    'MULTI_DESTINATION_FEE',
+                    $destResult['fee'],
                     $currency
                 );
-                
-                if ($destResult['fee'] > 0) {
-                    $this->settlement->invoiceFee(
-                        $multiDestRef,
-                        $sourceInstitution,
-                        $this->getParticipantId($sourceInstitution),
-                        'MULTI_DESTINATION_FEE',
-                        $destResult['fee'],
-                        $currency
-                    );
-                }
-                
-                $settlementResults[] = [
-                    'destination_institution' => $destResult['destination_institution'],
-                    'amount' => $destResult['deliverable_amount'],
-                    'fee' => $destResult['fee'],
-                    'hold_reference' => $destResult['hold_reference'],
-                    'settlement' => $settlement
-                ];
             }
+            
+            $settlementResults[] = [
+                'destination_institution' => $destResult['destination_institution'],
+                'amount' => $destResult['deliverable_amount'],
+                'fee' => $destResult['fee'],
+                'hold_reference' => $destResult['hold_reference'],
+                'settlement' => $settlement
+            ];
         }
-        
-        return [
-            'status' => count($failedDestinations) > 0 ? 'partial_success' : 'success',
-            'reference' => $multiDestRef,
-            'source_institution' => $sourceInstitution,
-            'total_destinations' => count($destinations),
-            'successful_destinations' => count($successfulDestinations),
-            'failed_destinations' => count($failedDestinations),
-            'total_amount' => array_sum(array_column($destinations, 'amount')),
-            'total_fees' => $totalFees,
-            'total_delivered' => $totalDelivered,
-            'total_held' => $totalHeld,
-            'multi_destination_id' => $multiDestId,
-            'destinations' => $destinationResults,
-            'settlement' => $settlementResults,
-            'fee_calculation_details' => $this->feeCalculationDetails,
-            'signature_chain' => $this->signedPayloads,
-            'can_retry' => count($failedDestinations) > 0
-        ];
     }
+    
+    return [
+        'status' => count($failedDestinations) > 0 ? 'partial_success' : 'success',
+        'reference' => $multiDestRef,
+        'source_institution' => $sourceInstitution,
+        'total_destinations' => count($destinations),
+        'successful_destinations' => count($successfulDestinations),
+        'failed_destinations' => count($failedDestinations),
+        'total_amount' => array_sum(array_column($destinations, 'amount')),
+        'total_fees' => $totalFees,
+        'total_delivered' => $totalDelivered,
+        'total_held' => $totalHeld,
+        'multi_destination_id' => $multiDestId,
+        'destinations' => $destinationResults,
+        'settlement' => $settlementResults,
+        'fee_calculation_details' => $this->feeCalculationDetails,
+        'signature_chain' => $this->signedPayloads,
+        'can_retry' => count($failedDestinations) > 0
+    ];
+}
 
     // ----------------------------------------------------------------------
 // 3. storeMultiDestinationRecord() — runs after real debits at multiple
@@ -3912,12 +3969,19 @@ public function cancelExpiredCashouts(int $bufferHours = 6): array
     );
     
     $debitResult = $this->executeStep('DEBIT_SOURCE', function() use ($payload, $sourceInstitution) {
-        return $this->debitSource($payload, $sourceInstitution);
-    });
-    
-    if (!($debitResult['debited'] ?? false)) {
-        throw new RuntimeException("Debit failed: " . ($debitResult['message'] ?? 'Unknown error'));
-    }
+    return $this->debitSource($payload, $sourceInstitution);
+});
+
+if (!($debitResult['debited'] ?? false)) {
+    // Deposit already succeeded above (processDepositWithProof) - the
+    // destination has real money. Flag this so rollbackAtomicSwap()
+    // does NOT release the source hold.
+    $this->postDeliveryDebitFailure = true;
+    $this->postDeliveryDestinationInstitution = $destinationInstitution;
+    $this->postDeliveryAmount = $netAmount;
+    $this->postDeliveryCurrency = $payload['currency'] ?? 'BWP';
+    throw new RuntimeException("Debit failed after destination delivery succeeded: " . ($debitResult['message'] ?? 'Unknown error'));
+}
     
     $this->updateHoldStatus($this->currentHoldId, 'DEBITED');
 
@@ -8889,11 +8953,85 @@ private function getHoldAssetContext(?int $holdId): array
     }
 }
 
-   private function rollbackAtomicSwap(string $reason): array
+/**
+ * Called ONLY when a source debit fails AFTER the destination has
+ * already been credited/dispensed. In this state, releasing the hold
+ * would double-pay: the destination already got real value, and
+ * releasing gives the source's money back to the customer as
+ * available balance. This must never happen automatically.
+ *
+ * Runs on its own connection state, deliberately AFTER the outer
+ * $this->swapDB->rollBack() in rollbackAtomicSwap(), so this record
+ * survives even though the swap's own DB transaction was rolled back.
+ */
+private function recordManualReconciliationRequired(
+    string $swapRef,
+    ?string $holdReference,
+    ?string $sourceInstitution,
+    ?string $destinationInstitution,
+    float $amount,
+    string $currency,
+    string $reason
+): void {
+    try {
+        $this->swapDB->exec("
+            CREATE TABLE IF NOT EXISTS swap_manual_reconciliation_required (
+                id BIGSERIAL PRIMARY KEY,
+                swap_reference VARCHAR(255) NOT NULL,
+                hold_reference VARCHAR(255),
+                source_institution VARCHAR(100),
+                destination_institution VARCHAR(100),
+                amount NUMERIC(18,2),
+                currency CHAR(3),
+                reason TEXT NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                resolved_at TIMESTAMP,
+                resolved_by VARCHAR(100),
+                resolution_notes TEXT
+            )
+        ");
+        $stmt = $this->swapDB->prepare("
+            INSERT INTO swap_manual_reconciliation_required
+                (swap_reference, hold_reference, source_institution, destination_institution, amount, currency, reason)
+            VALUES (:ref, :hold_ref, :src, :dest, :amount, :ccy, :reason)
+        ");
+        $stmt->execute([
+            ':ref' => $swapRef,
+            ':hold_ref' => $holdReference,
+            ':src' => $sourceInstitution,
+            ':dest' => $destinationInstitution,
+            ':amount' => $amount,
+            ':ccy' => $currency,
+            ':reason' => $reason,
+        ]);
+        $this->logger->critical("MANUAL RECONCILIATION REQUIRED: destination already paid but source debit failed - hold NOT released, flagged for ops", [
+            'swap_reference' => $swapRef,
+            'hold_reference' => $holdReference,
+            'source_institution' => $sourceInstitution,
+            'destination_institution' => $destinationInstitution,
+            'amount' => $amount,
+            'currency' => $currency,
+            'reason' => $reason,
+        ]);
+    } catch (\Throwable $e) {
+        // Same discipline as writeAuditFallback(): if even this fails,
+        // scream as loudly as possible rather than losing the signal.
+        $this->logger->emergency("swap_manual_reconciliation_required write ITSELF failed - manual DB investigation required immediately", [
+            'swap_reference' => $swapRef,
+            'hold_reference' => $holdReference,
+            'original_reason' => $reason,
+            'fallback_error' => $e->getMessage(),
+        ]);
+    }
+}
+ 
+  private function rollbackAtomicSwap(string $reason): array
 {
     $holdReference = $this->currentHoldReference;
     $holdInstitution = $this->currentHoldInstitution;
     $swapRef = $this->currentSwapRef;
+    $isPostDeliveryFailure = $this->postDeliveryDebitFailure;   // NEW - capture before reset
+    $amount = (float)($this->stepResults['amount'] ?? 0);        // best-effort, see note below
 
     // FIX: Get asset context for the hold before releasing
     // This ensures source_identifier and asset_type are sent to the bank's release endpoint
@@ -8906,7 +9044,17 @@ private function getHoldAssetContext(?int $holdId): array
     }
 
     $releaseResult = null;
-    if ($holdReference && $holdInstitution) {
+    
+    // NEW: Skip release when post-delivery failure flag is set
+    // Destination already has real money, so we must NOT release the hold
+    if ($isPostDeliveryFailure) {
+        $this->logger->critical("Skipping hold release - destination already delivered before debit failed", [
+            'reference' => $swapRef,
+            'hold_reference' => $holdReference,
+            'institution' => $holdInstitution,
+            'amount' => $amount
+        ]);
+    } elseif ($holdReference && $holdInstitution) {
         try {
             $adapter = $this->adapterFactory->getAdapter($holdInstitution);
             $releasePayload = array_merge([
@@ -8944,7 +9092,22 @@ private function getHoldAssetContext(?int $holdId): array
 
     $this->swapDB->rollBack();
 
-    if ($holdReference) {
+    // NEW: Write manual-reconciliation flag AFTER rollback on fresh transaction state
+    if ($isPostDeliveryFailure) {
+        $this->recordManualReconciliationRequired(
+            $swapRef ?? 'UNKNOWN',
+            $holdReference,
+            $holdInstitution,
+            $this->postDeliveryDestinationInstitution ?? null,
+            $this->postDeliveryAmount ?? 0.0,
+            $this->postDeliveryCurrency ?? 'BWP',
+            $reason
+        );
+    }
+
+    // Only log to swap_rollback_log if NOT a post-delivery failure
+    // (or modify to log the manual reconciliation state)
+    if ($holdReference && !$isPostDeliveryFailure) {
         try {
             $this->swapDB->exec("
                 CREATE TABLE IF NOT EXISTS swap_rollback_log (
@@ -8978,10 +9141,10 @@ private function getHoldAssetContext(?int $holdId): array
     }
 
     $result = [
-        'status' => 'rolled_back',
+        'status' => $isPostDeliveryFailure ? 'rolled_back_manual_reconciliation_required' : 'rolled_back',
         'reference' => $swapRef,
         'reason' => $reason,
-        'hold_released' => $releaseResult['released'] ?? null,
+        'hold_released' => $isPostDeliveryFailure ? false : ($releaseResult['released'] ?? null),
         'hold_reference' => $holdReference
     ];
     
@@ -8989,7 +9152,6 @@ private function getHoldAssetContext(?int $holdId): array
     $this->resetAtomicState();
     return $result;
 }
-
     private function resetAtomicState(): void
     {
         $this->inAtomicSwap = false;
@@ -9000,6 +9162,7 @@ private function getHoldAssetContext(?int $holdId): array
         $this->executedSteps = [];
         $this->stepResults = [];
         $this->signedPayloads = [];
+        $this->postDeliveryDebitFailure = false;   // NEW
     }
 
     private function executeStep(string $stepName, callable $operation)
