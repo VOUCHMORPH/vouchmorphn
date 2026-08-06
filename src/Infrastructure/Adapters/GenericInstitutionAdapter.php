@@ -89,22 +89,22 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
     }
 
     public function supports(string $capability): bool
-{
-    return in_array($capability, [
-        'VERIFY_ASSET',
-        'HOLD',
-        'DEBIT',
-        'CREDIT',
-        'RELEASE_HOLD',
-        'CASHOUT',
-        'VERIFY_ACCOUNT',
-        'BALANCE',
-        'TRANSACTIONS',
-        'ACCOUNTS',
-        'SETTLEMENT_STATUS',   // NEW
-    ]);
-}
-}    
+    {
+        return in_array($capability, [
+            'VERIFY_ASSET',
+            'HOLD',
+            'DEBIT',
+            'CREDIT',
+            'RELEASE_HOLD',
+            'CASHOUT',
+            'VERIFY_ACCOUNT',
+            'BALANCE',
+            'TRANSACTIONS',
+            'ACCOUNTS',
+            'SETTLEMENT_STATUS',   // NEW
+        ]);
+    }
+    
     // ============================================================
     // CORE SWAP OPERATIONS - STANDARDIZED
     // ============================================================
@@ -1038,59 +1038,59 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
         }
     }
 
-// ============================================================
-// SETTLEMENT CONFIRMATION
-// ============================================================
+    // ============================================================
+    // SETTLEMENT CONFIRMATION
+    // ============================================================
 
-/**
- * Asks this institution whether a specific settlement (identified by
- * whatever reference VouchMorph originally sent them) has actually
- * landed on their side. Thin wrapper around
- * GenericBankClient::checkSettlementStatus() -- exists so callers that
- * only have an InstitutionAdapterInterface (not a raw bank client) can
- * still poll settlement status, same pattern as every other method here.
- */
-public function checkSettlementStatus(array $payload, array $context): array
-{
-    $this->context = array_merge($context, $payload);
+    /**
+     * Asks this institution whether a specific settlement (identified by
+     * whatever reference VouchMorph originally sent them) has actually
+     * landed on their side. Thin wrapper around
+     * GenericBankClient::checkSettlementStatus() -- exists so callers that
+     * only have an InstitutionAdapterInterface (not a raw bank client) can
+     * still poll settlement status, same pattern as every other method here.
+     */
+    public function checkSettlementStatus(array $payload, array $context): array
+    {
+        $this->context = array_merge($context, $payload);
 
-    try {
-        $this->ensureConsent();
+        try {
+            $this->ensureConsent();
 
-        $checkPayload = $payload;
-        if (!isset($checkPayload['access_token']) && $this->accessToken) {
-            $checkPayload['access_token'] = $this->accessToken;
-        }
-        if (!isset($checkPayload['reference'])) {
-            $checkPayload['reference'] = $context['swap_reference'] ?? uniqid('settlecheck_');
-        }
+            $checkPayload = $payload;
+            if (!isset($checkPayload['access_token']) && $this->accessToken) {
+                $checkPayload['access_token'] = $this->accessToken;
+            }
+            if (!isset($checkPayload['reference'])) {
+                $checkPayload['reference'] = $context['swap_reference'] ?? uniqid('settlecheck_');
+            }
 
-        if (!method_exists($this->bankClient, 'checkSettlementStatus')) {
+            if (!method_exists($this->bankClient, 'checkSettlementStatus')) {
+                return [
+                    'success' => false,
+                    'settled' => false,
+                    'message' => "{$this->institution}'s bank client does not implement checkSettlementStatus()",
+                ];
+            }
+
+            $result = $this->bankClient->checkSettlementStatus($checkPayload);
+
+            return [
+                'success' => $result['success'] ?? false,
+                'settled' => $result['settled'] ?? false,
+                'settlement_reference' => $result['settlement_reference'] ?? null,
+                'message' => $result['message'] ?? ($result['settled'] ?? false ? 'Settled' : 'Not yet settled'),
+                'raw_response' => $result['raw_response'] ?? null,
+            ];
+
+        } catch (\Exception $e) {
             return [
                 'success' => false,
                 'settled' => false,
-                'message' => "{$this->institution}'s bank client does not implement checkSettlementStatus()",
+                'message' => $e->getMessage(),
             ];
         }
-
-        $result = $this->bankClient->checkSettlementStatus($checkPayload);
-
-        return [
-            'success' => $result['success'] ?? false,
-            'settled' => $result['settled'] ?? false,
-            'settlement_reference' => $result['settlement_reference'] ?? null,
-            'message' => $result['message'] ?? ($result['settled'] ?? false ? 'Settled' : 'Not yet settled'),
-            'raw_response' => $result['raw_response'] ?? null,
-        ];
-
-    } catch (\Exception $e) {
-        return [
-            'success' => false,
-            'settled' => false,
-            'message' => $e->getMessage(),
-        ];
     }
-}
     
     public function getTransactions(array $payload, array $context): array
     {
