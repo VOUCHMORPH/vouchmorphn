@@ -14,6 +14,7 @@ use Domain\Services\CardService;
 use Domain\Services\ContributionCalculator;
 use Domain\Services\MultiSourceFeeCalculator;
 use Domain\Services\MultiSource\MultiSourceSwapOrchestrator;
+use Domain\Services\Compliance\SanctionsScreeningService;
 use Infrastructure\Adapters\InstitutionAdapterFactory;
 use Infrastructure\SMS\SmsNotificationService;
 use Infrastructure\Mojaloop\IdempotencyService;
@@ -21,6 +22,7 @@ use Infrastructure\Crypto\SignatureVerifier;
 use Infrastructure\Crypto\MessageSigner;
 use Infrastructure\Crypto\CertificateManager;
 use Infrastructure\Crypto\AggregateSigner;
+
 
 /**
  * SIGNED ATOMIC SWAP ORCHESTRATOR
@@ -182,42 +184,12 @@ $this->certificateManager = \Infrastructure\Crypto\CertificateManagerFactory::ge
         $this->logger->info("InstitutionAdapterFactory initialized");
         
      $this->settlement = new HybridSettlementStrategy($this->swapDB, [], $this->participants);
-     $this->beginAtomicSwap($ref);
-
-try {
-    // ============================================================
-    // SANCTIONS SCREENING — added here
-    // ============================================================
-    if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY') {
-        $originatorParty = $this->extractOriginatorPartyData($payload);
-        $beneficiaryParty = $this->extractBeneficiaryPartyData($payload);
-
-        $screening = $this->sanctionsScreening->screenSwapParties(
-            $ref,
-            $originatorParty['name'],
-            $originatorParty['id_number'],
-            $beneficiaryParty['name'],
-            $beneficiaryParty['id_number']
-        );
-
-        if ($screening['blocked']) {
-            $this->logger->critical('Swap blocked by sanctions screening', [
-                'reference' => $ref,
-                'originator_result' => $screening['originator']['result'] ?? null,
-                'beneficiary_result' => $screening['beneficiary']['result'] ?? null,
-            ]);
-            throw new RuntimeException(
-                'This transaction cannot be processed. Please contact VouchMorph support.'
-            );
-        }
-    }
-    // ============================================================
-    // END SANCTIONS SCREENING
-    // ============================================================
-
-    $result = match($swapType) {
-        // ... existing dispatch unchanged
-     $this->forexService = new ForexService(
+$this->sanctionsScreening = new SanctionsScreeningService(
+    $this->swapDB,
+    getenv('SANCTIONS_SCREENING_MODE') ?: 'LOCAL_LIST',
+    (bool)(getenv('SANCTIONS_FAIL_OPEN') ?: false)
+);
+$this->forexService = new ForexService(
             $this->swapDB, 
             $countryConfig,
             $this->participants
@@ -2293,6 +2265,22 @@ public function recordExternalRailExecution(array $payload, array $railResult, s
         $this->beginAtomicSwap($ref);
         
         try {
+    if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY') {
+        $originatorParty = $this->extractOriginatorPartyData($payload);
+        $beneficiaryParty = $this->extractBeneficiaryPartyData($payload);
+        $screening = $this->sanctionsScreening->screenSwapParties(
+            $ref, $originatorParty['name'], $originatorParty['id_number'],
+            $beneficiaryParty['name'], $beneficiaryParty['id_number']
+        );
+        if ($screening['blocked']) {
+            $this->logger->critical('Swap blocked by sanctions screening', [
+                'reference' => $ref,
+                'originator_result' => $screening['originator']['result'] ?? null,
+                'beneficiary_result' => $screening['beneficiary']['result'] ?? null,
+            ]);
+            throw new RuntimeException('This transaction cannot be processed. Please contact VouchMorph support.');
+        }
+    }
             $result = match($swapType) {
                 'MULTI_SOURCE' => $this->executeMultiSourceSwap($payload),
                 'MULTI_DESTINATION' => $this->executeMultiDestinationSwap($payload),
