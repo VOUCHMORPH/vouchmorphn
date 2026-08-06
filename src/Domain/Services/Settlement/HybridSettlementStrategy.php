@@ -1179,20 +1179,20 @@ private function deliverToParticipant(string $institutionName, array $message): 
     }
 
     if (isset($message['instruction_id'])) {
-        $stmt = $this->db->prepare("
-            UPDATE settlement_outbox
-            SET status = :status, sent_at = CASE WHEN :status2 = 'SENT' THEN NOW() ELSE sent_at END,
-                delivery_attempts = COALESCE(delivery_attempts, 0) + 1,
-                last_delivery_error = :error
-            WHERE message_uuid = ?
-        ");
-        $stmt->execute([
-            ':status' => $delivered ? 'SENT' : 'PENDING',
-            ':status2' => $delivered ? 'SENT' : 'PENDING',
-            ':error' => $delivered ? null : ($curlError ?: "HTTP {$httpCode}"),
-            $message['instruction_id'],
-        ]);
-    }
+    $stmt = $this->db->prepare("
+        UPDATE settlement_outbox
+        SET status = :status, sent_at = CASE WHEN :status2 = 'SENT' THEN NOW() ELSE sent_at END,
+            delivery_attempts = COALESCE(delivery_attempts, 0) + 1,
+            last_delivery_error = :error
+        WHERE message_uuid = :uuid
+    ");
+    $stmt->execute([
+        ':status' => $delivered ? 'SENT' : 'PENDING',
+        ':status2' => $delivered ? 'SENT' : 'PENDING',
+        ':error' => $delivered ? null : ($curlError ?: "HTTP {$httpCode}"),
+        ':uuid' => $message['instruction_id'],
+    ]);
+}
 }
 
 /**
