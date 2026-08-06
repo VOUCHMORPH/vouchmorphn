@@ -36,22 +36,7 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
         return $this->institution;
     }
     
-    public function supports(string $capability): bool
-    {
-        return in_array($capability, [
-            'VERIFY_ASSET',
-            'HOLD',
-            'DEBIT',
-            'CREDIT',
-            'RELEASE_HOLD',
-            'CASHOUT',
-            'VERIFY_ACCOUNT',
-            'BALANCE',
-            'TRANSACTIONS',
-            'ACCOUNTS'
-        ]);
-    }
-    
+
     // ============================================================
     // INTERNAL: Consent Handling (Hidden from SwapService)
     // ============================================================
