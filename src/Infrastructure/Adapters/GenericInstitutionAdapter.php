@@ -104,7 +104,7 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
         'SETTLEMENT_STATUS',   // NEW
     ]);
 }
-    
+}    
     // ============================================================
     // CORE SWAP OPERATIONS - STANDARDIZED
     // ============================================================
