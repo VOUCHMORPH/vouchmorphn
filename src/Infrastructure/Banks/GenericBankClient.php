@@ -1646,20 +1646,8 @@ $this->certManager = \Infrastructure\Crypto\CertificateManagerFactory::get('VOUC
         error_log("=== GENERIC BANK CLIENT: checkStatus ===");
         return $this->send('check_status', ['reference' => $reference]);
     }
-
-    /**
- * Polls the destination institution asking: "did the interbank debit
- * I sent you actually land?" Distinct from checkStatus() (which checks
- * VouchMorph's own transaction reference generically) — this is
- * specifically the settlement-truth question: has the destination's
- * own ledger reflected receipt of the amount VouchMorph debited on
- * their behalf.
- *
- * Expected response contract: {"settled": bool, "settlement_reference": string|null}
- * Institutions not yet supporting this distinction should treat it as
- * an alias for their normal status endpoint returning a boolean.
- */
-public function checkSettlementStatus(array $payload): array
+    
+    public function checkSettlementStatus(array $payload): array
 {
     error_log("=== GENERIC BANK CLIENT: checkSettlementStatus ===");
     $result = $this->send('checkSettlementStatus', $payload);
@@ -1675,7 +1663,7 @@ public function checkSettlementStatus(array $payload): array
         'data' => $data,
     ];
 }
-    
+
     public function reverseTransaction(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: reverseTransaction ===");
