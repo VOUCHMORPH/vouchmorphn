@@ -48,13 +48,13 @@ class HybridSettlementStrategy
     private const MSG_CROSS_BORDER = 'CROSS_BORDER_SETTLEMENT';
     private const MSG_CORRIDOR_INSTRUCTION = 'CORRIDOR_INSTRUCTION';
 
-    public function __construct(PDO $db, array $vouchmorphCorridorAccounts = [])
-    {
-        $this->db = $db;
-        $this->vouchmorphCorridorAccounts = $vouchmorphCorridorAccounts;
-        $this->participants = $participants;   // NEW
-        $this->ensureTablesExist();
-    }
+    public function __construct(PDO $db, array $vouchmorphCorridorAccounts = [], array $participants = [])
+{
+    $this->db = $db;
+    $this->vouchmorphCorridorAccounts = $vouchmorphCorridorAccounts;
+    $this->participants = $participants;
+    $this->ensureTablesExist();
+}
     
     /**
      * Ensure all required tables exist with proper columns
