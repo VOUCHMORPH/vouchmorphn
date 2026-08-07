@@ -195,57 +195,122 @@ class PoolCoordinator
      * actually reflects what was calculated/verified/held/debited instead of only
      * existing in memory for the request.
      */
+       /**
+     * Persist each calculated contribution as a real DB row, so pool_contributions
+     * actually reflects what was calculated/verified/held/debited instead of only
+     * existing in memory for the request.
+     * 
+     * FIX: Extracts identifier from the nested 'source' array that ContributionCalculator returns.
+     */
     private function persistContributions(array $pool, array $contributions): array
     {
         $persisted = [];
         foreach ($contributions as $index => $contribution) {
+            // FIX: Extract identifier from the nested 'source' array
+            $source = $contribution['source'] ?? [];
+            
+            // Try multiple possible locations for the identifier
+            $identifier = $source['source_identifier'] ?? 
+                          $source['identifier'] ?? 
+                          $source['account_id'] ?? 
+                          $contribution['source_identifier'] ?? 
+                          $contribution['identifier'] ?? 
+                          $contribution['account_id'] ?? 
+                          '';
+            
+            $identifierType = $source['source_identifier_type'] ?? 
+                              $source['identifier_type'] ?? 
+                              $contribution['source_identifier_type'] ?? 
+                              $contribution['identifier_type'] ?? 
+                              'auto';
+            
+            $institution = $source['institution'] ?? $contribution['institution'] ?? '';
+            $assetType = $contribution['asset_type'] ?? $source['asset_type'] ?? 'ACCOUNT';
+            $amount = (float)($contribution['actual_amount'] ?? $contribution['amount'] ?? 0);
+            $requestedAmount = (float)($contribution['requested_amount'] ?? $contribution['amount'] ?? 0);
+            $currency = $contribution['currency'] ?? $pool['currency'] ?? 'BWP';
+            
+            // Log for debugging
+            $this->logger->debug('Persisting contribution', [
+                'index' => $index,
+                'institution' => $institution,
+                'identifier' => $identifier,
+                'identifier_type' => $identifierType,
+                'amount' => $amount,
+                'asset_type' => $assetType
+            ]);
+            
             $model = new PoolContribution(
                 $pool['id'],
                 $pool['reference'] . '-' . str_pad((string)($index + 1), 2, '0', STR_PAD_LEFT),
                 $index + 1,
-                $contribution['institution'],
-                $contribution['asset_type'] ?? 'ACCOUNT',
-                $contribution['account_id'] ?? $contribution['identifier'] ?? '',
-                (float)($contribution['requested_amount'] ?? $contribution['amount']),
-                (float)$contribution['amount'],
-                $contribution['currency'] ?? $pool['currency'] ?? 'BWP'
+                $institution,
+                $assetType,
+                $identifier,
+                $identifierType,  // NEW: pass identifier type
+                $requestedAmount,
+                $amount,
+                $currency
             );
+            
             $saved = $this->contributionRepository->save($model);
+            
             // Carry the DB id back onto the working array so later stages
             // (verify/hold/debit) can reference the correct row.
             $contribution['_contribution_id'] = $saved->getId();
             $contribution['_sub_reference'] = $pool['reference'] . '-' . str_pad((string)($index + 1), 2, '0', STR_PAD_LEFT);
+            
+            // Preserve the source identifier for later use in verifySources/placeHolds
+            $contribution['source_identifier'] = $identifier;
+            $contribution['source_identifier_type'] = $identifierType;
+            $contribution['institution'] = $institution;
+            $contribution['asset_type'] = $assetType;
+            $contribution['amount'] = $amount;
+            
             $persisted[] = $contribution;
         }
         return $persisted;
     }
 
-   private function createPool(array $payload): array
-{
-    $poolId = $payload['pool_id'] ?? 'POOL_' . uniqid();
-    
-    // Bug 3: Take forex snapshot once at pool creation
-    try {
-        // Check if we can get the ForexService from SwapService
-        if (isset($this->swapService->forexService)) {
-            $forexService = $this->swapService->forexService;
-            
-            // Use getExchangeRate() method which exists
-            $rate = $forexService->getExchangeRate(
-                $payload['currency'] ?? 'BWP',
-                $payload['destination_currency'] ?? 'BWP',
-                'internal'  // Use internal tier for pool calculations
-            );
-            
-            $this->forexRateSnapshot = [
-                'rate' => $rate,
-                'from' => $payload['currency'] ?? 'BWP',
-                'to' => $payload['destination_currency'] ?? 'BWP',
-                'applied' => true,
-                'timestamp' => time()
-            ];
-        } else {
-            // Fallback: no conversion
+      private function createPool(array $payload): array
+    {
+        $poolId = $payload['pool_id'] ?? 'POOL_' . uniqid();
+        
+        // Bug 3: Take forex snapshot once at pool creation
+        try {
+            // Check if we can get the ForexService from SwapService
+            if (isset($this->swapService->forexService)) {
+                $forexService = $this->swapService->forexService;
+                
+                // Use getExchangeRate() method which exists
+                $rate = $forexService->getExchangeRate(
+                    $payload['currency'] ?? 'BWP',
+                    $payload['destination_currency'] ?? 'BWP',
+                    'internal'  // Use internal tier for pool calculations
+                );
+                
+                $this->forexRateSnapshot = [
+                    'rate' => $rate,
+                    'from' => $payload['currency'] ?? 'BWP',
+                    'to' => $payload['destination_currency'] ?? 'BWP',
+                    'applied' => true,
+                    'timestamp' => time()
+                ];
+            } else {
+                // Fallback: no conversion
+                $this->forexRateSnapshot = [
+                    'rate' => 1.0,
+                    'from' => $payload['currency'] ?? 'BWP',
+                    'to' => $payload['destination_currency'] ?? 'BWP',
+                    'applied' => false,
+                    'timestamp' => time()
+                ];
+                $this->logger->info('ForexService not available, using default rate 1.0');
+            }
+        } catch (Exception $e) {
+            $this->logger->warning('Forex rate not available, using default', [
+                'error' => $e->getMessage()
+            ]);
             $this->forexRateSnapshot = [
                 'rate' => 1.0,
                 'from' => $payload['currency'] ?? 'BWP',
@@ -253,19 +318,37 @@ class PoolCoordinator
                 'applied' => false,
                 'timestamp' => time()
             ];
-            $this->logger->info('ForexService not available, using default rate 1.0');
         }
-    } catch (Exception $e) {
-        $this->logger->warning('Forex rate not available, using default', [
-            'error' => $e->getMessage()
-        ]);
-        $this->forexRateSnapshot = [
-            'rate' => 1.0,
-            'from' => $payload['currency'] ?? 'BWP',
-            'to' => $payload['destination_currency'] ?? 'BWP',
-            'applied' => false,
-            'timestamp' => time()
+        
+        // FIXED: Extract destination identifier and asset type
+        $destinationIdentifier = $this->swapService->extractDestinationIdentifier($payload);
+        $destinationAssetType = $this->swapService->extractDestinationAssetType($payload);
+        
+        // For IDENTITY swaps, destination_institution can be null
+        $destinationInstitution = $payload['to_institution'] ?? $payload['destination_institution'] ?? null;
+        
+        $pool = [
+            'id' => $poolId,
+            'sources' => $payload['sources'] ?? [],
+            'amount' => $payload['amount'] ?? 0,
+            'currency' => $payload['currency'] ?? 'BWP',
+            'destination_currency' => $payload['destination_currency'] ?? 'BWP',
+            'status' => PoolStatus::CREATED,
+            'source_institution' => $payload['from_institution'] ?? $payload['source_institution'] ?? null,
+            'destination_institution' => $destinationInstitution,
+            'destination_identifier' => $destinationIdentifier['identifier'] ?? null,
+            'destination_identifier_type' => $destinationIdentifier['type'] ?? null,
+            'destination_asset_type' => $destinationAssetType,
+            'reference' => $payload['reference'] ?? uniqid(),
+            'forex_rate' => $this->forexRateSnapshot,
+            'created_at' => date('Y-m-d H:i:s'),
+            'updated_at' => date('Y-m-d H:i:s')
         ];
+        
+        // FIXED: Use array-friendly save method
+        $this->poolRepository->saveFromArray($pool);
+        
+        return $pool;
     }
     
     // FIXED: Extract destination identifier and asset type the same way
