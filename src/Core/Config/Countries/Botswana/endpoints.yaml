@@ -200,18 +200,18 @@ MTN:
 
   endpoints:
     source:
-      verify_asset: "/api/mtn_momo_participant.php?action=verify_asset"
-      place_hold: "/api/mtn_momo_participant.php?action=place_hold"
-      debit_funds: "/api/mtn_momo_participant.php?action=debit_funds"
-      release_hold: "/api/mtn_momo_participant.php?action=release_hold"
-      get_balance: "/api/mtn_momo_participant.php?action=wallet_balance"
+      verify_asset: "/public/api/mtn_momo_participant.php?action=verify_asset"
+      place_hold: "/public/api/mtn_momo_participant.php?action=place_hold"
+      debit_funds: "/public/api/mtn_momo_participant.php?action=debit_funds"
+      release_hold: "/public/api/mtn_momo_participant.php?action=release_hold"
+      get_balance: "/public/api/mtn_momo_participant.php?action=wallet_balance"
     destination_deposit:
-      process_deposit: "/api/mtn_momo_participant.php?action=process_deposit"
-      verify_account: "/api/mtn_momo_participant.php?action=wallet_balance"
+      process_deposit: "/public/api/mtn_momo_participant.php?action=process_deposit"
+      verify_account: "/public/api/mtn_momo_participant.php?action=wallet_balance"
     common:
-      transferWithProof: "/api/mtn_momo_participant.php?action=process_deposit"
-      status: "/api/mtn_momo_participant.php?action=check_status"
-      check_settlement: "/api/mtn_momo_participant.php?action=check_settlement"
+      transferWithProof: "/public/api/mtn_momo_participant.php?action=process_deposit"
+      status: "/public/api/mtn_momo_participant.php?action=check_status"
+      check_settlement: "/public/api/mtn_momo_participant.php?action=check_settlement"
       health: "/health"
 
   callbacks:
