@@ -221,46 +221,80 @@ class PoolCoordinator
     }
 
     private function createPool(array $payload): array
-    {
-        $poolId = $payload['pool_id'] ?? 'POOL_' . uniqid();
-        
-        // Bug 3: Take forex snapshot once at pool creation
-        $this->forexRateSnapshot = $this->swapService->getForexRate(
-            $payload['currency'] ?? 'BWP',
-            $payload['destination_currency'] ?? 'BWP'
-        );
-        
-        // FIXED: Extract destination identifier and asset type the same way
-        // every other SwapService flow does, instead of expecting a pre-shaped
-        // 'destination_account_id' key that nothing ever populates.
-        $destinationIdentifier = $this->swapService->extractDestinationIdentifier($payload);
-        $destinationAssetType = $this->swapService->extractDestinationAssetType($payload);
-        
-        $pool = [
-            'id' => $poolId,
-            'sources' => $payload['sources'] ?? [],
-            'amount' => $payload['amount'] ?? 0,
-            'currency' => $payload['currency'] ?? 'BWP',
-            'destination_currency' => $payload['destination_currency'] ?? 'BWP',
-            'status' => PoolStatus::CREATED,
-            'source_institution' => $payload['from_institution'] ?? $payload['source_institution'] ?? null,
-            'destination_institution' => $payload['to_institution'] ?? $payload['destination_institution'] ?? null,
-            // FIXED: Use the real captured identifier instead of a key that
-            // was never populated anywhere in the pool record.
-            'destination_identifier' => $destinationIdentifier['identifier'] ?? null,
-            'destination_identifier_type' => $destinationIdentifier['type'] ?? null,
-            'destination_asset_type' => $destinationAssetType,
-            'reference' => $payload['reference'] ?? uniqid(),
-            'forex_rate' => $this->forexRateSnapshot,
-            'created_at' => date('Y-m-d H:i:s'),
-            'updated_at' => date('Y-m-d H:i:s')
+{
+    $poolId = $payload['pool_id'] ?? 'POOL_' . uniqid();
+    
+    // Bug 3: Take forex snapshot once at pool creation
+    try {
+        // Check if getForexService method exists
+        if (method_exists($this->swapService, 'getForexService')) {
+            $forexService = $this->swapService->getForexService();
+            $rate = $forexService->getRate(
+                $payload['currency'] ?? 'BWP',
+                $payload['destination_currency'] ?? 'BWP'
+            );
+            $this->forexRateSnapshot = [
+                'rate' => $rate,
+                'from' => $payload['currency'] ?? 'BWP',
+                'to' => $payload['destination_currency'] ?? 'BWP',
+                'applied' => true,
+                'timestamp' => time()
+            ];
+        } else {
+            // Fallback: no conversion
+            $this->forexRateSnapshot = [
+                'rate' => 1.0,
+                'from' => $payload['currency'] ?? 'BWP',
+                'to' => $payload['destination_currency'] ?? 'BWP',
+                'applied' => false,
+                'timestamp' => time()
+            ];
+            $this->logger->info('ForexService not available via getForexService(), using default rate 1.0');
+        }
+    } catch (Exception $e) {
+        $this->logger->warning('Forex rate not available, using default', [
+            'error' => $e->getMessage()
+        ]);
+        $this->forexRateSnapshot = [
+            'rate' => 1.0,
+            'from' => $payload['currency'] ?? 'BWP',
+            'to' => $payload['destination_currency'] ?? 'BWP',
+            'applied' => false,
+            'timestamp' => time()
         ];
-        
-        // FIXED: Use array-friendly save method
-        $this->poolRepository->saveFromArray($pool);
-        
-        return $pool;
     }
+    
+    // FIXED: Extract destination identifier and asset type the same way
+    // every other SwapService flow does, instead of expecting a pre-shaped
+    // 'destination_account_id' key that nothing ever populates.
+    $destinationIdentifier = $this->swapService->extractDestinationIdentifier($payload);
+    $destinationAssetType = $this->swapService->extractDestinationAssetType($payload);
+    
+    $pool = [
+        'id' => $poolId,
+        'sources' => $payload['sources'] ?? [],
+        'amount' => $payload['amount'] ?? 0,
+        'currency' => $payload['currency'] ?? 'BWP',
+        'destination_currency' => $payload['destination_currency'] ?? 'BWP',
+        'status' => PoolStatus::CREATED,
+        'source_institution' => $payload['from_institution'] ?? $payload['source_institution'] ?? null,
+        'destination_institution' => $payload['to_institution'] ?? $payload['destination_institution'] ?? null,
+        // FIXED: Use the real captured identifier instead of a key that
+        // was never populated anywhere in the pool record.
+        'destination_identifier' => $destinationIdentifier['identifier'] ?? null,
+        'destination_identifier_type' => $destinationIdentifier['type'] ?? null,
+        'destination_asset_type' => $destinationAssetType,
+        'reference' => $payload['reference'] ?? uniqid(),
+        'forex_rate' => $this->forexRateSnapshot,
+        'created_at' => date('Y-m-d H:i:s'),
+        'updated_at' => date('Y-m-d H:i:s')
+    ];
+    
+    // FIXED: Use array-friendly save method
+    $this->poolRepository->saveFromArray($pool);
+    
+    return $pool;
+}
 
     /**
      * FIXED: Calculate contributions using the real ContributionCalculator signature
