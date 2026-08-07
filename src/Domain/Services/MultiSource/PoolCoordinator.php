@@ -81,91 +81,114 @@ class PoolCoordinator
         $this->stateMachine = new PoolStateMachine();
     }
 
-    public function execute(array $payload): array
-    {
-        $this->logger->info('PoolCoordinator executing multi-source swap', [
-            'sources' => count($payload['sources'] ?? []),
-            'amount' => $payload['amount'] ?? 0
-        ]);
+   public function execute(array $payload): array
+{
+    $this->logger->info('PoolCoordinator executing multi-source swap', [
+        'sources' => count($payload['sources'] ?? []),
+        'amount' => $payload['amount'] ?? 0
+    ]);
 
+    // FIX: Check if a transaction is already open before starting one
+    // This prevents "There is already an active transaction" error
+    $transactionStartedHere = !$this->db->inTransaction();
+    
+    if ($transactionStartedHere) {
         $this->db->beginTransaction();
-        $pool = null;
-        $heldSources = [];
-        
-        try {
-            // 1. Create pool
-            $pool = $this->createPool($payload);
-            $this->logger->info('Pool created', ['pool_id' => $pool['id']]);
-            
-            // 2. Calculate contributions
-            $contributions = $this->calculateContributions($pool, $payload);
-            $this->logger->info('Contributions calculated', ['count' => count($contributions)]);
-            
-            // NEW: persist contributions immediately so they exist in the DB
-            // before verification/holds even start
-            $contributions = $this->persistContributions($pool, $contributions);
-            
-            // 3. Transition to VERIFYING
-            $this->stateMachine->transition($pool, PoolStatus::VERIFYING);
-            
-            // 4. Verify sources (Bug 1 fixed: checks 'verified' instead of 'success')
-            $verifications = $this->verifySources($contributions, $payload);
-            $this->logger->info('Sources verified', ['verified' => count($verifications)]);
-            
-            // 5. Transition to HOLDING
-            $this->stateMachine->transition($pool, PoolStatus::HOLDING);
-            
-            // 6. Place holds (Bug 2 fixed: captures held sources for rollback)
-            $holds = $this->placeHolds($pool, $contributions, $verifications, $heldSources);
-            $this->logger->info('Holds placed', ['holds' => count($holds)]);
-            
-            // 7. Transition to FUNDED
-            $this->stateMachine->transition($pool, PoolStatus::FUNDED);
-            
-            // 8. Generate master signature
-            $masterSignature = $this->aggregateSigner->signAggregate($pool, $holds, $verifications);
-            $this->logger->info('Master signature generated');
-            
-            // 9. Transition to DESTINATION_PENDING
-            $this->stateMachine->transition($pool, PoolStatus::DESTINATION_PENDING);
-            
-            // 10. Execute destination (FIXED: uses captured destination identifier)
-            $destinationResult = $this->executeDestination($pool, $contributions, $masterSignature);
-            $this->logger->info('Destination executed', ['success' => $destinationResult['success'] ?? false]);
-            
-            // 11. Transition to DESTINATION_COMPLETED
-            $this->stateMachine->transition($pool, PoolStatus::DESTINATION_COMPLETED);
-            
-            // 12. Debit sources
-            $debits = $this->debitSources($pool, $holds, $contributions);
-            $this->logger->info('Sources debited', ['debits' => count($debits)]);
-            
-            // 13. Settle
-            $settlementResult = $this->settle($pool, $contributions);
-            $this->logger->info('Settlement completed');
-            
-            // 14. Invoice
-            $invoiceResult = $this->invoice($pool, $contributions);
-            $this->logger->info('Invoicing completed');
-            
-            // 15. Complete
-            $this->stateMachine->transition($pool, PoolStatus::COMPLETED);
-            
-            $this->db->commit();
-            
-            return $this->buildResponse($pool, $contributions, $destinationResult, $settlementResult, $invoiceResult);
-            
-        } catch (Exception $e) {
-            $this->db->rollBack();
-            $this->logger->error('Multi-source swap failed', ['error' => $e->getMessage()]);
-            
-            // Bug 2 fixed: Now releases holds properly with real institution calls
-            $this->rollbackHolds($heldSources);
-            
-            $this->rollback($pool ?? null);
-            throw new RuntimeException("Multi-source swap failed: " . $e->getMessage());
-        }
+        $this->logger->debug('Started new transaction in PoolCoordinator');
+    } else {
+        $this->logger->debug('Using existing transaction from caller');
     }
+    
+    $pool = null;
+    $heldSources = [];
+    
+    try {
+        // 1. Create pool
+        $pool = $this->createPool($payload);
+        $this->logger->info('Pool created', ['pool_id' => $pool['id']]);
+        
+        // 2. Calculate contributions
+        $contributions = $this->calculateContributions($pool, $payload);
+        $this->logger->info('Contributions calculated', ['count' => count($contributions)]);
+        
+        // NEW: persist contributions immediately so they exist in the DB
+        // before verification/holds even start
+        $contributions = $this->persistContributions($pool, $contributions);
+        
+        // 3. Transition to VERIFYING
+        $this->stateMachine->transition($pool, PoolStatus::VERIFYING);
+        
+        // 4. Verify sources (Bug 1 fixed: checks 'verified' instead of 'success')
+        $verifications = $this->verifySources($contributions, $payload);
+        $this->logger->info('Sources verified', ['verified' => count($verifications)]);
+        
+        // 5. Transition to HOLDING
+        $this->stateMachine->transition($pool, PoolStatus::HOLDING);
+        
+        // 6. Place holds (Bug 2 fixed: captures held sources for rollback)
+        $holds = $this->placeHolds($pool, $contributions, $verifications, $heldSources);
+        $this->logger->info('Holds placed', ['holds' => count($holds)]);
+        
+        // 7. Transition to FUNDED
+        $this->stateMachine->transition($pool, PoolStatus::FUNDED);
+        
+        // 8. Generate master signature
+        $masterSignature = $this->aggregateSigner->signAggregate($pool, $holds, $verifications);
+        $this->logger->info('Master signature generated');
+        
+        // 9. Transition to DESTINATION_PENDING
+        $this->stateMachine->transition($pool, PoolStatus::DESTINATION_PENDING);
+        
+        // 10. Execute destination (FIXED: uses captured destination identifier)
+        $destinationResult = $this->executeDestination($pool, $contributions, $masterSignature);
+        $this->logger->info('Destination executed', ['success' => $destinationResult['success'] ?? false]);
+        
+        // 11. Transition to DESTINATION_COMPLETED
+        $this->stateMachine->transition($pool, PoolStatus::DESTINATION_COMPLETED);
+        
+        // 12. Debit sources
+        $debits = $this->debitSources($pool, $holds, $contributions);
+        $this->logger->info('Sources debited', ['debits' => count($debits)]);
+        
+        // 13. Settle
+        $settlementResult = $this->settle($pool, $contributions);
+        $this->logger->info('Settlement completed');
+        
+        // 14. Invoice
+        $invoiceResult = $this->invoice($pool, $contributions);
+        $this->logger->info('Invoicing completed');
+        
+        // 15. Complete
+        $this->stateMachine->transition($pool, PoolStatus::COMPLETED);
+        
+        // FIX: Only commit if we started the transaction
+        if ($transactionStartedHere) {
+            $this->db->commit();
+            $this->logger->debug('Committed transaction in PoolCoordinator');
+        } else {
+            $this->logger->debug('Leaving transaction open for caller to commit');
+        }
+        
+        return $this->buildResponse($pool, $contributions, $destinationResult, $settlementResult, $invoiceResult);
+        
+    } catch (Exception $e) {
+        // FIX: Only rollback if we started the transaction
+        if ($transactionStartedHere && $this->db->inTransaction()) {
+            $this->db->rollBack();
+            $this->logger->debug('Rolled back transaction in PoolCoordinator');
+        } else {
+            $this->logger->debug('Not rolling back - caller owns the transaction');
+        }
+        
+        $this->logger->error('Multi-source swap failed', ['error' => $e->getMessage()]);
+        
+        // Bug 2 fixed: Now releases holds properly with real institution calls
+        $this->rollbackHolds($heldSources);
+        
+        $this->rollback($pool ?? null);
+        throw new RuntimeException("Multi-source swap failed: " . $e->getMessage());
+    }
+}
 
     /**
      * Persist each calculated contribution as a real DB row, so pool_contributions
