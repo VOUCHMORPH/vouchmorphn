@@ -263,8 +263,12 @@ function executeWithRouting(
 
     $strategy = match ($plan->mode) {
         ExecutionPlan::MODE_DIRECT => new DirectExecutionStrategy($swapService),
-        ExecutionPlan::MODE_SWITCH => new SwitchExecutionStrategy($plan->rail),
-        default => new DirectExecutionStrategy($swapService), // defensive; UNROUTABLE already thrown above
+        ExecutionPlan::MODE_SWITCH => new SwitchExecutionStrategy(
+            $plan->rail,
+            $swapService->getAdapterFactory(),
+            $swapService->getParticipants()
+        ),
+        default => new DirectExecutionStrategy($swapService),
     };
 
     $tracer->info(
