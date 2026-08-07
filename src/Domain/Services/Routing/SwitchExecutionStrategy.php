@@ -31,8 +31,16 @@ final class SwitchExecutionStrategy implements ExecutionStrategyInterface
             throw new \RuntimeException("{$originCode} or {$destCode} has no switch_participant_ids entry for rail {$this->railName}");
         }
 
+        $vouchmorphSwitchId = $this->countryParticipants['VOUCHMORPH']['switch_participant_ids'][$this->railName] ?? null;
+
         $result = $switchAdapter->submitTransfer([
             'method' => 'PUSH',
+            // WHO IS CALLING (VouchMorph, the orchestrator) - distinct from
+            // origin_participant_id below, which is just data describing
+            // whose money this is. CENTRALSWITCH authenticates the caller,
+            // not the institution named inside the payload - see
+            // submit_transfer.php's verifyParticipantRequest() call.
+            'requester_participant_id' => $vouchmorphSwitchId,
             'origin_participant_id' => $originSwitchId,
             'destination_participant_id' => $destSwitchId,
             'origin_account_number' => $payload['source_identifier'] ?? $payload['source_account'] ?? '',
