@@ -14,6 +14,7 @@ class PoolContribution
     private string $institution;
     private string $assetType;
     private string $sourceIdentifier;
+    private string $sourceIdentifierType;  // NEW: Store identifier type
     private float $requestedAmount;
     private float $contributionAmount;
     private string $currency;
@@ -35,6 +36,7 @@ class PoolContribution
         string $institution,
         string $assetType,
         string $sourceIdentifier,
+        string $sourceIdentifierType,  // NEW parameter
         float $requestedAmount,
         float $contributionAmount,
         string $currency
@@ -46,6 +48,7 @@ class PoolContribution
         $this->institution = $institution;
         $this->assetType = $assetType;
         $this->sourceIdentifier = $sourceIdentifier;
+        $this->sourceIdentifierType = $sourceIdentifierType;  // NEW
         $this->requestedAmount = $requestedAmount;
         $this->contributionAmount = $contributionAmount;
         $this->currency = $currency;
@@ -74,6 +77,7 @@ class PoolContribution
             $data['institution'] ?? $data['source_institution'] ?? '',
             $data['asset_type'] ?? $data['assetType'] ?? 'ACCOUNT',
             $data['source_identifier'] ?? $data['sourceIdentifier'] ?? '',
+            $data['source_identifier_type'] ?? $data['sourceIdentifierType'] ?? 'auto',  // NEW
             (float)($data['requested_amount'] ?? $data['requestedAmount'] ?? 0),
             (float)($data['contribution_amount'] ?? $data['contributionAmount'] ?? 0),
             $data['currency'] ?? 'BWP'
@@ -140,6 +144,7 @@ class PoolContribution
             'institution' => $this->institution,
             'asset_type' => $this->assetType,
             'source_identifier' => $this->sourceIdentifier,
+            'source_identifier_type' => $this->sourceIdentifierType,  // NEW
             'requested_amount' => $this->requestedAmount,
             'contribution_amount' => $this->contributionAmount,
             'currency' => $this->currency,
@@ -276,6 +281,11 @@ class PoolContribution
         return $this->sourceIdentifier;
     }
 
+    public function getSourceIdentifierType(): string  // NEW
+    {
+        return $this->sourceIdentifierType;
+    }
+
     public function getRequestedAmount(): float
     {
         return $this->requestedAmount;
@@ -356,7 +366,8 @@ class PoolContribution
         return [
             'institution' => $this->institution,
             'asset_type' => $this->assetType,
-            'identifier' => $this->sourceIdentifier
+            'identifier' => $this->sourceIdentifier,
+            'identifier_type' => $this->sourceIdentifierType,
         ];
     }
 
