@@ -113,35 +113,35 @@ class PoolCoordinator
             // NEW: persist contributions immediately so they exist in the DB
             $contributions = $this->persistContributions($pool, $contributions);
             
-            // 3. Transition to VERIFYING - FIX 4: use ->value
+            // 3. Transition to VERIFYING
             $this->stateMachine->transition($pool, PoolStatus::VERIFYING->value);
             
             // 4. Verify sources
             $verifications = $this->verifySources($contributions, $payload);
             $this->logger->info('Sources verified', ['verified' => count($verifications)]);
             
-            // 5. Transition to HOLDING - FIX 4: use ->value
+            // 5. Transition to HOLDING
             $this->stateMachine->transition($pool, PoolStatus::HOLDING->value);
             
             // 6. Place holds
             $holds = $this->placeHolds($pool, $contributions, $verifications, $heldSources);
             $this->logger->info('Holds placed', ['holds' => count($holds)]);
             
-            // 7. Transition to FUNDED - FIX 4: use ->value
+            // 7. Transition to FUNDED
             $this->stateMachine->transition($pool, PoolStatus::FUNDED->value);
             
             // 8. Generate master signature
             $masterSignature = $this->aggregateSigner->signAggregate($pool, $holds, $verifications);
             $this->logger->info('Master signature generated');
             
-            // 9. Transition to DESTINATION_PENDING - FIX 4: use ->value
+            // 9. Transition to DESTINATION_PENDING
             $this->stateMachine->transition($pool, PoolStatus::DESTINATION_PENDING->value);
             
             // 10. Execute destination
             $destinationResult = $this->executeDestination($pool, $contributions, $masterSignature);
             $this->logger->info('Destination executed', ['success' => $destinationResult['success'] ?? false]);
             
-            // 11. Transition to DESTINATION_COMPLETED - FIX 4: use ->value
+            // 11. Transition to DESTINATION_COMPLETED
             $this->stateMachine->transition($pool, PoolStatus::DESTINATION_COMPLETED->value);
             
             // 12. Debit sources
@@ -156,7 +156,7 @@ class PoolCoordinator
             $invoiceResult = $this->invoice($pool, $contributions);
             $this->logger->info('Invoicing completed');
             
-            // 15. Complete - FIX 4: use ->value
+            // 15. Complete
             $this->stateMachine->transition($pool, PoolStatus::COMPLETED->value);
             
             // FIX: Only commit if we started the transaction
@@ -262,7 +262,7 @@ class PoolCoordinator
     }
 
     /**
-     * Create a funding pool - FIX 4: use ->value for status
+     * Create a funding pool
      */
     private function createPool(array $payload): array
     {
@@ -320,7 +320,7 @@ class PoolCoordinator
             'amount' => $payload['amount'] ?? 0,
             'currency' => $payload['currency'] ?? 'BWP',
             'destination_currency' => $payload['destination_currency'] ?? 'BWP',
-            'status' => PoolStatus::CREATED->value,  // FIX 4: use ->value
+            'status' => PoolStatus::CREATED->value,
             'source_institution' => $payload['from_institution'] ?? $payload['source_institution'] ?? null,
             'destination_institution' => $destinationInstitution,
             'destination_identifier' => $destinationIdentifier['identifier'] ?? null,
@@ -415,7 +415,7 @@ class PoolCoordinator
                 'verified' => true,
                 'asset_id' => $result['asset_id'] ?? null,
                 'balance' => $result['balance'] ?? 0,
-                'payload' => $result['original_payload'] ?? $verifyPayload ?? null,   // ADD: carry payload
+                'payload' => $result['original_payload'] ?? $verifyPayload ?? null,
             ];
             
             // Reflect verification in the persisted row
@@ -491,8 +491,8 @@ class PoolCoordinator
                 'hold_id' => $result['hold_id'] ?? null,
                 'hold_reference' => $result['hold_reference'] ?? null,
                 'amount' => $amount,
-                'signature' => $result['signature'] ?? null,        // ADD: signature
-                'certificate' => $result['certificate'] ?? null,    // ADD: certificate
+                'signature' => $result['signature'] ?? null,
+                'certificate' => $result['certificate'] ?? null,
                 'source_payload' => $contribution
             ];
             
@@ -523,7 +523,7 @@ class PoolCoordinator
     }
 
     /**
-     * FIX 5: rollbackHolds() - cast hold_id to string before calling releaseHold()
+     * FIX 5: rollbackHolds() - cast hold_id to string for BOTH calls
      */
     private function rollbackHolds(array $heldSources): void
     {
@@ -535,11 +535,11 @@ class PoolCoordinator
         
         foreach ($heldSources as $held) {
             try {
-                // FIX 5: Cast hold_id to string to avoid type errors
+                // FIX 5a: Cast hold_id to string for releaseHold()
                 $releaseResult = $this->swapService->releaseHold(
                     $held['source_payload'] ?? [],
                     $held['institution'],
-                    isset($held['hold_id']) ? (string)$held['hold_id'] : null,   // FIX: cast int -> string
+                    isset($held['hold_id']) ? (string)$held['hold_id'] : null,
                     $held['hold_reference'] ?? null
                 );
                 
@@ -549,8 +549,8 @@ class PoolCoordinator
                     'success' => $releaseResult['success'] ?? false
                 ]);
                 
-                // Then clean up local bookkeeping
-                $this->releaseLocalHold($held['hold_id'] ?? null);
+                // FIX 5b: Cast hold_id to string for releaseLocalHold() too
+                $this->releaseLocalHold(isset($held['hold_id']) ? (string)$held['hold_id'] : null);
                 
                 // Reflect the failure on the contribution row too
                 $contribution = $held['source_payload'] ?? null;
@@ -735,14 +735,11 @@ class PoolCoordinator
         return $invoiceResults;
     }
 
-    /**
-     * FIX 4: rollback() - use ->value for PoolStatus::FAILED
-     */
     private function rollback(?array $pool): void
     {
         if ($pool && isset($pool['id'])) {
             try {
-                $this->poolRepository->updateStatus($pool['id'], PoolStatus::FAILED->value);  // FIX 4: use ->value
+                $this->poolRepository->updateStatus($pool['id'], PoolStatus::FAILED->value);
                 $this->logger->warning('Pool rolled back', ['pool_id' => $pool['id']]);
             } catch (Exception $e) {
                 $this->logger->error('Rollback failed', ['error' => $e->getMessage()]);
@@ -750,16 +747,13 @@ class PoolCoordinator
         }
     }
 
-    /**
-     * FIX 4: buildResponse() - use ->value for PoolStatus::COMPLETED
-     */
     private function buildResponse(array $pool, array $contributions, array $destinationResult, array $settlementResult, array $invoiceResult): array
     {
         return [
             'success' => true,
             'pool_id' => $pool['id'],
             'reference' => $pool['reference'],
-            'status' => PoolStatus::COMPLETED->value,  // FIX 4: use ->value
+            'status' => PoolStatus::COMPLETED->value,
             'total_amount' => $pool['amount'],
             'currency' => $pool['currency'] ?? 'BWP',
             'forex_rate_used' => $this->forexRateSnapshot,
@@ -771,9 +765,6 @@ class PoolCoordinator
         ];
     }
 
-    /**
-     * FIX 4: getStatus() - use ->value for PoolStatus::UNKNOWN
-     */
     public function getStatus(string $poolId): array
     {
         $pool = $this->poolRepository->findByIdAsArray($poolId);
@@ -785,10 +776,11 @@ class PoolCoordinator
             ];
         }
         
+        // FIX: Use plain string fallback instead of non-existent PoolStatus::UNKNOWN
         return [
             'success' => true,
             'pool_id' => $pool['id'] ?? $poolId,
-            'status' => $pool['status'] ?? PoolStatus::UNKNOWN->value,  // FIX 4: use ->value
+            'status' => $pool['status'] ?? 'UNKNOWN',
             'amount' => $pool['amount'] ?? 0,
             'currency' => $pool['currency'] ?? 'BWP',
             'created_at' => $pool['created_at'] ?? null,
@@ -796,9 +788,6 @@ class PoolCoordinator
         ];
     }
 
-    /**
-     * FIX 4: cancel() - use ->value for PoolStatus::CANCELLED
-     */
     public function cancel(string $poolId, string $reason): array
     {
         $pool = $this->poolRepository->findByIdAsArray($poolId);
@@ -810,12 +799,12 @@ class PoolCoordinator
             ];
         }
         
-        $this->poolRepository->updateStatus($poolId, PoolStatus::CANCELLED->value);  // FIX 4: use ->value
+        $this->poolRepository->updateStatus($poolId, PoolStatus::CANCELLED->value);
         
         return [
             'success' => true,
             'pool_id' => $poolId,
-            'status' => PoolStatus::CANCELLED->value,  // FIX 4: use ->value
+            'status' => PoolStatus::CANCELLED->value,
             'reason' => $reason
         ];
     }
