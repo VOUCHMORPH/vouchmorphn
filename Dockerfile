@@ -24,6 +24,7 @@ RUN apt-get update && apt-get install -y \
 
 RUN php -m | grep -q pdo_pgsql || (echo "ERROR: pdo_pgsql extension not installed" && exit 1)
 RUN php -m | grep -q pgsql || (echo "ERROR: pgsql extension not installed" && exit 1)
+RUN pecl install yaml && docker-php-ext-enable yaml
 
 RUN echo "extension=pdo_pgsql.so" > /usr/local/etc/php/conf.d/20-pdo_pgsql.ini \
     && echo "extension=pgsql.so" > /usr/local/etc/php/conf.d/20-pgsql.ini
