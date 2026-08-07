@@ -1002,7 +1002,7 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
             $balancePayload['source_institution'] = $this->institution;
         }
 
-        $result = $this->bankClient->getBalance($balancePayload);
+        $result = $this->bankClient->getBalance($balancePayload);   // was: getAccountBalance($token, $accountId)
 
         if (!$result['success']) {
             return [
