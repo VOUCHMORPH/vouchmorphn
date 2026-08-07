@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-namespace Infrastructure\Adapters;
+namespace Infrastructure\Adapters; 
 
 use Infrastructure\Banks\GenericBankClient;
 use Infrastructure\Banks\Contracts\BankAPIInterface;
