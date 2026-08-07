@@ -690,6 +690,10 @@ public function revokeHookedSource(int $userId, string $sourceReference): array
         return $this->executeAtomicSwap($swapPayload);
     }
 
+public function getForexService(): ForexService
+{
+    return $this->forexService;
+}
     public function executeMultiSourceWithHookedSources(array $payload): array
     {
         error_log("[SwapService] executeMultiSourceWithHookedSources called");
