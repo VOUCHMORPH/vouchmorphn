@@ -22,51 +22,44 @@ class AggregateSigner
         $this->systemId = $systemId;
     }
 
-    public function signAggregate(FundingPool $pool, array $holds, array $verifications): array
-    {
-        // Verify all source signatures before aggregating
-        $this->verifySourceSignatures($holds, $verifications);
+    public function signAggregate(array $pool, array $holds, array $verifications): array
+{
+    $this->verifySourceSignatures($holds, $verifications);
 
-        // Build aggregate payload (no timestamp here - createSignedRequest adds its own)
-        $payload = [
-            'pool_id' => $pool->getPoolId(),
-            'swap_reference' => $pool->getSwapReference(),
-            'total_amount' => $pool->getFundedAmount(),
-            'currency' => $pool->getCurrency(),
-            'destination_institution' => $pool->getDestinationInstitution(),
-            'contributors' => array_map(function ($hold) {
-                return [
-                    'institution' => $hold['source']['institution'],
-                    'amount' => $hold['amount'],
-                    'hold_reference' => $hold['hold_reference'],
-                    'source_signature' => $hold['signature'],
-                    'source_certificate' => $hold['certificate']
-                ];
-            }, $holds)
-        ];
-        ksort($payload);
+    $payload = [
+        'pool_id' => $pool['id'],
+        'swap_reference' => $pool['reference'],
+        'total_amount' => $pool['amount'],
+        'currency' => $pool['currency'],
+        'destination_institution' => $pool['destination_institution'],
+        'contributors' => array_map(function ($hold) {
+            return [
+                'institution' => $hold['institution'],              // was: $hold['source']['institution']
+                'amount' => $hold['amount'],
+                'hold_reference' => $hold['hold_reference'],
+                'source_signature' => $hold['signature'],
+                'source_certificate' => $hold['certificate']
+            ];
+        }, $holds)
+    ];
+    ksort($payload);
 
-        // Hash of the pre-signed payload, for audit/dispute trail purposes
-        $payloadHash = hash('sha256', json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+    $payloadHash = hash('sha256', json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
 
-        // CertificateManager::createSignedRequest() signs the payload, attaches a
-        // timestamp, the requester id, and the certificate - matching how
-        // MessageSigner::createSignedRequest() and verifySignedRequest() expect
-        // signed payloads to look elsewhere in the codebase.
-        $signedRequest = $this->certManager->createSignedRequest($payload, $this->systemId);
+    $signedRequest = $this->certManager->createSignedRequest($payload, $this->systemId);
 
-        if (!isset($signedRequest['signature'])) {
-            throw new RuntimeException('AggregateSigner: failed to sign aggregate payload - check that CertificateManager has a private key and certificate configured');
-        }
-
-        return [
-            'signature' => $signedRequest['signature'],
-            'certificate' => $signedRequest['certificate'] ?? $this->certManager->getMyCertificate(),
-            'payload' => $signedRequest,
-            'payload_hash' => $payloadHash,
-            'timestamp' => $signedRequest['timestamp'] ?? time()
-        ];
+    if (!isset($signedRequest['signature'])) {
+        throw new RuntimeException('AggregateSigner: failed to sign aggregate payload - check that CertificateManager has a private key and certificate configured');
     }
+
+    return [
+        'signature' => $signedRequest['signature'],
+        'certificate' => $signedRequest['certificate'] ?? $this->certManager->getMyCertificate(),
+        'payload' => $signedRequest,
+        'payload_hash' => $payloadHash,
+        'timestamp' => $signedRequest['timestamp'] ?? time()
+    ];
+}
 
     private function verifySourceSignatures(array $holds, array $verifications): void
     {
