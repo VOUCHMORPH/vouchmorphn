@@ -694,71 +694,53 @@ public function getForexService(): ForexService
 {
     return $this->forexService;
 }
-    public function executeMultiSourceWithHookedSources(array $payload): array
-    {
-        error_log("[SwapService] executeMultiSourceWithHookedSources called");
+private function executeMultiSourceSwap(array $payload): array
+{
+    error_log("[SwapService] ===== executeMultiSourceSwap START =====");
+    error_log("[SwapService] Multi-Source payload has " . count($payload['sources'] ?? []) . " sources");
+    
+    if ($this->multiSourceOrchestrator === null) {
+        error_log("[SwapService] Multi-Source orchestrator not available - falling back to standard swap");
+        $this->logger->warning("Multi-source swap requested but orchestrator not initialized - falling back to standard swap");
         
-        $userId = $payload['user_id'] ?? null;
-        if (!$userId) {
-            throw new RuntimeException("user_id required");
+        if (isset($payload['sources']) && is_array($payload['sources']) && count($payload['sources']) > 0
+            && empty($payload['identity_type']) && empty($payload['identity_value'])) {
+            $firstSource = $payload['sources'][0];
+            $payload['from_institution'] = $firstSource['institution'] ?? $payload['from_institution'];
+            $payload['source_identifier'] = $firstSource['identifier'] ?? $payload['source_identifier'] ?? null;
+            $payload['source_identifier_type'] = $firstSource['identifier_type'] ?? $payload['source_identifier_type'] ?? 'auto';
+            $payload['asset_type'] = $firstSource['asset_type'] ?? $payload['asset_type'] ?? 'ACCOUNT';
+            $payload['amount'] = $firstSource['amount'] ?? $payload['amount'];
+            return $this->resolveStandardSwapDeliveryMethod($payload);   // CHANGED: routes to deposit/cashout correctly
         }
         
-        $sources = $payload['sources'] ?? [];
-        if (empty($sources) || count($sources) < 2) {
-            throw new RuntimeException("At least 2 sources required for multi-source swap");
-        }
-        
-        $resolvedSources = [];
-        $totalAmount = 0;
-        
-        foreach ($sources as $source) {
-            $sourceRef = $source['source_reference'] ?? null;
-            $amount = (float)($source['amount'] ?? 0);
-            
-            if (!$sourceRef) {
-                throw new RuntimeException("source_reference required for each source");
-            }
-            
-            if ($amount <= 0) {
-                throw new RuntimeException("Amount must be greater than 0 for each source");
-            }
-            
-            $sql = "SELECT * FROM user_authorized_sources WHERE source_reference = :source_ref AND user_id = :user_id AND status = 'active'";
-            $stmt = $this->swapDB->prepare($sql);
-            $stmt->execute([':source_ref' => $sourceRef, ':user_id' => $userId]);
-            $hookedSource = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            if (!$hookedSource) {
-                throw new RuntimeException("Hooked source not found: {$sourceRef}");
-            }
-            
-            if ($this->isTokenExpired($hookedSource['token_expires_at'])) {
-                $refreshed = $this->refreshHookedSource($userId, $sourceRef);
-                $hookedSource['access_token'] = $refreshed['access_token'];
-                $hookedSource['token_expires_at'] = $refreshed['expires_at'];
-            }
-            
-            $resolvedSources[] = [
-                'institution' => $hookedSource['institution'],
-                'asset_type' => $hookedSource['asset_type'],
-                'identifier' => $hookedSource['identifier'],
-                'amount' => $amount,
-                'access_token' => $hookedSource['access_token'],
-                'source_reference' => $sourceRef,
-                'currency' => $hookedSource['currency'] ?? 'BWP',
-                'is_hooked' => true
-            ];
-            
-            $totalAmount += $amount;
-        }
-        
-        $multiPayload = $payload;
-        $multiPayload['sources'] = $resolvedSources;
-        $multiPayload['amount'] = $totalAmount;
-        $multiPayload['_is_multi_hooked'] = true;
-        
-        return $this->executeAtomicSwap($multiPayload);
+        throw new RuntimeException("Multi-source orchestrator unavailable and payload cannot be reduced to a standard swap (missing sources or is an identity swap).");
     }
+    
+    try {
+        error_log("[SwapService] Delegating to MultiSourceOrchestrator");
+        $result = $this->multiSourceOrchestrator->execute($payload);
+        error_log("[SwapService] MultiSourceOrchestrator returned: " . ($result['success'] ? 'SUCCESS' : 'FAILED'));
+        return $result;
+    } catch (Exception $e) {
+        error_log("[SwapService] MultiSourceOrchestrator threw exception: " . $e->getMessage());
+        $this->logger->error("Multi-source swap failed", ['error' => $e->getMessage()]);
+        
+        if (isset($payload['sources']) && is_array($payload['sources']) && count($payload['sources']) > 0
+            && empty($payload['identity_type']) && empty($payload['identity_value'])) {
+            $firstSource = $payload['sources'][0];
+            $payload['from_institution'] = $firstSource['institution'] ?? $payload['from_institution'];
+            $payload['source_identifier'] = $firstSource['identifier'] ?? $payload['source_identifier'] ?? null;
+            $payload['source_identifier_type'] = $firstSource['identifier_type'] ?? $payload['source_identifier_type'] ?? 'auto';
+            $payload['asset_type'] = $firstSource['asset_type'] ?? $payload['asset_type'] ?? 'ACCOUNT';
+            $payload['amount'] = $firstSource['amount'] ?? $payload['amount'];
+            $this->logger->warning("Falling back to standard swap with first source");
+            return $this->resolveStandardSwapDeliveryMethod($payload);   // CHANGED: routes to deposit/cashout correctly
+        }
+        
+        throw new RuntimeException("Multi-source swap failed: " . $e->getMessage());
+    }
+}
 // ============================================================================
 // PENDING SOURCES MANAGEMENT - GET, DELETE, RETRY
 // ============================================================================
