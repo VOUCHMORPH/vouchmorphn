@@ -67,16 +67,30 @@ class FundingPoolRepository
         return $this->hydrate($data);
     }
 
+    /**
+     * FIX: Added ::varchar casts on every occurrence of :status.
+     *
+     * ROOT CAUSE: PDO named parameters are bound once but referenced
+     * multiple times in this query (once in SET, once inside the CASE
+     * expression). When the same placeholder appears in contexts where
+     * Postgres infers different types for it (a plain column assignment
+     * vs. a comparison inside CASE), it can throw:
+     *   SQLSTATE[42P08]: Ambiguous parameter: inconsistent types deduced
+     *   for parameter $1 - text versus character varying
+     * Explicitly casting every occurrence to the same type removes the
+     * ambiguity without changing any behavior - the value bound is
+     * always a plain string already.
+     */
     public function update(FundingPool $pool): void
     {
         $sql = "
             UPDATE virtual_funding_pools 
-            SET status = :status,
+            SET status = :status::varchar,
                 funded_amount = :funded,
                 metadata = :metadata,
                 updated_at = NOW(),
                 completed_at = CASE 
-                    WHEN :status = 'COMPLETED' THEN NOW() 
+                    WHEN :status::varchar = 'COMPLETED' THEN NOW() 
                     ELSE completed_at 
                 END
             WHERE pool_id = :pool_id
@@ -175,6 +189,22 @@ class FundingPoolRepository
     /**
      * Direct status update by pool ID — did not previously exist.
      * PoolCoordinator::rollback() and ::cancel() call this.
+     *
+     * FIX: Added ::varchar casts on every occurrence of :status.
+     *
+     * ROOT CAUSE: this method binds :status once but references it FOUR
+     * times in the SQL (once in SET, three times inside the CASE
+     * expression's WHEN clauses). PDO/Postgres's type inference for a
+     * repeated named placeholder can end up deducing conflicting types
+     * across those occurrences, throwing:
+     *   SQLSTATE[42P08]: Ambiguous parameter: inconsistent types deduced
+     *   for parameter $1 - text versus character varying
+     * This was firing on every PoolCoordinator rollback, silently
+     * failing to mark the pool FAILED/CANCELLED/COMPLETED even though
+     * the calling code logged "Pool rolled back" as if it succeeded.
+     * Casting every occurrence to the same type (::varchar) removes the
+     * ambiguity - purely additive, no behavior change, since the bound
+     * value is always a plain string already.
      */
     public function updateStatus(string $poolId, $status, array $additionalMetadata = []): void
     {
@@ -182,13 +212,13 @@ class FundingPoolRepository
 
         $sql = "
             UPDATE virtual_funding_pools 
-            SET status = :status,
+            SET status = :status::varchar,
                 metadata = COALESCE(metadata, '{}'::jsonb) || :metadata::jsonb,
                 updated_at = NOW(),
                 completed_at = CASE 
-                    WHEN :status = 'COMPLETED' THEN NOW() 
-                    WHEN :status = 'FAILED' THEN NOW()
-                    WHEN :status = 'CANCELLED' THEN NOW()
+                    WHEN :status::varchar = 'COMPLETED' THEN NOW() 
+                    WHEN :status::varchar = 'FAILED' THEN NOW()
+                    WHEN :status::varchar = 'CANCELLED' THEN NOW()
                     ELSE completed_at 
                 END
             WHERE pool_id = :pool_id
