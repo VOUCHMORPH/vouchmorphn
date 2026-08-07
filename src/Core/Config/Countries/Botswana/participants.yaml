@@ -169,7 +169,7 @@ participants:
     capabilities:
       source: true
       deposit: true
-      cashout: false             # no ATM network
+      cashout: false            
 
     hold_model: NATIVE
 
@@ -206,11 +206,7 @@ participants:
         - { tier: 2, max_balance: 50000, daily_limit: 10000 }
         - { tier: 3, max_balance: 100000, daily_limit: 50000 }
 
-  # ----------------------------------------------------------
-  # MTN - Mobile money, technically hosted on Cazacom's infra.
-  # Collection (source/pull) implemented — see mtn_momo_participant.php.
-  # No ATM network — agent cash-out only.
-  # ----------------------------------------------------------
+  
   MTN:
     provider_code: MTN
     id: MTNBWX1
@@ -227,21 +223,16 @@ participants:
       - VOUCHER
 
     capabilities:
-      source: true               # Collection (requesttopay) implemented
+      source: true              
       deposit: true
       cashout: false
 
-    hold_model: NATIVE            # MTN Collection approximates a real hold via
-                                   # requesttopay approval — see class docblock
-                                   # in mtn_momo_participant.php for the async
-                                   # timing caveat this implies.
+    hold_model: NATIVE         
 
-    source_is_async: true         # placeHold() may take several seconds to
-                                   # resolve via customer phone approval, and
-                                   # can time out under real Collection load.
+    source_is_async: true        
 
     settlement_confirmation:
-      mode: PUSH                  # MTN pushes via switch_webhook-style callback
+      mode: PUSH                 
 
     switch_participant_ids:
       CENTRALSWITCH: "8f05724f-e93b-4ad8-b874-aab32e0fa9bd"
@@ -288,6 +279,7 @@ participants:
     type: SWITCH
     country: BW
     status: ACTIVE
+    adapter_class: "Infrastructure\\Adapters\\CentralSwitchInstitutionAdapter"  
 
     capabilities:
       source: false               # not a debitable participant itself
