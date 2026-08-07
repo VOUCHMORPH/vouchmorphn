@@ -246,6 +246,19 @@ if (!empty($commConfig)) {
         $this->logger->info("Signed SwapService initialized (multi-source " . ($this->multiSourceOrchestrator ? 'ENABLED' : 'DISABLED') . ")", ['country' => $country]);
     }
 
+ // --- Fix 1: src/Domain/Services/SwapService.php ---
+// Add this getter anywhere in the class (e.g. right after __construct):
+
+public function getAdapterFactory(): \Infrastructure\Adapters\InstitutionAdapterFactory
+{
+    return $this->adapterFactory;
+}
+
+public function getParticipants(): array
+{
+    return $this->participants;
+}
+
 private function extractOriginatorPartyData(array $payload): array
 {
     return [
