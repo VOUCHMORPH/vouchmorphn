@@ -7522,115 +7522,131 @@ private function recordSettlementPending(
      * STANDARD: Consistent with adapter and bank client
      */
     public function releaseHold(
-        array $sourcePayload,
-        string $institution,
-        ?string $holdId = null,
-        ?string $holdReference = null
-    ): array {
-        $this->logger->info("releaseHold called", [
+    array $sourcePayload,
+    string $institution,
+    ?string $holdId = null,
+    ?string $holdReference = null
+): array {
+    $this->logger->info("releaseHold called", [
+        'institution' => $institution,
+        'hold_id' => $holdId,
+        'hold_reference' => $holdReference
+    ]);
+
+    $holdRef = $holdReference ?? $sourcePayload['hold_reference'] ?? $this->currentHoldReference ?? null;
+    
+    if (empty($holdRef)) {
+        $this->logger->warning("No hold reference available for release", [
             'institution' => $institution,
-            'hold_id' => $holdId,
-            'hold_reference' => $holdReference
+            'hold_id' => $holdId
+        ]);
+        return [
+            'success' => false,
+            'released' => false,
+            'message' => 'No hold reference available for release',
+            'hold_reference' => null,
+            'status_code' => 0,
+            'curl_error' => null,
+            'raw_response' => null,
+            'data' => []
+        ];
+    }
+
+    // ============================================================
+    // FIX: ADD asset_type to the release payload
+    // ZuruBank's hold.php requires this to auto-detect the release target
+    // (VOUCHER, ACCOUNT, or WALLET)
+    // ============================================================
+    $releasePayload = [
+        'action' => 'RELEASE_HOLD',
+        'hold_reference' => $holdRef,
+        'asset_type' => $sourcePayload['asset_type'] ?? 'ACCOUNT',   // ADDED - critical fix
+        'reason' => 'Multi-source swap rolled back',
+        'from_institution' => $institution,
+        'source_institution' => $institution,
+        'reference' => $this->currentSwapRef ?? 'RELEASE_' . uniqid()
+    ];
+
+    $this->forwardPin($sourcePayload, $releasePayload);
+    
+    if (!empty($sourcePayload['access_token'])) {
+        $releasePayload['access_token'] = $sourcePayload['access_token'];
+    }
+
+    // Add certificate if available
+    if (!empty($sourcePayload['certificate'])) {
+        $releasePayload['certificate'] = $sourcePayload['certificate'];
+    }
+    
+    // Add signature if available
+    if (!empty($sourcePayload['signature'])) {
+        $releasePayload['signature'] = $sourcePayload['signature'];
+    }
+
+    try {
+        $adapter = $this->adapterFactory->getAdapter($institution);
+        $result = $adapter->releaseHold($releasePayload, [
+            'swap_reference' => $this->currentSwapRef ?? 'MULTI_SOURCE_ROLLBACK',
+            'institution' => $institution,
+            'hold_reference' => $holdRef,
+            'signed_payloads' => $this->signedPayloads
         ]);
 
-        $holdRef = $holdReference ?? $sourcePayload['hold_reference'] ?? $this->currentHoldReference ?? null;
-        
-        if (empty($holdRef)) {
-            $this->logger->warning("No hold reference available for release", [
-                'institution' => $institution,
-                'hold_id' => $holdId
-            ]);
-            return [
-                'success' => false,
-                'released' => false,
-                'message' => 'No hold reference available for release',
-                'hold_reference' => null,
-                'status_code' => 0,
-                'curl_error' => null,
-                'raw_response' => null,
-                'data' => []
-            ];
+        if ($holdId) {
+            $this->updateHoldStatus((int)$holdId, 'RELEASED');
         }
 
-        $releasePayload = [
-            'action' => 'RELEASE_HOLD',
+        $released = $result['released'] ?? $result['success'] ?? false;
+
+        $this->logger->info("Hold released successfully", [
+            'institution' => $institution,
             'hold_reference' => $holdRef,
-            'reason' => 'Multi-source swap rolled back',
-            'from_institution' => $institution,
-            'source_institution' => $institution,
-            'reference' => $this->currentSwapRef ?? 'RELEASE_' . uniqid()
+            'success' => $released
+        ]);
+
+        // ============================================================
+        // STANDARDIZED RESPONSE STRUCTURE
+        // ============================================================
+        return [
+            'success' => $released,
+            'released' => $released,
+            'message' => $result['message'] ?? ($released ? 'Hold released' : 'Release failed'),
+            'hold_reference' => $holdRef,
+            'status' => $result['status'] ?? ($released ? 'RELEASED' : 'FAILED'),
+            'released_at' => $result['released_at'] ?? date('Y-m-d H:i:s'),
+            'status_code' => $result['status_code'] ?? 0,
+            'curl_error' => $result['curl_error'] ?? null,
+            'raw_response' => $result['raw_response'] ?? null,
+            'data' => $result['data'] ?? []
         ];
 
-        $this->forwardPin($sourcePayload, $releasePayload);
-        
-        if (!empty($sourcePayload['access_token'])) {
-            $releasePayload['access_token'] = $sourcePayload['access_token'];
+    } catch (Exception $e) {
+        $this->logger->error("Failed to release hold", [
+            'institution' => $institution,
+            'hold_reference' => $holdRef,
+            'error' => $e->getMessage()
+        ]);
+
+        if ($holdId) {
+            $this->updateHoldStatus((int)$holdId, 'RELEASED');
         }
 
-        try {
-            $adapter = $this->adapterFactory->getAdapter($institution);
-            $result = $adapter->releaseHold($releasePayload, [
-                'swap_reference' => $this->currentSwapRef ?? 'MULTI_SOURCE_ROLLBACK',
-                'institution' => $institution,
-                'hold_reference' => $holdRef,
-                'signed_payloads' => $this->signedPayloads
-            ]);
-
-            if ($holdId) {
-                $this->updateHoldStatus((int)$holdId, 'RELEASED');
-            }
-
-            $released = $result['released'] ?? $result['success'] ?? false;
-
-            $this->logger->info("Hold released successfully", [
-                'institution' => $institution,
-                'hold_reference' => $holdRef,
-                'success' => $released
-            ]);
-
-            // ============================================================
-            // STANDARDIZED RESPONSE STRUCTURE
-            // ============================================================
-            return [
-                'success' => $released,
-                'released' => $released,
-                'message' => $result['message'] ?? ($released ? 'Hold released' : 'Release failed'),
-                'hold_reference' => $holdRef,
-                'status' => $result['status'] ?? ($released ? 'RELEASED' : 'FAILED'),
-                'released_at' => $result['released_at'] ?? date('Y-m-d H:i:s'),
-                'status_code' => $result['status_code'] ?? 0,
-                'curl_error' => $result['curl_error'] ?? null,
-                'raw_response' => $result['raw_response'] ?? null,
-                'data' => $result['data'] ?? []
-            ];
-
-        } catch (Exception $e) {
-            $this->logger->error("Failed to release hold", [
-                'institution' => $institution,
-                'hold_reference' => $holdRef,
-                'error' => $e->getMessage()
-            ]);
-
-            if ($holdId) {
-                $this->updateHoldStatus((int)$holdId, 'RELEASED');
-            }
-
-            // ============================================================
-            // STANDARDIZED ERROR RESPONSE STRUCTURE
-            // ============================================================
-            return [
-                'success' => false,
-                'released' => false,
-                'message' => 'Failed to release hold: ' . $e->getMessage(),
-                'hold_reference' => $holdRef,
-                'status' => 'FAILED',
-                'status_code' => 500,
-                'curl_error' => null,
-                'raw_response' => null,
-                'data' => ['error' => $e->getMessage()]
-            ];
-        }
+        // ============================================================
+        // STANDARDIZED ERROR RESPONSE STRUCTURE
+        // ============================================================
+        return [
+            'success' => false,
+            'released' => false,
+            'message' => 'Failed to release hold: ' . $e->getMessage(),
+            'hold_reference' => $holdRef,
+            'status' => 'FAILED',
+            'status_code' => 500,
+            'curl_error' => null,
+            'raw_response' => null,
+            'data' => ['error' => $e->getMessage()]
+        ];
     }
+}
 
     /**
      * Credit destination (pool credit)
