@@ -368,6 +368,7 @@ $this->certManager = \Infrastructure\Crypto\CertificateManagerFactory::get('VOUC
             'processDepositWithProof' => ['destination_deposit', 'process_deposit'],
             'transfer' => ['common', 'transfer'],
             'transferWithProof' => ['common', 'transfer'],
+            'transfer_with_proof' => ['common', 'transfer'],   
             'reverse' => ['common', 'reverse'],
             'status' => ['common', 'status'],
             'check_status' => ['common', 'status'],
