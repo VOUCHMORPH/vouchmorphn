@@ -978,66 +978,64 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
     // ============================================================
     
     public function getBalance(array $payload, array $context): array
-    {
-        $this->context = array_merge($context, $payload);
-        
-        try {
-            $this->ensureConsent();
-            
-            $accountId = $payload['account_id'] ?? 
-                         $payload['account_identifier'] ?? 
-                         $payload['source_identifier'] ??
-                         $payload['identifier'] ?? 
-                         null;
-            
-            if (empty($accountId)) {
-                if ($this->logger) {
-                    $this->logger->error("getBalance called with no account identifier", [
-                        'payload_keys' => array_keys($payload),
-                        'institution' => $this->institution
-                    ]);
-                }
-                return [
-                    'success' => false,
-                    'message' => 'No account identifier provided',
-                    'balance' => 0,
-                    'currency' => $payload['currency'] ?? 'BWP'
-                ];
-            }
-            
-            $result = $this->bankClient->getAccountBalance(
-                $this->accessToken ?? '',
-                $accountId
-            );
-            
-            if (!$result || !isset($result['balance'])) {
-                return [
-                    'success' => false,
-                    'message' => 'Failed to get balance',
-                    'balance' => 0,
-                    'currency' => $payload['currency'] ?? 'BWP'
-                ];
-            }
-            
-            return [
-                'success' => true,
-                'balance' => (float) $result['balance'],
-                'currency' => $result['currency'] ?? $payload['currency'] ?? 'BWP',
-                'account_id' => $accountId,
-                'account_name' => $result['account_name'] ?? null,
-                'last_updated' => date('Y-m-d H:i:s')
-            ];
-            
-        } catch (\Exception $e) {
+{
+    $this->context = array_merge($context, $payload);
+
+    try {
+        $this->ensureConsent();
+
+        $balancePayload = $payload;
+
+        if (!isset($balancePayload['access_token']) && $this->accessToken) {
+            $balancePayload['access_token'] = $this->accessToken;
+        }
+        if (!isset($balancePayload['reference'])) {
+            $balancePayload['reference'] = $context['swap_reference'] ?? uniqid('balance_');
+        }
+        if (!isset($balancePayload['action'])) {
+            $balancePayload['action'] = 'GET_BALANCE';
+        }
+        if (!isset($balancePayload['from_institution'])) {
+            $balancePayload['from_institution'] = $this->institution;
+        }
+        if (!isset($balancePayload['source_institution'])) {
+            $balancePayload['source_institution'] = $this->institution;
+        }
+
+        $result = $this->bankClient->getBalance($balancePayload);
+
+        if (!$result['success']) {
             return [
                 'success' => false,
-                'message' => $e->getMessage(),
+                'message' => $result['message'] ?? $result['curl_error'] ?? 'Balance check failed (HTTP ' . ($result['status_code'] ?? 'unknown') . ')',
                 'balance' => 0,
-                'currency' => $payload['currency'] ?? 'BWP'
+                'currency' => $payload['currency'] ?? 'BWP',
+                'status_code' => $result['status_code'] ?? 0,
+                'raw_response' => $result['raw_response'] ?? null,
             ];
         }
-    }
 
+        $data = $result['data'] ?? [];
+
+        return [
+            'success' => true,
+            'balance' => (float)($data['balance'] ?? $data['available_balance'] ?? 0),
+            'available_balance' => (float)($data['available_balance'] ?? $data['balance'] ?? 0),
+            'currency' => $data['currency'] ?? $payload['currency'] ?? 'BWP',
+            'account_id' => $payload['account_id'] ?? $payload['source_identifier'] ?? null,
+            'account_name' => $data['account_name'] ?? $data['holder_name'] ?? null,
+            'last_updated' => date('Y-m-d H:i:s'),
+        ];
+
+    } catch (\Exception $e) {
+        return [
+            'success' => false,
+            'message' => $e->getMessage(),
+            'balance' => 0,
+            'currency' => $payload['currency'] ?? 'BWP'
+        ];
+    }
+}
     // ============================================================
     // SETTLEMENT CONFIRMATION
     // ============================================================
