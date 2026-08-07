@@ -188,7 +188,7 @@ CAZACOM:
 
 # ------------------------------------------------------------
 MTN:
-  base_url: "https://cazacom-production.up.railway.app"
+  base_url: "https://cazacom-production.up.railway.app/backend/public/api" 
   timeout_ms: 5000
   sandbox_mode: true
   adapter_class: "MobileMoneyAdapter"
