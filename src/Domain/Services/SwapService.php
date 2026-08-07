@@ -6757,46 +6757,53 @@ public function isApprovedAgent(int $userId): bool
     // MULTI-SOURCE SWAP
     // ============================================================================
 
-    private function executeMultiSourceSwap(array $payload): array
-    {
-        error_log("[SwapService] ===== executeMultiSourceSwap START =====");
-        error_log("[SwapService] Multi-Source payload has " . count($payload['sources'] ?? []) . " sources");
+   private function executeMultiSourceSwap(array $payload): array
+{
+    error_log("[SwapService] ===== executeMultiSourceSwap START =====");
+    error_log("[SwapService] Multi-Source payload has " . count($payload['sources'] ?? []) . " sources");
+    
+    if ($this->multiSourceOrchestrator === null) {
+        error_log("[SwapService] Multi-Source orchestrator not available - falling back to standard swap");
+        $this->logger->warning("Multi-source swap requested but orchestrator not initialized - falling back to standard swap");
         
-        if ($this->multiSourceOrchestrator === null) {
-            error_log("[SwapService] Multi-Source orchestrator not available - falling back to standard swap");
-            $this->logger->warning("Multi-source swap requested but orchestrator not initialized - falling back to standard swap");
-            
-            if (isset($payload['sources']) && is_array($payload['sources']) && count($payload['sources']) > 0) {
-                $firstSource = $payload['sources'][0];
-                $payload['from_institution'] = $firstSource['institution'] ?? $payload['from_institution'];
-                $payload['account_id'] = $firstSource['account_id'] ?? $payload['account_id'];
-                $payload['amount'] = $firstSource['amount'] ?? $payload['amount'];
-            }
-            
+        if (isset($payload['sources']) && is_array($payload['sources']) && count($payload['sources']) > 0
+            && empty($payload['identity_type']) && empty($payload['identity_value'])) {
+            $firstSource = $payload['sources'][0];
+            $payload['from_institution'] = $firstSource['institution'] ?? $payload['from_institution'];
+            $payload['source_identifier'] = $firstSource['identifier'] ?? $payload['source_identifier'] ?? null;
+            $payload['source_identifier_type'] = $firstSource['identifier_type'] ?? $payload['source_identifier_type'] ?? 'auto';
+            $payload['asset_type'] = $firstSource['asset_type'] ?? $payload['asset_type'] ?? 'ACCOUNT';
+            $payload['amount'] = $firstSource['amount'] ?? $payload['amount'];
             return $this->executeSignedStandardSwap($payload);
         }
         
-        try {
-            error_log("[SwapService] Delegating to MultiSourceOrchestrator");
-            $result = $this->multiSourceOrchestrator->execute($payload);
-            error_log("[SwapService] MultiSourceOrchestrator returned: " . ($result['success'] ? 'SUCCESS' : 'FAILED'));
-            return $result;
-        } catch (Exception $e) {
-            error_log("[SwapService] MultiSourceOrchestrator threw exception: " . $e->getMessage());
-            $this->logger->error("Multi-source swap failed", ['error' => $e->getMessage()]);
-            
-            if (isset($payload['sources']) && is_array($payload['sources']) && count($payload['sources']) > 0) {
-                $firstSource = $payload['sources'][0];
-                $payload['from_institution'] = $firstSource['institution'] ?? $payload['from_institution'];
-                $payload['account_id'] = $firstSource['account_id'] ?? $payload['account_id'];
-                $payload['amount'] = $firstSource['amount'] ?? $payload['amount'];
-                $this->logger->warning("Falling back to standard swap with first source");
-                return $this->executeSignedStandardSwap($payload);
-            }
-            
-            throw new RuntimeException("Multi-source swap failed: " . $e->getMessage());
-        }
+        throw new RuntimeException("Multi-source orchestrator unavailable and payload cannot be reduced to a standard swap (missing sources or is an identity swap).");
     }
+    
+    try {
+        error_log("[SwapService] Delegating to MultiSourceOrchestrator");
+        $result = $this->multiSourceOrchestrator->execute($payload);
+        error_log("[SwapService] MultiSourceOrchestrator returned: " . ($result['success'] ? 'SUCCESS' : 'FAILED'));
+        return $result;
+    } catch (Exception $e) {
+        error_log("[SwapService] MultiSourceOrchestrator threw exception: " . $e->getMessage());
+        $this->logger->error("Multi-source swap failed", ['error' => $e->getMessage()]);
+        
+        if (isset($payload['sources']) && is_array($payload['sources']) && count($payload['sources']) > 0
+            && empty($payload['identity_type']) && empty($payload['identity_value'])) {
+            $firstSource = $payload['sources'][0];
+            $payload['from_institution'] = $firstSource['institution'] ?? $payload['from_institution'];
+            $payload['source_identifier'] = $firstSource['identifier'] ?? $payload['source_identifier'] ?? null;
+            $payload['source_identifier_type'] = $firstSource['identifier_type'] ?? $payload['source_identifier_type'] ?? 'auto';
+            $payload['asset_type'] = $firstSource['asset_type'] ?? $payload['asset_type'] ?? 'ACCOUNT';
+            $payload['amount'] = $firstSource['amount'] ?? $payload['amount'];
+            $this->logger->warning("Falling back to standard swap with first source");
+            return $this->executeSignedStandardSwap($payload);
+        }
+        
+        throw new RuntimeException("Multi-source swap failed: " . $e->getMessage());
+    }
+}
 
  private function resolveStandardSwapDeliveryMethod(array $payload): array
 {
