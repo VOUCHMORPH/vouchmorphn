@@ -279,7 +279,7 @@ participants:
     type: SWITCH
     country: BW
     status: ACTIVE
-    adapter_class: "Infrastructure\\Adapters\\CentralSwitchInstitutionAdapter"  
+    adapter_class: "Infrastructure\\Banks\\CentralSwitchAdapter"
 
     capabilities:
       source: false               # not a debitable participant itself
