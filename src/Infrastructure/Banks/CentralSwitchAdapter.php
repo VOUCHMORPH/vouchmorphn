@@ -3,25 +3,71 @@ declare(strict_types=1);
 
 namespace Infrastructure\Banks;
 
-use Infrastructure\Banks\Contracts\BankAPIInterface;
+use Infrastructure\Adapters\InstitutionAdapterInterface;
 use Infrastructure\Auth\AuthSchemeRegistry;
 use Domain\Services\Routing\Exceptions\SwitchUnavailableException;
 
 /**
- * Adapter for the CENTRALSWITCH rail. Implements BankAPIInterface so
- * InstitutionAdapterFactory can hand it out identically to any other
- * institution adapter. Unlike GenericBankClient, this has no hold
- * concept at all (a switch settles instantly, it doesn't reserve) —
- * every hold/release/debit-hold method returns an explicit
- * "not supported" response rather than silently no-op-ing.
+ * Adapter for the CENTRALSWITCH rail. Implements InstitutionAdapterInterface
+ * so InstitutionAdapterFactory can hand it out identically to any other
+ * institution adapter (this previously implemented the older BankAPIInterface,
+ * whose method names/signatures don't match InstitutionAdapterInterface at
+ * all - debitFunds() vs debit(), verifyAsset($payload) vs
+ * verifyAsset($payload, $context), etc. - so it was never actually reachable
+ * via the factory; confirmed nothing in the codebase ever instantiated this
+ * class directly either, so this rewrite is safe).
+ *
+ * Unlike GenericBankClient, this has no hold concept at all (a switch settles
+ * instantly, it doesn't reserve) — every hold/release/cashout/account method
+ * returns an explicit "not applicable" response rather than silently no-op-ing,
+ * since the ONLY method a SWITCH-mode swap actually calls is submitTransfer()
+ * (see SwitchExecutionStrategy::execute()).
  */
-class CentralSwitchAdapter implements BankAPIInterface
+class CentralSwitchAdapter implements InstitutionAdapterInterface
 {
     private AuthSchemeRegistry $authRegistry;
+    private array $config;
+    private string $institution;
 
-    public function __construct(private array $config)
+    /**
+     * Constructor shape matches what InstitutionAdapterFactory actually
+     * calls for every adapter_class: (bankClient, logger, institution,
+     * participant). $bankClient/$logger aren't needed here - this adapter
+     * builds its own HTTP config directly from endpoints.yaml, the same
+     * way GenericBankClient does internally, rather than going through it.
+     */
+    public function __construct($bankClient, $logger, string $institution, array $participant)
     {
+        $this->institution = $institution;
         $this->authRegistry = new AuthSchemeRegistry();
+        $this->config = $this->loadEndpointsYamlConfig($institution);
+    }
+
+    private function loadEndpointsYamlConfig(string $institution): array
+    {
+        $countryName = $GLOBALS['country_config']['name'] ?? 'Botswana';
+        $yamlPath = __DIR__ . '/../../Core/Config/Countries/' . $countryName . '/endpoints.yaml';
+
+        if (!file_exists($yamlPath)) {
+            throw new \RuntimeException("endpoints.yaml not found at {$yamlPath} while building CentralSwitchAdapter");
+        }
+
+        if (!function_exists('yaml_parse_file')) {
+            throw new \RuntimeException(
+                "php-yaml extension not available - CentralSwitchAdapter requires it to correctly " .
+                "parse endpoints.yaml's nested auth/endpoints blocks (a hand-rolled regex parser " .
+                "silently drops nested YAML - see the switch_participant_ids parsing bug this fix follows)."
+            );
+        }
+
+        $parsed = yaml_parse_file($yamlPath);
+        $config = $parsed[$institution] ?? null;
+
+        if ($config === null) {
+            throw new \RuntimeException("No endpoints.yaml entry found for institution: {$institution}");
+        }
+
+        return $config;
     }
 
     private function baseUrl(): string
@@ -75,6 +121,9 @@ class CentralSwitchAdapter implements BankAPIInterface
         return ['http_code' => $httpCode, 'body' => $data];
     }
 
+    // ============================================================
+    // The one real method - what SwitchExecutionStrategy actually calls.
+    // ============================================================
     public function submitTransfer(array $payload): array
     {
         $result = $this->send('submit_transfer', $payload);
@@ -95,39 +144,54 @@ class CentralSwitchAdapter implements BankAPIInterface
     // ------------------------------------------------------------
     // Not applicable to a switch rail — explicit refusal, not a
     // silent no-op, so a caller that mistakenly routes a hold-based
-    // operation here fails loudly.
+    // operation here fails loudly and clearly.
     // ------------------------------------------------------------
-    private function notSupported(string $method): array
+    private function notApplicable(string $method): array
     {
-        return ['success' => false, 'message' => "{$method} is not supported by CENTRALSWITCH — switches settle instantly, they do not hold funds"];
+        return [
+            'success' => false,
+            'not_applicable' => true,
+            'message' => "{$method} is not applicable to CENTRALSWITCH — switches settle atomically via submitTransfer(), they have no hold/cashout/account concept of their own.",
+        ];
     }
 
-    public function initiateSourceLink(array $params): array { return $this->notSupported('initiateSourceLink'); }
-    public function verifySourceLink(array $params): array { return $this->notSupported('verifySourceLink'); }
-    public function refreshSourceToken(array $params): array { return $this->notSupported('refreshSourceToken'); }
-    public function revokeSourceToken(array $params): array { return $this->notSupported('revokeSourceToken'); }
-    public function useSourceToken(array $params): array { return $this->notSupported('useSourceToken'); }
-    public function getAuthorizationUrl(string $redirectUri, string $state, array $scope = []): string { throw new \RuntimeException('Not supported by CENTRALSWITCH'); }
-    public function exchangeCodeForToken(string $code, string $redirectUri): array { return $this->notSupported('exchangeCodeForToken'); }
-    public function refreshAccessToken(string $refreshToken): array { return $this->notSupported('refreshAccessToken'); }
-    public function revokeToken(string $token, string $tokenType = 'access_token'): bool { return false; }
-    public function getUserInfo(string $accessToken): array { return $this->notSupported('getUserInfo'); }
-    public function getAccountBalance(string $accessToken, string $accountId): array { return $this->notSupported('getAccountBalance'); }
-    public function getTransactions(string $accessToken, string $accountId, int $limit = 50, int $offset = 0): array { return $this->notSupported('getTransactions'); }
-    public function verifyAsset(array $payload): array { return $this->notSupported('verifyAsset'); }
-    public function placeHold(array $payload): array { return $this->notSupported('placeHold'); }
-    public function debitFunds(array $payload): array { return $this->notSupported('debitFunds'); }
-    public function releaseHold(array $payload): array { return $this->notSupported('releaseHold'); }
-    public function generateToken(array $payload): array { return $this->notSupported('generateToken'); }
-    public function verifyToken(array $payload): array { return $this->notSupported('verifyToken'); }
-    public function confirmCashout(array $payload): array { return $this->notSupported('confirmCashout'); }
-    public function processDeposit(array $payload): array { return $this->submitTransfer($payload); }
-    public function verifyAssetSigned(array $payload): array { return $this->notSupported('verifyAssetSigned'); }
-    public function placeHoldSigned(array $payload): array { return $this->notSupported('placeHoldSigned'); }
+    // ============================================================
+    // InstitutionAdapterInterface's required surface. Never called for
+    // a SWITCH-mode swap in practice, but must exist with the correct
+    // (payload, context) signature to satisfy the interface.
+    // ============================================================
+    public function verifyAsset(array $payload, array $context): array { return $this->notApplicable('verifyAsset'); }
+    public function placeHold(array $payload, array $context): array { return $this->notApplicable('placeHold'); }
+    public function debit(array $payload, array $context): array { return $this->notApplicable('debit'); }
+    public function credit(array $payload, array $context): array { return $this->notApplicable('credit'); }
+    public function releaseHold(array $payload, array $context): array { return $this->notApplicable('releaseHold'); }
+    public function generateCashoutToken(array $payload, array $context): array { return $this->notApplicable('generateCashoutToken'); }
+    public function verifyCashoutToken(array $payload, array $context): array { return $this->notApplicable('verifyCashoutToken'); }
+    public function confirmCashout(array $payload, array $context): array { return $this->notApplicable('confirmCashout'); }
+    public function verifyAccount(array $payload, array $context): array { return $this->notApplicable('verifyAccount'); }
+    public function getBalance(array $payload, array $context): array { return $this->notApplicable('getBalance'); }
+    public function getTransactions(array $payload, array $context): array { return $this->notApplicable('getTransactions'); }
+    public function checkSettlementStatus(array $payload, array $context): array { return $this->notApplicable('checkSettlementStatus'); }
+    public function getAccounts(array $payload, array $context): array { return $this->notApplicable('getAccounts'); }
+
+    public function supports(string $capability): bool
+    {
+        return $capability === 'submitTransfer';
+    }
+
+    public function getInstitution(): string
+    {
+        return $this->institution;
+    }
+
+    // ============================================================
+    // Harmless convenience aliases kept from the original file - not
+    // part of InstitutionAdapterInterface, don't collide with it,
+    // safe to keep for anything that might call them directly.
+    // ============================================================
     public function transferWithProof(array $payload): array { return $this->submitTransfer($payload); }
-    public function generateTokenWithProof(array $payload): array { return $this->notSupported('generateTokenWithProof'); }
+    public function processDeposit(array $payload): array { return $this->submitTransfer($payload); }
     public function processDepositWithProof(array $payload): array { return $this->submitTransfer($payload); }
     public function transfer(array $payload, ?string $type = null): array { return $this->submitTransfer($payload); }
-    public function reverse(array $payload): array { return $this->notSupported('reverse'); }
     public function checkStatus(string $reference): array { return $this->getTransferStatus($reference); }
 }
