@@ -268,126 +268,157 @@ class PoolCoordinator
     }
 
     private function verifySources(array $contributions, array $payload): array
-    {
-        $verifications = [];
-        
-        foreach ($contributions as $index => $contribution) {
-            $institution = $contribution['institution'];
-            $amount = $contribution['amount'];
+{
+    $verifications = [];
+    
+    foreach ($contributions as $index => $contribution) {
+        $institution = $contribution['institution'];
+        $amount = $contribution['amount'];
 
-             // NEW: reject non-source-capable institutions before attempting
-        // verification.
+        // NEW: reject non-source-capable institutions before attempting verification
         $this->swapService->assertCanBeSourcePublic($institution);
         
-            
-            // Create verification payload
-            $verifyPayload = [
-                'account_id' => $contribution['account_id'],
-                'amount' => $amount,
-                'currency' => $contribution['currency'] ?? 'BWP',
-                'reference' => $payload['reference'] ?? uniqid(),
-                'from_institution' => $institution,
-                'source_institution' => $institution
-            ];
-            
-            // Call SwapService to verify asset
-            $result = $this->swapService->verifyAssetSigned($verifyPayload, $institution);
-            
-            // Bug 1 FIX: Check 'verified' instead of 'success'
-            if (!($result['verified'] ?? false)) {
-                throw new RuntimeException("Verification failed for source: {$institution} - " . ($result['message'] ?? 'Unknown error'));
-            }
-            
-            $verifications[] = [
-                'index' => $index,
-                'institution' => $institution,
-                'verified' => true,
-                'asset_id' => $result['asset_id'] ?? null,
-                'balance' => $result['balance'] ?? 0
-            ];
-            
-            // NEW: reflect verification in the persisted row
-            if (isset($contribution['_contribution_id'])) {
-                try {
-                    $this->contributionRepository->updateStatus(
-                        $contribution['_contribution_id'],
-                        ContributionStatus::VERIFIED
-                    );
-                } catch (Exception $e) {
-                    $this->logger->warning('Failed to update contribution verification status', [
-                        'contribution_id' => $contribution['_contribution_id'],
-                        'error' => $e->getMessage()
-                    ]);
-                }
-            }
+        // FIX: Use the correct source identifier keys
+        $sourceIdentifier = $contribution['identifier'] ?? 
+                           $contribution['source_identifier'] ?? 
+                           $contribution['account_id'] ?? 
+                           null;
+        
+        $sourceIdentifierType = $contribution['identifier_type'] ?? 
+                                $contribution['source_identifier_type'] ?? 
+                                'auto';
+        
+        // Create verification payload with the correct fields
+        $verifyPayload = [
+            'action' => 'VERIFY_ASSET',
+            'reference' => $payload['reference'] ?? uniqid(),
+            'asset_type' => $contribution['asset_type'] ?? 'ACCOUNT',
+            'amount' => $amount,
+            'currency' => $contribution['currency'] ?? 'BWP',
+            'institution' => $institution,
+            'timestamp' => time(),
+            'swap_type' => 'MULTI_SOURCE',
+            'requester' => 'VOUCHMORPH',
+            'from_institution' => $institution,
+            'source_institution' => $institution,
+            'source_identifier' => $sourceIdentifier,
+            'source_identifier_type' => $sourceIdentifierType,
+        ];
+        
+        // Call SwapService to verify asset
+        $result = $this->swapService->verifyAssetSigned($verifyPayload, $institution);
+        
+        // Bug 1 FIX: Check 'verified' instead of 'success'
+        if (!($result['verified'] ?? false)) {
+            throw new RuntimeException("Verification failed for source: {$institution} - " . ($result['message'] ?? 'Unknown error'));
         }
         
-        return $verifications;
+        $verifications[] = [
+            'index' => $index,
+            'institution' => $institution,
+            'verified' => true,
+            'asset_id' => $result['asset_id'] ?? null,
+            'balance' => $result['balance'] ?? 0
+        ];
+        
+        // NEW: reflect verification in the persisted row
+        if (isset($contribution['_contribution_id'])) {
+            try {
+                $this->contributionRepository->updateStatus(
+                    $contribution['_contribution_id'],
+                    ContributionStatus::VERIFIED
+                );
+            } catch (Exception $e) {
+                $this->logger->warning('Failed to update contribution verification status', [
+                    'contribution_id' => $contribution['_contribution_id'],
+                    'error' => $e->getMessage()
+                ]);
+            }
+        }
     }
+    
+    return $verifications;
+}
 
     private function placeHolds(array $pool, array $contributions, array $verifications, ?array &$heldSources = null): array
-    {
-        $holds = [];
-        $heldSources = []; // Track successfully held sources for rollback
+{
+    $holds = [];
+    $heldSources = []; // Track successfully held sources for rollback
+    
+    foreach ($contributions as $index => $contribution) {
+        $institution = $contribution['institution'];
+        $amount = $contribution['amount'];
         
-        foreach ($contributions as $index => $contribution) {
-            $institution = $contribution['institution'];
-            $amount = $contribution['amount'];
-            
-            $holdPayload = [
-                'account_id' => $contribution['account_id'],
-                'amount' => $amount,
-                'currency' => $contribution['currency'] ?? 'BWP',
-                'hold_reason' => 'MULTI_SOURCE_SWAP',
-                'expires_at' => date('Y-m-d H:i:s', strtotime('+1 hour')),
-                'reference' => $pool['reference'] ?? uniqid(),
-                'from_institution' => $institution,
-                'source_institution' => $institution
-            ];
-            
-            $verificationResult = $verifications[$index] ?? [];
-            $result = $this->swapService->placeHoldSigned($holdPayload, $institution, $verificationResult);
-            
-            if (!$result['hold_placed']) {
-                // Bug 2 FIX: Rollback all previously held sources with real institution calls
-                $this->rollbackHolds($heldSources);
-                throw new RuntimeException("Hold failed for source: {$institution} - " . ($result['message'] ?? 'Unknown error'));
-            }
-            
-            $holdData = [
-                'index' => $index,
-                'institution' => $institution,
-                'hold_id' => $result['hold_id'] ?? null,
-                'hold_reference' => $result['hold_reference'] ?? null,
-                'amount' => $amount,
-                'source_payload' => $contribution // Store for rollback
-            ];
-            
-            // NEW: persist hold reference against the contribution row
-            if (isset($contribution['_contribution_id']) && !empty($holdData['hold_reference'])) {
-                try {
-                    $this->contributionRepository->updateHoldReference(
-                        $contribution['_contribution_id'],
-                        $holdData['hold_reference']
-                    );
-                    $this->contributionRepository->updateStatus(
-                        $contribution['_contribution_id'],
-                        ContributionStatus::HELD
-                    );
-                } catch (Exception $e) {
-                    $this->logger->warning('Failed to update contribution hold status', [
-                        'contribution_id' => $contribution['_contribution_id'],
-                        'error' => $e->getMessage()
-                    ]);
-                }
-            }
-            
-            $holds[] = $holdData;
-            $heldSources[] = $holdData; // Track for rollback
+        // FIX: Use the correct source identifier keys
+        $sourceIdentifier = $contribution['identifier'] ?? 
+                           $contribution['source_identifier'] ?? 
+                           $contribution['account_id'] ?? 
+                           null;
+        
+        $sourceIdentifierType = $contribution['identifier_type'] ?? 
+                                $contribution['source_identifier_type'] ?? 
+                                'auto';
+        
+        $holdPayload = [
+            'action' => 'PLACE_HOLD',
+            'reference' => $pool['reference'] ?? uniqid(),
+            'asset_type' => $contribution['asset_type'] ?? 'ACCOUNT',
+            'amount' => $amount,
+            'currency' => $contribution['currency'] ?? 'BWP',
+            'hold_reason' => 'MULTI_SOURCE_SWAP',
+            'expiry' => date('Y-m-d H:i:s', strtotime('+1 hour')),
+            'timestamp' => time(),
+            'from_institution' => $institution,
+            'source_institution' => $institution,
+            'source_identifier' => $sourceIdentifier,
+            'source_identifier_type' => $sourceIdentifierType,
+            'user_id' => $pool['user_id'] ?? 0,
+            'destination_institution' => $pool['destination_institution'] ?? null,
+        ];
+        
+        $verificationResult = $verifications[$index] ?? [];
+        $result = $this->swapService->placeHoldSigned($holdPayload, $institution, $verificationResult);
+        
+        if (!$result['hold_placed']) {
+            // Bug 2 FIX: Rollback all previously held sources with real institution calls
+            $this->rollbackHolds($heldSources);
+            throw new RuntimeException("Hold failed for source: {$institution} - " . ($result['message'] ?? 'Unknown error'));
         }
         
-        return $holds;
+        $holdData = [
+            'index' => $index,
+            'institution' => $institution,
+            'hold_id' => $result['hold_id'] ?? null,
+            'hold_reference' => $result['hold_reference'] ?? null,
+            'amount' => $amount,
+            'source_payload' => $contribution // Store for rollback
+        ];
+        
+        // NEW: persist hold reference against the contribution row
+        if (isset($contribution['_contribution_id']) && !empty($holdData['hold_reference'])) {
+            try {
+                $this->contributionRepository->updateHoldReference(
+                    $contribution['_contribution_id'],
+                    $holdData['hold_reference']
+                );
+                $this->contributionRepository->updateStatus(
+                    $contribution['_contribution_id'],
+                    ContributionStatus::HELD
+                );
+            } catch (Exception $e) {
+                $this->logger->warning('Failed to update contribution hold status', [
+                    'contribution_id' => $contribution['_contribution_id'],
+                    'error' => $e->getMessage()
+                ]);
+            }
+        }
+        
+        $holds[] = $holdData;
+        $heldSources[] = $holdData; // Track for rollback
     }
+    
+    return $holds;
+}
 
     /**
      * Bug 2 FIX: Rollback holds with real institution calls
