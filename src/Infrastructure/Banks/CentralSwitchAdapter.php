@@ -5,42 +5,72 @@ namespace Infrastructure\Banks;
 
 use Infrastructure\Adapters\InstitutionAdapterInterface;
 use Infrastructure\Auth\AuthSchemeRegistry;
+use Infrastructure\Messaging\MessageFormatterInterface;
+use Infrastructure\Messaging\MessageFormatterFactory;
 use Domain\Services\Routing\Exceptions\SwitchUnavailableException;
 
 /**
  * Adapter for the CENTRALSWITCH rail. Implements InstitutionAdapterInterface
  * so InstitutionAdapterFactory can hand it out identically to any other
- * institution adapter (this previously implemented the older BankAPIInterface,
- * whose method names/signatures don't match InstitutionAdapterInterface at
- * all - debitFunds() vs debit(), verifyAsset($payload) vs
- * verifyAsset($payload, $context), etc. - so it was never actually reachable
- * via the factory; confirmed nothing in the codebase ever instantiated this
- * class directly either, so this rewrite is safe).
+ * institution adapter.
  *
- * Unlike GenericBankClient, this has no hold concept at all (a switch settles
- * instantly, it doesn't reserve) — every hold/release/cashout/account method
- * returns an explicit "not applicable" response rather than silently no-op-ing,
- * since the ONLY method a SWITCH-mode swap actually calls is submitTransfer()
- * (see SwitchExecutionStrategy::execute()).
+ * ============================================================================
+ * PROTOCOL PLUGGABILITY - READ BEFORE INTEGRATING A REAL SWITCH
+ * ============================================================================
+ * The mock CENTRALSWITCH speaks JSON over plain HTTPS with HMAC-signed
+ * bodies. A REAL national switch operator's spec could look completely
+ * different - mutual TLS, OAuth2, ISO 20022 XML messages, or any
+ * combination of those. Rather than hardcode one protocol, this class
+ * treats three axes as independently configurable, the same way DIRECT
+ * vs SWITCH routing is already config-driven rather than hardcoded:
+ *
+ *   1. AUTH SCHEME (endpoints.yaml auth.type) - API_KEY, HMAC_SHARED_SECRET,
+ *      or OAUTH_BEARER, via AuthSchemeRegistry. Already fully pluggable;
+ *      switching schemes is a config change, not a code change.
+ *
+ *   2. TRANSPORT (endpoints.yaml transport.mtls) - plain HTTPS, or mutual
+ *      TLS with a client certificate. Independent of auth scheme: a real
+ *      switch could require mTLS AND a signed body, not one or the other.
+ *
+ *   3. MESSAGE FORMAT (endpoints.yaml message_format) - JSON (default,
+ *      fully working) or ISO20022 (interface exists, NOT implemented -
+ *      see Infrastructure\Messaging\Iso20022MessageFormatter's docblock;
+ *      building it blind without a real schema would be worse than
+ *      leaving it a loud stub).
+ *
+ * Swapping any one of these for a real switch's actual requirements should
+ * mean a new AuthSchemeInterface/MessageFormatterInterface implementation
+ * plus config, NOT a rewrite of this class, SwitchExecutionStrategy, or
+ * anything in the routing layer above it.
+ * ============================================================================
  */
 class CentralSwitchAdapter implements InstitutionAdapterInterface
 {
     private AuthSchemeRegistry $authRegistry;
+    private MessageFormatterInterface $formatter;
     private array $config;
     private string $institution;
 
-    /**
-     * Constructor shape matches what InstitutionAdapterFactory actually
-     * calls for every adapter_class: (bankClient, logger, institution,
-     * participant). $bankClient/$logger aren't needed here - this adapter
-     * builds its own HTTP config directly from endpoints.yaml, the same
-     * way GenericBankClient does internally, rather than going through it.
-     */
+    /** Temp file paths for mTLS material, cleaned up in the destructor. */
+    private array $mtlsTempFiles = [];
+
     public function __construct($bankClient, $logger, string $institution, array $participant)
     {
         $this->institution = $institution;
         $this->authRegistry = new AuthSchemeRegistry();
         $this->config = $this->loadEndpointsYamlConfig($institution);
+        $this->formatter = MessageFormatterFactory::forConfig($this->config);
+    }
+
+    public function __destruct()
+    {
+        // mTLS material is written to disk only for the lifetime of this
+        // request - never left behind for a later process to stumble on.
+        foreach ($this->mtlsTempFiles as $path) {
+            if (is_string($path) && file_exists($path)) {
+                @unlink($path);
+            }
+        }
     }
 
     private function loadEndpointsYamlConfig(string $institution): array
@@ -81,23 +111,114 @@ class CentralSwitchAdapter implements InstitutionAdapterInterface
             ?? throw new \RuntimeException("No CENTRALSWITCH endpoint configured for: {$key}");
     }
 
+    /**
+     * Resolves one secret from endpoints.yaml's env_var-source convention.
+     * Shared by mTLS material and (indirectly, via AuthSchemeRegistry) the
+     * HMAC/API-key secret - one place that knows how "secret_source" is
+     * structured, rather than each caller re-deriving it.
+     */
+    private function resolveSecret(?array $secretSource): ?string
+    {
+        if (!$secretSource || ($secretSource['type'] ?? null) !== 'env_var') {
+            return null;
+        }
+        $name = $secretSource['name'] ?? null;
+        if (!$name) return null;
+        $value = getenv($name);
+        return $value ?: null;
+    }
+
+    /**
+     * Writes PEM content (already stored as env var content elsewhere in
+     * this codebase - see VOUCHMORPH_CERT_CONTENT, ZURUBANK_CERT_CONTENT,
+     * etc.) to a request-scoped temp file, since curl's CURLOPT_SSLCERT/
+     * CURLOPT_SSLKEY need a filesystem path, not a raw string, on most
+     * libcurl builds. Tracked in $this->mtlsTempFiles for cleanup.
+     */
+    private function materializePemToTempFile(string $pemContent, string $label): string
+    {
+        // Env vars commonly store PEM content with literal \n escapes
+        // rather than real newlines - same normalization already used
+        // elsewhere in this codebase for cert/key content.
+        $normalized = str_replace(['\\r\\n', '\\n', '\\r'], "\n", $pemContent);
+
+        $path = tempnam(sys_get_temp_dir(), 'switch_mtls_' . $label . '_');
+        if ($path === false) {
+            throw new \RuntimeException("Failed to create temp file for mTLS {$label}");
+        }
+        chmod($path, 0600);
+        file_put_contents($path, $normalized);
+        $this->mtlsTempFiles[] = $path;
+        return $path;
+    }
+
+    /**
+     * Applies mTLS curl options if transport.mtls.enabled is true in this
+     * institution's endpoints.yaml block. No-op (plain HTTPS, unchanged
+     * behavior) if that block is absent - existing institutions with no
+     * transport.mtls config are completely unaffected by this method
+     * existing.
+     */
+    private function applyMutualTls($curlHandle): void
+    {
+        $mtls = $this->config['transport']['mtls'] ?? null;
+        if (!$mtls || empty($mtls['enabled'])) {
+            return;
+        }
+
+        $certContent = $this->resolveSecret($mtls['cert_source'] ?? null);
+        $keyContent = $this->resolveSecret($mtls['key_source'] ?? null);
+        $caContent = $this->resolveSecret($mtls['ca_source'] ?? null);
+        $keyPassphrase = $this->resolveSecret($mtls['key_passphrase_source'] ?? null);
+
+        if (!$certContent || !$keyContent) {
+            throw new \RuntimeException(
+                "transport.mtls.enabled is true for {$this->institution} but cert_source/key_source " .
+                "did not resolve to actual values - check the referenced env vars are set."
+            );
+        }
+
+        $certPath = $this->materializePemToTempFile($certContent, 'cert');
+        $keyPath = $this->materializePemToTempFile($keyContent, 'key');
+
+        curl_setopt($curlHandle, CURLOPT_SSLCERT, $certPath);
+        curl_setopt($curlHandle, CURLOPT_SSLCERTTYPE, 'PEM');
+        curl_setopt($curlHandle, CURLOPT_SSLKEY, $keyPath);
+        curl_setopt($curlHandle, CURLOPT_SSLKEYTYPE, 'PEM');
+        if ($keyPassphrase) {
+            curl_setopt($curlHandle, CURLOPT_SSLKEYPASSWD, $keyPassphrase);
+        }
+        if ($caContent) {
+            $caPath = $this->materializePemToTempFile($caContent, 'ca');
+            curl_setopt($curlHandle, CURLOPT_CAINFO, $caPath);
+        }
+    }
+
     private function send(string $endpointKey, array $payload): array
     {
         $url = $this->baseUrl() . $this->endpoint($endpointKey);
-        $body = json_encode($payload, JSON_UNESCAPED_SLASHES);
+        $body = $this->formatter->encode($payload);
 
-        $secretVar = $this->config['auth']['secret_source']['name'] ?? null;
-        $secret = $secretVar ? (getenv($secretVar) ?: '') : '';
+        $headers = ['Content-Type: ' . $this->formatter->contentType()];
 
-        $authHeaders = $this->authRegistry->sign($this->config['auth']['type'], $body, [
-            'secret' => $secret,
-            'timestamp_header' => $this->config['message_profile']['timestamp_header'] ?? 'X-Api-Timestamp',
-            'signature_header' => $this->config['message_profile']['signature_header'] ?? 'X-Api-Signature',
-        ]);
-
-        $headers = ['Content-Type: application/json'];
-        foreach ($authHeaders as $name => $value) {
-            $headers[] = "{$name}: {$value}";
+        // Auth scheme (API_KEY / HMAC_SHARED_SECRET / OAUTH_BEARER) - fully
+        // independent of transport below. Skipped entirely if this
+        // institution's config has no auth.type (e.g. an mTLS-only switch
+        // where the client certificate itself IS the credential).
+        $authType = $this->config['auth']['type'] ?? null;
+        if ($authType) {
+            $secret = $this->resolveSecret($this->config['auth']['secret_source'] ?? null);
+            $authHeaders = $this->authRegistry->sign($authType, $body, [
+                'secret' => $secret,
+                'key' => $secret,
+                'access_token' => $secret,
+                'timestamp_header' => $this->config['message_profile']['timestamp_header'] ?? 'X-Api-Timestamp',
+                'signature_header' => $this->config['message_profile']['signature_header'] ?? 'X-Api-Signature',
+                'header_name' => $this->config['auth']['header_name'] ?? 'X-API-Key',
+            ]);
+            foreach ($authHeaders as $name => $value) {
+                $headers[] = "{$name}: {$value}";
+            }
         }
 
         $ch = curl_init($url);
@@ -108,6 +229,10 @@ class CentralSwitchAdapter implements InstitutionAdapterInterface
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT => ($this->config['timeout_ms'] ?? 10000) / 1000,
         ]);
+
+        // Transport (mTLS) - independent of the auth headers set above.
+        $this->applyMutualTls($ch);
+
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $curlError = curl_error($ch);
@@ -117,7 +242,7 @@ class CentralSwitchAdapter implements InstitutionAdapterInterface
             throw new SwitchUnavailableException("Central switch unreachable: {$curlError}");
         }
 
-        $data = json_decode($response, true) ?? [];
+        $data = $this->formatter->decode($response);
         return ['http_code' => $httpCode, 'body' => $data];
     }
 
@@ -155,11 +280,6 @@ class CentralSwitchAdapter implements InstitutionAdapterInterface
         ];
     }
 
-    // ============================================================
-    // InstitutionAdapterInterface's required surface. Never called for
-    // a SWITCH-mode swap in practice, but must exist with the correct
-    // (payload, context) signature to satisfy the interface.
-    // ============================================================
     public function verifyAsset(array $payload, array $context): array { return $this->notApplicable('verifyAsset'); }
     public function placeHold(array $payload, array $context): array { return $this->notApplicable('placeHold'); }
     public function debit(array $payload, array $context): array { return $this->notApplicable('debit'); }
@@ -185,9 +305,8 @@ class CentralSwitchAdapter implements InstitutionAdapterInterface
     }
 
     // ============================================================
-    // Harmless convenience aliases kept from the original file - not
-    // part of InstitutionAdapterInterface, don't collide with it,
-    // safe to keep for anything that might call them directly.
+    // Harmless convenience aliases - not part of InstitutionAdapterInterface,
+    // don't collide with it, kept for anything that might call them directly.
     // ============================================================
     public function transferWithProof(array $payload): array { return $this->submitTransfer($payload); }
     public function processDeposit(array $payload): array { return $this->submitTransfer($payload); }
