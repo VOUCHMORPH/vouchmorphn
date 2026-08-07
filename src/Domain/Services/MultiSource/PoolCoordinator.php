@@ -220,19 +220,23 @@ class PoolCoordinator
         return $persisted;
     }
 
-    private function createPool(array $payload): array
+   private function createPool(array $payload): array
 {
     $poolId = $payload['pool_id'] ?? 'POOL_' . uniqid();
     
     // Bug 3: Take forex snapshot once at pool creation
     try {
-        // Check if getForexService method exists
-        if (method_exists($this->swapService, 'getForexService')) {
-            $forexService = $this->swapService->getForexService();
-            $rate = $forexService->getRate(
+        // Check if we can get the ForexService from SwapService
+        if (isset($this->swapService->forexService)) {
+            $forexService = $this->swapService->forexService;
+            
+            // Use getExchangeRate() method which exists
+            $rate = $forexService->getExchangeRate(
                 $payload['currency'] ?? 'BWP',
-                $payload['destination_currency'] ?? 'BWP'
+                $payload['destination_currency'] ?? 'BWP',
+                'internal'  // Use internal tier for pool calculations
             );
+            
             $this->forexRateSnapshot = [
                 'rate' => $rate,
                 'from' => $payload['currency'] ?? 'BWP',
@@ -249,7 +253,7 @@ class PoolCoordinator
                 'applied' => false,
                 'timestamp' => time()
             ];
-            $this->logger->info('ForexService not available via getForexService(), using default rate 1.0');
+            $this->logger->info('ForexService not available, using default rate 1.0');
         }
     } catch (Exception $e) {
         $this->logger->warning('Forex rate not available, using default', [
