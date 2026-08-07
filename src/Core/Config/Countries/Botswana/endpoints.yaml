@@ -7,7 +7,7 @@
 version: "3.3.0"
 
 ZURUBANK:
-  base_url: "https://zurubank-production.up.railway.app/Backend"
+  base_url: "https://zurubank-production.up.railway.app/Backend/public"
   timeout_ms: 5000
   sandbox_mode: true
   adapter_class: "GenericFinancialInstitutionAdapter"
