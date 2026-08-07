@@ -978,6 +978,7 @@ $this->certManager = \Infrastructure\Crypto\CertificateManagerFactory::get('VOUC
             $payload['phone'] = $sourceIdentifier;
             $payload['national_id'] = $sourceIdentifier;
             $payload['email'] = $sourceIdentifier;
+            $payload['account_number'] = $sourceIdentifier;  
             
             error_log("[GenericBankClient] Source identifier added: {$sourceIdentifier}");
         } else {
