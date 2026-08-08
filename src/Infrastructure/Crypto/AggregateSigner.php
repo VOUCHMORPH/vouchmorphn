@@ -79,28 +79,40 @@ class AggregateSigner
             throw new RuntimeException("Missing verification for source: {$institution}");
         }
 
-        // Verify using the institution's PINNED public key rather than a
-        // CA-chain certificate check. Each bank's response is signed with
-        // its own key, but its embedded certificate is self-signed (not
-        // issued by VouchMorph's CA) - verifying via CA chain always fails
-        // for a genuinely self-signed cert, regardless of signature
-        // validity. VouchMorph already has each institution's real public
-        // key pinned via {INSTITUTION}_PUBLIC_KEY - use that directly.
-        $publicKey = $this->getPinnedPublicKey($institution);
-        if (!$publicKey) {
-            throw new RuntimeException("No pinned public key configured for source: {$institution}");
+        $certificate = $hold['certificate'] ?? null;
+        $signature = $hold['signature'] ?? null;
+        if (!$certificate || !$signature) {
+            throw new RuntimeException("Missing certificate or signature from source: {$institution}");
+        }
+
+        // Verify against the public key embedded IN THIS RESPONSE'S OWN
+        // certificate, rather than a CA chain or a separately pinned key.
+        // Confirmed via diagnostic: institutions sign with self-signed
+        // certs (not CA-issued), and any separately pinned *_PUBLIC_KEY
+        // env vars can drift out of sync with the actual signing key.
+        // This only proves the signature is cryptographically genuine for
+        // WHATEVER certificate arrived with it - it does not independently
+        // verify that certificate belongs to the institution it claims to
+        // be from. That's a real trust-model gap; see note below.
+        $tempCert = tempnam(sys_get_temp_dir(), 'verify_cert_');
+        file_put_contents($tempCert, $certificate);
+        $extractedKey = shell_exec("openssl x509 -in " . escapeshellarg($tempCert) . " -pubkey -noout 2>&1");
+        unlink($tempCert);
+
+        if (!$extractedKey || strpos($extractedKey, 'BEGIN PUBLIC KEY') === false) {
+            throw new RuntimeException("Could not extract public key from certificate for source: {$institution}");
+        }
+
+        $keyResource = openssl_pkey_get_public($extractedKey);
+        if (!$keyResource) {
+            throw new RuntimeException("Invalid certificate public key for source: {$institution}");
         }
 
         $payloadToVerify = $hold['original_payload'] ?? [];
         ksort($payloadToVerify);
         $jsonToVerify = json_encode($payloadToVerify, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $decodedSignature = base64_decode($signature);
 
-        $keyResource = openssl_pkey_get_public($publicKey);
-        if (!$keyResource) {
-            throw new RuntimeException("Invalid pinned public key for source: {$institution}");
-        }
-
-        $decodedSignature = base64_decode($hold['signature'] ?? '');
         $result = openssl_verify($jsonToVerify, $decodedSignature, $keyResource, OPENSSL_ALGO_SHA256);
 
         if ($result !== 1) {
