@@ -114,17 +114,17 @@ class PoolCoordinator
             $contributions = $this->persistContributions($pool, $contributions);
 
             $skipped = [];
-$contributions = array_values(array_filter($contributions, function ($c) use (&$skipped) {
-    $keep = (float)($c['amount'] ?? 0) > 0;
-    if (!$keep) {
-        $skipped[] = $c;
-    }
-    return $keep;
-}));
+            $contributions = array_values(array_filter($contributions, function ($c) use (&$skipped) {
+                $keep = (float)($c['amount'] ?? 0) > 0;
+                if (!$keep) {
+                    $skipped[] = $c;
+                }
+                return $keep;
+            }));
 
-foreach ($skipped as $c) {
-       $this->logger->info('Skipping zero-amount contribution', ['institution' => $c['institution'] ?? 'unknown']);
-   }
+            foreach ($skipped as $c) {
+                $this->logger->info('Skipping zero-amount contribution', ['institution' => $c['institution'] ?? 'unknown']);
+            }
             // 3. Transition to VERIFYING
             $this->stateMachine->transition($pool, PoolStatus::VERIFYING->value);
             
@@ -200,18 +200,11 @@ foreach ($skipped as $c) {
         }
     }
 
-    /**
-     * Persist each calculated contribution as a real DB row
-     * FIX: Extracts identifier from the nested 'source' array that ContributionCalculator returns.
-     */
     private function persistContributions(array $pool, array $contributions): array
     {
         $persisted = [];
         foreach ($contributions as $index => $contribution) {
-            // FIX: Extract identifier from the nested 'source' array
             $source = $contribution['source'] ?? [];
-            
-            // Try multiple possible locations for the identifier
             $identifier = $source['source_identifier'] ?? 
                           $source['identifier'] ?? 
                           $source['account_id'] ?? 
@@ -219,20 +212,17 @@ foreach ($skipped as $c) {
                           $contribution['identifier'] ?? 
                           $contribution['account_id'] ?? 
                           '';
-            
             $identifierType = $source['source_identifier_type'] ?? 
                               $source['identifier_type'] ?? 
                               $contribution['source_identifier_type'] ?? 
                               $contribution['identifier_type'] ?? 
                               'auto';
-            
             $institution = $source['institution'] ?? $contribution['institution'] ?? '';
             $assetType = $contribution['asset_type'] ?? $source['asset_type'] ?? 'ACCOUNT';
             $amount = (float)($contribution['actual_amount'] ?? $contribution['amount'] ?? 0);
             $requestedAmount = (float)($contribution['requested_amount'] ?? $contribution['amount'] ?? 0);
             $currency = $contribution['currency'] ?? $pool['currency'] ?? 'BWP';
             
-            // Log for debugging
             $this->logger->debug('Persisting contribution', [
                 'index' => $index,
                 'institution' => $institution,
@@ -249,19 +239,15 @@ foreach ($skipped as $c) {
                 $institution,
                 $assetType,
                 $identifier,
-                $identifierType,  // NEW: pass identifier type
+                $identifierType,
                 $requestedAmount,
                 $amount,
                 $currency
             );
             
             $saved = $this->contributionRepository->save($model);
-            
-            // Carry the DB id back onto the working array
             $contribution['_contribution_id'] = $saved->getId();
             $contribution['_sub_reference'] = $pool['reference'] . '-' . str_pad((string)($index + 1), 2, '0', STR_PAD_LEFT);
-            
-            // Preserve the source identifier for later use
             $contribution['source_identifier'] = $identifier;
             $contribution['source_identifier_type'] = $identifierType;
             $contribution['institution'] = $institution;
@@ -273,14 +259,10 @@ foreach ($skipped as $c) {
         return $persisted;
     }
 
-    /**
-     * Create a funding pool
-     */
     private function createPool(array $payload): array
     {
         $poolId = $payload['pool_id'] ?? 'POOL_' . uniqid();
         
-        // Take forex snapshot once at pool creation
         try {
             if (isset($this->swapService->forexService)) {
                 $forexService = $this->swapService->forexService;
@@ -319,11 +301,8 @@ foreach ($skipped as $c) {
             ];
         }
         
-        // Extract destination identifier and asset type
         $destinationIdentifier = $this->swapService->extractDestinationIdentifier($payload);
         $destinationAssetType = $this->swapService->extractDestinationAssetType($payload);
-        
-        // For IDENTITY swaps, destination_institution can be null
         $destinationInstitution = $payload['to_institution'] ?? $payload['destination_institution'] ?? null;
         
         $pool = [
@@ -344,25 +323,19 @@ foreach ($skipped as $c) {
             'updated_at' => date('Y-m-d H:i:s')
         ];
         
-        // Use array-friendly save method
         $this->poolRepository->saveFromArray($pool);
         
         return $pool;
     }
 
-    /**
-     * Calculate contributions using the real ContributionCalculator signature
-     */
     private function calculateContributions(array $pool, array $payload): array
     {
-        // Build sources with available balances
         $sourcesWithBalances = [];
         foreach ($pool['sources'] as $source) {
             $balance = $this->swapService->getSourceAvailableBalance($source);
             $sourcesWithBalances[] = array_merge($source, ['available_balance' => $balance]);
         }
 
-        // Call the real ContributionCalculator method
         return $this->contributionCalculator->calculateContributions(
             $pool['amount'],
             $sourcesWithBalances,
@@ -372,9 +345,6 @@ foreach ($skipped as $c) {
         );
     }
 
-    /**
-     * FIX 7: verifySources() - carry payload into $verifications
-     */
     private function verifySources(array $contributions, array $payload): array
     {
         $verifications = [];
@@ -383,10 +353,8 @@ foreach ($skipped as $c) {
             $institution = $contribution['institution'];
             $amount = $contribution['amount'];
 
-            // Reject non-source-capable institutions before attempting verification
             $this->swapService->assertCanBeSourcePublic($institution);
             
-            // Use the correct source identifier keys
             $sourceIdentifier = $contribution['source_identifier'] ?? 
                                $contribution['identifier'] ?? 
                                $contribution['account_id'] ?? 
@@ -396,7 +364,6 @@ foreach ($skipped as $c) {
                                     $contribution['identifier_type'] ?? 
                                     'auto';
             
-            // Create verification payload with the correct fields
             $verifyPayload = [
                 'action' => 'VERIFY_ASSET',
                 'reference' => $payload['reference'] ?? uniqid(),
@@ -413,14 +380,12 @@ foreach ($skipped as $c) {
                 'source_identifier_type' => $sourceIdentifierType,
             ];
             
-            // Call SwapService to verify asset
             $result = $this->swapService->verifyAssetSigned($verifyPayload, $institution);
             
             if (!($result['verified'] ?? false)) {
                 throw new RuntimeException("Verification failed for source: {$institution} - " . ($result['message'] ?? 'Unknown error'));
             }
             
-            // FIX 7: Carry payload into verification record
             $verifications[] = [
                 'index' => $index,
                 'institution' => $institution,
@@ -430,7 +395,6 @@ foreach ($skipped as $c) {
                 'payload' => $result['original_payload'] ?? $verifyPayload ?? null,
             ];
             
-            // Reflect verification in the persisted row
             if (isset($contribution['_contribution_id'])) {
                 try {
                     $this->contributionRepository->updateStatus(
@@ -449,9 +413,6 @@ foreach ($skipped as $c) {
         return $verifications;
     }
 
-    /**
-     * FIX 6: placeHolds() - carry signature/certificate into $holdData
-     */
     private function placeHolds(array $pool, array $contributions, array $verifications, ?array &$heldSources = null): array
     {
         $holds = [];
@@ -461,7 +422,6 @@ foreach ($skipped as $c) {
             $institution = $contribution['institution'];
             $amount = $contribution['amount'];
             
-            // Use the correct source identifier keys
             $sourceIdentifier = $contribution['source_identifier'] ?? 
                                $contribution['identifier'] ?? 
                                $contribution['account_id'] ?? 
@@ -496,7 +456,6 @@ foreach ($skipped as $c) {
                 throw new RuntimeException("Hold failed for source: {$institution} - " . ($result['message'] ?? 'Unknown error'));
             }
             
-            // FIX 6: Carry signature/certificate into hold data
             $holdData = [
                 'index' => $index,
                 'institution' => $institution,
@@ -505,11 +464,10 @@ foreach ($skipped as $c) {
                 'amount' => $amount,
                 'signature' => $result['signature'] ?? null,
                 'certificate' => $result['certificate'] ?? null,
-               'original_payload' => $result['original_payload'] ?? $holdPayload,   
+                'original_payload' => $result['original_payload'] ?? $holdPayload,   
                 'source_payload' => $contribution
             ];
             
-            // Persist hold reference against the contribution row
             if (isset($contribution['_contribution_id']) && !empty($holdData['hold_reference'])) {
                 try {
                     $this->contributionRepository->updateHoldReference(
@@ -535,9 +493,6 @@ foreach ($skipped as $c) {
         return $holds;
     }
 
-    /**
-     * FIX 5: rollbackHolds() - cast hold_id to string for BOTH calls
-     */
     private function rollbackHolds(array $heldSources): void
     {
         if (empty($heldSources)) {
@@ -548,7 +503,6 @@ foreach ($skipped as $c) {
         
         foreach ($heldSources as $held) {
             try {
-                // FIX 5a: Cast hold_id to string for releaseHold()
                 $releaseResult = $this->swapService->releaseHold(
                     $held['source_payload'] ?? [],
                     $held['institution'],
@@ -562,10 +516,8 @@ foreach ($skipped as $c) {
                     'success' => $releaseResult['success'] ?? false
                 ]);
                 
-                // FIX 5b: Cast hold_id to string for releaseLocalHold() too
                 $this->releaseLocalHold(isset($held['hold_id']) ? (string)$held['hold_id'] : null);
                 
-                // Reflect the failure on the contribution row too
                 $contribution = $held['source_payload'] ?? null;
                 if ($contribution && isset($contribution['_contribution_id'])) {
                     try {
@@ -587,7 +539,6 @@ foreach ($skipped as $c) {
                     'hold_id' => $held['hold_id'] ?? 'unknown',
                     'error' => $e->getMessage()
                 ]);
-                // Continue trying to release other holds even if one fails
             }
         }
     }
@@ -596,7 +547,6 @@ foreach ($skipped as $c) {
     {
         if ($holdId) {
             try {
-                // Clean up local hold_transactions bookkeeping
                 $stmt = $this->db->prepare("
                     UPDATE hold_transactions 
                     SET status = 'RELEASED', 
@@ -667,7 +617,6 @@ foreach ($skipped as $c) {
                 'transaction_reference' => $result['transaction_reference'] ?? null
             ];
             
-            // Mark the contribution as debited
             $matchingContribution = $hold['source_payload'] ?? null;
             if ($matchingContribution && isset($matchingContribution['_contribution_id']) && !empty($result['transaction_reference'])) {
                 try {
@@ -719,7 +668,6 @@ foreach ($skipped as $c) {
         
         $invoiceResults = [];
         
-        // Invoice platform fee
         if (isset($feeResult['platform_fee']) && $feeResult['platform_fee'] > 0) {
             $result = $this->settlement->invoiceFee(
                 $pool['reference'] ?? uniqid(),
@@ -732,7 +680,6 @@ foreach ($skipped as $c) {
             $invoiceResults[] = $result;
         }
         
-        // Invoice each source
         foreach ($feeResult['source_fees'] ?? [] as $sourceFee) {
             $result = $this->settlement->invoiceFee(
                 $pool['reference'] ?? uniqid(),
@@ -789,7 +736,6 @@ foreach ($skipped as $c) {
             ];
         }
         
-        // FIX: Use plain string fallback instead of non-existent PoolStatus::UNKNOWN
         return [
             'success' => true,
             'pool_id' => $pool['id'] ?? $poolId,
