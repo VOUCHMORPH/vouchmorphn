@@ -41,6 +41,60 @@ if (!$batch) {
 }
 
 // ============================================================
+// AUTO-REPAIR: If batch has destinations but totals are 0, fix them
+// ============================================================
+function repairBatchTotals(PDO $db, $batchId): void {
+    // Check current totals
+    $stmt = $db->prepare("
+        SELECT total_destinations, total_amount 
+        FROM disbursement_batches 
+        WHERE id = :id
+    ");
+    $stmt->execute([':id' => $batchId]);
+    $batch = $stmt->fetch(PDO::FETCH_ASSOC);
+    
+    // Count actual destinations
+    $stmt = $db->prepare("
+        SELECT COUNT(*) AS cnt, COALESCE(SUM(amount), 0) AS total
+        FROM disbursement_destinations 
+        WHERE batch_id = :id
+    ");
+    $stmt->execute([':id' => $batchId]);
+    $actual = $stmt->fetch(PDO::FETCH_ASSOC);
+    
+    // If mismatch, fix it
+    if ((int)$batch['total_destinations'] !== (int)$actual['cnt'] || 
+        (float)$batch['total_amount'] !== (float)$actual['total']) {
+        error_log("[add_destinations] Repairing batch {$batchId}: total_destinations {$batch['total_destinations']}->{$actual['cnt']}, total_amount {$batch['total_amount']}->{$actual['total']}");
+        
+        $stmt = $db->prepare("
+            UPDATE disbursement_batches
+            SET total_destinations = :cnt, total_amount = :amt,
+                pending_count = :cnt, updated_at = NOW()
+            WHERE id = :id
+        ");
+        $stmt->execute([
+            ':cnt' => (int)$actual['cnt'],
+            ':amt' => (float)$actual['total'],
+            ':id' => $batchId
+        ]);
+    }
+}
+
+// ============================================================
+// AUTO-REPAIR: Run immediately after loading the batch
+// ============================================================
+repairBatchTotals($db, $batchId);
+
+// Refresh batch data after repair
+$stmt = $db->prepare("
+    SELECT * FROM disbursement_batches 
+    WHERE id = :id AND organization_id = :org_id
+");
+$stmt->execute([':id' => $batchId, ':org_id' => $orgId]);
+$batch = $stmt->fetch(PDO::FETCH_ASSOC);
+
+// ============================================================
 // PERMISSIONS — this page previously had none at all: any authenticated
 // role could POST here regardless of who created the batch. Mirrors
 // canEditBatch() from review_batch.php/view.php, extended for
