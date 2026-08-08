@@ -1215,6 +1215,7 @@ return [
     'original_payload' => $responseForVerification,   // <-- fixed: response, not request
     'timestamp' => $data['timestamp'] ?? time()
 ];
+    }
     public function releaseHold(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: releaseHold ===");
