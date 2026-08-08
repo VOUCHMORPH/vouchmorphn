@@ -64,14 +64,17 @@ class AggregateSigner
     private function verifySourceSignatures(array $holds, array $verifications): void
 {
     foreach ($holds as $index => $hold) {
-        $institution = $hold['institution'] ?? 'unknown';   // <-- fix: flat key, matches signAggregate()
+        $institution = $hold['institution'] ?? 'unknown';
 
         $verification = $verifications[$index] ?? null;
         if (!$verification) {
             throw new RuntimeException("Missing verification for source: {$institution}");
         }
 
-        $request = array_merge($verification['payload'] ?? [], [
+        // Verify the HOLD's signature against the HOLD's own payload —
+        // not the (different) VERIFY_ASSET payload. Signing and
+        // verifying must operate on the same signed document.
+        $request = array_merge($hold['original_payload'] ?? [], [
             'signature' => $hold['signature'] ?? '',
             'certificate' => $hold['certificate'] ?? ''
         ]);
@@ -81,4 +84,4 @@ class AggregateSigner
         }
     }
 }
-}
+
