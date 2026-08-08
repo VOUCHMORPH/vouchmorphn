@@ -1178,33 +1178,43 @@ if ($currentSection === 'auth' && preg_match('/^    ([a-z_]+): (.+)$/', $line, $
         $data = $result['data'] ?? [];
         
         // If the hold failed due to certificate issues, log it clearly
-        if (!$result['success'] && isset($data['message']) && 
-            strpos($data['message'], 'Certificate required') !== false) {
-            error_log("[GenericBankClient] placeHold: ❌ HOLD FAILED - Certificate required but not sent or invalid");
-            error_log("[GenericBankClient] placeHold: Payload certificate key exists: " . 
-                      (isset($payload['certificate']) ? 'YES' : 'NO'));
-            error_log("[GenericBankClient] placeHold: Payload signature key exists: " . 
-                      (isset($payload['signature']) ? 'YES' : 'NO'));
-        }
-        
-        return [
-            'success' => $result['success'] ?? false,
-            'hold_placed' => $result['success'] ?? false,
-            'hold_reference' => $data['hold_reference'] ?? $data['reference'] ?? null,
-            'hold_id' => $data['hold_id'] ?? null,
-            'status' => $data['status'] ?? 'ACTIVE',
-            'data' => $data,
-            'message' => $data['message'] ?? ($result['success'] ? 'Hold placed' : 'Hold failed'),
-            'status_code' => $result['status_code'] ?? 0,
-            'curl_error' => $result['curl_error'] ?? null,
-            'raw_response' => $result['raw_response'] ?? null,
-            'signature' => $data['signature'] ?? $payload['signature'] ?? null,
-            'certificate' => $data['certificate'] ?? $payload['certificate'] ?? null,
-            'original_payload' => $payload,
-            'timestamp' => $data['timestamp'] ?? time()
-        ];
-    }
+       $data = $result['data'] ?? [];
 
+// If the hold failed due to certificate issues, log it clearly
+if (!$result['success'] && isset($data['message']) && 
+    strpos($data['message'], 'Certificate required') !== false) {
+    error_log("[GenericBankClient] placeHold: ❌ HOLD FAILED - Certificate required but not sent or invalid");
+    error_log("[GenericBankClient] placeHold: Payload certificate key exists: " . 
+              (isset($payload['certificate']) ? 'YES' : 'NO'));
+    error_log("[GenericBankClient] placeHold: Payload signature key exists: " . 
+              (isset($payload['signature']) ? 'YES' : 'NO'));
+}
+
+// The document the bank actually signed is ITS OWN response body
+// (minus signature/certificate, which it appends after signing) -
+// not the request we sent it. AggregateSigner needs this exact
+// document to verify the bank's signature; passing the outgoing
+// $payload here (as before) checks the wrong document and always
+// fails verification, regardless of whether the signature is valid.
+$responseForVerification = $data;
+unset($responseForVerification['signature'], $responseForVerification['certificate']);
+
+return [
+    'success' => $result['success'] ?? false,
+    'hold_placed' => $result['success'] ?? false,
+    'hold_reference' => $data['hold_reference'] ?? $data['reference'] ?? null,
+    'hold_id' => $data['hold_id'] ?? null,
+    'status' => $data['status'] ?? 'ACTIVE',
+    'data' => $data,
+    'message' => $data['message'] ?? ($result['success'] ? 'Hold placed' : 'Hold failed'),
+    'status_code' => $result['status_code'] ?? 0,
+    'curl_error' => $result['curl_error'] ?? null,
+    'raw_response' => $result['raw_response'] ?? null,
+    'signature' => $data['signature'] ?? $payload['signature'] ?? null,
+    'certificate' => $data['certificate'] ?? $payload['certificate'] ?? null,
+    'original_payload' => $responseForVerification,   // <-- fixed: response, not request
+    'timestamp' => $data['timestamp'] ?? time()
+];
     public function releaseHold(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: releaseHold ===");
