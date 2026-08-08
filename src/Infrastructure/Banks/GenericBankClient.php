@@ -1200,6 +1200,7 @@ if ($currentSection === 'auth' && preg_match('/^    ([a-z_]+): (.+)$/', $line, $
             'raw_response' => $result['raw_response'] ?? null,
             'signature' => $data['signature'] ?? $payload['signature'] ?? null,
             'certificate' => $data['certificate'] ?? $payload['certificate'] ?? null,
+            'original_payload' => $payload,
             'timestamp' => $data['timestamp'] ?? time()
         ];
     }
