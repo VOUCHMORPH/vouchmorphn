@@ -22,13 +22,13 @@ $search = $_GET['search'] ?? '';
 $params = [':org_id' => $orgId];
 $where = ["organization_id = :org_id"];
 
-/// Department scope - FIX: restore proper scoping
+// Department scope - FIX: restore proper scoping
 if (in_array($userRole, ['department_head', 'program_officer'])) {
     $where[] = "department_id = :dept_id";
     $params[':dept_id'] = $departmentId;
 }
 
-// Status filter
+// Status filter - FIX: use synonym mapping
 $statusSynonyms = [
     'pending_approval' => ['pending', 'pending_approval', 'PENDING', 'PENDING_APPROVAL'],
     'pending'          => ['pending', 'pending_approval', 'PENDING', 'PENDING_APPROVAL'],
@@ -55,7 +55,7 @@ if ($search) {
     $params[':search'] = "%$search%";
 }
 
-// Role-based visibility - FIXED: added owner and loader visibility
+// Role-based visibility
 if ($userRole === 'owner' || $userRole === 'it_manager_enterprise') {
     // Owners and IT Managers see ALL batches
     // No additional filters
@@ -73,11 +73,11 @@ if ($userRole === 'owner' || $userRole === 'it_manager_enterprise') {
 
 $whereClause = implode(" AND ", $where);
 
-// FIXED: Removed department_id from SELECT
+// FIX: Added currency column to SELECT
 $stmt = $db->prepare("
     SELECT 
         id, batch_reference, batch_name, source_institution,
-        total_amount, total_destinations, status, created_at,
+        total_amount, currency, total_destinations, status, created_at,
         updated_at, created_by,
         approved_at, executed_at
     FROM disbursement_batches
@@ -94,12 +94,26 @@ $stmt = $db->prepare("
 $stmt->execute($params);
 $batches = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Get counts for status badges
+// Get counts for status badges - FIX: use synonym-aware counting
 $counts = [];
-$stmt = $db->prepare("SELECT status, COUNT(*) as count FROM disbursement_batches WHERE organization_id = :org_id GROUP BY status");
+$stmt = $db->prepare("
+    SELECT 
+        CASE 
+            WHEN status IN ('pending', 'pending_approval', 'PENDING', 'PENDING_APPROVAL') THEN 'pending_approval'
+            WHEN status IN ('approved', 'APPROVED') THEN 'approved'
+            WHEN status IN ('completed', 'executed', 'COMPLETED', 'EXECUTED') THEN 'completed'
+            WHEN status IN ('draft', 'DRAFT') THEN 'draft'
+            WHEN status IN ('rejected', 'REJECTED') THEN 'rejected'
+            ELSE LOWER(status)
+        END as normalized_status,
+        COUNT(*) as count 
+    FROM disbursement_batches 
+    WHERE organization_id = :org_id 
+    GROUP BY normalized_status
+");
 $stmt->execute([':org_id' => $orgId]);
 while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-    $counts[strtolower($row['status'])] = $row['count'];
+    $counts[$row['normalized_status']] = $row['count'];
 }
 
 $roleDisplay = strtoupper($userRole);
@@ -130,8 +144,13 @@ function getStatusLabel($status) {
     };
 }
 
-function formatCurrency($amount) {
-    return 'BWP ' . number_format($amount, 2);
+// FIX: Updated formatCurrency to use the batch's currency
+function formatCurrency($amount, $currency = null) {
+    $formatted = number_format((float)$amount, 2);
+    if ($currency === null || $currency === '') {
+        return $formatted . ' <span style="color:#f59e0b; font-size:10px;">(no currency)</span>';
+    }
+    return $formatted . ' ' . safeHtml($currency);
 }
 
 function safeHtml($value) {
@@ -488,7 +507,9 @@ function safeHtml($value) {
                             <td><strong><?php echo safeHtml($batch['batch_reference']); ?></strong></td>
                             <td><?php echo safeHtml($batch['batch_name'] ?? '—'); ?></td>
                             <td><?php echo safeHtml($batch['source_institution'] ?? '—'); ?></td>
-                            <td><strong><?php echo formatCurrency($batch['total_amount'] ?? 0); ?></strong></td>
+                            <td>
+                                <strong><?php echo formatCurrency($batch['total_amount'] ?? 0, $batch['currency'] ?? null); ?></strong>
+                            </td>
                             <td><?php echo number_format($batch['total_destinations'] ?? 0); ?></td>
                             <td>
                                 <span class="status status-<?php echo getStatusClass($batch['status']); ?>">
