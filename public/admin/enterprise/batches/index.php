@@ -22,31 +22,16 @@ $search = $_GET['search'] ?? '';
 $params = [':org_id' => $orgId];
 $where = ["organization_id = :org_id"];
 
-// Department scope - FIX: restore proper scoping
+// Department scope - keep original behavior
 if (in_array($userRole, ['department_head', 'program_officer'])) {
     $where[] = "department_id = :dept_id";
     $params[':dept_id'] = $departmentId;
 }
 
-// Status filter - FIX: use synonym mapping
-$statusSynonyms = [
-    'pending_approval' => ['pending', 'pending_approval', 'PENDING', 'PENDING_APPROVAL'],
-    'pending'          => ['pending', 'pending_approval', 'PENDING', 'PENDING_APPROVAL'],
-    'approved'         => ['approved', 'APPROVED'],
-    'completed'        => ['completed', 'executed', 'COMPLETED', 'EXECUTED'],
-    'draft'            => ['draft', 'DRAFT'],
-    'rejected'         => ['rejected', 'REJECTED'],
-];
-
+// Status filter - keep original behavior
 if ($statusFilter !== 'all') {
-    $group = $statusSynonyms[$statusFilter] ?? [$statusFilter];
-    $placeholders = [];
-    foreach ($group as $i => $val) {
-        $key = ":status{$i}";
-        $placeholders[] = $key;
-        $params[$key] = $val;
-    }
-    $where[] = "status IN (" . implode(',', $placeholders) . ")";
+    $where[] = "LOWER(status) = LOWER(:status)";
+    $params[':status'] = $statusFilter;
 }
 
 // Search
@@ -58,7 +43,6 @@ if ($search) {
 // Role-based visibility
 if ($userRole === 'owner' || $userRole === 'it_manager_enterprise') {
     // Owners and IT Managers see ALL batches
-    // No additional filters
 } elseif (in_array($userRole, ['auditor', 'viewer'])) {
     $where[] = "status IN ('completed', 'executed', 'COMPLETED', 'EXECUTED')";
 } elseif (in_array($userRole, ['approver', 'senior_approver'])) {
@@ -66,14 +50,13 @@ if ($userRole === 'owner' || $userRole === 'it_manager_enterprise') {
 } elseif ($userRole === 'supervisor') {
     $where[] = "status IN ('approved', 'completed', 'executed', 'APPROVED', 'COMPLETED', 'EXECUTED')";
 } elseif (in_array($userRole, ['program_officer', 'department_head'])) {
-    // Loaders see their own + pending + approved + draft
     $where[] = "(created_by = :user_id OR status IN ('pending', 'pending_approval', 'approved', 'draft', 'PENDING', 'PENDING_APPROVAL', 'APPROVED'))";
     $params[':user_id'] = $userId;
 }
 
 $whereClause = implode(" AND ", $where);
 
-// FIX: Added currency column to SELECT
+// FIX: Added currency to SELECT
 $stmt = $db->prepare("
     SELECT 
         id, batch_reference, batch_name, source_institution,
@@ -94,26 +77,12 @@ $stmt = $db->prepare("
 $stmt->execute($params);
 $batches = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Get counts for status badges - FIX: use synonym-aware counting
+// Get counts for status badges
 $counts = [];
-$stmt = $db->prepare("
-    SELECT 
-        CASE 
-            WHEN status IN ('pending', 'pending_approval', 'PENDING', 'PENDING_APPROVAL') THEN 'pending_approval'
-            WHEN status IN ('approved', 'APPROVED') THEN 'approved'
-            WHEN status IN ('completed', 'executed', 'COMPLETED', 'EXECUTED') THEN 'completed'
-            WHEN status IN ('draft', 'DRAFT') THEN 'draft'
-            WHEN status IN ('rejected', 'REJECTED') THEN 'rejected'
-            ELSE LOWER(status)
-        END as normalized_status,
-        COUNT(*) as count 
-    FROM disbursement_batches 
-    WHERE organization_id = :org_id 
-    GROUP BY normalized_status
-");
+$stmt = $db->prepare("SELECT status, COUNT(*) as count FROM disbursement_batches WHERE organization_id = :org_id GROUP BY status");
 $stmt->execute([':org_id' => $orgId]);
 while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-    $counts[$row['normalized_status']] = $row['count'];
+    $counts[strtolower($row['status'])] = $row['count'];
 }
 
 $roleDisplay = strtoupper($userRole);
@@ -144,13 +113,9 @@ function getStatusLabel($status) {
     };
 }
 
-// FIX: Updated formatCurrency to use the batch's currency
-function formatCurrency($amount, $currency = null) {
-    $formatted = number_format((float)$amount, 2);
-    if ($currency === null || $currency === '') {
-        return $formatted . ' <span style="color:#f59e0b; font-size:10px;">(no currency)</span>';
-    }
-    return $formatted . ' ' . safeHtml($currency);
+// FIX: Updated to use currency parameter
+function formatCurrency($amount, $currency = 'BWP') {
+    return $currency . ' ' . number_format((float)$amount, 2);
 }
 
 function safeHtml($value) {
@@ -508,7 +473,7 @@ function safeHtml($value) {
                             <td><?php echo safeHtml($batch['batch_name'] ?? '—'); ?></td>
                             <td><?php echo safeHtml($batch['source_institution'] ?? '—'); ?></td>
                             <td>
-                                <strong><?php echo formatCurrency($batch['total_amount'] ?? 0, $batch['currency'] ?? null); ?></strong>
+                                <strong><?php echo formatCurrency($batch['total_amount'] ?? 0, $batch['currency'] ?? 'BWP'); ?></strong>
                             </td>
                             <td><?php echo number_format($batch['total_destinations'] ?? 0); ?></td>
                             <td>
