@@ -70,28 +70,51 @@ class AggregateSigner
      * always fails regardless of whether the hold was legitimately signed.
      */
     private function verifySourceSignatures(array $holds, array $verifications): void
-    {
-        foreach ($holds as $index => $hold) {
-            $institution = $hold['institution'] ?? 'unknown';
+{
+    foreach ($holds as $index => $hold) {
+        $institution = $hold['institution'] ?? 'unknown';
 
-            $verification = $verifications[$index] ?? null;
-            if (!$verification) {
-                throw new RuntimeException("Missing verification for source: {$institution}");
-            }
+        $verification = $verifications[$index] ?? null;
+        if (!$verification) {
+            throw new RuntimeException("Missing verification for source: {$institution}");
+        }
 
-            // verifyWithCertificate() expects a single request array containing
-            // the payload fields plus 'signature' and 'certificate' keys - it
-            // does not take them as separate arguments.
-            $request = array_merge($hold['original_payload'] ?? [], [
-                'signature' => $hold['signature'] ?? '',
-                'certificate' => $hold['certificate'] ?? ''
-            ]);
+        // Verify using the institution's PINNED public key rather than a
+        // CA-chain certificate check. Each bank's response is signed with
+        // its own key, but its embedded certificate is self-signed (not
+        // issued by VouchMorph's CA) - verifying via CA chain always fails
+        // for a genuinely self-signed cert, regardless of signature
+        // validity. VouchMorph already has each institution's real public
+        // key pinned via {INSTITUTION}_PUBLIC_KEY - use that directly.
+        $publicKey = $this->getPinnedPublicKey($institution);
+        if (!$publicKey) {
+            throw new RuntimeException("No pinned public key configured for source: {$institution}");
+        }
 
-            $result = $this->signatureVerifier->verifyWithCertificate($request);
+        $payloadToVerify = $hold['original_payload'] ?? [];
+        ksort($payloadToVerify);
+        $jsonToVerify = json_encode($payloadToVerify, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
-            if (!$result['verified']) {
-                throw new RuntimeException("Invalid signature from: {$institution}");
-            }
+        $keyResource = openssl_pkey_get_public($publicKey);
+        if (!$keyResource) {
+            throw new RuntimeException("Invalid pinned public key for source: {$institution}");
+        }
+
+        $decodedSignature = base64_decode($hold['signature'] ?? '');
+        $result = openssl_verify($jsonToVerify, $decodedSignature, $keyResource, OPENSSL_ALGO_SHA256);
+
+        if ($result !== 1) {
+            throw new RuntimeException("Invalid signature from: {$institution}");
         }
     }
+}
+
+private function getPinnedPublicKey(string $institution): ?string
+{
+    $envName = strtoupper($institution) . '_PUBLIC_KEY';
+    $key = getenv($envName);
+    if (!$key) {
+        return null;
+    }
+    return str_replace(['\\n', '\n'], "\n", $key);
 }
