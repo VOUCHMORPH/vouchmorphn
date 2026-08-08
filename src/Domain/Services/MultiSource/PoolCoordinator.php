@@ -747,43 +747,60 @@ class PoolCoordinator
     }
 
     private function invoice(array $pool, array $contributions): array
-    {
-        $feeResult = $this->feeCalculator->calculate(
-            $pool['amount'] ?? 0,
-            $contributions,
-            $pool,
-            $this->forexRateSnapshot
-        );
-        
-        $invoiceResults = [];
-        
-        if (isset($feeResult['platform_fee']) && $feeResult['platform_fee'] > 0) {
-            $result = $this->settlement->invoiceFee(
-                $pool['reference'] ?? uniqid(),
-                'VOUCHMORPH',
-                1,
-                'PLATFORM_FEE',
-                $feeResult['platform_fee'],
-                $pool['currency'] ?? 'BWP'
-            );
-            $invoiceResults[] = $result;
-        }
-        
-        foreach ($feeResult['source_fees'] ?? [] as $sourceFee) {
-            $result = $this->settlement->invoiceFee(
-                $pool['reference'] ?? uniqid(),
-                $sourceFee['institution'],
-                0,
-                'SOURCE_FEE',
-                $sourceFee['amount'],
-                $pool['currency'] ?? 'BWP'
-            );
-            $invoiceResults[] = $result;
-        }
-        
-        return $invoiceResults;
+{
+    // Derive delivery mode from how the pool was destined
+    $deliveryMode = match (true) {
+        isset($pool['identity_type'], $pool['identity_value']) => 'deposit', // identity swaps settle as deposits internally
+        strtoupper($pool['destination_asset_type'] ?? '') === 'CASHOUT' => 'cashout',
+        default => 'deposit',
+    };
+    // If the caller flagged this pool as a cashout explicitly, honor that instead
+    if (!empty($pool['delivery_mode'])) {
+        $deliveryMode = $pool['delivery_mode'];
     }
 
+    $feeResult = $this->feeCalculator->calculateFees(
+        count($contributions),
+        $deliveryMode,
+        $pool['amount'] ?? 0,
+        $pool['currency'] ?? 'BWP',
+        $pool['destination_currency'] ?? $pool['currency'] ?? 'BWP'
+    );
+
+    $invoiceResults = [];
+
+    $platformShare = $feeResult['split_distribution']['platform_share'] ?? 0;
+    if ($platformShare > 0) {
+        $result = $this->settlement->invoiceFee(
+            $pool['reference'] ?? uniqid(),
+            'VOUCHMORPH',
+            1,
+            'PLATFORM_FEE',
+            $platformShare,
+            $feeResult['currency'] ?? $pool['currency'] ?? 'BWP'
+        );
+        $invoiceResults[] = $result;
+    }
+
+    // Invoice each source's individual share, using per_source_fees
+    // (keyed by contribution index, matching $contributions' own indexing)
+    foreach ($feeResult['per_source_fees'] ?? [] as $index => $amount) {
+        if ($amount <= 0 || !isset($contributions[$index])) {
+            continue;
+        }
+        $result = $this->settlement->invoiceFee(
+            $pool['reference'] ?? uniqid(),
+            $contributions[$index]['institution'],
+            0,
+            'SOURCE_FEE',
+            $amount,
+            $feeResult['currency'] ?? $pool['currency'] ?? 'BWP'
+        );
+        $invoiceResults[] = $result;
+    }
+
+    return $invoiceResults;
+}
     private function rollback(?array $pool): void
     {
         if ($pool && isset($pool['id'])) {
