@@ -112,7 +112,26 @@ class PoolCoordinator
             
             // NEW: persist contributions immediately so they exist in the DB
             $contributions = $this->persistContributions($pool, $contributions);
-            
+
+            $skipped = [];
+$contributions = array_values(array_filter($contributions, function ($c) use (&$skipped) {
+    $keep = (float)($c['amount'] ?? 0) > 0;
+    if (!$keep) {
+        $skipped[] = $c;
+    }
+    return $keep;
+}));
+
+foreach ($skipped as $c) {
+    $this->logger->info('Skipping zero-amount contribution', ['institution' => $c['institution'] ?? 'unknown']);
+    if (isset($c['_contribution_id'])) {
+        try {
+            $this->contributionRepository->updateStatus($c['_contribution_id'], ContributionStatus::SKIPPED);
+        } catch (Exception $e) {
+            $this->logger->warning('Failed to mark contribution skipped', ['error' => $e->getMessage()]);
+        }
+    }
+}
             // 3. Transition to VERIFYING
             $this->stateMachine->transition($pool, PoolStatus::VERIFYING->value);
             
@@ -493,6 +512,7 @@ class PoolCoordinator
                 'amount' => $amount,
                 'signature' => $result['signature'] ?? null,
                 'certificate' => $result['certificate'] ?? null,
+               'original_payload' => $result['original_payload'] ?? $holdPayload,   
                 'source_payload' => $contribution
             ];
             
