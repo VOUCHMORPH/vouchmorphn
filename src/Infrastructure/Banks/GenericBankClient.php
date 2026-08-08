@@ -30,6 +30,7 @@ class GenericBankClient implements BankAPIInterface
     // YAML configuration cache
     protected ?array $yamlEndpoints = null;
     protected ?string $yamlBaseUrl = null;
+    protected ?array $yamlAuth = null;   
 
     public function __construct(array $config, ?array $requestPayload = null, ?array $headers = null, ?string $endpoint = null)
     {
@@ -126,6 +127,10 @@ $this->certManager = \Infrastructure\Crypto\CertificateManagerFactory::get('VOUC
                 $this->yamlEndpoints['source_linking'] = $parsed[$bankCode]['source_linking'];
                 error_log("Loaded source_linking endpoints for {$bankCode}");
             }
+            if (isset($parsed[$bankCode]['auth'])) {
+    $this->yamlAuth = $parsed[$bankCode]['auth'];
+    error_log("Loaded YAML auth config for {$bankCode}");
+}
         } else {
             // Try case-insensitive match
             error_log("Exact match NOT found, trying case-insensitive...");
@@ -216,6 +221,29 @@ $this->certManager = \Infrastructure\Crypto\CertificateManagerFactory::get('VOUC
                     $result[$currentBank]['endpoints'] = [];
                     continue;
                 }
+
+                // Auth section
+if (preg_match('/^  auth:$/', $line)) {
+    $currentSection = 'auth';
+    $result[$currentBank]['auth'] = [];
+    continue;
+}
+
+if ($currentSection === 'auth' && preg_match('/^    ([a-z_]+): (.+)$/', $line, $matches)) {
+    $key = $matches[1];
+    $rawValue = trim($matches[2]);
+
+    // Inline flow-mapping: secret_source: { type: env_var, name: "X" }
+    if ($key === 'secret_source' && preg_match('/^\{\s*type:\s*(\w+),\s*name:\s*"?([^",}]+)"?\s*\}$/', $rawValue, $sm)) {
+        $result[$currentBank]['auth']['secret_source'] = [
+            'type' => $sm[1],
+            'name' => $sm[2],
+        ];
+    } else {
+        $result[$currentBank]['auth'][$key] = trim($rawValue, '"');
+    }
+    continue;
+}
                 
                 // Source endpoints
                 if ($currentSection === 'endpoints' && preg_match('/^    source:$/', $line)) {
@@ -301,6 +329,18 @@ $this->certManager = \Infrastructure\Crypto\CertificateManagerFactory::get('VOUC
 
     protected function getApiKey(): ?string
     {
+        if ($this->yamlAuth && isset($this->yamlAuth['secret_source']['name'])) {
+        if (($this->yamlAuth['secret_source']['type'] ?? 'env_var') === 'env_var') {
+            $envName = $this->yamlAuth['secret_source']['name'];
+            $apiKey = getenv($envName);
+            if ($apiKey && !empty($apiKey)) {
+                error_log("[GenericBankClient] getApiKey: using YAML secret_source: {$envName}");
+                return $apiKey;
+            }
+            error_log("[GenericBankClient] getApiKey: YAML secret_source {$envName} not set, falling back");
+        }
+    }
+
         // Check config auth section
         $authConfig = $this->config['auth'] ?? null;
         if ($authConfig && isset($authConfig['secret_source'])) {
