@@ -23,65 +23,75 @@ class AggregateSigner
     }
 
     public function signAggregate(array $pool, array $holds, array $verifications): array
-{
-    $this->verifySourceSignatures($holds, $verifications);
+    {
+        $this->verifySourceSignatures($holds, $verifications);
 
-    $payload = [
-        'pool_id' => $pool['id'],
-        'swap_reference' => $pool['reference'],
-        'total_amount' => $pool['amount'],
-        'currency' => $pool['currency'],
-        'destination_institution' => $pool['destination_institution'],
-        'contributors' => array_map(function ($hold) {
-            return [
-                'institution' => $hold['institution'],              // was: $hold['source']['institution']
-                'amount' => $hold['amount'],
-                'hold_reference' => $hold['hold_reference'],
-                'source_signature' => $hold['signature'],
-                'source_certificate' => $hold['certificate']
-            ];
-        }, $holds)
-    ];
-    ksort($payload);
+        $payload = [
+            'pool_id' => $pool['id'],
+            'swap_reference' => $pool['reference'],
+            'total_amount' => $pool['amount'],
+            'currency' => $pool['currency'],
+            'destination_institution' => $pool['destination_institution'],
+            'contributors' => array_map(function ($hold) {
+                return [
+                    'institution' => $hold['institution'],
+                    'amount' => $hold['amount'],
+                    'hold_reference' => $hold['hold_reference'],
+                    'source_signature' => $hold['signature'],
+                    'source_certificate' => $hold['certificate']
+                ];
+            }, $holds)
+        ];
 
-    $payloadHash = hash('sha256', json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+        ksort($payload);
 
-    $signedRequest = $this->certManager->createSignedRequest($payload, $this->systemId);
+        $payloadHash = hash('sha256', json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+        $signedRequest = $this->certManager->createSignedRequest($payload, $this->systemId);
 
-    if (!isset($signedRequest['signature'])) {
-        throw new RuntimeException('AggregateSigner: failed to sign aggregate payload - check that CertificateManager has a private key and certificate configured');
+        if (!isset($signedRequest['signature'])) {
+            throw new RuntimeException('AggregateSigner: failed to sign aggregate payload - check that CertificateManager has a private key and certificate configured');
+        }
+
+        return [
+            'signature' => $signedRequest['signature'],
+            'certificate' => $signedRequest['certificate'] ?? $this->certManager->getMyCertificate(),
+            'payload' => $signedRequest,
+            'payload_hash' => $payloadHash,
+            'timestamp' => $signedRequest['timestamp'] ?? time()
+        ];
     }
 
-    return [
-        'signature' => $signedRequest['signature'],
-        'certificate' => $signedRequest['certificate'] ?? $this->certManager->getMyCertificate(),
-        'payload' => $signedRequest,
-        'payload_hash' => $payloadHash,
-        'timestamp' => $signedRequest['timestamp'] ?? time()
-    ];
-}
-
+    /**
+     * Verifies each hold's own signature against its own signed payload.
+     * Deliberately does NOT reuse $verification['payload'] here - that is
+     * the VERIFY_ASSET payload, a different signed document from the
+     * PLACE_HOLD payload each $hold carries in 'original_payload'.
+     * Signing and verifying must operate on the same document, or this
+     * always fails regardless of whether the hold was legitimately signed.
+     */
     private function verifySourceSignatures(array $holds, array $verifications): void
-{
-    foreach ($holds as $index => $hold) {
-        $institution = $hold['institution'] ?? 'unknown';
+    {
+        foreach ($holds as $index => $hold) {
+            $institution = $hold['institution'] ?? 'unknown';
 
-        $verification = $verifications[$index] ?? null;
-        if (!$verification) {
-            throw new RuntimeException("Missing verification for source: {$institution}");
-        }
+            $verification = $verifications[$index] ?? null;
+            if (!$verification) {
+                throw new RuntimeException("Missing verification for source: {$institution}");
+            }
 
-        // Verify the HOLD's signature against the HOLD's own payload —
-        // not the (different) VERIFY_ASSET payload. Signing and
-        // verifying must operate on the same signed document.
-        $request = array_merge($hold['original_payload'] ?? [], [
-            'signature' => $hold['signature'] ?? '',
-            'certificate' => $hold['certificate'] ?? ''
-        ]);
-        $result = $this->signatureVerifier->verifyWithCertificate($request);
-        if (!$result['verified']) {
-            throw new RuntimeException("Invalid signature from: {$institution}");
+            // verifyWithCertificate() expects a single request array containing
+            // the payload fields plus 'signature' and 'certificate' keys - it
+            // does not take them as separate arguments.
+            $request = array_merge($hold['original_payload'] ?? [], [
+                'signature' => $hold['signature'] ?? '',
+                'certificate' => $hold['certificate'] ?? ''
+            ]);
+
+            $result = $this->signatureVerifier->verifyWithCertificate($request);
+
+            if (!$result['verified']) {
+                throw new RuntimeException("Invalid signature from: {$institution}");
+            }
         }
     }
 }
-
