@@ -364,6 +364,27 @@ class PoolCoordinator
                                     $contribution['identifier_type'] ?? 
                                     'auto';
             
+            // FIX: Get the original source data to include certificate and signature
+            $originalSource = null;
+            foreach ($payload['sources'] ?? [] as $source) {
+                $sourceId = $source['source_identifier'] ?? $source['identifier'] ?? $source['account_id'] ?? null;
+                if ($sourceId === $sourceIdentifier) {
+                    $originalSource = $source;
+                    break;
+                }
+            }
+            
+            // If not found by identifier, try matching by institution
+            if (!$originalSource) {
+                foreach ($payload['sources'] ?? [] as $source) {
+                    if (($source['source_type'] ?? '') === $institution || 
+                        ($source['institution'] ?? '') === $institution) {
+                        $originalSource = $source;
+                        break;
+                    }
+                }
+            }
+            
             $verifyPayload = [
                 'action' => 'VERIFY_ASSET',
                 'reference' => $payload['reference'] ?? uniqid(),
@@ -379,6 +400,31 @@ class PoolCoordinator
                 'source_identifier' => $sourceIdentifier,
                 'source_identifier_type' => $sourceIdentifierType,
             ];
+            
+            // FIX: Include certificate and signature from original source if available
+            if ($originalSource) {
+                if (isset($originalSource['certificate'])) {
+                    $verifyPayload['certificate'] = $originalSource['certificate'];
+                }
+                if (isset($originalSource['signature'])) {
+                    $verifyPayload['signature'] = $originalSource['signature'];
+                }
+                // Also pass any other relevant verification data
+                if (isset($originalSource['verification_data'])) {
+                    $verifyPayload['verification_data'] = $originalSource['verification_data'];
+                }
+                
+                $this->logger->debug('Including certificate/signature for verification', [
+                    'institution' => $institution,
+                    'has_certificate' => isset($originalSource['certificate']),
+                    'has_signature' => isset($originalSource['signature'])
+                ]);
+            } else {
+                $this->logger->warning('No original source found for verification', [
+                    'institution' => $institution,
+                    'source_identifier' => $sourceIdentifier
+                ]);
+            }
             
             $result = $this->swapService->verifyAssetSigned($verifyPayload, $institution);
             
@@ -431,6 +477,27 @@ class PoolCoordinator
                                     $contribution['identifier_type'] ?? 
                                     'auto';
             
+            // FIX: Get original source data for certificate/signature
+            $originalSource = null;
+            foreach ($pool['sources'] ?? [] as $source) {
+                $sourceId = $source['source_identifier'] ?? $source['identifier'] ?? $source['account_id'] ?? null;
+                if ($sourceId === $sourceIdentifier) {
+                    $originalSource = $source;
+                    break;
+                }
+            }
+            
+            // If not found by identifier, try matching by institution
+            if (!$originalSource) {
+                foreach ($pool['sources'] ?? [] as $source) {
+                    if (($source['source_type'] ?? '') === $institution || 
+                        ($source['institution'] ?? '') === $institution) {
+                        $originalSource = $source;
+                        break;
+                    }
+                }
+            }
+            
             $holdPayload = [
                 'action' => 'PLACE_HOLD',
                 'reference' => $pool['reference'] ?? uniqid(),
@@ -447,6 +514,27 @@ class PoolCoordinator
                 'user_id' => $pool['user_id'] ?? 0,
                 'destination_institution' => $pool['destination_institution'] ?? null,
             ];
+            
+            // FIX: Include certificate and signature from original source
+            if ($originalSource) {
+                if (isset($originalSource['certificate'])) {
+                    $holdPayload['certificate'] = $originalSource['certificate'];
+                }
+                if (isset($originalSource['signature'])) {
+                    $holdPayload['signature'] = $originalSource['signature'];
+                }
+                
+                $this->logger->debug('Including certificate/signature for hold', [
+                    'institution' => $institution,
+                    'has_certificate' => isset($originalSource['certificate']),
+                    'has_signature' => isset($originalSource['signature'])
+                ]);
+            } else {
+                $this->logger->warning('No original source found for hold', [
+                    'institution' => $institution,
+                    'source_identifier' => $sourceIdentifier
+                ]);
+            }
             
             $verificationResult = $verifications[$index] ?? [];
             $result = $this->swapService->placeHoldSigned($holdPayload, $institution, $verificationResult);
