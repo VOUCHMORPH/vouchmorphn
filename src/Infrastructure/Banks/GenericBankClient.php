@@ -1211,8 +1211,8 @@ return [
     'curl_error' => $result['curl_error'] ?? null,
     'raw_response' => $result['raw_response'] ?? null,
     'signature' => $data['signature'] ?? $payload['signature'] ?? null,
-    'certificate' => $data['certificate'] ?? $payload['certificate'] ?? null,
-    'original_payload' => $responseForVerification,   // <-- fixed: response, not request
+'certificate' => $payload['certificate'] ?? $data['certificate'] ?? null,
+ 'original_payload' => $responseForVerification,   // <-- fixed: response, not request
     'timestamp' => $data['timestamp'] ?? time()
 ];
     }
