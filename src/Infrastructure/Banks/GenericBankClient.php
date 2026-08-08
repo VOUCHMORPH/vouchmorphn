@@ -3,7 +3,7 @@
 
 namespace Infrastructure\Banks;    
 
-
+ 
 require_once __DIR__ . '/Contracts/BankAPIInterface.php';
 require_once __DIR__ . '/../MessageAdapters/MessageAdapterFactory.php';
 
