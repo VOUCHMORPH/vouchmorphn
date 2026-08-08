@@ -217,7 +217,7 @@ if (!empty($commConfig)) {
         
         try {
             $this->contributionCalculator = new ContributionCalculator();
-            $this->multiSourceFeeCalculator = new MultiSourceFeeCalculator($this->config, $this->countryCode);
+            $this->multiSourceFeeCalculator = new MultiSourceFeeCalculator($this->feesconfig, $this->countryCode);
             
             $aggregateSigner = new AggregateSigner(
                 $this->certificateManager ?? new CertificateManager('VOUCHMORPH'),
