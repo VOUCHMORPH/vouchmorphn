@@ -652,28 +652,29 @@ class PoolCoordinator
         }
     }
 
-    private function executeDestination(array $pool, array $contributions, string $masterSignature): array
-    {
-        $destinationInstitution = $pool['destination_institution'];
-        $totalAmount = $pool['amount'];
-        $currency = $pool['currency'] ?? 'BWP';
-        
-        $destinationPayload = [
-            'destination_identifier' => $pool['destination_identifier'] ?? null,
-            'destination_identifier_type' => $pool['destination_identifier_type'] ?? 'account',
-            'destination_asset_type' => $pool['destination_asset_type'] ?? 'WALLET',
-            'destination_institution' => $destinationInstitution,
-            'to_institution' => $destinationInstitution,
-            'amount' => $totalAmount,
-            'currency' => $currency,
-            'reference' => $pool['reference'] ?? uniqid(),
-            'master_signature' => $masterSignature,
-            'pool_id' => $pool['id'],
-            'sources' => $contributions
-        ];
-        
-        return $this->swapService->creditDestination($destinationPayload, $destinationInstitution);
-    }
+    private function executeDestination(array $pool, array $contributions, array $masterSignature): array
+{
+    $destinationInstitution = $pool['destination_institution'];
+    $totalAmount = $pool['amount'];
+    $currency = $pool['currency'] ?? 'BWP';
+    
+    $destinationPayload = [
+        'destination_identifier' => $pool['destination_identifier'] ?? null,
+        'destination_identifier_type' => $pool['destination_identifier_type'] ?? 'account',
+        'destination_asset_type' => $pool['destination_asset_type'] ?? 'WALLET',
+        'destination_institution' => $destinationInstitution,
+        'to_institution' => $destinationInstitution,
+        'amount' => $totalAmount,
+        'currency' => $currency,
+        'reference' => $pool['reference'] ?? uniqid(),
+        'master_signature' => $masterSignature['signature'] ?? null,      // <-- extract the bare signature string
+        'master_certificate' => $masterSignature['certificate'] ?? null,  // <-- pass the cert too, likely needed by the destination bank
+        'pool_id' => $pool['id'],
+        'sources' => $contributions
+    ];
+    
+    return $this->swapService->creditDestination($destinationPayload, $destinationInstitution);
+}
 
     private function debitSources(array $pool, array $holds, array $contributions): array
     {
