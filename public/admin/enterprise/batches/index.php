@@ -22,16 +22,31 @@ $search = $_GET['search'] ?? '';
 $params = [':org_id' => $orgId];
 $where = ["organization_id = :org_id"];
 
-// Department scope - FIXED: removed department_id since it doesn't exist
-// if ($userRole === 'department_head' && $departmentId) {
-//     $where[] = "department_id = :dept_id";
-//     $params[':dept_id'] = $departmentId;
-// }
+/// Department scope - FIX: restore proper scoping
+if (in_array($userRole, ['department_head', 'program_officer'])) {
+    $where[] = "department_id = :dept_id";
+    $params[':dept_id'] = $departmentId;
+}
 
 // Status filter
+$statusSynonyms = [
+    'pending_approval' => ['pending', 'pending_approval', 'PENDING', 'PENDING_APPROVAL'],
+    'pending'          => ['pending', 'pending_approval', 'PENDING', 'PENDING_APPROVAL'],
+    'approved'         => ['approved', 'APPROVED'],
+    'completed'        => ['completed', 'executed', 'COMPLETED', 'EXECUTED'],
+    'draft'            => ['draft', 'DRAFT'],
+    'rejected'         => ['rejected', 'REJECTED'],
+];
+
 if ($statusFilter !== 'all') {
-    $where[] = "LOWER(status) = LOWER(:status)";
-    $params[':status'] = $statusFilter;
+    $group = $statusSynonyms[$statusFilter] ?? [$statusFilter];
+    $placeholders = [];
+    foreach ($group as $i => $val) {
+        $key = ":status{$i}";
+        $placeholders[] = $key;
+        $params[$key] = $val;
+    }
+    $where[] = "status IN (" . implode(',', $placeholders) . ")";
 }
 
 // Search
