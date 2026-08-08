@@ -123,15 +123,8 @@ $contributions = array_values(array_filter($contributions, function ($c) use (&$
 }));
 
 foreach ($skipped as $c) {
-    $this->logger->info('Skipping zero-amount contribution', ['institution' => $c['institution'] ?? 'unknown']);
-    if (isset($c['_contribution_id'])) {
-        try {
-            $this->contributionRepository->updateStatus($c['_contribution_id'], ContributionStatus::SKIPPED);
-        } catch (Exception $e) {
-            $this->logger->warning('Failed to mark contribution skipped', ['error' => $e->getMessage()]);
-        }
-    }
-}
+       $this->logger->info('Skipping zero-amount contribution', ['institution' => $c['institution'] ?? 'unknown']);
+   }
             // 3. Transition to VERIFYING
             $this->stateMachine->transition($pool, PoolStatus::VERIFYING->value);
             
