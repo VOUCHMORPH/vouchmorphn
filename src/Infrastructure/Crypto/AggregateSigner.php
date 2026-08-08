@@ -62,26 +62,23 @@ class AggregateSigner
 }
 
     private function verifySourceSignatures(array $holds, array $verifications): void
-    {
-        foreach ($holds as $index => $hold) {
-            $verification = $verifications[$index] ?? null;
-            if (!$verification) {
-                throw new RuntimeException("Missing verification for source: {$hold['source']['institution']}");
-            }
+{
+    foreach ($holds as $index => $hold) {
+        $institution = $hold['institution'] ?? 'unknown';   // <-- fix: flat key, matches signAggregate()
 
-            // verifyWithCertificate() expects a single request array containing
-            // the payload fields plus 'signature' and 'certificate' keys - it
-            // does not take them as separate arguments.
-            $request = array_merge($verification['payload'] ?? [], [
-                'signature' => $hold['signature'] ?? '',
-                'certificate' => $hold['certificate'] ?? ''
-            ]);
+        $verification = $verifications[$index] ?? null;
+        if (!$verification) {
+            throw new RuntimeException("Missing verification for source: {$institution}");
+        }
 
-            $result = $this->signatureVerifier->verifyWithCertificate($request);
-
-            if (!$result['verified']) {
-                throw new RuntimeException("Invalid signature from: {$hold['source']['institution']}");
-            }
+        $request = array_merge($verification['payload'] ?? [], [
+            'signature' => $hold['signature'] ?? '',
+            'certificate' => $hold['certificate'] ?? ''
+        ]);
+        $result = $this->signatureVerifier->verifyWithCertificate($request);
+        if (!$result['verified']) {
+            throw new RuntimeException("Invalid signature from: {$institution}");
         }
     }
+}
 }
