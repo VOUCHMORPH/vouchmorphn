@@ -3,46 +3,45 @@ declare(strict_types=1);
 
 namespace Domain\Services;
 
-/**
- * Multi-Source Fee Calculator
- * 
- * Pulls fees from country-specific configuration (fee.json)
- * Supports dynamic fee structures per country
- */
 class MultiSourceFeeCalculator
 {
-    private array $feeConfig;
-    private array $regulatoryConfig;
+    private array $feeConfig = [];
+    private array $regulatoryConfig = [];
     private string $countryCode;
-    
-    // Multi-source specific multipliers (configurable)
-    private float $extraSourceFeeMultiplier = 1.00; // P1 per extra source
-    private float $maxTotalFee = 15.00; // Cap at P15
-    
+    private float $extraSourceFeeMultiplier = 1.00;
+    private float $maxTotalFee = 15.00;
+
     public function __construct(array $fullConfig, string $countryCode = 'BW')
     {
         $this->countryCode = $countryCode;
-        
-        // Extract fee configuration
-        $this->feeConfig = $fullConfig['fees'] ?? [];
+
+        // $fullConfig is the caller's $this->feesConfig (fees.json's raw
+        // content: CASHOUT / DEPOSIT / CARD_LOAD at the root) - it is NOT
+        // the broader app config, so no further unwrapping is done here.
+        $this->feeConfig = $fullConfig;
+
+        // NOTE: 'regulatory' and 'multi_source' sub-keys don't exist in
+        // fees.json's structure, so these will always fall back to their
+        // defaults below given the current caller. If real override
+        // values are needed, they'll need to be threaded in separately
+        // from the broader app config, not from this $fullConfig.
         $this->regulatoryConfig = $fullConfig['regulatory'] ?? ['vat_rate' => 0.12, 'reporting_currency' => 'BWP'];
-        
-        // Load multi-source specific config if exists
+
         if (isset($fullConfig['multi_source'])) {
             $this->extraSourceFeeMultiplier = $fullConfig['multi_source']['extra_source_fee'] ?? 1.00;
             $this->maxTotalFee = $fullConfig['multi_source']['max_total_fee'] ?? 15.00;
         }
     }
-    
+
     /**
-     * Calculate fees for multi-source transaction
-     * 
-     * @param int $sourceCount Number of sources contributing
-     * @param string $deliveryMode 'deposit', 'cashout', 'card_load', 'card'
-     * @param float $destinationAmount Target amount for destination
-     * @param string $sourceCurrency Source currency (defaults to reporting currency)
-     * @param string $destinationCurrency Destination currency
-     * @return array Fee calculation result
+     * Calculate the total fee, its component breakdown, and the
+     * per-source/platform/destination split for a multi-source swap.
+     *
+     * @param int    $sourceCount          Number of sources contributing to this swap
+     * @param string $deliveryMode         'cashout' | 'card_load' | 'card' | 'deposit' (default)
+     * @param float  $destinationAmount    Total amount being delivered to the destination
+     * @param string $sourceCurrency       Currency of the source contributions
+     * @param string $destinationCurrency  Currency of the destination
      */
     public function calculateFees(
         int $sourceCount,
@@ -51,227 +50,130 @@ class MultiSourceFeeCalculator
         string $sourceCurrency = 'BWP',
         string $destinationCurrency = 'BWP'
     ): array {
-        // Get base fee from configuration based on delivery mode
         $baseFeeConfig = $this->getBaseFeeConfig($deliveryMode);
-        
+
         if (!$baseFeeConfig) {
-            throw new \RuntimeException("No fee configuration found for delivery mode: {$deliveryMode}");
+            throw new \RuntimeException(
+                "No fee configuration found for delivery mode: {$deliveryMode} (country: {$this->countryCode})"
+            );
         }
-        
-        $baseFee = $baseFeeConfig['total_amount'] ?? 0;
-        $swapLevy = $baseFeeConfig['swap_levy'] ?? 0;
-        
-        // Calculate multi-source extra fees
-        $extraSourcesCount = max(0, $sourceCount - 1);
-        $extraFees = $extraSourcesCount * $this->extraSourceFeeMultiplier;
-        
-        // Calculate total fees (base + extra)
-        $totalFees = $baseFee + $extraFees;
-        
-        // Apply cap if configured
-        if ($this->maxTotalFee > 0 && $totalFees > $this->maxTotalFee) {
-            $totalFees = $this->maxTotalFee;
+
+        // Base fee + swap levy come from fee_components, matching the
+        // structure confirmed in fees.json (F1 = base fee, F7 = levy) -
+        // same paths SwapService's single-source code already reads
+        // directly (e.g. $this->feesConfig['CASHOUT']['fee_components']['F7']['amount']).
+        $baseFee = (float)($baseFeeConfig['fee_components']['F1']['amount'] ?? 0);
+        $swapLevy = (float)($baseFeeConfig['fee_components']['F7']['amount'] ?? 0);
+
+        // Extra sources beyond the first add an additional charge,
+        // scaled by the configured multiplier.
+        $extraSources = max(0, $sourceCount - 1);
+        $extraSourceFee = $extraSources * $this->extraSourceFeeMultiplier;
+
+        $totalFee = $baseFee + $swapLevy + $extraSourceFee;
+
+        // Cap at the configured maximum
+        if ($totalFee > $this->maxTotalFee) {
+            $totalFee = $this->maxTotalFee;
         }
-        
-        // Get VAT rate from regulatory config
-        $vatRate = $this->regulatoryConfig['vat_rate'] ?? 0.12;
-        $vatAmount = $totalFees * $vatRate;
-        
-        // Distribute fees across sources
-        $feeDistribution = $this->distributeFeesAcrossSources(
-            $sourceCount,
-            $baseFee,
-            $extraFees,
-            $totalFees,
-            $swapLevy
-        );
-        
-        // Calculate split distribution based on config
-        $splitDistribution = $this->calculateSplitDistribution(
-            $totalFees,
-            $swapLevy,
-            $baseFeeConfig
-        );
-        
+
+        $splitDistribution = $this->calculateSplitDistribution($baseFeeConfig, $totalFee);
+        $perSourceFees = $this->calculatePerSourceFees($sourceCount, $splitDistribution);
+
         return [
-            'total_fees' => $totalFees,
-            'swap_levy' => $swapLevy,
-            'vat_rate' => $vatRate,
-            'vat_amount' => $vatAmount,
-            'currency' => $this->regulatoryConfig['reporting_currency'] ?? 'BWP',
-            'breakdown' => [
-                'base_fee' => $baseFee,
-                'base_fee_config' => [
-                    'fee_type' => $deliveryMode,
-                    'description' => $baseFeeConfig['description'] ?? ''
-                ],
-                'extra_source_fee' => $this->extraSourceFeeMultiplier,
-                'extra_sources_count' => $extraSourcesCount,
-                'extra_fees_total' => $extraFees,
-                'cap_applied' => ($this->maxTotalFee > 0 && ($baseFee + $extraFees) > $this->maxTotalFee),
-                'max_fee_cap' => $this->maxTotalFee
-            ],
-            'per_source_fees' => $feeDistribution,
+            'total_fee' => round($totalFee, 2),
+            'base_fee' => round($baseFee, 2),
+            'swap_levy' => round($swapLevy, 2),
+            'extra_source_fee' => round($extraSourceFee, 2),
+            'source_count' => $sourceCount,
+            'delivery_mode' => $deliveryMode,
+            'currency' => $destinationCurrency,
             'split_distribution' => $splitDistribution,
-            'net_destination_amount' => $destinationAmount - $totalFees
+            'per_source_fees' => $perSourceFees,
         ];
     }
-    
+
     /**
-     * Get base fee configuration for delivery mode
+     * Look up the fee schedule block for a given delivery mode.
+     *
+     * Key names match fees.json's actual root-level keys directly
+     * (CASHOUT / DEPOSIT / CARD_LOAD) - confirmed against SwapService's
+     * existing single-source fee-reading code, which reads the same
+     * structure via $this->feesConfig['CASHOUT'] / ['DEPOSIT'] etc.
      */
     private function getBaseFeeConfig(string $deliveryMode): ?array
     {
-        $feeKey = match($deliveryMode) {
-            'cashout' => 'CASHOUT_SWAP_FEE',
-            'card_load' => 'CARD_LOAD_FEE',
-            'card' => 'CARD_ISSUANCE_FEE',
-            default => 'DEPOSIT_SWAP_FEE'
+        $feeKey = match ($deliveryMode) {
+            'cashout' => 'CASHOUT',
+            'card_load' => 'CARD_LOAD',
+            'card' => 'CARD_LOAD', // no separate CARD_ISSUANCE entry exists in fees.json - reuses CARD_LOAD
+            default => 'DEPOSIT',
         };
-        
+
         return $this->feeConfig[$feeKey] ?? null;
     }
-    
+
     /**
-     * Distribute fees across sources
-     * 
-     * Distribution logic:
-     * - First source pays the base fee
-     * - All sources share extra fees equally
-     * - Swap levy is applied to first source
+     * Splits the total fee between platform, source institution(s), and
+     * destination institution, using the percentages configured under
+     * distribution.split in fees.json (confirmed structure, matching
+     * SwapService's existing reads of
+     * ['distribution']['split']['destination_institution_percent']).
      */
-    private function distributeFeesAcrossSources(
-        int $sourceCount,
-        float $baseFee,
-        float $extraFees,
-        float $totalFees,
-        float $swapLevy = 0
-    ): array {
-        $distribution = [];
-        
-        if ($sourceCount === 0) {
-            return $distribution;
-        }
-        
-        // First source pays base fee + swap levy
-        $distribution[0] = $baseFee + $swapLevy;
-        
-        if ($sourceCount === 1) {
-            return $distribution;
-        }
-        
-        // Distribute extra fees equally among ALL sources
-        $extraPerSource = $extraFees / $sourceCount;
-        
-        for ($i = 0; $i < $sourceCount; $i++) {
-            if ($i === 0) {
-                // First source already has base fee, add its share of extra
-                $distribution[$i] += $extraPerSource;
-            } else {
-                $distribution[$i] = $extraPerSource;
-            }
-        }
-        
-        // Adjust for rounding errors
-        $totalDistributed = array_sum($distribution);
-        if (abs($totalDistributed - $totalFees - $swapLevy) > 0.01) {
-            $distribution[0] += ($totalFees + $swapLevy - $totalDistributed);
-        }
-        
-        return $distribution;
-    }
-    
-    /**
-     * Calculate split distribution based on fee configuration
-     * This mirrors the logic from FeeService but for multi-source
-     */
-    private function calculateSplitDistribution(
-        float $totalFees,
-        float $swapLevy,
-        array $baseFeeConfig
-    ): array {
-        $afterLevy = $totalFees - $swapLevy;
-        
-        $splitConfig = $baseFeeConfig['split_after_levy'] ?? [
+    private function calculateSplitDistribution(array $baseFeeConfig, float $totalFee): array
+    {
+        $splitConfig = $baseFeeConfig['distribution']['split'] ?? [
             'platform_percent' => 35,
             'source_institution_percent' => 15,
-            'destination_institution_percent' => 50
+            'destination_institution_percent' => 50,
         ];
-        
-        $platformShare = $afterLevy * ($splitConfig['platform_percent'] / 100);
-        $sourceShare = $afterLevy * ($splitConfig['source_institution_percent'] / 100);
-        $destinationShare = $afterLevy * ($splitConfig['destination_institution_percent'] / 100);
-        
-        $distribution = [
-            'swap_levy' => $swapLevy,
-            'platform_share' => $platformShare,
-            'platform_percent' => $splitConfig['platform_percent'],
-            'source_institution_share' => $sourceShare,
-            'source_institution_percent' => $splitConfig['source_institution_percent'],
-            'destination_institution_share' => $destinationShare,
-            'destination_institution_percent' => $splitConfig['destination_institution_percent']
-        ];
-        
-        // Add destination split if it exists (for cashout)
-        if (isset($baseFeeConfig['destination_split'])) {
-            $destSplit = $baseFeeConfig['destination_split'];
-            $distribution['destination_split'] = [
-                'generate_code_fee' => $destinationShare * ($destSplit['generate_code_fee_percent'] / 100),
-                'generate_code_fee_percent' => $destSplit['generate_code_fee_percent'],
-                'cashout_fee' => $destinationShare * ($destSplit['cashout_fee_percent'] / 100),
-                'cashout_fee_percent' => $destSplit['cashout_fee_percent'],
-                'description' => $destSplit['description'] ?? ''
-            ];
-        }
-        
-        return $distribution;
-    }
-    
-    /**
-     * Calculate retry fees for multi-source cashout
-     */
-    public function calculateRetryFees(
-        int $sourceCount,
-        int $retryCount,
-        string $deliveryMode,
-        float $destinationAmount
-    ): array {
-        $baseCalculation = $this->calculateFees($sourceCount, $deliveryMode, $destinationAmount);
-        
-        $baseFeeConfig = $this->getBaseFeeConfig($deliveryMode);
-        $generateCodeFee = $baseFeeConfig['retry_fee']['generate_code_fee'] ?? 0.45;
-        
-        $isFreeRetry = ($retryCount === 1);
-        $isPaidRetry = ($retryCount >= 2);
-        
-        if ($isFreeRetry) {
-            // Free retry: VouchMorph pays generate code fee
-            $totalFees = 0;
-            $retryType = 'FREE_RETRY';
-            $feePaidBy = 'vouchmorph';
-        } elseif ($isPaidRetry) {
-            // Paid retry: Client pays generate code fee only
-            $totalFees = $generateCodeFee;
-            $retryType = 'PAID_RETRY';
-            $feePaidBy = 'client';
-        } else {
-            // First attempt: normal fee structure
-            return $baseCalculation;
-        }
-        
-        $vatRate = $this->regulatoryConfig['vat_rate'] ?? 0.12;
-        $vatAmount = $totalFees * $vatRate;
-        
+
+        $platformShare = round($totalFee * (($splitConfig['platform_percent'] ?? 35) / 100), 2);
+        $sourceShare = round($totalFee * (($splitConfig['source_institution_percent'] ?? 15) / 100), 2);
+        $destinationShare = round($totalFee * (($splitConfig['destination_institution_percent'] ?? 50) / 100), 2);
+
+        // Correct any rounding drift on the platform share so the three
+        // shares sum exactly to $totalFee
+        $roundingError = $totalFee - ($platformShare + $sourceShare + $destinationShare);
+        $platformShare = round($platformShare + $roundingError, 2);
+
         return [
-            'total_fees' => $totalFees,
-            'vat_amount' => $vatAmount,
-            'retry_type' => $retryType,
-            'fee_paid_by' => $feePaidBy,
-            'generate_code_fee' => $generateCodeFee,
-            'is_free_retry' => $isFreeRetry,
-            'is_paid_retry' => $isPaidRetry,
-            'currency' => $this->regulatoryConfig['reporting_currency'] ?? 'BWP',
-            'net_destination_amount' => $destinationAmount - $totalFees
+            'platform_share' => $platformShare,
+            'source_share' => $sourceShare,
+            'destination_share' => $destinationShare,
+            'split_config' => $splitConfig,
         ];
+    }
+
+    /**
+     * Divides the total "source share" of the fee evenly across all
+     * contributing sources, keyed by contribution index (0-based) so
+     * PoolCoordinator::invoice() can map each amount back to the
+     * corresponding entry in $contributions.
+     */
+    private function calculatePerSourceFees(int $sourceCount, array $splitDistribution): array
+    {
+        if ($sourceCount <= 0) {
+            return [];
+        }
+
+        $sourceShare = $splitDistribution['source_share'] ?? 0;
+        $perSource = round($sourceShare / $sourceCount, 2);
+
+        $result = [];
+        $runningTotal = 0;
+        for ($i = 0; $i < $sourceCount; $i++) {
+            $result[$i] = $perSource;
+            $runningTotal += $perSource;
+        }
+
+        // Correct rounding drift on the last source so amounts sum
+        // exactly to $sourceShare
+        if ($sourceCount > 0) {
+            $roundingError = $sourceShare - $runningTotal;
+            $result[$sourceCount - 1] = round($result[$sourceCount - 1] + $roundingError, 2);
+        }
+
+        return $result;
     }
 }
