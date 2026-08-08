@@ -156,15 +156,18 @@ class PoolCoordinator
             // 11. Transition to DESTINATION_COMPLETED
             $this->stateMachine->transition($pool, PoolStatus::DESTINATION_COMPLETED->value);
             
-            // 12. Debit sources
+            // 12. Transition to DEBITING, then debit sources
+            $this->stateMachine->transition($pool, PoolStatus::DEBITING->value);
             $debits = $this->debitSources($pool, $holds, $contributions);
             $this->logger->info('Sources debited', ['debits' => count($debits)]);
             
-            // 13. Settle
+            // 13. Transition to SETTLING, then settle
+            $this->stateMachine->transition($pool, PoolStatus::SETTLING->value);
             $settlementResult = $this->settle($pool, $contributions);
             $this->logger->info('Settlement completed');
             
-            // 14. Invoice
+            // 14. Transition to INVOICING, then invoice
+            $this->stateMachine->transition($pool, PoolStatus::INVOICING->value);
             $invoiceResult = $this->invoice($pool, $contributions);
             $this->logger->info('Invoicing completed');
             
