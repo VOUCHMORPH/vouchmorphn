@@ -9183,7 +9183,7 @@ private function recordManualReconciliationRequired(
         try {
             $stmt = $this->swapDB->prepare($sql);
             $stmt->execute([
-                ':hold_ref' => 'HOLD_' . $this->currentSwapRef,
+                ':hold_ref' => 'HOLD_' . $this->currentSwapRef . '_' . $institution,   // <-- fix
                 ':swap_ref' => $this->currentSwapRef,
                 ':participant_name' => $institution,
                 ':asset_type' => $payload['asset_type'] ?? 'ACCOUNT',
