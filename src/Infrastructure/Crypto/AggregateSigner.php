@@ -118,3 +118,5 @@ private function getPinnedPublicKey(string $institution): ?string
     }
     return str_replace(['\\n', '\n'], "\n", $key);
 }
+
+}
