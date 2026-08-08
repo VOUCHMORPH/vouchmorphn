@@ -59,21 +59,40 @@ class CertificateManager
         return openssl_x509_read($cleaned);
     }
     
+    /**
+     * DIAGNOSTIC VERSION - remove the [DIAG] lines once the root cause
+     * of "Certificate not trusted" (seen only on vouchmorphn, never on
+     * the counterparty banks' own verification) is identified.
+     */
     public function verifyCertificate(string $certificatePem): bool
     {
         if (!$this->caCert) {
             error_log("CertificateManager: No CA certificate to verify against");
             return false;
         }
-        
+
+        error_log("CertificateManager: [DIAG] sys_get_temp_dir() = " . sys_get_temp_dir());
+        error_log("CertificateManager: [DIAG] running as uid=" . (function_exists('posix_getuid') ? posix_getuid() : 'unknown'));
+        error_log("CertificateManager: [DIAG] certificatePem length=" . strlen($certificatePem) . ", caCert length=" . strlen($this->caCert));
+
         $tempCert = tempnam(sys_get_temp_dir(), 'cert_');
         $tempCA = tempnam(sys_get_temp_dir(), 'ca_');
-        
-        file_put_contents($tempCert, $certificatePem);
-        file_put_contents($tempCA, $this->caCert);
-        
+
+        error_log("CertificateManager: [DIAG] tempCert=" . var_export($tempCert, true) . ", tempCA=" . var_export($tempCA, true));
+
+        $wroteCert = file_put_contents($tempCert, $certificatePem);
+        $wroteCA = file_put_contents($tempCA, $this->caCert);
+
+        error_log("CertificateManager: [DIAG] wroteCert bytes=" . var_export($wroteCert, true) . ", wroteCA bytes=" . var_export($wroteCA, true));
+        error_log("CertificateManager: [DIAG] file_exists(tempCert)=" . (file_exists($tempCert) ? 'YES' : 'NO') . ", file_exists(tempCA)=" . (file_exists($tempCA) ? 'YES' : 'NO'));
+
         $cmd = "openssl verify -CAfile " . escapeshellarg($tempCA) . " " . escapeshellarg($tempCert) . " 2>&1";
+        error_log("CertificateManager: [DIAG] cmd=" . $cmd);
+
         exec($cmd, $output, $returnCode);
+
+        error_log("CertificateManager: [DIAG] returnCode=" . $returnCode . ", output=" . implode(' | ', $output));
+
         $result = ($returnCode === 0);
         
         unlink($tempCert);
