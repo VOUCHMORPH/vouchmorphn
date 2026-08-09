@@ -9,7 +9,7 @@ declare(strict_types=1);
  * for MANUAL, enter their own amount) via status.php / contribute.php.
  */
 
-define('ROOT_PATH', dirname(__DIR__, 5));
+define('ROOT_PATH', dirname(__DIR__, 4));
 
 header("Content-Type: application/json; charset=UTF-8");
 header("Access-Control-Allow-Origin: *");
