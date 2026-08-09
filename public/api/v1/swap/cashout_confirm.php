@@ -107,14 +107,27 @@ $confirmPayload = [
 ];
 
 // ============================================================
-// CONFIRM
+// CONFIRM - WITH POOL SUPPORT
 // ============================================================
 
 try {
     $swapService = new SwapService($db, $config, 'Botswana');
-    $result = $swapService->confirmCashout($confirmPayload);
 
-    error_log("[CashoutConfirmWebhook] confirmCashout result: " . json_encode($result));
+    // Check if this voucher belongs to a pool
+    $poolId = $swapService->getPoolIdForCashoutVoucher(
+        $data['voucher_number'] ?? null,
+        $data['swap_reference'] ?? null
+    );
+
+    if ($poolId) {
+        error_log("[CashoutConfirmWebhook] Voucher belongs to pool {$poolId} — routing to confirmPoolCashout()");
+        $result = $swapService->confirmPoolCashout($poolId, $confirmPayload);
+    } else {
+        error_log("[CashoutConfirmWebhook] Voucher belongs to single swap — routing to confirmCashout()");
+        $result = $swapService->confirmCashout($confirmPayload);
+    }
+
+    error_log("[CashoutConfirmWebhook] confirm result: " . json_encode($result));
 
     respond(200, [
         'status' => 'SUCCESS',
