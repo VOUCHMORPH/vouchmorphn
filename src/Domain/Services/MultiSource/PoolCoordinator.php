@@ -905,7 +905,7 @@ class PoolCoordinator
 
         $deliveryMethod = strtoupper($pool['delivery_method'] ?? $pool['destination_asset_type'] ?? 'DEPOSIT');
         if (in_array($deliveryMethod, ['CASHOUT', 'ATM', 'AGENT', 'VOUCHER'], true)) {
-            $result = $this->executeCashoutDestination($pool, $contributions, $masterSignature, $holds);
+            $result = $this->Destination($pool, $contributions, $masterSignature, $holds);
             $result['_defer_debit'] = $result['success'] ?? false;
             $result['_defer_status'] = PoolStatus::PENDING_CASHOUT->value;
             return $result;
@@ -940,51 +940,76 @@ class PoolCoordinator
      * SwapService::generateCashoutToken()'s single-source shape, sourced
      * from the pool's aggregate amount instead of a single hold.
      */
-    private function executeCashoutDestination(array $pool, array $contributions, array $masterSignature, array $holds): array
-    {
-        $destinationInstitution = $pool['destination_institution'];
-        if (empty($destinationInstitution)) {
-            return ['success' => false, 'message' => 'Cashout requires a destination institution'];
-        }
-
-        $tokenPayload = [
-            'reference' => $pool['reference'] ?? uniqid(),
-            'amount' => $pool['amount'],
-            'currency' => $pool['currency'] ?? 'BWP',
-            'action' => 'GENERATE_TOKEN',
-            'to_institution' => $destinationInstitution,
-            'destination_institution' => $destinationInstitution,
-            'destination_identifier' => $pool['destination_identifier'] ?? null,
-            'destination_identifier_type' => $pool['destination_identifier_type'] ?? null,
-            'beneficiary_phone' => $pool['beneficiary_phone'] ?? null,
-            'master_signature' => $masterSignature['signature'] ?? null,
-            'master_certificate' => $masterSignature['certificate'] ?? null,
-            'pool_id' => $pool['id'],
-            'source_type' => 'VIRTUAL_POOL',
-            'from_institution' => 'VM_POOL',
-            'source_institution' => 'VM_POOL',
-        ];
-
-        $adapter = $this->swapService->getAdapterFactory()->getAdapter($destinationInstitution);
-        $result = $adapter->generateCashoutToken($tokenPayload, [
-            'swap_reference' => $pool['reference'] ?? null,
-            'destination_institution' => $destinationInstitution,
-            'pool_id' => $pool['id'],
-        ]);
-
-        if (!($result['success'] ?? false)) {
-            return ['success' => false, 'message' => $result['message'] ?? 'Cashout code generation failed'];
-        }
-
-        return [
-            'success' => true,
-            'atm_pin' => $result['atm_pin'] ?? null,
-            'voucher_number' => $result['voucher_number'] ?? $result['swap_code'] ?? null,
-            'expires_at' => $result['expires_at'] ?? null,
-            'message' => $result['message'] ?? 'Cashout code generated. Debit deferred until redemption.',
-        ];
+   private function executeCashoutDestination(array $pool, array $contributions, array $masterSignature, array $holds): array
+{
+    $destinationInstitution = $pool['destination_institution'];
+    if (empty($destinationInstitution)) {
+        return ['success' => false, 'message' => 'Cashout requires a destination institution'];
     }
 
+    $tokenPayload = [
+        'reference' => $pool['reference'] ?? uniqid(),
+        'amount' => $pool['amount'],
+        'currency' => $pool['currency'] ?? 'BWP',
+        'action' => 'GENERATE_TOKEN',
+        'to_institution' => $destinationInstitution,
+        'destination_institution' => $destinationInstitution,
+        'destination_identifier' => $pool['destination_identifier'] ?? null,
+        'destination_identifier_type' => $pool['destination_identifier_type'] ?? null,
+        'beneficiary_phone' => $pool['beneficiary_phone'] ?? null,
+        'master_signature' => $masterSignature['signature'] ?? null,
+        'master_certificate' => $masterSignature['certificate'] ?? null,
+        'pool_id' => $pool['id'],
+        'source_type' => 'VIRTUAL_POOL',
+        'from_institution' => 'VM_POOL',
+        'source_institution' => 'VM_POOL',
+    ];
+
+    $adapter = $this->swapService->getAdapterFactory()->getAdapter($destinationInstitution);
+    $result = $adapter->generateCashoutToken($tokenPayload, [
+        'swap_reference' => $pool['reference'] ?? null,
+        'destination_institution' => $destinationInstitution,
+        'pool_id' => $pool['id'],
+    ]);
+
+    if (!($result['success'] ?? false)) {
+        return ['success' => false, 'message' => $result['message'] ?? 'Cashout code generation failed'];
+    }
+
+    $swapCode = $result['voucher_number'] ?? $result['swap_code'] ?? null;
+    $pinCode = $result['atm_pin'] ?? '';
+    $expiresAt = $result['expires_at'] ?? date('Y-m-d H:i:s', strtotime('+24 hours'));
+
+    if ($swapCode) {
+        try {
+            $this->swapService->storePoolCashoutAuthorization(
+                $pool['id'],
+                $pool['reference'],
+                $destinationInstitution,
+                $pool['amount'],
+                $swapCode,
+                $pinCode,
+                $expiresAt
+            );
+        } catch (\Throwable $e) {
+            $this->logger->error('Failed to store pool cashout authorization — ATM callback will not find this pool', [
+                'pool_id' => $pool['id'],
+                'error' => $e->getMessage(),
+            ]);
+            return ['success' => false, 'message' => 'Cashout code generated but authorization record failed: ' . $e->getMessage()];
+        }
+    } else {
+        $this->logger->warning('Cashout token generated with no swap_code/voucher_number — cannot record authorization', ['pool_id' => $pool['id']]);
+    }
+
+    return [
+        'success' => true,
+        'atm_pin' => $pinCode,
+        'voucher_number' => $swapCode,
+        'expires_at' => $expiresAt,
+        'message' => $result['message'] ?? 'Cashout code generated. Debit deferred until redemption.',
+    ];
+}
     /**
      * Identity destinations have no institution to credit — the pooled
      * amount is placed into an identity_swap_holds record for the
