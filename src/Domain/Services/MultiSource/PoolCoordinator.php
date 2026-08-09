@@ -159,9 +159,52 @@ if (!($destinationResult['success'] ?? false)) {
     );
 }
 
-// 11. Transition to DESTINATION_COMPLETED
+$isDeferred = ($destinationResult['_defer_debit'] ?? false) === true;
+
+if ($isDeferred) {
+    // CASHOUT or IDENTITY: destination has NOT actually delivered value
+    // yet (code not redeemed / claim not confirmed) — do NOT debit
+    // sources now. Persist pool state and stop; a separate confirm
+    // call finishes debit/settle/invoice later.
+    $deferredStatus = $destinationResult['_defer_status'] ?? PoolStatus::PENDING_CASHOUT->value;
+    $this->stateMachine->transition($pool, $deferredStatus);
+    $this->poolRepository->updateStatus($pool['id'], $deferredStatus);
+
+    if ($transactionStartedHere) {
+        $this->db->commit();
+        $this->logger->debug('Committed transaction in PoolCoordinator (deferred pool, awaiting confirmation)');
+    } else {
+        $this->logger->debug('Leaving transaction open for caller to commit (deferred pool)');
+    }
+
+    return [
+        'success' => true,
+        'pool_id' => $pool['id'],
+        'reference' => $pool['reference'],
+        'status' => $deferredStatus,
+        'total_amount' => $pool['amount'],
+        'currency' => $pool['currency'] ?? 'BWP',
+        'source_count' => count($contributions),
+        'destination_result' => $destinationResult,
+        'message' => $deferredStatus === PoolStatus::PENDING_CASHOUT->value
+            ? 'Cashout code generated. Sources will be debited once the code is redeemed.'
+            : 'Identity claim pending. Sources will be debited once the claim is confirmed.',
+    ];
+}
+
+// 11. Transition to DESTINATION_COMPLETED (ordinary deposit path only)
 $this->stateMachine->transition($pool, PoolStatus::DESTINATION_COMPLETED->value);
-            
+
+$completion = $this->completeDeferredPool($pool, $holds, $contributions);
+
+if ($transactionStartedHere) {
+    $this->db->commit();
+    $this->logger->debug('Committed transaction in PoolCoordinator');
+} else {
+    $this->logger->debug('Leaving transaction open for caller to commit');
+}
+
+return $this->buildResponse($pool, $contributions, $destinationResult, $completion['settlement'], $completion['invoices']);
             // 12. Transition to DEBITING, then debit sources
             $this->stateMachine->transition($pool, PoolStatus::DEBITING->value);
             $debits = $this->debitSources($pool, $holds, $contributions);
@@ -208,6 +251,26 @@ $this->stateMachine->transition($pool, PoolStatus::DESTINATION_COMPLETED->value)
             throw new RuntimeException("Multi-source swap failed: " . $e->getMessage());
         }
     }
+
+    private function completeDeferredPool(array $pool, array $holds, array $contributions): array
+{
+    $this->stateMachine->transition($pool, PoolStatus::DEBITING->value);
+    $debits = $this->debitSources($pool, $holds, $contributions);
+    $this->logger->info('Sources debited', ['debits' => count($debits)]);
+
+    $this->stateMachine->transition($pool, PoolStatus::SETTLING->value);
+    $settlementResult = $this->settle($pool, $contributions);
+    $this->logger->info('Settlement completed');
+
+    $this->stateMachine->transition($pool, PoolStatus::INVOICING->value);
+    $invoiceResult = $this->invoice($pool, $contributions);
+    $this->logger->info('Invoicing completed');
+
+    $this->stateMachine->transition($pool, PoolStatus::COMPLETED->value);
+    $this->poolRepository->updateStatus($pool['id'], PoolStatus::COMPLETED->value);
+
+    return ['debits' => $debits, 'settlement' => $settlementResult, 'invoices' => $invoiceResult];
+}
 
     private function persistContributions(array $pool, array $contributions): array
     {
