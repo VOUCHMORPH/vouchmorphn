@@ -310,7 +310,7 @@ $this->stateMachine->transition($pool, PoolStatus::DESTINATION_COMPLETED->value)
             ];
         }
         
-        $$isIdentityDestination = isset($payload['identity_type']) && !empty($payload['identity_value']);
+        $isIdentityDestination = isset($payload['identity_type']) && !empty($payload['identity_value']);
 
         $destinationIdentifier = $isIdentityDestination
             ? ['identifier' => null, 'type' => null]
