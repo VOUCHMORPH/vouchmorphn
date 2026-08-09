@@ -11,7 +11,7 @@ declare(strict_types=1);
  * in the request body.
  */
 
-define('ROOT_PATH', dirname(__DIR__, 5));
+define('ROOT_PATH', dirname(__DIR__, 4));
 
 header("Content-Type: application/json; charset=UTF-8");
 header("Access-Control-Allow-Origin: *");
