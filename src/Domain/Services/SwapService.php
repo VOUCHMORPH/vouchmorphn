@@ -8576,7 +8576,8 @@ private function storeCashoutAuthorization(
     float $levyAmount,
     ?string $swapCode,
     string $pinCode,
-    string $codeExpiry
+    string $codeExpiry,
+    ?string $poolId = null  
 ): int {
     $sql = "
         INSERT INTO cashout_authorizations (
@@ -8597,7 +8598,8 @@ private function storeCashoutAuthorization(
             cashout_provider,
             status,
             created_at,
-            updated_at
+            updated_at,
+            metadata
         ) VALUES (
             :swap_ref,
             :client_phone,
@@ -8616,7 +8618,8 @@ private function storeCashoutAuthorization(
             :cashout_provider,
             'PENDING',
             NOW(),
-            NOW()
+            NOW(),
+            :metadata::jsonb
         ) RETURNING auth_id
     ";
  
@@ -8637,13 +8640,14 @@ private function storeCashoutAuthorization(
             ':pin_code' => $pinCode,
             ':code_expiry' => $codeExpiry,
             ':cashout_point' => 'ATM',
-            ':cashout_provider' => $destinationInstitution
+            ':cashout_provider' => $destinationInstitution,
+            ':metadata' => json_encode($poolId ? ['pool_id' => $poolId] : []),
         ]);
  
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         $authId = $row ? (int)$row['auth_id'] : 0;
  
-        error_log("[SwapService] Cashout authorization stored: auth_id={$authId}, source={$sourceIdentifierType}:{$sourceIdentifier}, generate_code_fee={$generateCodeFeeAmount}, levy={$levyAmount}");
+        error_log("[SwapService] Cashout authorization stored: auth_id={$authId}, source={$sourceIdentifierType}:{$sourceIdentifier}, generate_code_fee={$generateCodeFeeAmount}, levy={$levyAmount}, pool_id=" . ($poolId ?? 'none')");
  
         return $authId;
  
@@ -8653,7 +8657,89 @@ private function storeCashoutAuthorization(
     }
 }
 
+ /**
+ * Records a pool-sourced cashout authorization. Called by
+ * PoolCoordinator::executeCashoutDestination() after the destination
+ * bank successfully generates a code, so the ATM callback webhook has
+ * something to find later — mirrors storeCashoutAuthorization()'s
+ * single-source shape but stamps source_institution as 'VM_POOL'
+ * (no single real source) and links back to the pool via metadata.
+ */
+public function storePoolCashoutAuthorization(
+    string $poolId,
+    string $swapReference,
+    string $destinationInstitution,
+    float $amount,
+    string $swapCode,
+    string $pinCode,
+    string $codeExpiry
+): int {
+    return $this->storeCashoutAuthorization(
+        $swapReference,
+        null,               // no single client phone for a pool
+        'VM_POOL',
+        null,
+        null,
+        $destinationInstitution,
+        $amount,
+        0, 0, 0,             // fees settled separately via invoice() in completeDeferredPool()
+        $swapCode,
+        $pinCode,
+        $codeExpiry,
+        $poolId
+    );
+}
 
+/**
+ * Looks up whether a cashout voucher/swap_reference belongs to a
+ * multi-source pool, for cashout_confirm.php to route correctly.
+ * Returns null for an ordinary single-source cashout.
+ */
+public function getPoolIdForCashoutVoucher(?string $voucherNumber, ?string $swapReference): ?string
+{
+    $sql = "SELECT metadata FROM cashout_authorizations WHERE 1=1";
+    $params = [];
+    if ($voucherNumber) {
+        $sql .= " AND swap_code = :voucher";
+        $params[':voucher'] = $voucherNumber;
+    } elseif ($swapReference) {
+        $sql .= " AND swap_reference = :swap_ref";
+        $params[':swap_ref'] = $swapReference;
+    } else {
+        return null;
+    }
+    $sql .= " ORDER BY created_at DESC LIMIT 1";
+
+    try {
+        $stmt = $this->swapDB->prepare($sql);
+        $stmt->execute($params);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$row || empty($row['metadata'])) {
+            return null;
+        }
+        $metadata = json_decode($row['metadata'], true) ?: [];
+        return $metadata['pool_id'] ?? null;
+    } catch (PDOException $e) {
+        error_log("[SwapService] getPoolIdForCashoutVoucher failed: " . $e->getMessage());
+        return null;
+    }
+}
+
+ public function confirmPoolCashout(string $poolId, array $confirmationPayload = []): array
+{
+    if ($this->multiSourceOrchestrator === null) {
+        throw new RuntimeException("Multi-source swaps are not enabled");
+    }
+    return $this->multiSourceOrchestrator->confirmPoolCashout($poolId, $confirmationPayload);
+}
+
+public function confirmPoolIdentityClaim(string $poolId): array
+{
+    if ($this->multiSourceOrchestrator === null) {
+        throw new RuntimeException("Multi-source swaps are not enabled");
+    }
+    return $this->multiSourceOrchestrator->confirmPoolIdentityClaim($poolId);
+}
     private function getCashoutAuthorization(?string $swapRef, ?int $authId): ?array
     {
         $sql = "
