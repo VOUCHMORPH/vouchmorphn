@@ -8672,11 +8672,12 @@ public function storePoolCashoutAuthorization(
     float $amount,
     string $swapCode,
     string $pinCode,
-    string $codeExpiry
+    string $codeExpiry,
+   ?string $beneficiaryPhone = null   // NEW
 ): int {
     return $this->storeCashoutAuthorization(
         $swapReference,
-        null,               // no single client phone for a pool
+        $beneficiaryPhone ?? 'VM_POOL',   
         'VM_POOL',
         null,
         null,
