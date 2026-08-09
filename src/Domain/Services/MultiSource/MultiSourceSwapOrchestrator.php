@@ -80,6 +80,16 @@ class MultiSourceSwapOrchestrator
     return $this->coordinator->confirmPoolCashout($poolId, $confirmationPayload);
 }
 
+public function cancelExpiredPoolCashouts(int $bufferHours = 6): array
+{
+    return $this->coordinator->cancelExpiredPoolCashouts($bufferHours);
+}
+
+public function cancelExpiredPoolIdentityClaims(): array
+{
+    return $this->coordinator->cancelExpiredPoolIdentityClaims();
+}
+    
 public function confirmPoolIdentityClaim(string $poolId): array
 {
     return $this->coordinator->confirmPoolIdentityClaim($poolId);
