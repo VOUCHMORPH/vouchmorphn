@@ -272,6 +272,97 @@ return $this->buildResponse($pool, $contributions, $destinationResult, $completi
     return ['debits' => $debits, 'settlement' => $settlementResult, 'invoices' => $invoiceResult];
 }
 
+private function executeDestination(array $pool, array $contributions, array $masterSignature, array $holds): array
+{
+    if (!empty($pool['identity_type']) && !empty($pool['identity_value'])) {
+        $result = $this->executeIdentityDestination($pool, $contributions, $masterSignature, $holds);
+        $result['_defer_debit'] = $result['success'] ?? false;
+        $result['_defer_status'] = PoolStatus::PENDING_IDENTITY_CLAIM->value;
+        return $result;
+    }
+
+    $deliveryMethod = strtoupper($pool['delivery_method'] ?? $pool['destination_asset_type'] ?? 'DEPOSIT');
+    if (in_array($deliveryMethod, ['CASHOUT', 'ATM', 'AGENT', 'VOUCHER'], true)) {
+        $result = $this->executeCashoutDestination($pool, $contributions, $masterSignature, $holds);
+        $result['_defer_debit'] = $result['success'] ?? false;
+        $result['_defer_status'] = PoolStatus::PENDING_CASHOUT->value;
+        return $result;
+    }
+
+    $destinationInstitution = $pool['destination_institution'];
+    $totalAmount = $pool['amount'];
+    $currency = $pool['currency'] ?? 'BWP';
+
+    $destinationPayload = [
+        'destination_identifier' => $pool['destination_identifier'] ?? null,
+        'destination_identifier_type' => $pool['destination_identifier_type'] ?? 'account',
+        'destination_asset_type' => $pool['destination_asset_type'] ?? 'WALLET',
+        'destination_institution' => $destinationInstitution,
+        'to_institution' => $destinationInstitution,
+        'amount' => $totalAmount,
+        'currency' => $currency,
+        'reference' => $pool['reference'] ?? uniqid(),
+        'master_signature' => $masterSignature['signature'] ?? null,
+        'master_certificate' => $masterSignature['certificate'] ?? null,
+        'pool_id' => $pool['id'],
+        'sources' => $contributions
+    ];
+
+    return $this->swapService->creditDestination($destinationPayload, $destinationInstitution);
+}
+
+/**
+ * CASHOUT destination: generates an ATM/agent code at the destination
+ * institution. Does NOT credit/deposit anything and does NOT debit any
+ * source — the client hasn't redeemed the code yet. Mirrors
+ * SwapService::generateCashoutToken()'s single-source shape, sourced
+ * from the pool's aggregate amount instead of a single hold.
+ */
+private function executeCashoutDestination(array $pool, array $contributions, array $masterSignature, array $holds): array
+{
+    $destinationInstitution = $pool['destination_institution'];
+    if (empty($destinationInstitution)) {
+        return ['success' => false, 'message' => 'Cashout requires a destination institution'];
+    }
+
+    $tokenPayload = [
+        'reference' => $pool['reference'] ?? uniqid(),
+        'amount' => $pool['amount'],
+        'currency' => $pool['currency'] ?? 'BWP',
+        'action' => 'GENERATE_TOKEN',
+        'to_institution' => $destinationInstitution,
+        'destination_institution' => $destinationInstitution,
+        'destination_identifier' => $pool['destination_identifier'] ?? null,
+        'destination_identifier_type' => $pool['destination_identifier_type'] ?? null,
+        'beneficiary_phone' => $pool['beneficiary_phone'] ?? null,
+        'master_signature' => $masterSignature['signature'] ?? null,
+        'master_certificate' => $masterSignature['certificate'] ?? null,
+        'pool_id' => $pool['id'],
+        'source_type' => 'VIRTUAL_POOL',
+        'from_institution' => 'VM_POOL',
+        'source_institution' => 'VM_POOL',
+    ];
+
+    $adapter = $this->swapService->getAdapterFactory()->getAdapter($destinationInstitution);
+    $result = $adapter->generateCashoutToken($tokenPayload, [
+        'swap_reference' => $pool['reference'] ?? null,
+        'destination_institution' => $destinationInstitution,
+        'pool_id' => $pool['id'],
+    ]);
+
+    if (!($result['success'] ?? false)) {
+        return ['success' => false, 'message' => $result['message'] ?? 'Cashout code generation failed'];
+    }
+
+    return [
+        'success' => true,
+        'atm_pin' => $result['atm_pin'] ?? null,
+        'voucher_number' => $result['voucher_number'] ?? $result['swap_code'] ?? null,
+        'expires_at' => $result['expires_at'] ?? null,
+        'message' => $result['message'] ?? 'Cashout code generated. Debit deferred until redemption.',
+    ];
+}
+    
     private function persistContributions(array $pool, array $contributions): array
     {
         $persisted = [];
