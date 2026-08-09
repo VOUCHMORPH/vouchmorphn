@@ -989,7 +989,8 @@ class PoolCoordinator
                 $pool['amount'],
                 $swapCode,
                 $pinCode,
-                $expiresAt
+                $expiresAt,
+                $pool['beneficiary_phone'] ?? null   // NEW
             );
         } catch (\Throwable $e) {
             $this->logger->error('Failed to store pool cashout authorization — ATM callback will not find this pool', [
