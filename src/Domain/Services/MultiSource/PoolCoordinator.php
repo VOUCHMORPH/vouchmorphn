@@ -819,22 +819,23 @@ $this->stateMachine->transition($pool, PoolStatus::DESTINATION_COMPLETED->value)
     }
 
     private function settle(array $pool, array $contributions): array
-    {
-        $sourceInstitutions = array_column($contributions, 'institution');
-        $destinationInstitution = $pool['destination_institution'];
-        $totalAmount = $pool['amount'];
-        $currency = $pool['currency'] ?? 'BWP';
-        
-        return $this->settlement->updateNetPosition(
-            $pool['reference'] ?? uniqid(),
-            implode(',', $sourceInstitutions),
-            $destinationInstitution,
-            $totalAmount,
-            'MULTI_SOURCE_COMPLETED',
-            $currency
-        );
-    }
+{
+    $sourceInstitutions = array_column($contributions, 'institution');
+    $totalAmount = $pool['amount'];
+    $currency = $pool['currency'] ?? 'BWP';
 
+    $destinationInstitution = $pool['destination_institution']
+        ?? 'IDENTITY_CLAIM_' . strtoupper($pool['identity_type'] ?? 'UNKNOWN');
+
+    return $this->settlement->updateNetPosition(
+        $pool['reference'] ?? uniqid(),
+        implode(',', $sourceInstitutions),
+        $destinationInstitution,
+        $totalAmount,
+        'MULTI_SOURCE_COMPLETED',
+        $currency
+    );
+}
     private function invoice(array $pool, array $contributions): array
 {
     // Derive delivery mode from how the pool was destined
