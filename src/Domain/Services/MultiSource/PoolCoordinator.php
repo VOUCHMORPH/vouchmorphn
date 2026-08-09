@@ -149,89 +149,62 @@ class PoolCoordinator
             // 9. Transition to DESTINATION_PENDING
             $this->stateMachine->transition($pool, PoolStatus::DESTINATION_PENDING->value);
             
-           // 10. Execute destination
-$destinationResult = $this->executeDestination($pool, $contributions, $masterSignature, $holds);
-$this->logger->info('Destination executed', ['success' => $destinationResult['success'] ?? false]);
+            // 10. Execute destination
+            $destinationResult = $this->executeDestination($pool, $contributions, $masterSignature, $holds);
+            $this->logger->info('Destination executed', ['success' => $destinationResult['success'] ?? false]);
 
-if (!($destinationResult['success'] ?? false)) {
-    throw new RuntimeException(
-        "Destination credit failed: " . ($destinationResult['message'] ?? 'Unknown error')
-    );
-}
+            if (!($destinationResult['success'] ?? false)) {
+                throw new RuntimeException(
+                    "Destination credit failed: " . ($destinationResult['message'] ?? 'Unknown error')
+                );
+            }
 
-$isDeferred = ($destinationResult['_defer_debit'] ?? false) === true;
+            $isDeferred = ($destinationResult['_defer_debit'] ?? false) === true;
 
-if ($isDeferred) {
-    // CASHOUT or IDENTITY: destination has NOT actually delivered value
-    // yet (code not redeemed / claim not confirmed) — do NOT debit
-    // sources now. Persist pool state and stop; a separate confirm
-    // call finishes debit/settle/invoice later.
-    $deferredStatus = $destinationResult['_defer_status'] ?? PoolStatus::PENDING_CASHOUT->value;
-    $this->stateMachine->transition($pool, $deferredStatus);
-    $this->poolRepository->updateStatus($pool['id'], $deferredStatus);
+            if ($isDeferred) {
+                // CASHOUT or IDENTITY: destination has NOT actually delivered value
+                // yet (code not redeemed / claim not confirmed) — do NOT debit
+                // sources now. Persist pool state and stop; a separate confirm
+                // call finishes debit/settle/invoice later.
+                $deferredStatus = $destinationResult['_defer_status'] ?? PoolStatus::PENDING_CASHOUT->value;
+                $this->stateMachine->transition($pool, $deferredStatus);
+                $this->poolRepository->updateStatus($pool['id'], $deferredStatus);
 
-    if ($transactionStartedHere) {
-        $this->db->commit();
-        $this->logger->debug('Committed transaction in PoolCoordinator (deferred pool, awaiting confirmation)');
-    } else {
-        $this->logger->debug('Leaving transaction open for caller to commit (deferred pool)');
-    }
+                if ($transactionStartedHere) {
+                    $this->db->commit();
+                    $this->logger->debug('Committed transaction in PoolCoordinator (deferred pool, awaiting confirmation)');
+                } else {
+                    $this->logger->debug('Leaving transaction open for caller to commit (deferred pool)');
+                }
 
-    return [
-        'success' => true,
-        'pool_id' => $pool['id'],
-        'reference' => $pool['reference'],
-        'status' => $deferredStatus,
-        'total_amount' => $pool['amount'],
-        'currency' => $pool['currency'] ?? 'BWP',
-        'source_count' => count($contributions),
-        'destination_result' => $destinationResult,
-        'message' => $deferredStatus === PoolStatus::PENDING_CASHOUT->value
-            ? 'Cashout code generated. Sources will be debited once the code is redeemed.'
-            : 'Identity claim pending. Sources will be debited once the claim is confirmed.',
-    ];
-}
+                return [
+                    'success' => true,
+                    'pool_id' => $pool['id'],
+                    'reference' => $pool['reference'],
+                    'status' => $deferredStatus,
+                    'total_amount' => $pool['amount'],
+                    'currency' => $pool['currency'] ?? 'BWP',
+                    'source_count' => count($contributions),
+                    'destination_result' => $destinationResult,
+                    'message' => $deferredStatus === PoolStatus::PENDING_CASHOUT->value
+                        ? 'Cashout code generated. Sources will be debited once the code is redeemed.'
+                        : 'Identity claim pending. Sources will be debited once the claim is confirmed.',
+                ];
+            }
 
-// 11. Transition to DESTINATION_COMPLETED (ordinary deposit path only)
-$this->stateMachine->transition($pool, PoolStatus::DESTINATION_COMPLETED->value);
+            // 11. Transition to DESTINATION_COMPLETED (ordinary deposit path only)
+            $this->stateMachine->transition($pool, PoolStatus::DESTINATION_COMPLETED->value);
 
-$completion = $this->completeDeferredPool($pool, $holds, $contributions);
+            $completion = $this->completeDeferredPool($pool, $holds, $contributions);
 
-if ($transactionStartedHere) {
-    $this->db->commit();
-    $this->logger->debug('Committed transaction in PoolCoordinator');
-} else {
-    $this->logger->debug('Leaving transaction open for caller to commit');
-}
-
-return $this->buildResponse($pool, $contributions, $destinationResult, $completion['settlement'], $completion['invoices']);
-            // 12. Transition to DEBITING, then debit sources
-            $this->stateMachine->transition($pool, PoolStatus::DEBITING->value);
-            $debits = $this->debitSources($pool, $holds, $contributions);
-            $this->logger->info('Sources debited', ['debits' => count($debits)]);
-            
-            // 13. Transition to SETTLING, then settle
-            $this->stateMachine->transition($pool, PoolStatus::SETTLING->value);
-            $settlementResult = $this->settle($pool, $contributions);
-            $this->logger->info('Settlement completed');
-            
-            // 14. Transition to INVOICING, then invoice
-            $this->stateMachine->transition($pool, PoolStatus::INVOICING->value);
-            $invoiceResult = $this->invoice($pool, $contributions);
-            $this->logger->info('Invoicing completed');
-            
-            // 15. Complete
-            $this->stateMachine->transition($pool, PoolStatus::COMPLETED->value);
-            
-            // FIX: Only commit if we started the transaction
             if ($transactionStartedHere) {
                 $this->db->commit();
                 $this->logger->debug('Committed transaction in PoolCoordinator');
             } else {
                 $this->logger->debug('Leaving transaction open for caller to commit');
             }
-            
-            return $this->buildResponse($pool, $contributions, $destinationResult, $settlementResult, $invoiceResult);
+
+            return $this->buildResponse($pool, $contributions, $destinationResult, $completion['settlement'], $completion['invoices']);
             
         } catch (Exception $e) {
             // FIX: Only rollback if we started the transaction
@@ -253,115 +226,290 @@ return $this->buildResponse($pool, $contributions, $destinationResult, $completi
     }
 
     private function completeDeferredPool(array $pool, array $holds, array $contributions): array
-{
-    $this->stateMachine->transition($pool, PoolStatus::DEBITING->value);
-    $debits = $this->debitSources($pool, $holds, $contributions);
-    $this->logger->info('Sources debited', ['debits' => count($debits)]);
+    {
+        $this->stateMachine->transition($pool, PoolStatus::DEBITING->value);
+        $debits = $this->debitSources($pool, $holds, $contributions);
+        $this->logger->info('Sources debited', ['debits' => count($debits)]);
 
-    $this->stateMachine->transition($pool, PoolStatus::SETTLING->value);
-    $settlementResult = $this->settle($pool, $contributions);
-    $this->logger->info('Settlement completed');
+        $this->stateMachine->transition($pool, PoolStatus::SETTLING->value);
+        $settlementResult = $this->settle($pool, $contributions);
+        $this->logger->info('Settlement completed');
 
-    $this->stateMachine->transition($pool, PoolStatus::INVOICING->value);
-    $invoiceResult = $this->invoice($pool, $contributions);
-    $this->logger->info('Invoicing completed');
+        $this->stateMachine->transition($pool, PoolStatus::INVOICING->value);
+        $invoiceResult = $this->invoice($pool, $contributions);
+        $this->logger->info('Invoicing completed');
 
-    $this->stateMachine->transition($pool, PoolStatus::COMPLETED->value);
-    $this->poolRepository->updateStatus($pool['id'], PoolStatus::COMPLETED->value);
+        $this->stateMachine->transition($pool, PoolStatus::COMPLETED->value);
+        $this->poolRepository->updateStatus($pool['id'], PoolStatus::COMPLETED->value);
 
-    return ['debits' => $debits, 'settlement' => $settlementResult, 'invoices' => $invoiceResult];
-}
-
-private function executeDestination(array $pool, array $contributions, array $masterSignature, array $holds): array
-{
-    if (!empty($pool['identity_type']) && !empty($pool['identity_value'])) {
-        $result = $this->executeIdentityDestination($pool, $contributions, $masterSignature, $holds);
-        $result['_defer_debit'] = $result['success'] ?? false;
-        $result['_defer_status'] = PoolStatus::PENDING_IDENTITY_CLAIM->value;
-        return $result;
+        return ['debits' => $debits, 'settlement' => $settlementResult, 'invoices' => $invoiceResult];
     }
 
-    $deliveryMethod = strtoupper($pool['delivery_method'] ?? $pool['destination_asset_type'] ?? 'DEPOSIT');
-    if (in_array($deliveryMethod, ['CASHOUT', 'ATM', 'AGENT', 'VOUCHER'], true)) {
-        $result = $this->executeCashoutDestination($pool, $contributions, $masterSignature, $holds);
-        $result['_defer_debit'] = $result['success'] ?? false;
-        $result['_defer_status'] = PoolStatus::PENDING_CASHOUT->value;
-        return $result;
+    private function createPool(array $payload): array
+    {
+        $poolId = $payload['pool_id'] ?? 'POOL_' . uniqid();
+        
+        try {
+            if (isset($this->swapService->forexService)) {
+                $forexService = $this->swapService->forexService;
+                $rate = $forexService->getExchangeRate(
+                    $payload['currency'] ?? 'BWP',
+                    $payload['destination_currency'] ?? 'BWP',
+                    'internal'
+                );
+                $this->forexRateSnapshot = [
+                    'rate' => $rate,
+                    'from' => $payload['currency'] ?? 'BWP',
+                    'to' => $payload['destination_currency'] ?? 'BWP',
+                    'applied' => true,
+                    'timestamp' => time()
+                ];
+            } else {
+                $this->forexRateSnapshot = [
+                    'rate' => 1.0,
+                    'from' => $payload['currency'] ?? 'BWP',
+                    'to' => $payload['destination_currency'] ?? 'BWP',
+                    'applied' => false,
+                    'timestamp' => time()
+                ];
+                $this->logger->info('ForexService not available, using default rate 1.0');
+            }
+        } catch (Exception $e) {
+            $this->logger->warning('Forex rate not available, using default', [
+                'error' => $e->getMessage()
+            ]);
+            $this->forexRateSnapshot = [
+                'rate' => 1.0,
+                'from' => $payload['currency'] ?? 'BWP',
+                'to' => $payload['destination_currency'] ?? 'BWP',
+                'applied' => false,
+                'timestamp' => time()
+            ];
+        }
+        
+        $isIdentityDestination = isset($payload['identity_type']) && !empty($payload['identity_value']);
+        $deliveryMethod = strtoupper($payload['delivery_method'] ?? ($isIdentityDestination ? 'IDENTITY' : 'DEPOSIT'));
+
+        $destinationIdentifier = $isIdentityDestination
+            ? ['identifier' => null, 'type' => null]
+            : $this->swapService->extractDestinationIdentifier($payload);
+        $destinationAssetType = $isIdentityDestination
+            ? null
+            : $this->swapService->extractDestinationAssetType($payload);
+        $destinationInstitution = $isIdentityDestination
+            ? null
+            : ($payload['to_institution'] ?? $payload['destination_institution'] ?? null);
+
+        if (!$isIdentityDestination && empty($destinationInstitution)) {
+            throw new RuntimeException("Multi-source swap requires either a destination institution or identity_type/identity_value");
+        }
+
+        $pool = [
+            'id' => $poolId,
+            'sources' => $payload['sources'] ?? [],
+            'amount' => $payload['amount'] ?? 0,
+            'currency' => $payload['currency'] ?? 'BWP',
+            'destination_currency' => $payload['destination_currency'] ?? 'BWP',
+            'status' => PoolStatus::CREATED->value,
+            'source_institution' => $payload['from_institution'] ?? $payload['source_institution'] ?? null,
+            'destination_institution' => $destinationInstitution,
+            'destination_identifier' => $destinationIdentifier['identifier'] ?? null,
+            'destination_identifier_type' => $destinationIdentifier['type'] ?? null,
+            'destination_asset_type' => $destinationAssetType,
+            'delivery_method' => $deliveryMethod,
+            'identity_type' => $isIdentityDestination ? strtolower($payload['identity_type']) : null,
+            'identity_value' => $isIdentityDestination ? $payload['identity_value'] : null,
+            'beneficiary_phone' => $payload['beneficiary_phone'] ?? null,
+            'user_id' => $payload['user_id'] ?? null,
+            'reference' => $payload['reference'] ?? uniqid(),
+            'forex_rate' => $this->forexRateSnapshot,
+            'created_at' => date('Y-m-d H:i:s'),
+            'updated_at' => date('Y-m-d H:i:s'),
+            // Persisted copy — top-level keys above are for THIS request's
+            // in-memory flow only and are lost once this process ends.
+            // A later confirmPoolCashout()/confirmPoolIdentityClaim() call
+            // (a fresh HTTP request, possibly minutes/hours later) reloads
+            // the pool from the DB and can only see what's in metadata.
+            'metadata' => [
+                'delivery_method' => $deliveryMethod,
+                'identity_type' => $isIdentityDestination ? strtolower($payload['identity_type']) : null,
+                'identity_value' => $isIdentityDestination ? $payload['identity_value'] : null,
+                'beneficiary_phone' => $payload['beneficiary_phone'] ?? null,
+                'destination_identifier_type' => $destinationIdentifier['type'] ?? null,
+                'destination_asset_type' => $destinationAssetType,
+                'user_id' => $payload['user_id'] ?? null,
+            ],
+        ];
+        
+        $this->poolRepository->saveFromArray($pool);
+        
+        return $pool;
     }
 
-    $destinationInstitution = $pool['destination_institution'];
-    $totalAmount = $pool['amount'];
-    $currency = $pool['currency'] ?? 'BWP';
+    /**
+     * Reconstructs the in-memory $pool / $holds / $contributions shape
+     * that execute() built originally, from persisted rows only. Used by
+     * confirmPoolCashout() and confirmPoolIdentityClaim(), which run in a
+     * separate request from the one that created the pool.
+     */
+    private function reloadPoolForConfirmation(string $poolId): array
+    {
+        $row = $this->poolRepository->findByIdAsArray($poolId);
+        if (!$row) {
+            throw new RuntimeException("Pool not found: {$poolId}");
+        }
 
-    $destinationPayload = [
-        'destination_identifier' => $pool['destination_identifier'] ?? null,
-        'destination_identifier_type' => $pool['destination_identifier_type'] ?? 'account',
-        'destination_asset_type' => $pool['destination_asset_type'] ?? 'WALLET',
-        'destination_institution' => $destinationInstitution,
-        'to_institution' => $destinationInstitution,
-        'amount' => $totalAmount,
-        'currency' => $currency,
-        'reference' => $pool['reference'] ?? uniqid(),
-        'master_signature' => $masterSignature['signature'] ?? null,
-        'master_certificate' => $masterSignature['certificate'] ?? null,
-        'pool_id' => $pool['id'],
-        'sources' => $contributions
-    ];
+        $metadata = json_decode($row['metadata'] ?? '{}', true) ?: [];
 
-    return $this->swapService->creditDestination($destinationPayload, $destinationInstitution);
-}
+        $pool = [
+            'id' => $row['pool_id'],
+            'reference' => $row['swap_reference'],
+            'amount' => (float)$row['requested_amount'],
+            'currency' => $row['currency'] ?? 'BWP',
+            'status' => $row['status'],
+            'destination_institution' => $row['destination_institution'],
+            'destination_identifier' => $row['destination_identifier'],
+            'destination_identifier_type' => $metadata['destination_identifier_type'] ?? null,
+            'destination_asset_type' => $metadata['destination_asset_type'] ?? ($row['destination_type'] ?? null),
+            'delivery_method' => $metadata['delivery_method'] ?? 'DEPOSIT',
+            'identity_type' => $metadata['identity_type'] ?? null,
+            'identity_value' => $metadata['identity_value'] ?? null,
+            'beneficiary_phone' => $metadata['beneficiary_phone'] ?? null,
+            'user_id' => $metadata['user_id'] ?? null,
+        ];
 
-/**
- * CASHOUT destination: generates an ATM/agent code at the destination
- * institution. Does NOT credit/deposit anything and does NOT debit any
- * source — the client hasn't redeemed the code yet. Mirrors
- * SwapService::generateCashoutToken()'s single-source shape, sourced
- * from the pool's aggregate amount instead of a single hold.
- */
-private function executeCashoutDestination(array $pool, array $contributions, array $masterSignature, array $holds): array
-{
-    $destinationInstitution = $pool['destination_institution'];
-    if (empty($destinationInstitution)) {
-        return ['success' => false, 'message' => 'Cashout requires a destination institution'];
+        $contributionRows = $this->contributionRepository->getAllByPoolIdAsArray($poolId);
+        if (empty($contributionRows)) {
+            throw new RuntimeException("No contributions found for pool: {$poolId}");
+        }
+
+        $holds = [];
+        $contributions = [];
+        foreach ($contributionRows as $row) {
+            if (empty($row['hold_reference'])) {
+                throw new RuntimeException("Contribution {$row['id']} for pool {$poolId} has no hold_reference — cannot debit");
+            }
+            $contribution = [
+                '_contribution_id' => (int)$row['id'],
+                'institution' => $row['institution'],
+                'asset_type' => $row['asset_type'] ?? 'ACCOUNT',
+                'source_identifier' => $row['source_identifier'],
+                'amount' => (float)$row['contribution_amount'],
+                'currency' => $row['currency'] ?? $pool['currency'],
+            ];
+            $contributions[] = $contribution;
+            $holds[] = [
+                'institution' => $row['institution'],
+                'hold_reference' => $row['hold_reference'],
+                'amount' => (float)$row['contribution_amount'],
+                'source_payload' => $contribution,
+            ];
+        }
+
+        return [$pool, $holds, $contributions];
     }
 
-    $tokenPayload = [
-        'reference' => $pool['reference'] ?? uniqid(),
-        'amount' => $pool['amount'],
-        'currency' => $pool['currency'] ?? 'BWP',
-        'action' => 'GENERATE_TOKEN',
-        'to_institution' => $destinationInstitution,
-        'destination_institution' => $destinationInstitution,
-        'destination_identifier' => $pool['destination_identifier'] ?? null,
-        'destination_identifier_type' => $pool['destination_identifier_type'] ?? null,
-        'beneficiary_phone' => $pool['beneficiary_phone'] ?? null,
-        'master_signature' => $masterSignature['signature'] ?? null,
-        'master_certificate' => $masterSignature['certificate'] ?? null,
-        'pool_id' => $pool['id'],
-        'source_type' => 'VIRTUAL_POOL',
-        'from_institution' => 'VM_POOL',
-        'source_institution' => 'VM_POOL',
-    ];
+    /**
+     * Called once the client has redeemed the cashout code at an ATM/agent.
+     * Confirms with the destination bank, then debits every source hold
+     * and completes the pool. Mirrors SwapService::confirmCashout()'s
+     * two-phase shape, but for a pool of N source holds instead of one.
+     */
+    public function confirmPoolCashout(string $poolId, array $confirmationPayload = []): array
+    {
+        [$pool, $holds, $contributions] = $this->reloadPoolForConfirmation($poolId);
 
-    $adapter = $this->swapService->getAdapterFactory()->getAdapter($destinationInstitution);
-    $result = $adapter->generateCashoutToken($tokenPayload, [
-        'swap_reference' => $pool['reference'] ?? null,
-        'destination_institution' => $destinationInstitution,
-        'pool_id' => $pool['id'],
-    ]);
+        if ($pool['status'] !== PoolStatus::PENDING_CASHOUT->value) {
+            throw new RuntimeException(
+                "Pool {$poolId} is not awaiting cashout confirmation (status: {$pool['status']})"
+            );
+        }
 
-    if (!($result['success'] ?? false)) {
-        return ['success' => false, 'message' => $result['message'] ?? 'Cashout code generation failed'];
+        $transactionStartedHere = !$this->db->inTransaction();
+        if ($transactionStartedHere) {
+            $this->db->beginTransaction();
+        }
+
+        try {
+            $destinationInstitution = $pool['destination_institution'];
+            $adapter = $this->swapService->getAdapterFactory()->getAdapter($destinationInstitution);
+
+            $confirmResult = $adapter->confirmCashout(array_merge([
+                'reference' => $pool['reference'],
+                'pool_id' => $pool['id'],
+                'to_institution' => $destinationInstitution,
+                'destination_institution' => $destinationInstitution,
+                'action' => 'CONFIRM_CASHOUT',
+            ], $confirmationPayload), [
+                'swap_reference' => $pool['reference'],
+                'destination_institution' => $destinationInstitution,
+            ]);
+
+            if (!($confirmResult['confirmed'] ?? false)) {
+                throw new RuntimeException(
+                    "Cashout not confirmed by destination: " . ($confirmResult['message'] ?? 'Unknown error')
+                );
+            }
+
+            $this->stateMachine->transition($pool, PoolStatus::DESTINATION_COMPLETED->value);
+            $completion = $this->completeDeferredPool($pool, $holds, $contributions);
+
+            if ($transactionStartedHere) {
+                $this->db->commit();
+            }
+
+            return $this->buildResponse($pool, $contributions, $confirmResult, $completion['settlement'], $completion['invoices']);
+
+        } catch (\Throwable $e) {
+            if ($transactionStartedHere && $this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            $this->logger->error('confirmPoolCashout failed', ['pool_id' => $poolId, 'error' => $e->getMessage()]);
+            throw new RuntimeException("Cashout confirmation failed: " . $e->getMessage());
+        }
     }
 
-    return [
-        'success' => true,
-        'atm_pin' => $result['atm_pin'] ?? null,
-        'voucher_number' => $result['voucher_number'] ?? $result['swap_code'] ?? null,
-        'expires_at' => $result['expires_at'] ?? null,
-        'message' => $result['message'] ?? 'Cashout code generated. Debit deferred until redemption.',
-    ];
-}
+    /**
+     * Called once the recipient (or agent, for document-based identity
+     * types) has finalized their identity claim via SwapService's normal
+     * single-hold flow. Debits every pooled source hold and completes
+     * the pool. The recipient's chosen destination_type/institution for
+     * THIS claim is separate from the pool's own destination fields (the
+     * pool never had one — see executeIdentityDestination()).
+     */
+    public function confirmPoolIdentityClaim(string $poolId): array
+    {
+        [$pool, $holds, $contributions] = $this->reloadPoolForConfirmation($poolId);
+
+        if ($pool['status'] !== PoolStatus::PENDING_IDENTITY_CLAIM->value) {
+            throw new RuntimeException(
+                "Pool {$poolId} is not awaiting identity claim confirmation (status: {$pool['status']})"
+            );
+        }
+
+        $transactionStartedHere = !$this->db->inTransaction();
+        if ($transactionStartedHere) {
+            $this->db->beginTransaction();
+        }
+
+        try {
+            $this->stateMachine->transition($pool, PoolStatus::DESTINATION_COMPLETED->value);
+            $completion = $this->completeDeferredPool($pool, $holds, $contributions);
+
+            if ($transactionStartedHere) {
+                $this->db->commit();
+            }
+
+            return $this->buildResponse($pool, $contributions, ['success' => true], $completion['settlement'], $completion['invoices']);
+
+        } catch (\Throwable $e) {
+            if ($transactionStartedHere && $this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            $this->logger->error('confirmPoolIdentityClaim failed', ['pool_id' => $poolId, 'error' => $e->getMessage()]);
+            throw new RuntimeException("Identity claim confirmation failed: " . $e->getMessage());
+        }
+    }
     
     private function persistContributions(array $pool, array $contributions): array
     {
@@ -420,91 +568,6 @@ private function executeCashoutDestination(array $pool, array $contributions, ar
             $persisted[] = $contribution;
         }
         return $persisted;
-    }
-
-    private function createPool(array $payload): array
-    {
-        $poolId = $payload['pool_id'] ?? 'POOL_' . uniqid();
-        
-        try {
-            if (isset($this->swapService->forexService)) {
-                $forexService = $this->swapService->forexService;
-                $rate = $forexService->getExchangeRate(
-                    $payload['currency'] ?? 'BWP',
-                    $payload['destination_currency'] ?? 'BWP',
-                    'internal'
-                );
-                $this->forexRateSnapshot = [
-                    'rate' => $rate,
-                    'from' => $payload['currency'] ?? 'BWP',
-                    'to' => $payload['destination_currency'] ?? 'BWP',
-                    'applied' => true,
-                    'timestamp' => time()
-                ];
-            } else {
-                $this->forexRateSnapshot = [
-                    'rate' => 1.0,
-                    'from' => $payload['currency'] ?? 'BWP',
-                    'to' => $payload['destination_currency'] ?? 'BWP',
-                    'applied' => false,
-                    'timestamp' => time()
-                ];
-                $this->logger->info('ForexService not available, using default rate 1.0');
-            }
-        } catch (Exception $e) {
-            $this->logger->warning('Forex rate not available, using default', [
-                'error' => $e->getMessage()
-            ]);
-            $this->forexRateSnapshot = [
-                'rate' => 1.0,
-                'from' => $payload['currency'] ?? 'BWP',
-                'to' => $payload['destination_currency'] ?? 'BWP',
-                'applied' => false,
-                'timestamp' => time()
-            ];
-        }
-        
-        $isIdentityDestination = isset($payload['identity_type']) && !empty($payload['identity_value']);
-
-        $destinationIdentifier = $isIdentityDestination
-            ? ['identifier' => null, 'type' => null]
-            : $this->swapService->extractDestinationIdentifier($payload);
-        $destinationAssetType = $isIdentityDestination
-            ? null
-            : $this->swapService->extractDestinationAssetType($payload);
-        $destinationInstitution = $isIdentityDestination
-            ? null
-            : ($payload['to_institution'] ?? $payload['destination_institution'] ?? null);
-
-        if (!$isIdentityDestination && empty($destinationInstitution)) {
-            throw new RuntimeException("Multi-source swap requires either a destination institution or identity_type/identity_value");
-        }
-
-        $pool = [
-            'id' => $poolId,
-            'sources' => $payload['sources'] ?? [],
-            'amount' => $payload['amount'] ?? 0,
-            'currency' => $payload['currency'] ?? 'BWP',
-            'destination_currency' => $payload['destination_currency'] ?? 'BWP',
-            'status' => PoolStatus::CREATED->value,
-            'source_institution' => $payload['from_institution'] ?? $payload['source_institution'] ?? null,
-            'destination_institution' => $destinationInstitution,
-            'destination_identifier' => $destinationIdentifier['identifier'] ?? null,
-            'destination_identifier_type' => $destinationIdentifier['type'] ?? null,
-            'destination_asset_type' => $destinationAssetType,
-            'identity_type' => $isIdentityDestination ? strtolower($payload['identity_type']) : null,
-            'identity_value' => $isIdentityDestination ? $payload['identity_value'] : null,
-            'beneficiary_phone' => $payload['beneficiary_phone'] ?? null,
-            'user_id' => $payload['user_id'] ?? null,
-            'reference' => $payload['reference'] ?? uniqid(),
-            'forex_rate' => $this->forexRateSnapshot,
-            'created_at' => date('Y-m-d H:i:s'),
-            'updated_at' => date('Y-m-d H:i:s')
-        ];
-        
-        $this->poolRepository->saveFromArray($pool);
-        
-        return $pool;
     }
 
     private function calculateContributions(array $pool, array $payload): array
@@ -834,7 +897,18 @@ private function executeCashoutDestination(array $pool, array $contributions, ar
     private function executeDestination(array $pool, array $contributions, array $masterSignature, array $holds): array
     {
         if (!empty($pool['identity_type']) && !empty($pool['identity_value'])) {
-            return $this->executeIdentityDestination($pool, $contributions, $masterSignature, $holds);
+            $result = $this->executeIdentityDestination($pool, $contributions, $masterSignature, $holds);
+            $result['_defer_debit'] = $result['success'] ?? false;
+            $result['_defer_status'] = PoolStatus::PENDING_IDENTITY_CLAIM->value;
+            return $result;
+        }
+
+        $deliveryMethod = strtoupper($pool['delivery_method'] ?? $pool['destination_asset_type'] ?? 'DEPOSIT');
+        if (in_array($deliveryMethod, ['CASHOUT', 'ATM', 'AGENT', 'VOUCHER'], true)) {
+            $result = $this->executeCashoutDestination($pool, $contributions, $masterSignature, $holds);
+            $result['_defer_debit'] = $result['success'] ?? false;
+            $result['_defer_status'] = PoolStatus::PENDING_CASHOUT->value;
+            return $result;
         }
 
         $destinationInstitution = $pool['destination_institution'];
@@ -857,6 +931,58 @@ private function executeCashoutDestination(array $pool, array $contributions, ar
         ];
 
         return $this->swapService->creditDestination($destinationPayload, $destinationInstitution);
+    }
+
+    /**
+     * CASHOUT destination: generates an ATM/agent code at the destination
+     * institution. Does NOT credit/deposit anything and does NOT debit any
+     * source — the client hasn't redeemed the code yet. Mirrors
+     * SwapService::generateCashoutToken()'s single-source shape, sourced
+     * from the pool's aggregate amount instead of a single hold.
+     */
+    private function executeCashoutDestination(array $pool, array $contributions, array $masterSignature, array $holds): array
+    {
+        $destinationInstitution = $pool['destination_institution'];
+        if (empty($destinationInstitution)) {
+            return ['success' => false, 'message' => 'Cashout requires a destination institution'];
+        }
+
+        $tokenPayload = [
+            'reference' => $pool['reference'] ?? uniqid(),
+            'amount' => $pool['amount'],
+            'currency' => $pool['currency'] ?? 'BWP',
+            'action' => 'GENERATE_TOKEN',
+            'to_institution' => $destinationInstitution,
+            'destination_institution' => $destinationInstitution,
+            'destination_identifier' => $pool['destination_identifier'] ?? null,
+            'destination_identifier_type' => $pool['destination_identifier_type'] ?? null,
+            'beneficiary_phone' => $pool['beneficiary_phone'] ?? null,
+            'master_signature' => $masterSignature['signature'] ?? null,
+            'master_certificate' => $masterSignature['certificate'] ?? null,
+            'pool_id' => $pool['id'],
+            'source_type' => 'VIRTUAL_POOL',
+            'from_institution' => 'VM_POOL',
+            'source_institution' => 'VM_POOL',
+        ];
+
+        $adapter = $this->swapService->getAdapterFactory()->getAdapter($destinationInstitution);
+        $result = $adapter->generateCashoutToken($tokenPayload, [
+            'swap_reference' => $pool['reference'] ?? null,
+            'destination_institution' => $destinationInstitution,
+            'pool_id' => $pool['id'],
+        ]);
+
+        if (!($result['success'] ?? false)) {
+            return ['success' => false, 'message' => $result['message'] ?? 'Cashout code generation failed'];
+        }
+
+        return [
+            'success' => true,
+            'atm_pin' => $result['atm_pin'] ?? null,
+            'voucher_number' => $result['voucher_number'] ?? $result['swap_code'] ?? null,
+            'expires_at' => $result['expires_at'] ?? null,
+            'message' => $result['message'] ?? 'Cashout code generated. Debit deferred until redemption.',
+        ];
     }
 
     /**
@@ -919,6 +1045,7 @@ private function executeCashoutDestination(array $pool, array $contributions, ar
             'result' => $result,
         ];
     }
+
     private function debitSources(array $pool, array $holds, array $contributions): array
     {
         $debits = [];
@@ -973,78 +1100,80 @@ private function executeCashoutDestination(array $pool, array $contributions, ar
     }
 
     private function settle(array $pool, array $contributions): array
-{
-    $sourceInstitutions = array_column($contributions, 'institution');
-    $totalAmount = $pool['amount'];
-    $currency = $pool['currency'] ?? 'BWP';
+    {
+        $sourceInstitutions = array_column($contributions, 'institution');
+        $totalAmount = $pool['amount'];
+        $currency = $pool['currency'] ?? 'BWP';
 
-    $destinationInstitution = $pool['destination_institution']
-        ?? 'IDENTITY_CLAIM_' . strtoupper($pool['identity_type'] ?? 'UNKNOWN');
+        $destinationInstitution = $pool['destination_institution']
+            ?? 'IDENTITY_CLAIM_' . strtoupper($pool['identity_type'] ?? 'UNKNOWN');
 
-    return $this->settlement->updateNetPosition(
-        $pool['reference'] ?? uniqid(),
-        implode(',', $sourceInstitutions),
-        $destinationInstitution,
-        $totalAmount,
-        'MULTI_SOURCE_COMPLETED',
-        $currency
-    );
-}
+        return $this->settlement->updateNetPosition(
+            $pool['reference'] ?? uniqid(),
+            implode(',', $sourceInstitutions),
+            $destinationInstitution,
+            $totalAmount,
+            'MULTI_SOURCE_COMPLETED',
+            $currency
+        );
+    }
+
     private function invoice(array $pool, array $contributions): array
-{
-    // Derive delivery mode from how the pool was destined
-    $deliveryMode = match (true) {
-        isset($pool['identity_type'], $pool['identity_value']) => 'deposit', // identity swaps settle as deposits internally
-        strtoupper($pool['destination_asset_type'] ?? '') === 'CASHOUT' => 'cashout',
-        default => 'deposit',
-    };
-    // If the caller flagged this pool as a cashout explicitly, honor that instead
-    if (!empty($pool['delivery_mode'])) {
-        $deliveryMode = $pool['delivery_mode'];
-    }
-
-    $feeResult = $this->feeCalculator->calculateFees(
-        count($contributions),
-        $deliveryMode,
-        $pool['amount'] ?? 0,
-        $pool['currency'] ?? 'BWP',
-        $pool['destination_currency'] ?? $pool['currency'] ?? 'BWP'
-    );
-
-    $invoiceResults = [];
-
-    $platformShare = $feeResult['split_distribution']['platform_share'] ?? 0;
-    if ($platformShare > 0) {
-        $result = $this->settlement->invoiceFee(
-            $pool['reference'] ?? uniqid(),
-            'VOUCHMORPH',
-            1,
-            'PLATFORM_FEE',
-            $platformShare,
-            $feeResult['currency'] ?? $pool['currency'] ?? 'BWP'
-        );
-        $invoiceResults[] = $result;
-    }
-
-    // Invoice each source's individual share, using per_source_fees
-    // (keyed by contribution index, matching $contributions' own indexing)
-    foreach ($feeResult['per_source_fees'] ?? [] as $index => $amount) {
-        if ($amount <= 0 || !isset($contributions[$index])) {
-            continue;
+    {
+        // Derive delivery mode from how the pool was destined
+        $deliveryMode = match (true) {
+            isset($pool['identity_type'], $pool['identity_value']) => 'deposit', // identity swaps settle as deposits internally
+            strtoupper($pool['destination_asset_type'] ?? '') === 'CASHOUT' => 'cashout',
+            default => 'deposit',
+        };
+        // If the caller flagged this pool as a cashout explicitly, honor that instead
+        if (!empty($pool['delivery_mode'])) {
+            $deliveryMode = $pool['delivery_mode'];
         }
-        $result = $this->settlement->invoiceFee(
-            $pool['reference'] ?? uniqid(),
-            $contributions[$index]['institution'],
-            0,
-            'SOURCE_FEE',
-            $amount,
-            $feeResult['currency'] ?? $pool['currency'] ?? 'BWP'
+
+        $feeResult = $this->feeCalculator->calculateFees(
+            count($contributions),
+            $deliveryMode,
+            $pool['amount'] ?? 0,
+            $pool['currency'] ?? 'BWP',
+            $pool['destination_currency'] ?? $pool['currency'] ?? 'BWP'
         );
-        $invoiceResults[] = $result;
+
+        $invoiceResults = [];
+
+        $platformShare = $feeResult['split_distribution']['platform_share'] ?? 0;
+        if ($platformShare > 0) {
+            $result = $this->settlement->invoiceFee(
+                $pool['reference'] ?? uniqid(),
+                'VOUCHMORPH',
+                1,
+                'PLATFORM_FEE',
+                $platformShare,
+                $feeResult['currency'] ?? $pool['currency'] ?? 'BWP'
+            );
+            $invoiceResults[] = $result;
+        }
+
+        // Invoice each source's individual share, using per_source_fees
+        // (keyed by contribution index, matching $contributions' own indexing)
+        foreach ($feeResult['per_source_fees'] ?? [] as $index => $amount) {
+            if ($amount <= 0 || !isset($contributions[$index])) {
+                continue;
+            }
+            $result = $this->settlement->invoiceFee(
+                $pool['reference'] ?? uniqid(),
+                $contributions[$index]['institution'],
+                0,
+                'SOURCE_FEE',
+                $amount,
+                $feeResult['currency'] ?? $pool['currency'] ?? 'BWP'
+            );
+            $invoiceResults[] = $result;
+        }
+
+        return $invoiceResults;
     }
 
-    return $invoiceResults;
-}
     private function rollback(?array $pool): void
     {
         if ($pool && isset($pool['id'])) {
