@@ -8741,6 +8741,23 @@ public function confirmPoolIdentityClaim(string $poolId): array
     }
     return $this->multiSourceOrchestrator->confirmPoolIdentityClaim($poolId);
 }
+
+public function cancelExpiredPoolCashouts(int $bufferHours = 6): array
+{
+    if ($this->multiSourceOrchestrator === null) {
+        return ['total_expired' => 0, 'released' => 0, 'errors' => 0, 'details' => []];
+    }
+    return $this->multiSourceOrchestrator->cancelExpiredPoolCashouts($bufferHours);
+}
+
+public function cancelExpiredPoolIdentityClaims(): array
+{
+    if ($this->multiSourceOrchestrator === null) {
+        return ['total_expired' => 0, 'cancelled' => 0, 'errors' => 0, 'details' => []];
+    }
+    return $this->multiSourceOrchestrator->cancelExpiredPoolIdentityClaims();
+}
+ 
     private function getCashoutAuthorization(?string $swapRef, ?int $authId): ?array
     {
         $sql = "
