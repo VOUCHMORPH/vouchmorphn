@@ -14,13 +14,16 @@ class PoolStateMachine
     /**
      * Valid state transitions
      * Current state => [allowed next states]
+     * 
+     * Note: Status strings must fit in the database column (varchar(20))
+     * PENDING_ID_CLAIM (16 chars) instead of PENDING_IDENTITY_CLAIM (23 chars)
      */
     private array $transitions = [
         'CREATED' => ['VERIFYING', 'CANCELLED'],
         'VERIFYING' => ['HOLDING', 'FAILED', 'CANCELLED'],
         'HOLDING' => ['FUNDED', 'FAILED', 'ROLLED_BACK'],
         'FUNDED' => ['DESTINATION_PENDING', 'FAILED'],
-        'DESTINATION_PENDING' => ['DESTINATION_COMPLETED', 'PENDING_CASHOUT', 'PENDING_IDENTITY_CLAIM', 'FAILED'],
+        'DESTINATION_PENDING' => ['DESTINATION_COMPLETED', 'PENDING_CASHOUT', 'PENDING_ID_CLAIM', 'FAILED'],
         'DESTINATION_COMPLETED' => ['DEBITING', 'FAILED'],
         'DEBITING' => ['SETTLING', 'FAILED', 'ROLLED_BACK'],
         'SETTLING' => ['INVOICING', 'FAILED'],
@@ -30,7 +33,7 @@ class PoolStateMachine
         'CANCELLED' => [],
         'ROLLED_BACK' => [],
         'PENDING_CASHOUT' => ['DEBITING', 'FAILED', 'CANCELLED', 'ROLLED_BACK'],
-        'PENDING_IDENTITY_CLAIM' => ['DEBITING', 'FAILED', 'CANCELLED', 'ROLLED_BACK']
+        'PENDING_ID_CLAIM' => ['DEBITING', 'FAILED', 'CANCELLED', 'ROLLED_BACK']
     ];
 
     public function transition(array &$pool, string $newStatus, array $metadata = []): void
