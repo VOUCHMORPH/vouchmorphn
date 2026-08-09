@@ -75,4 +75,13 @@ class MultiSourceSwapOrchestrator
     {
         return $this->coordinator->cancel($poolId, $reason);
     }
+    public function confirmPoolCashout(string $poolId, array $confirmationPayload = []): array
+{
+    return $this->coordinator->confirmPoolCashout($poolId, $confirmationPayload);
+}
+
+public function confirmPoolIdentityClaim(string $poolId): array
+{
+    return $this->coordinator->confirmPoolIdentityClaim($poolId);
+}
 }
