@@ -304,10 +304,22 @@ class PoolCoordinator
             ];
         }
         
-        $destinationIdentifier = $this->swapService->extractDestinationIdentifier($payload);
-        $destinationAssetType = $this->swapService->extractDestinationAssetType($payload);
-        $destinationInstitution = $payload['to_institution'] ?? $payload['destination_institution'] ?? null;
-        
+        $$isIdentityDestination = isset($payload['identity_type']) && !empty($payload['identity_value']);
+
+        $destinationIdentifier = $isIdentityDestination
+            ? ['identifier' => null, 'type' => null]
+            : $this->swapService->extractDestinationIdentifier($payload);
+        $destinationAssetType = $isIdentityDestination
+            ? null
+            : $this->swapService->extractDestinationAssetType($payload);
+        $destinationInstitution = $isIdentityDestination
+            ? null
+            : ($payload['to_institution'] ?? $payload['destination_institution'] ?? null);
+
+        if (!$isIdentityDestination && empty($destinationInstitution)) {
+            throw new RuntimeException("Multi-source swap requires either a destination institution or identity_type/identity_value");
+        }
+
         $pool = [
             'id' => $poolId,
             'sources' => $payload['sources'] ?? [],
@@ -320,6 +332,10 @@ class PoolCoordinator
             'destination_identifier' => $destinationIdentifier['identifier'] ?? null,
             'destination_identifier_type' => $destinationIdentifier['type'] ?? null,
             'destination_asset_type' => $destinationAssetType,
+            'identity_type' => $isIdentityDestination ? strtolower($payload['identity_type']) : null,
+            'identity_value' => $isIdentityDestination ? $payload['identity_value'] : null,
+            'beneficiary_phone' => $payload['beneficiary_phone'] ?? null,
+            'user_id' => $payload['user_id'] ?? null,
             'reference' => $payload['reference'] ?? uniqid(),
             'forex_rate' => $this->forexRateSnapshot,
             'created_at' => date('Y-m-d H:i:s'),
