@@ -150,7 +150,7 @@ class PoolCoordinator
             $this->stateMachine->transition($pool, PoolStatus::DESTINATION_PENDING->value);
             
             // 10. Execute destination
-            $destinationResult = $this->executeDestination($pool, $contributions, $masterSignature);
+            $destinationResult = $this->executeDestination($pool, $contributions, $masterSignature, $holds);
             $this->logger->info('Destination executed', ['success' => $destinationResult['success'] ?? false]);
             
             // 11. Transition to DESTINATION_COMPLETED
