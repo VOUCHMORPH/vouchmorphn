@@ -8647,8 +8647,8 @@ private function storeCashoutAuthorization(
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         $authId = $row ? (int)$row['auth_id'] : 0;
  
-        error_log("[SwapService] Cashout authorization stored: auth_id={$authId}, source={$sourceIdentifierType}:{$sourceIdentifier}, generate_code_fee={$generateCodeFeeAmount}, levy={$levyAmount}, pool_id=" . ($poolId ?? 'none')");
- 
+error_log("[SwapService] Cashout authorization stored: auth_id={$authId}, source={$sourceIdentifierType}:{$sourceIdentifier}, generate_code_fee={$generateCodeFeeAmount}, levy={$levyAmount}, pool_id=" . ($poolId ?? 'none'));
+     
         return $authId;
  
     } catch (PDOException $e) {
