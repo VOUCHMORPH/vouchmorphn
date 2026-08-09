@@ -20,7 +20,7 @@ class PoolStateMachine
         'VERIFYING' => ['HOLDING', 'FAILED', 'CANCELLED'],
         'HOLDING' => ['FUNDED', 'FAILED', 'ROLLED_BACK'],
         'FUNDED' => ['DESTINATION_PENDING', 'FAILED'],
-        'DESTINATION_PENDING' => ['DESTINATION_COMPLETED', 'FAILED'],
+        'DESTINATION_PENDING' => ['DESTINATION_COMPLETED', 'PENDING_CASHOUT', 'PENDING_IDENTITY_CLAIM', 'FAILED'],
         'DESTINATION_COMPLETED' => ['DEBITING', 'FAILED'],
         'DEBITING' => ['SETTLING', 'FAILED', 'ROLLED_BACK'],
         'SETTLING' => ['INVOICING', 'FAILED'],
@@ -28,7 +28,9 @@ class PoolStateMachine
         'COMPLETED' => [],
         'FAILED' => [],
         'CANCELLED' => [],
-        'ROLLED_BACK' => []
+        'ROLLED_BACK' => [],
+        'PENDING_CASHOUT' => ['DEBITING', 'FAILED', 'CANCELLED', 'ROLLED_BACK'],
+        'PENDING_IDENTITY_CLAIM' => ['DEBITING', 'FAILED', 'CANCELLED', 'ROLLED_BACK']
     ];
 
     public function transition(array &$pool, string $newStatus, array $metadata = []): void
