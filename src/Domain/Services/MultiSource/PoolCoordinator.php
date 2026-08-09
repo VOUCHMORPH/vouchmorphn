@@ -149,12 +149,18 @@ class PoolCoordinator
             // 9. Transition to DESTINATION_PENDING
             $this->stateMachine->transition($pool, PoolStatus::DESTINATION_PENDING->value);
             
-            // 10. Execute destination
-            $destinationResult = $this->executeDestination($pool, $contributions, $masterSignature, $holds);
-            $this->logger->info('Destination executed', ['success' => $destinationResult['success'] ?? false]);
-            
-            // 11. Transition to DESTINATION_COMPLETED
-            $this->stateMachine->transition($pool, PoolStatus::DESTINATION_COMPLETED->value);
+           // 10. Execute destination
+$destinationResult = $this->executeDestination($pool, $contributions, $masterSignature, $holds);
+$this->logger->info('Destination executed', ['success' => $destinationResult['success'] ?? false]);
+
+if (!($destinationResult['success'] ?? false)) {
+    throw new RuntimeException(
+        "Destination credit failed: " . ($destinationResult['message'] ?? 'Unknown error')
+    );
+}
+
+// 11. Transition to DESTINATION_COMPLETED
+$this->stateMachine->transition($pool, PoolStatus::DESTINATION_COMPLETED->value);
             
             // 12. Transition to DEBITING, then debit sources
             $this->stateMachine->transition($pool, PoolStatus::DEBITING->value);
