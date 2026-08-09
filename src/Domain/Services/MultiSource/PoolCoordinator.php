@@ -655,30 +655,94 @@ class PoolCoordinator
         }
     }
 
-    private function executeDestination(array $pool, array $contributions, array $masterSignature): array
-{
-    $destinationInstitution = $pool['destination_institution'];
-    $totalAmount = $pool['amount'];
-    $currency = $pool['currency'] ?? 'BWP';
-    
-    $destinationPayload = [
-        'destination_identifier' => $pool['destination_identifier'] ?? null,
-        'destination_identifier_type' => $pool['destination_identifier_type'] ?? 'account',
-        'destination_asset_type' => $pool['destination_asset_type'] ?? 'WALLET',
-        'destination_institution' => $destinationInstitution,
-        'to_institution' => $destinationInstitution,
-        'amount' => $totalAmount,
-        'currency' => $currency,
-        'reference' => $pool['reference'] ?? uniqid(),
-        'master_signature' => $masterSignature['signature'] ?? null,      // <-- extract the bare signature string
-        'master_certificate' => $masterSignature['certificate'] ?? null,  // <-- pass the cert too, likely needed by the destination bank
-        'pool_id' => $pool['id'],
-        'sources' => $contributions
-    ];
-    
-    return $this->swapService->creditDestination($destinationPayload, $destinationInstitution);
-}
+    private function executeDestination(array $pool, array $contributions, array $masterSignature, array $holds): array
+    {
+        if (!empty($pool['identity_type']) && !empty($pool['identity_value'])) {
+            return $this->executeIdentityDestination($pool, $contributions, $masterSignature, $holds);
+        }
 
+        $destinationInstitution = $pool['destination_institution'];
+        $totalAmount = $pool['amount'];
+        $currency = $pool['currency'] ?? 'BWP';
+
+        $destinationPayload = [
+            'destination_identifier' => $pool['destination_identifier'] ?? null,
+            'destination_identifier_type' => $pool['destination_identifier_type'] ?? 'account',
+            'destination_asset_type' => $pool['destination_asset_type'] ?? 'WALLET',
+            'destination_institution' => $destinationInstitution,
+            'to_institution' => $destinationInstitution,
+            'amount' => $totalAmount,
+            'currency' => $currency,
+            'reference' => $pool['reference'] ?? uniqid(),
+            'master_signature' => $masterSignature['signature'] ?? null,
+            'master_certificate' => $masterSignature['certificate'] ?? null,
+            'pool_id' => $pool['id'],
+            'sources' => $contributions
+        ];
+
+        return $this->swapService->creditDestination($destinationPayload, $destinationInstitution);
+    }
+
+    /**
+     * Identity destinations have no institution to credit — the pooled
+     * amount is placed into an identity_swap_holds record for the
+     * recipient to claim later, exactly like a single-source identity
+     * swap.
+     *
+     * LIMITATION: initiateSwapToIdentity()'s _skip_hold path only tracks
+     * ONE hold_reference/hold_id per identity record. For a multi-source
+     * pool, N separate per-source holds were placed by placeHolds() above
+     * (one per contributing institution) — this anchors the identity
+     * claim to the LAST hold placed only. All N holds get correctly
+     * debited later by debitSources(), but only the last hold's
+     * institution/reference is linked in identity_swap_holds. This is
+     * sufficient for the claim/redemption flow to work end-to-end, but
+     * NOT sufficient for per-source reconciliation against the identity
+     * record — that would require identity_swap_holds (or a join table)
+     * to support multiple hold references per claim, which is a schema
+     * change, not a code fix. Flagging rather than silently masking it.
+     */
+    private function executeIdentityDestination(array $pool, array $contributions, array $masterSignature, array $holds): array
+    {
+        if (empty($holds)) {
+            throw new RuntimeException("No holds available to attach identity swap to");
+        }
+
+        $anchorHold = end($holds);
+
+        if (empty($anchorHold['hold_reference'])) {
+            throw new RuntimeException("Anchor hold has no hold_reference to attach identity swap to");
+        }
+
+        $identityPayload = [
+            'swap_type' => 'IDENTITY',
+            'reference' => $pool['reference'] ?? uniqid(),
+            'amount' => $pool['amount'],
+            'currency' => $pool['currency'] ?? 'BWP',
+            'identity_type' => $pool['identity_type'],
+            'identity_value' => $pool['identity_value'],
+            'beneficiary_phone' => $pool['beneficiary_phone'] ?? null,
+            'notification_phone' => $pool['beneficiary_phone'] ?? null,
+            'from_institution' => $anchorHold['institution'],
+            'source_institution' => $anchorHold['institution'],
+            'source_identifier' => $anchorHold['source_payload']['source_identifier'] ?? null,
+            'asset_type' => $anchorHold['source_payload']['asset_type'] ?? 'ACCOUNT',
+            'user_id' => $pool['user_id'] ?? null,
+            '_skip_hold' => true,
+            'hold_reference' => $anchorHold['hold_reference'],
+        ];
+
+        $result = $this->swapService->initiateSwapToIdentity($identityPayload);
+
+        return [
+            'success' => ($result['status'] ?? null) === 'pending_identity_confirmation',
+            'status' => $result['status'] ?? 'unknown',
+            'swap_reference' => $result['swap_reference'] ?? null,
+            'hold_reference' => $result['hold_reference'] ?? null,
+            'message' => $result['message'] ?? null,
+            'result' => $result,
+        ];
+    }
     private function debitSources(array $pool, array $holds, array $contributions): array
     {
         $debits = [];
