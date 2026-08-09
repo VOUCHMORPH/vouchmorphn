@@ -905,7 +905,7 @@ class PoolCoordinator
 
         $deliveryMethod = strtoupper($pool['delivery_method'] ?? $pool['destination_asset_type'] ?? 'DEPOSIT');
         if (in_array($deliveryMethod, ['CASHOUT', 'ATM', 'AGENT', 'VOUCHER'], true)) {
-            $result = $this->Destination($pool, $contributions, $masterSignature, $holds);
+            $result = $this->executeCashoutDestination($pool, $contributions, $masterSignature, $holds);
             $result['_defer_debit'] = $result['success'] ?? false;
             $result['_defer_status'] = PoolStatus::PENDING_CASHOUT->value;
             return $result;
