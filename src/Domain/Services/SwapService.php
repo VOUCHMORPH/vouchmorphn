@@ -7581,6 +7581,8 @@ private function recordSettlementPending(
             'asset_type' => $destinationAssetType,
             'to_institution' => $institution,
             'destination_institution' => $institution,
+            'from_institution' => 'VOUCHMORPH_POOL',     
+            'source_institution' => 'VOUCHMORPH_POOL', 
             'source_type' => 'VIRTUAL_POOL',
             'pool_id' => $payload['pool_id'] ?? null,
             'master_signature' => $payload['master_signature'] ?? null,
