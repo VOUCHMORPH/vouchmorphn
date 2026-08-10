@@ -129,7 +129,23 @@
       }
     }
   },
-  
+  "CARD_ACTIVATION": {
+    "description": "One-time VouchMorph Card activation fee",
+    "fee_components": {
+        "F1": {
+            "amount": 5.00,
+            "description": "One-time card activation fee, paid in full to VouchMorph"
+        }
+    },
+    "distribution": {
+        "split": {
+            "platform_percent": 100,
+            "platform_owner": "VOUCHMORPH"
+        }
+    },
+    "settlement_institution": "ZURUBANK",
+    "settlement_identifier": "10101011"
+},
 
   "switch_routing": {
     "fee_code": "F23",
