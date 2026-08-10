@@ -1493,6 +1493,7 @@ class CardService
             }
 
             $reference = 'CARD_ACTIVATE_' . $cardSuffix . '_' . time();
+            $swapService->setCurrentSwapReference($reference);
             $verifyPayload = array_merge($sourcePayload, [
                 'amount' => $activationFee,
                 'currency' => $currency,
