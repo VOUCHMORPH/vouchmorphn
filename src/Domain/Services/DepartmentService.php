@@ -215,6 +215,38 @@ class DepartmentService
     }
 
     /**
+     * Walks parent_department_id upward from $departmentId to its
+     * top-most ancestor — the "Main Central Government Account" for the
+     * sub-department budget guardrails below (see
+     * checkTransactionAgainstSpendingLimits / recordApprovedDepartmentSpend).
+     * Returns $departmentId itself if it has no parent (it already IS a
+     * root). Deliberately does not filter by status — this is used both
+     * before a payout and after one has already happened, and the latter
+     * must record money that has genuinely moved regardless of a
+     * department's active/inactive flag. Bounded against a cyclic
+     * parent_department_id in the data, same defensive posture as
+     * getDescendantDepartmentIds.
+     */
+    private function getRootDepartmentId(int $departmentId): int
+    {
+        $currentId = $departmentId;
+        for ($hops = 0; $hops < 20; $hops++) {
+            $stmt = $this->db->prepare("SELECT parent_department_id FROM departments WHERE id = :id");
+            $stmt->execute([':id' => $currentId]);
+            $parentId = $stmt->fetchColumn();
+
+            if ($parentId === false) {
+                throw new RuntimeException("Department not found: {$currentId}");
+            }
+            if ($parentId === null) {
+                return $currentId;
+            }
+            $currentId = (int)$parentId;
+        }
+        throw new RuntimeException("Department parent chain too deep or cyclic starting from {$departmentId}.");
+    }
+
+    /**
      * The set of department IDs a user "based" in $departmentId is
      * authorized to act across: themselves plus every descendant. Returns
      * NULL (not an array) to mean "unrestricted / every department in the
@@ -257,6 +289,12 @@ class DepartmentService
      * not yet disbursed (so not yet reflected in amount_disbursed_ytd).
      * This is what keeps two simultaneously-pending batches from both
      * passing the ration check and jointly blowing the ceiling.
+     *
+     * NOTE: once a batch moves to 'executing' (BatchExecutionQueueService::
+     * enqueueBatch), it drops out of this sum even though its destinations
+     * may still be actively paying out — a pre-existing gap. The
+     * sub-department spending guardrails (checkTransactionAgainstSpendingLimits
+     * below) inherit this gap rather than attempting to fix it here.
      */
     private function getReservedAmountsByDepartment(int $organizationId): array
     {
@@ -390,6 +428,88 @@ class DepartmentService
     }
 
     // ============================================================================
+    // TRANSACTION-TIME SPENDING GUARDRAIL — call this right before a single
+    // destination/transaction is actually paid out (not at batch submit
+    // time; assertBatchFitsRation above already covers the whole-batch
+    // check at submit/approve time). This is the later, per-transaction
+    // check: does this ONE payout still fit both (a) the sub-department's
+    // own remaining budget and (b) the Main Central Government Account's
+    // (its root department's) remaining available balance, checked again
+    // right before money moves.
+    // ============================================================================
+
+    /**
+     * Pure check (no mutation, no lock) — can this one transaction go out
+     * from $departmentId right now? Two parts:
+     *   (a) does it fit inside the sub-department's OWN remaining budget
+     *       (ceiling - disbursed_ytd - reserved_in_flight, via
+     *       getAvailableRation)?
+     *   (b) does it fit inside the Main Central Government Account's (the
+     *       root department's) remaining available balance, same formula?
+     * A department with no ceiling ("no vote") is exempt from its own
+     * half of the check — same "unlimited locally, checked at execute
+     * time by the source account" semantics as checkBatchAgainstRation.
+     * The atomic, race-safe re-check happens AFTER the real payout, in
+     * recordApprovedDepartmentSpend() — this method is deliberately cheap
+     * and unlocked so it can run inline before every single transaction
+     * without adding real contention.
+     */
+    public function checkTransactionAgainstSpendingLimits(int $departmentId, float $amount): array
+    {
+        $subRation = $this->getAvailableRation($departmentId);
+        $rootId = $this->getRootDepartmentId($departmentId);
+        $rootRation = ($rootId === $departmentId) ? $subRation : $this->getAvailableRation($rootId);
+
+        if ($subRation['has_ceiling'] && $amount > $subRation['available']) {
+            $shortfall = round($amount - $subRation['available'], 2);
+            return [
+                'can_proceed' => false,
+                'reason' => 'sub_department_limit',
+                'sub_department_ration' => $subRation,
+                'root_ration' => $rootRation,
+                'message' => "Transaction exceeds sub-department spending limit. This transaction ("
+                    . number_format($amount, 2) . " {$subRation['currency']}) would push total spend past "
+                    . "the department's ceiling of " . number_format($subRation['ceiling'], 2) . " {$subRation['currency']} "
+                    . "(disbursed so far " . number_format($subRation['disbursed_ytd'], 2) . " {$subRation['currency']}, "
+                    . number_format($subRation['reserved_in_flight'], 2) . " {$subRation['currency']} reserved by other "
+                    . "pending batches; shortfall " . number_format($shortfall, 2) . " {$subRation['currency']}).",
+            ];
+        }
+
+        if ($rootRation['has_ceiling'] && $amount > $rootRation['available']) {
+            $shortfall = round($amount - $rootRation['available'], 2);
+            return [
+                'can_proceed' => false,
+                'reason' => 'main_account_balance',
+                'sub_department_ration' => $subRation,
+                'root_ration' => $rootRation,
+                'message' => "Transaction exceeds Main Central Government Account available balance. "
+                    . "This transaction (" . number_format($amount, 2) . " {$rootRation['currency']}) exceeds "
+                    . "the central account's remaining available balance of "
+                    . number_format($rootRation['available'], 2) . " {$rootRation['currency']} "
+                    . "(shortfall " . number_format($shortfall, 2) . " {$rootRation['currency']}).",
+            ];
+        }
+
+        return ['can_proceed' => true, 'sub_department_ration' => $subRation, 'root_ration' => $rootRation];
+    }
+
+    /**
+     * Convenience wrapper: throws if the transaction doesn't fit. Use this
+     * at the actual payout point (worker.php, right before calling out to
+     * SwapService) — a rejected transaction never reaches the external
+     * adapter, so no real money moves for something already known to bust
+     * either ledger.
+     */
+    public function assertTransactionFitsSpendingLimits(int $departmentId, float $amount): void
+    {
+        $result = $this->checkTransactionAgainstSpendingLimits($departmentId, $amount);
+        if (!$result['can_proceed']) {
+            throw new RuntimeException($result['message']);
+        }
+    }
+
+    // ============================================================================
     // DEPARTMENT CREATION (top roles only) — direct, no approval hop
     // ============================================================================
 
@@ -433,6 +553,24 @@ class DepartmentService
      * own ceiling. This is the only structural constraint tying child
      * rations to the parent; it's enforced here in application code since
      * it's a cross-row check Postgres can't express as a simple CHECK.
+     *
+     * This is also the enforcement point for the sub-department Budget
+     * Allocation Guardrail: a sub-department's budget limit can never
+     * exceed what's still available at the Main Central Government
+     * Account level. A genuine sub-department's immediate parent IS the
+     * root department in this codebase's model, so checking against the
+     * immediate parent's raw ceiling here already IS checking against the
+     * Main Account — no need to walk up via getRootDepartmentId() here.
+     * Deliberately NOT also netting the parent's own amount_disbursed_ytd/
+     * reserved_in_flight into this check on top of the sibling-ceiling
+     * sum: once recordApprovedDepartmentSpend() rolls every
+     * sub-department's spend up into the root's own amount_disbursed_ytd
+     * (dual-write), doing so here too would double-count that spend —
+     * once via a sibling's ceiling already being in the sum, again via
+     * the root's disbursed total that now includes it — and would wrongly
+     * reject valid allocations. Ceiling allocation is bounded purely by
+     * ceiling sums; actual spend is bounded, per-department, by
+     * assertTransactionFitsSpendingLimits() instead.
      */
     private function assertCeilingFitsUnderParent(int $parentId, ?float $newChildCeiling, ?int $excludeDepartmentId = null): void
     {
@@ -478,9 +616,9 @@ class DepartmentService
         if ($existingChildrenTotal + $newChildCeiling > $parentCeiling) {
             $remaining = max(0, $parentCeiling - $existingChildrenTotal);
             throw new RuntimeException(
-                "Sub-department ceilings can't exceed the parent department's total ceiling. "
+                "Budget allocation exceeds total available central funds. "
                 . "Parent ceiling: " . number_format($parentCeiling, 2)
-                . ", already allocated to sub-departments: " . number_format($existingChildrenTotal, 2)
+                . ", already allocated to sibling sub-departments: " . number_format($existingChildrenTotal, 2)
                 . ", room left: " . number_format($remaining, 2) . "."
             );
         }
@@ -849,6 +987,152 @@ class DepartmentService
 
         $this->log('info', 'Ration borrow rejected', ['request_id' => $requestId, 'rejected_by' => $approverUserId, 'reason' => $reason]);
         return ['success' => true];
+    }
+
+    // ============================================================================
+    // TRANSACTION-TIME SPENDING GUARDRAIL — EXECUTION & LEDGER (Rule 3)
+    // ============================================================================
+
+    /**
+     * The atomic, locked ledger write that runs AFTER a payout has already
+     * been sent by the external adapter (see worker.php). True atomicity
+     * across "check budget -> call adapter -> record spend" is impossible
+     * (the adapter call is a live network request and can't sit inside a
+     * DB lock without stalling every other transaction against this
+     * department). What this method guarantees instead: it closes the
+     * race between concurrent workers at the LOCAL BOOKKEEPING level by
+     * re-verifying and recording the spend under a row lock, atomically,
+     * immediately after the money has already moved.
+     *
+     * Updates TWO rows in one transaction: the transacting department's
+     * own amount_disbursed_ytd, AND its root department's ("Main Central
+     * Government Account") amount_disbursed_ytd. This dual-write is what
+     * keeps assertCeilingFitsUnderParent's sibling-ceiling-sum check
+     * meaningful once sub-departments actually spend — see that method's
+     * docblock. Scope note: only the transacting department and its
+     * ultimate root are updated — an intermediate department in a
+     * hierarchy deeper than two levels would NOT have its own
+     * amount_disbursed_ytd reflect a descendant's spend. This matches the
+     * two-tier "Main Account + Sub-Departments" model this feature was
+     * built for; a full ancestor-chain rollup would be a larger change
+     * than was asked for.
+     *
+     * Both rows are locked together (ORDER BY id ASC FOR UPDATE) so
+     * concurrent calls acquire locks in a consistent order. In practice
+     * this access pattern can't deadlock regardless: every call only ever
+     * touches {one specific sub-department, the shared root} — never two
+     * different sub-departments together — so two concurrent calls can
+     * only ever contend on the shared root row itself (a wait, not a
+     * cycle).
+     *
+     * Because the payout already happened and is irreversible, this NEVER
+     * throws just because a department is now over budget — a race that
+     * slips past the pre-check (checkTransactionAgainstSpendingLimits) is
+     * recorded truthfully (the ledger must reflect money that genuinely
+     * left) and flagged via organization_audit_logs for a human to
+     * reconcile. It only throws for genuine failures (department row
+     * missing, DB error) — those roll back and propagate, same as
+     * approveBorrowRequest.
+     *
+     * @param array $auditContext Extra identifying info merged into the
+     *        audit log's new_values if a race is detected — e.g. job_id,
+     *        destination_id, batch_id, transaction_reference.
+     * @return array{race_detected:bool, sub_department:array, root:array}
+     */
+    public function recordApprovedDepartmentSpend(
+        int $departmentId,
+        float $amount,
+        ?int $actorUserId,
+        array $auditContext = []
+    ): array {
+        $rootId = $this->getRootDepartmentId($departmentId);
+        $ids = array_unique([$departmentId, $rootId]);
+        sort($ids);
+
+        $this->db->beginTransaction();
+        try {
+            $placeholders = [];
+            $params = [];
+            foreach ($ids as $i => $id) {
+                $placeholders[] = ":id{$i}";
+                $params[":id{$i}"] = $id;
+            }
+            $stmt = $this->db->prepare("
+                SELECT id, organization_id, budget_ceiling, amount_disbursed_ytd
+                FROM departments
+                WHERE id IN (" . implode(',', $placeholders) . ")
+                ORDER BY id ASC
+                FOR UPDATE
+            ");
+            $stmt->execute($params);
+            $byId = [];
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $byId[(int)$row['id']] = $row;
+            }
+            if (!isset($byId[$departmentId]) || !isset($byId[$rootId])) {
+                throw new RuntimeException("Department or root department not found while recording spend (department {$departmentId}, root {$rootId}).");
+            }
+
+            $raceDetected = false;
+            $results = [];
+            foreach ($ids as $id) {
+                $row = $byId[$id];
+                $ceiling = $row['budget_ceiling'] !== null ? (float)$row['budget_ceiling'] : null;
+                $disbursedBefore = (float)$row['amount_disbursed_ytd'];
+                $disbursedAfter = $disbursedBefore + $amount;
+                $overCeiling = ($ceiling !== null && $disbursedAfter > $ceiling);
+                if ($overCeiling) {
+                    $raceDetected = true;
+                }
+
+                $upd = $this->db->prepare("UPDATE departments SET amount_disbursed_ytd = :new_amt, updated_at = NOW() WHERE id = :id");
+                $upd->execute([':new_amt' => $disbursedAfter, ':id' => $id]);
+
+                $results[$id] = [
+                    'department_id' => $id,
+                    'is_root' => ($id === $rootId),
+                    'ceiling' => $ceiling,
+                    'disbursed_before' => $disbursedBefore,
+                    'disbursed_after' => $disbursedAfter,
+                    'over_ceiling' => $overCeiling,
+                ];
+            }
+
+            if ($raceDetected) {
+                $stmt = $this->db->prepare("
+                    INSERT INTO organization_audit_logs (
+                        organization_id, user_id, action, entity_type, entity_id,
+                        new_values, ip_address, user_agent, created_at
+                    ) VALUES (
+                        :org_id, :user_id, 'BUDGET_OVERRUN_RACE_DETECTED', 'department', :entity_id,
+                        :new_values, NULL, :ua, NOW()
+                    )
+                ");
+                $stmt->execute([
+                    ':org_id' => $byId[$departmentId]['organization_id'],
+                    ':user_id' => $actorUserId,
+                    ':entity_id' => $departmentId,
+                    ':new_values' => json_encode([
+                        'department_id' => $departmentId,
+                        'root_department_id' => $rootId,
+                        'amount' => $amount,
+                        'sub_department' => $results[$departmentId],
+                        'root' => $results[$rootId],
+                        'context' => $auditContext,
+                    ]),
+                    ':ua' => 'cli:worker.php',
+                ]);
+                $this->log('warning', 'Budget overrun race detected — payout already executed, flagged for manual reconciliation', [
+                    'department_id' => $departmentId, 'root_id' => $rootId, 'amount' => $amount,
+                ]);
+            }
+
+            $this->db->commit();
+            return ['race_detected' => $raceDetected, 'sub_department' => $results[$departmentId], 'root' => $results[$rootId]];
+        } catch (\Throwable $e) {
+            $this->db->rollBack();
+            throw $e;
+        }
     }
 
     // ============================================================================
