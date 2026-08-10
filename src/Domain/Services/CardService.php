@@ -1531,12 +1531,7 @@ class CardService
                     $activationFee,
                     $currency
                 );
-            } catch (Exception $settleErr) {
-                // Non-fatal — the customer has already been debited and the
-                // card must still activate. Same discipline as every other
-                // tracking/settlement write in this codebase: log loudly,
-                // don't let a settlement-recording failure block the swap
-                // that already succeeded.
+             } catch (\Throwable $settleErr) {   // was: catch (Exception $settleErr)
                 error_log("[CardService] activateCard: failed to invoice CARD_ACTIVATION_FEE to VOUCHMORPH: " . $settleErr->getMessage());
             }
             
