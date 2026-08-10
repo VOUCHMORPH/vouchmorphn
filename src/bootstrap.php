@@ -248,15 +248,17 @@ $container->setFactory('Domain\Services\SwapService', function($c) {
         'communication' => $c->get('communication'),
         'multi_source' => ['enabled' => true, 'extra_source_fee' => 1.00, 'max_total_fee' => 15.00]
     ];
-    
+ 
     return new \Domain\Services\SwapService(
         $c->get(PDO::class),
-        $c->get('settings'),
-        $c->get('countryCode'),
-        $c->get('settings')['encryption_key'],
-        $fullConfig
+        $fullConfig,
+        $c->get('countryCode')
+        // $logger intentionally omitted -> defaults to null ->
+        // SwapService builds its own working default logger internally.
     );
 });
+ 
+
 
 $container->setFactory('Domain\Services\MultiSourceSwapExecutor', function($c) {
     return new \Domain\Services\MultiSourceSwapExecutor(
