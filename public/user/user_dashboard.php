@@ -3579,18 +3579,37 @@ async function callApiGet(endpoint) {
 // ------------------------------------------------------------
 async function openMyCardModal() {
     openModal('My VouchMorph Card', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading...</div>');
-    const result = await callApiGet(CONFIG.API_BASE + '/api/v1/cards/My.php');
-    if (!result.ok) {
-        document.getElementById('modalBody').innerHTML = `<div style="color:var(--danger);padding:12px;">${escapeHtml(result.error)}</div>`;
-        return;
-    }
-    myCard = result.body.data;
-    document.getElementById('modalBody').innerHTML = renderMyCardModal();
-    if (myCard.is_active && myCard.qr_payload) {
-        renderCardQr(myCard.qr_payload);
-    }
-    if (myCard.active_session) {
-        startSessionPolling(myCard.active_session.session_id);
+    try {
+        const result = await callApiGet(CONFIG.API_BASE + '/api/v1/cards/My.php');
+        if (!result.ok) {
+            console.error('[card] My.php failed:', result.error);
+            document.getElementById('modalBody').innerHTML = `
+                <div style="color:var(--danger);padding:12px;">
+                    <div style="font-weight:700;margin-bottom:6px;">Couldn't load your card</div>
+                    <div style="font-size:12px;">${escapeHtml(result.error)}</div>
+                    <button class="btn btn-secondary btn-sm" onclick="openMyCardModal()" style="margin-top:12px;">Retry</button>
+                </div>`;
+            return;
+        }
+        myCard = result.body.data;
+        document.getElementById('modalBody').innerHTML = renderMyCardModal();
+        if (myCard.is_active && myCard.qr_payload) {
+            renderCardQr(myCard.qr_payload);
+        }
+        if (myCard.active_session) {
+            startSessionPolling(myCard.active_session.session_id);
+        }
+    } catch (e) {
+        // Catches JS-side failures (bad response shape, a render error,
+        // etc.) that would otherwise leave the spinner stuck forever
+        // with the real cause only visible in the console.
+        console.error('[card] openMyCardModal threw:', e);
+        document.getElementById('modalBody').innerHTML = `
+            <div style="color:var(--danger);padding:12px;">
+                <div style="font-weight:700;margin-bottom:6px;">Something went wrong loading your card</div>
+                <div style="font-size:12px;">${escapeHtml(e.message || String(e))}</div>
+                <button class="btn btn-secondary btn-sm" onclick="openMyCardModal()" style="margin-top:12px;">Retry</button>
+            </div>`;
     }
 }
 
