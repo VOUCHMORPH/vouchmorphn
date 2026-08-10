@@ -54,6 +54,7 @@ class CardService
     private const MONTHLY_SPEND_LIMIT = 50000;
     private const ATM_DAILY_LIMIT = 2000;
     private const POS_MAX_TRANSACTION = 5000;
+    private const DEFAULT_ACTIVATION_FEE = 5.00; // NEW: activation fee constant
     
     public function __construct(
         PDO $db, 
@@ -1312,6 +1313,204 @@ private function generateVRN($cardSuffix, $amount, $holdReference): array
     }
 
     // ============================================================
+    // PROVISION & ACTIVATE CARDS - NEW METHODS
+    // ============================================================
+
+    /**
+     * Auto-provisions a zero-cost, zero-balance VouchMorph Card for a
+     * user who doesn't have one yet. No hold is placed, no fee is
+     * charged — the card is minted INACTIVE and stays that way until
+     * activateCard() is called. Idempotent: if the user already has a
+     * card (any status), returns it instead of minting a second one.
+     */
+    public function provisionUserCard(int $userId, string $cardholderName): array
+    {
+        $stmt = $this->db->prepare("
+            SELECT card_suffix, status FROM message_cards
+            WHERE user_id = :uid ORDER BY issued_at DESC LIMIT 1
+        ");
+        $stmt->execute([':uid' => $userId]);
+        $existing = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($existing) {
+            return [
+                'success' => true,
+                'card_suffix' => $existing['card_suffix'],
+                'status' => $existing['status'],
+                'newly_created' => false,
+            ];
+        }
+
+        $cardDetails = $this->cardGenerator->generateForPurpose('standard');
+
+        $google2fa = new Google2FA();
+        $totpSecret = $google2fa->generateSecretKey();
+        $encryptedSecret = $this->encryptTotpSecret($totpSecret);
+
+        $stmt = $this->db->prepare("
+            INSERT INTO message_cards (
+                card_number_hash, card_suffix, hold_reference, swap_reference,
+                user_id, cardholder_name, initial_amount, remaining_amount,
+                currency, status, issued_at, expiry_year, expiry_month,
+                daily_limit, monthly_limit, atm_daily_limit, fee_amount,
+                funding_mode, metadata,
+                totp_secret_encrypted, totp_secret_iv, totp_secret_tag
+            ) VALUES (
+                ?, ?, NULL, NULL,
+                ?, ?, 0, 0,
+                ?, 'INACTIVE', NOW(), ?, ?,
+                ?, ?, ?, 0,
+                'HOOKED', ?::jsonb,
+                ?, ?, ?
+            )
+            RETURNING card_id
+        ");
+
+        $stmt->execute([
+            $this->hashPan($cardDetails['pan_formatted']),
+            $cardDetails['pan_suffix'],
+            $userId,
+            $cardholderName,
+            $this->config['currency'] ?? 'BWP',
+            $cardDetails['expiry_year'],
+            $cardDetails['expiry_month'],
+            self::DAILY_SPEND_LIMIT,
+            self::MONTHLY_SPEND_LIMIT,
+            self::ATM_DAILY_LIMIT,
+            json_encode(['issued_by' => 'auto_provision', 'purpose' => 'standard']),
+            $encryptedSecret['ciphertext'],
+            $encryptedSecret['iv'],
+            $encryptedSecret['tag'],
+        ]);
+
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        error_log("[CardService] Auto-provisioned INACTIVE card {$cardDetails['pan_suffix']} for user_id={$userId}");
+
+        return [
+            'success' => true,
+            'card_id' => $row['card_id'] ?? null,
+            'card_suffix' => $cardDetails['pan_suffix'],
+            'status' => 'INACTIVE',
+            'newly_created' => true,
+        ];
+    }
+
+    /**
+     * Activates an INACTIVE card by charging the activation fee from a
+     * source the user chooses, using the same verify -> hold -> debit
+     * primitives SwapService exposes for everything else in this
+     * codebase — not a full executeAtomicSwap(), since this is an
+     * internal fee collection, not a customer-facing swap that needs
+     * swap_type routing.
+     */
+    public function activateCard(
+        string $cardSuffix,
+        int $userId,
+        array $sourcePayload,
+        \Domain\Services\SwapService $swapService
+    ): array {
+        $this->db->beginTransaction();
+
+        try {
+            $stmt = $this->db->prepare("
+                SELECT card_id, status, currency FROM message_cards
+                WHERE card_suffix = :suffix AND user_id = :uid
+                FOR UPDATE
+            ");
+            $stmt->execute([':suffix' => $cardSuffix, ':uid' => $userId]);
+            $card = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$card) {
+                throw new RuntimeException("Card not found or does not belong to you.");
+            }
+            if ($card['status'] === 'ACTIVE') {
+                $this->db->commit();
+                return ['success' => true, 'already_active' => true, 'card_suffix' => $cardSuffix, 'message' => 'Card is already active.'];
+            }
+            if ($card['status'] !== 'INACTIVE') {
+                throw new RuntimeException("Card cannot be activated from its current status: {$card['status']}");
+            }
+
+            $activationFee = (float)($this->config['activation_fee'] ?? self::DEFAULT_ACTIVATION_FEE);
+            $currency = $card['currency'] ?? 'BWP';
+            $institution = $sourcePayload['institution'] ?? null;
+
+            if (empty($institution)) {
+                throw new RuntimeException("Source institution is required to activate.");
+            }
+
+            $reference = 'CARD_ACTIVATE_' . $cardSuffix . '_' . time();
+            $verifyPayload = array_merge($sourcePayload, [
+                'amount' => $activationFee,
+                'currency' => $currency,
+                'reference' => $reference,
+            ]);
+
+            $verifyResult = $swapService->verifyAssetSigned($verifyPayload, $institution);
+            if (!($verifyResult['verified'] ?? false)) {
+                throw new RuntimeException("Could not verify the source: " . ($verifyResult['message'] ?? 'unknown error'));
+            }
+
+            $holdResult = $swapService->placeHoldSigned($verifyPayload, $institution, $verifyResult);
+            if (!($holdResult['hold_placed'] ?? false)) {
+                throw new RuntimeException("Could not hold the activation fee: " . ($holdResult['message'] ?? 'unknown error'));
+            }
+
+            $debitResult = $swapService->debitSource(array_merge($verifyPayload, [
+                'hold_reference' => $holdResult['hold_reference'],
+                'reason' => 'VouchMorph Card activation fee',
+            ]), $institution);
+
+            if (!($debitResult['debited'] ?? false)) {
+                // Debit failed after a real hold was placed — release it
+                // rather than leaving the customer's money stuck for a fee
+                // that was never actually taken.
+                try {
+                    $swapService->releaseHold($verifyPayload, $institution, null, $holdResult['hold_reference']);
+                } catch (Exception $releaseErr) {
+                    error_log("[CardService] activateCard: failed to release hold after debit failure: " . $releaseErr->getMessage());
+                }
+                throw new RuntimeException("Could not charge the activation fee: " . ($debitResult['message'] ?? 'unknown error'));
+            }
+
+            $stmt = $this->db->prepare("
+                UPDATE message_cards
+                SET status = 'ACTIVE', activated_at = NOW(), fee_amount = fee_amount + :fee
+                WHERE card_id = :id
+            ");
+            $stmt->execute([':fee' => $activationFee, ':id' => $card['card_id']]);
+
+            $this->logTransaction([
+                'card_id' => $card['card_id'],
+                'type' => 'ACTIVATION',
+                'amount' => $activationFee,
+                'fee_amount' => $activationFee,
+                'auth_code' => CardHelper::generateAuthCode(),
+                'reference' => $debitResult['transaction_reference'] ?? $reference,
+                'channel' => 'ACTIVATION',
+            ]);
+
+            $this->db->commit();
+
+            return [
+                'success' => true,
+                'card_suffix' => $cardSuffix,
+                'status' => 'ACTIVE',
+                'activation_fee_charged' => $activationFee,
+                'currency' => $currency,
+                'message' => 'Card activated successfully.',
+            ];
+
+        } catch (Exception $e) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            error_log("[CardService] activateCard failed: " . $e->getMessage());
+            return ['success' => false, 'error' => $e->getMessage()];
+        }
+    }
+
+    // ============================================================
     // POOLED CARD HOOK/SWIPE/FINALIZE - VouchMorph's own network
     // ============================================================
 
@@ -1335,6 +1534,25 @@ private function generateVRN($cardSuffix, $amount, $holdReference): array
         SwapService $swapService,
         int $cardOwnerUserId
     ): array {
+        // ============================================================
+        // FIX: GUARD - Check card status BEFORE any holds are placed
+        // ============================================================
+        $stmt = $this->db->prepare("SELECT status FROM message_cards WHERE card_suffix = :suffix");
+        $stmt->execute([':suffix' => $cardSuffix]);
+        $cardStatus = $stmt->fetchColumn();
+
+        if ($cardStatus === false) {
+            return ['success' => false, 'error' => 'Card not found.'];
+        }
+        if ($cardStatus !== 'ACTIVE') {
+            return [
+                'success' => false,
+                'error' => $cardStatus === 'INACTIVE'
+                    ? 'This card has not been activated yet — the card owner needs to activate it before sources can be hooked.'
+                    : "This card is {$cardStatus} and cannot accept hooks.",
+            ];
+        }
+
         $this->db->beginTransaction();
         $placedHolds = [];
 
