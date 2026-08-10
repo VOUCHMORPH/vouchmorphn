@@ -2390,6 +2390,17 @@ function selectSavedSource(sourceId) {
         const config = getAssetConfig(source.asset_type);
         const displayName = config?.label || source.asset_type;
         showMessage(`${displayName} selected: ${inst?.name || source.institution}`, 'success');
+        
+        // ============================================================
+        // ADD THIS ONE LINE inside selectSavedSource(), in the setTimeout()
+        // block right after the existing showMessage() call:
+        // ============================================================
+        const existingHookLink = document.getElementById('hookToCardEntryPoint');
+        if (existingHookLink) existingHookLink.remove();
+        document.getElementById('sourceSelectedHelp')?.insertAdjacentHTML('afterend',
+            `<div id="hookToCardEntryPoint" style="margin-top:8px;"><span class="quick-link muted" onclick="openHookToCardChooser()">Hook this source to a VouchMorph Card instead →</span></div>`
+        );
+        
         refreshUI();
     }, 300);
 
@@ -3801,33 +3812,11 @@ async function resolveScannedQr(raw) {
         </div>`);
 }
 
-// ------------------------------------------------------------
-// Contribution sessions — owner creates, everyone watches live
-// ------------------------------------------------------------
-function openCreateSessionModal(cardSuffix) {
-    const instOptions = Object.keys(PARTICIPANTS).map(c => `<option value="${c}">${PARTICIPANTS[c]?.name || c}</option>`).join('');
-    openModal('Start a payment', `
-        <div class="field-group"><label>Amount needed at destination</label><input type="number" id="sessTarget" min="0.01" step="0.01" placeholder="0.00"></div>
-        <div class="field-group"><label>Currency</label><input id="sessCurrency" value="${myCard.hook?.currency || myCard.currency || 'BWP'}"></div>
-        <div class="field-group"><label>Destination institution</label><select id="sessToInst"><option value="">Select</option>${instOptions}</select></div>
-        <div class="field-group"><label>Destination account/wallet number</label><input id="sessToIdentifier" placeholder="Account number or phone"></div>
-        <div class="field-group"><label>Strategy — how should contributions split?</label>
-            <select id="sessStrategy">
-                <option value="EQUAL">Equal — split evenly across hooked sources</option>
-                <option value="RATIO">Ratio — proportional to each source's balance</option>
-                <option value="SMART" selected>Smart — VouchMorph balances it automatically</option>
-                <option value="MANUAL">Manual — each person enters their own amount</option>
-            </select>
-        </div>
-        <div style="font-size:11px;color:var(--text-dim);margin-bottom:12px;">Everyone currently hooked will see this in real time. You decide the strategy; they follow it — under Manual, each person enters their own share.</div>
-        <div class="cta-row"><button class="btn btn-primary" onclick="submitCreateSession('${cardSuffix}')">Start session</button></div>`);
-}
-
-/* ============================================================
- * ADD THIS BLOCK to user_dashboard.php's <script> section,
- * anywhere near the existing openScanToHookModal() / resolveScannedQr()
- * functions (search for "SCAN SOMEONE ELSE'S CARD QR TO HOOK TO IT").
- * ============================================================ */
+// ============================================================
+// ADD THIS BLOCK to user_dashboard.php's <script> section,
+// anywhere near the existing openScanToHookModal() / resolveScannedQr()
+// functions (search for "SCAN SOMEONE ELSE'S CARD QR TO HOOK TO IT").
+// ============================================================
 
 function openHookToCardChooser() {
     if (!(state.fromInst && state.fromAsset && fieldsValidForAsset(state.fromAsset, state.fromFields, true).valid)) {
@@ -3890,19 +3879,28 @@ async function submitManualCardNumber() {
             </div>
         </div>`);
 }
-
-/* ============================================================
- * ADD THIS ONE LINE inside selectSavedSource(), in the setTimeout()
- * block right after the existing:
- *
- *     showMessage(`${displayName} selected: ${inst?.name || source.institution}`, 'success');
- *
- * so the entry point appears once a source is actually selected:
- * ============================================================ */
-
-// document.getElementById('sourceSelectedHelp')?.insertAdjacentHTML('afterend',
-//     `<div style="margin-top:8px;"><span class="quick-link muted" onclick="openHookToCardChooser()">Hook this source to a VouchMorph Card instead →</span></div>`
-// );
+    
+// ------------------------------------------------------------
+// Contribution sessions — owner creates, everyone watches live
+// ------------------------------------------------------------
+function openCreateSessionModal(cardSuffix) {
+    const instOptions = Object.keys(PARTICIPANTS).map(c => `<option value="${c}">${PARTICIPANTS[c]?.name || c}</option>`).join('');
+    openModal('Start a payment', `
+        <div class="field-group"><label>Amount needed at destination</label><input type="number" id="sessTarget" min="0.01" step="0.01" placeholder="0.00"></div>
+        <div class="field-group"><label>Currency</label><input id="sessCurrency" value="${myCard.hook?.currency || myCard.currency || 'BWP'}"></div>
+        <div class="field-group"><label>Destination institution</label><select id="sessToInst"><option value="">Select</option>${instOptions}</select></div>
+        <div class="field-group"><label>Destination account/wallet number</label><input id="sessToIdentifier" placeholder="Account number or phone"></div>
+        <div class="field-group"><label>Strategy — how should contributions split?</label>
+            <select id="sessStrategy">
+                <option value="EQUAL">Equal — split evenly across hooked sources</option>
+                <option value="RATIO">Ratio — proportional to each source's balance</option>
+                <option value="SMART" selected>Smart — VouchMorph balances it automatically</option>
+                <option value="MANUAL">Manual — each person enters their own amount</option>
+            </select>
+        </div>
+        <div style="font-size:11px;color:var(--text-dim);margin-bottom:12px;">Everyone currently hooked will see this in real time. You decide the strategy; they follow it — under Manual, each person enters their own share.</div>
+        <div class="cta-row"><button class="btn btn-primary" onclick="submitCreateSession('${cardSuffix}')">Start session</button></div>`);
+}
     
 async function submitCreateSession(cardSuffix) {
     const target = parseFloat(document.getElementById('sessTarget').value);
