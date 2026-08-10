@@ -940,77 +940,78 @@ class PoolCoordinator
      * SwapService::generateCashoutToken()'s single-source shape, sourced
      * from the pool's aggregate amount instead of a single hold.
      */
-   private function executeCashoutDestination(array $pool, array $contributions, array $masterSignature, array $holds): array
-{
-    $destinationInstitution = $pool['destination_institution'];
-    if (empty($destinationInstitution)) {
-        return ['success' => false, 'message' => 'Cashout requires a destination institution'];
-    }
-
-    $tokenPayload = [
-        'reference' => $pool['reference'] ?? uniqid(),
-        'amount' => $pool['amount'],
-        'currency' => $pool['currency'] ?? 'BWP',
-        'action' => 'GENERATE_TOKEN',
-        'to_institution' => $destinationInstitution,
-        'destination_institution' => $destinationInstitution,
-        'destination_identifier' => $pool['destination_identifier'] ?? null,
-        'destination_identifier_type' => $pool['destination_identifier_type'] ?? null,
-        'beneficiary_phone' => $pool['beneficiary_phone'] ?? null,
-        'master_signature' => $masterSignature['signature'] ?? null,
-        'master_certificate' => $masterSignature['certificate'] ?? null,
-        'pool_id' => $pool['id'],
-        'source_type' => 'VIRTUAL_POOL',
-        'from_institution' => 'VM_POOL',
-        'source_institution' => 'VM_POOL',
-    ];
-
-    $adapter = $this->swapService->getAdapterFactory()->getAdapter($destinationInstitution);
-    $result = $adapter->generateCashoutToken($tokenPayload, [
-        'swap_reference' => $pool['reference'] ?? null,
-        'destination_institution' => $destinationInstitution,
-        'pool_id' => $pool['id'],
-    ]);
-
-    if (!($result['success'] ?? false)) {
-        return ['success' => false, 'message' => $result['message'] ?? 'Cashout code generation failed'];
-    }
-
-    $swapCode = $result['voucher_number'] ?? $result['swap_code'] ?? null;
-    $pinCode = $result['atm_pin'] ?? '';
-    $expiresAt = $result['expires_at'] ?? date('Y-m-d H:i:s', strtotime('+24 hours'));
-
-    if ($swapCode) {
-        try {
-            $this->swapService->storePoolCashoutAuthorization(
-                $pool['id'],
-                $pool['reference'],
-                $destinationInstitution,
-                $pool['amount'],
-                $swapCode,
-                $pinCode,
-                $expiresAt,
-                $pool['beneficiary_phone'] ?? null   // NEW
-            );
-        } catch (\Throwable $e) {
-            $this->logger->error('Failed to store pool cashout authorization — ATM callback will not find this pool', [
-                'pool_id' => $pool['id'],
-                'error' => $e->getMessage(),
-            ]);
-            return ['success' => false, 'message' => 'Cashout code generated but authorization record failed: ' . $e->getMessage()];
+    private function executeCashoutDestination(array $pool, array $contributions, array $masterSignature, array $holds): array
+    {
+        $destinationInstitution = $pool['destination_institution'];
+        if (empty($destinationInstitution)) {
+            return ['success' => false, 'message' => 'Cashout requires a destination institution'];
         }
-    } else {
-        $this->logger->warning('Cashout token generated with no swap_code/voucher_number — cannot record authorization', ['pool_id' => $pool['id']]);
+
+        $tokenPayload = [
+            'reference' => $pool['reference'] ?? uniqid(),
+            'amount' => $pool['amount'],
+            'currency' => $pool['currency'] ?? 'BWP',
+            'action' => 'GENERATE_TOKEN',
+            'to_institution' => $destinationInstitution,
+            'destination_institution' => $destinationInstitution,
+            'destination_identifier' => $pool['destination_identifier'] ?? null,
+            'destination_identifier_type' => $pool['destination_identifier_type'] ?? null,
+            'beneficiary_phone' => $pool['beneficiary_phone'] ?? null,
+            'master_signature' => $masterSignature['signature'] ?? null,
+            'master_certificate' => $masterSignature['certificate'] ?? null,
+            'pool_id' => $pool['id'],
+            'source_type' => 'VIRTUAL_POOL',
+            'from_institution' => 'VM_POOL',
+            'source_institution' => 'VM_POOL',
+        ];
+
+        $adapter = $this->swapService->getAdapterFactory()->getAdapter($destinationInstitution);
+        $result = $adapter->generateCashoutToken($tokenPayload, [
+            'swap_reference' => $pool['reference'] ?? null,
+            'destination_institution' => $destinationInstitution,
+            'pool_id' => $pool['id'],
+        ]);
+
+        if (!($result['success'] ?? false)) {
+            return ['success' => false, 'message' => $result['message'] ?? 'Cashout code generation failed'];
+        }
+
+        $swapCode = $result['voucher_number'] ?? $result['swap_code'] ?? null;
+        $pinCode = $result['atm_pin'] ?? '';
+        $expiresAt = $result['expires_at'] ?? date('Y-m-d H:i:s', strtotime('+24 hours'));
+
+        if ($swapCode) {
+            try {
+                $this->swapService->storePoolCashoutAuthorization(
+                    $pool['id'],
+                    $pool['reference'],
+                    $destinationInstitution,
+                    $pool['amount'],
+                    $swapCode,
+                    $pinCode,
+                    $expiresAt,
+                    $pool['beneficiary_phone'] ?? null
+                );
+            } catch (\Throwable $e) {
+                $this->logger->error('Failed to store pool cashout authorization — ATM callback will not find this pool', [
+                    'pool_id' => $pool['id'],
+                    'error' => $e->getMessage(),
+                ]);
+                return ['success' => false, 'message' => 'Cashout code generated but authorization record failed: ' . $e->getMessage()];
+            }
+        } else {
+            $this->logger->warning('Cashout token generated with no swap_code/voucher_number — cannot record authorization', ['pool_id' => $pool['id']]);
+        }
+
+        return [
+            'success' => true,
+            'atm_pin' => $pinCode,
+            'voucher_number' => $swapCode,
+            'expires_at' => $expiresAt,
+            'message' => $result['message'] ?? 'Cashout code generated. Debit deferred until redemption.',
+        ];
     }
 
-    return [
-        'success' => true,
-        'atm_pin' => $pinCode,
-        'voucher_number' => $swapCode,
-        'expires_at' => $expiresAt,
-        'message' => $result['message'] ?? 'Cashout code generated. Debit deferred until redemption.',
-    ];
-}
     /**
      * Identity destinations have no institution to credit — the pooled
      * amount is placed into an identity_swap_holds record for the
@@ -1274,297 +1275,270 @@ class PoolCoordinator
     }
 
     /**
- * Cron entry point for pools stuck in PENDING_IDENTITY_CLAIM past
- * the identity_swap_holds record's expiry (24h, same as single-source).
- * Deliberately does NOT call SwapService::cancelExpiredIdentitySwaps() —
- * that method only knows about the anchor hold recorded in
- * identity_swap_holds and would attempt to release it, but a pool has
- * N-1 OTHER source holds that method has no visibility into. This
- * releases all N holds itself and marks the identity_swap_holds row
- * expired directly.
- */
-public function cancelExpiredPoolIdentityClaims(): array
-{
-    $results = ['total_expired' => 0, 'cancelled' => 0, 'errors' => 0, 'details' => []];  // CHANGED: 'released' → 'cancelled'
+     * Cron entry point for pools stuck in PENDING_IDENTITY_CLAIM past
+     * the identity_swap_holds record's expiry (24h, same as single-source).
+     * Deliberately does NOT call SwapService::cancelExpiredIdentitySwaps() —
+     * that method only knows about the anchor hold recorded in
+     * identity_swap_holds and would attempt to release it, but a pool has
+     * N-1 OTHER source holds that method has no visibility into. This
+     * releases all N holds itself and marks the identity_swap_holds row
+     * expired directly.
+     */
+    public function cancelExpiredPoolIdentityClaims(): array
+    {
+        $results = ['total_expired' => 0, 'cancelled' => 0, 'errors' => 0, 'details' => []];
 
-    $sql = "
-        SELECT p.pool_id, p.swap_reference, h.hold_id AS anchor_hold_id, h.hold_expires_at
-        FROM virtual_funding_pools p
-        JOIN identity_swap_holds h ON h.swap_reference = p.swap_reference
-        WHERE p.status = :pending_status
-        AND h.status = 'pending'
-        AND h.hold_expires_at < NOW()
-    ";
-    $stmt = $this->db->prepare($sql);
-    $stmt->execute([':pending_status' => PoolStatus::PENDING_IDENTITY_CLAIM->value]);
-    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    $results['total_expired'] = count($rows);
+        $sql = "
+            SELECT p.pool_id, p.swap_reference, h.hold_id AS anchor_hold_id, h.hold_expires_at
+            FROM virtual_funding_pools p
+            JOIN identity_swap_holds h ON h.swap_reference = p.swap_reference
+            WHERE p.status = :pending_status
+            AND h.status = 'pending'
+            AND h.hold_expires_at < NOW()
+        ";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([':pending_status' => PoolStatus::PENDING_IDENTITY_CLAIM->value]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $results['total_expired'] = count($rows);
 
-    foreach ($rows as $row) {
-        $poolId = $row['pool_id'];
+        foreach ($rows as $row) {
+            $poolId = $row['pool_id'];
+
+            try {
+                [$pool, $holds, $contributions] = $this->reloadPoolForConfirmation($poolId);
+
+                foreach ($holds as $hold) {
+                    try {
+                        $this->swapService->releaseHold(
+                            $hold['source_payload'] ?? [],
+                            $hold['institution'],
+                            null,
+                            $hold['hold_reference'] ?? null
+                        );
+                    } catch (\Throwable $releaseError) {
+                        $this->logger->error('Failed to release pool source hold on identity claim expiry', [
+                            'pool_id' => $poolId,
+                            'institution' => $hold['institution'],
+                            'error' => $releaseError->getMessage(),
+                        ]);
+                    }
+                }
+
+                $stmt2 = $this->db->prepare("
+                    UPDATE identity_swap_holds
+                    SET status = 'expired', expired_at = NOW()
+                    WHERE hold_id = :hold_id
+                ");
+                $stmt2->execute([':hold_id' => $row['anchor_hold_id']]);
+
+                $this->poolRepository->updateStatus($poolId, PoolStatus::CANCELLED->value, [
+                    'cancel_reason' => 'identity_claim_expired',
+                ]);
+
+                $results['cancelled']++;
+                $results['details'][] = ['pool_id' => $poolId, 'status' => 'cancelled'];
+
+            } catch (\Throwable $e) {
+                $this->logger->error('cancelExpiredPoolIdentityClaims failed for pool', ['pool_id' => $poolId, 'error' => $e->getMessage()]);
+                $results['errors']++;
+                $results['details'][] = ['pool_id' => $poolId, 'status' => 'error', 'error' => $e->getMessage()];
+            }
+        }
+
+        return $results;
+    }
+
+    /**
+     * Executes a pool where every source's funds are ALREADY held
+     * (VouchMorph Card hook flow), rather than the standard execute()
+     * pipeline which discovers, verifies, and holds sources itself.
+     *
+     * Called by CardContributionSessionService once a card owner's
+     * contribution session has reached full coverage of the destination
+     * amount (status READY).
+     *
+     * @param array $payload Same shape as execute()'s $payload for the
+     *   destination side (amount, currency, delivery_method /
+     *   destination_institution / destination_identifier, OR
+     *   identity_type + identity_value). No `sources` key needed —
+     *   $preHeldSources replaces that entirely.
+     * @param array $preHeldSources One entry per contributing hooked
+     *   source: ['institution', 'asset_type', 'source_identifier',
+     *   'source_identifier_type', 'amount' (the FINAL contribution amount
+     *   to debit — not necessarily the full held amount), 'hold_reference'].
+     */
+    public function executeFromCardHook(array $payload, array $preHeldSources): array
+    {
+        $this->logger->info('PoolCoordinator executing from card hook (pre-held sources)', [
+            'sources' => count($preHeldSources),
+            'amount' => $payload['amount'] ?? 0
+        ]);
+
+        $transactionStartedHere = !$this->db->inTransaction();
+        if ($transactionStartedHere) {
+            $this->db->beginTransaction();
+            $this->logger->debug('Started new transaction in PoolCoordinator (card hook)');
+        } else {
+            $this->logger->debug('Using existing transaction from caller (card hook)');
+        }
+
+        $pool = null;
 
         try {
-            [$pool, $holds, $contributions] = $this->reloadPoolForConfirmation($poolId);
+            // 1. Create pool record (forex snapshot, destination fields) —
+            // identical to the normal path.
+            $pool = $this->createPool($payload);
+            $this->logger->info('Pool created (card hook)', ['pool_id' => $pool['id']]);
 
-            foreach ($holds as $hold) {
-                try {
-                    $this->swapService->releaseHold(
-                        $hold['source_payload'] ?? [],
-                        $hold['institution'],
-                        null,
-                        $hold['hold_reference'] ?? null
-                    );
-                } catch (\Throwable $releaseError) {
-                    $this->logger->error('Failed to release pool source hold on identity claim expiry', [
-                        'pool_id' => $poolId,
-                        'institution' => $hold['institution'],
-                        'error' => $releaseError->getMessage(),
-                    ]);
+            // 2. Shape the pre-held sources exactly as persistContributions()
+            // expects, and drop anything with a non-positive amount (same
+            // rule execute() applies to normally-discovered contributions).
+            $rawContributions = array_values(array_filter(array_map(function ($s) use ($pool) {
+                return [
+                    'institution' => $s['institution'],
+                    'asset_type' => $s['asset_type'] ?? 'ACCOUNT',
+                    'source_identifier' => $s['source_identifier'],
+                    'source_identifier_type' => $s['source_identifier_type'] ?? 'auto',
+                    'amount' => (float)($s['amount'] ?? 0),
+                    'actual_amount' => (float)($s['amount'] ?? 0),
+                    'requested_amount' => (float)($s['amount'] ?? 0),
+                    'currency' => $pool['currency'] ?? 'BWP',
+                    '_hold_reference' => $s['hold_reference'] ?? null,
+                ];
+            }, $preHeldSources), fn($c) => $c['amount'] > 0));
+
+            if (empty($rawContributions)) {
+                throw new RuntimeException("No positive-amount pre-held contributions to execute");
+            }
+
+            foreach ($rawContributions as $c) {
+                if (empty($c['_hold_reference'])) {
+                    throw new RuntimeException("Missing hold_reference for pre-held source: {$c['institution']}");
                 }
             }
 
-            $stmt2 = $this->db->prepare("
-                UPDATE identity_swap_holds
-                SET status = 'expired', expired_at = NOW()
-                WHERE hold_id = :hold_id
-            ");
-            $stmt2->execute([':hold_id' => $row['anchor_hold_id']]);
+            // 3. Persist contributions the normal way (pool_contributions
+            // rows, sub-references, etc.) so downstream reporting/reconciliation
+            // sees a card-hook-funded pool exactly like any other pool.
+            $contributions = $this->persistContributions($pool, $rawContributions);
 
-            $this->poolRepository->updateStatus($poolId, PoolStatus::CANCELLED->value, [
-                'cancel_reason' => 'identity_claim_expired',
-            ]);
+            // 4. Build the $holds shape placeHolds() would normally produce,
+            // and mark each contribution HELD directly — skip verifySources()
+            // and placeHolds() entirely, since CardService::hookSourcesToCard()
+            // already did real verify+hold for these at hook time.
+            $holds = [];
+            foreach ($contributions as $index => $contribution) {
+                $holdRef = $rawContributions[$index]['_hold_reference'];
 
-            $results['cancelled']++;  // CHANGED: 'released' → 'cancelled'
-            $results['details'][] = ['pool_id' => $poolId, 'status' => 'cancelled'];
-
-        } catch (\Throwable $e) {
-            $this->logger->error('cancelExpiredPoolIdentityClaims failed for pool', ['pool_id' => $poolId, 'error' => $e->getMessage()]);
-            $results['errors']++;
-            $results['details'][] = ['pool_id' => $poolId, 'status' => 'error', 'error' => $e->getMessage()];
-        }
-    }
-
-    return $results;
-}
-
-<?php
-/**
- * PATCH — add this method to Domain\Services\MultiSource\PoolCoordinator
- *
- * WHERE TO ADD IT: anywhere inside the class body, e.g. directly after
- * the existing public execute() method. No other changes to
- * PoolCoordinator are required — this reuses createPool(),
- * persistContributions(), executeDestination(), completeDeferredPool(),
- * buildResponse(), and rollback() exactly as they already exist.
- *
- * WHY THIS EXISTS:
- * The normal execute() pipeline discovers sources, verifies them, and
- * places NEW holds (calculateContributions -> verifySources ->
- * placeHolds). A VouchMorph Card's hooked sources are already verified
- * and held at hook time by CardService::hookSourcesToCard() — feeding
- * them through execute() again would place a SECOND hold on top of
- * money that's already locked, which is wrong and would likely fail
- * outright at the source institution (can't double-hold the same funds).
- *
- * This method is the same pipeline from the FUNDED state onward,
- * fed directly with the pre-held source data instead of discovering
- * and holding it itself.
- */
-
-// ---- add inside class PoolCoordinator { ... } ----
-
-/**
- * Executes a pool where every source's funds are ALREADY held
- * (VouchMorph Card hook flow), rather than the standard execute()
- * pipeline which discovers, verifies, and holds sources itself.
- *
- * Called by CardContributionSessionService once a card owner's
- * contribution session has reached full coverage of the destination
- * amount (status READY).
- *
- * @param array $payload Same shape as execute()'s $payload for the
- *   destination side (amount, currency, delivery_method /
- *   destination_institution / destination_identifier, OR
- *   identity_type + identity_value). No `sources` key needed —
- *   $preHeldSources replaces that entirely.
- * @param array $preHeldSources One entry per contributing hooked
- *   source: ['institution', 'asset_type', 'source_identifier',
- *   'source_identifier_type', 'amount' (the FINAL contribution amount
- *   to debit — not necessarily the full held amount), 'hold_reference'].
- */
-public function executeFromCardHook(array $payload, array $preHeldSources): array
-{
-    $this->logger->info('PoolCoordinator executing from card hook (pre-held sources)', [
-        'sources' => count($preHeldSources),
-        'amount' => $payload['amount'] ?? 0
-    ]);
-
-    $transactionStartedHere = !$this->db->inTransaction();
-    if ($transactionStartedHere) {
-        $this->db->beginTransaction();
-        $this->logger->debug('Started new transaction in PoolCoordinator (card hook)');
-    } else {
-        $this->logger->debug('Using existing transaction from caller (card hook)');
-    }
-
-    $pool = null;
-
-    try {
-        // 1. Create pool record (forex snapshot, destination fields) —
-        // identical to the normal path.
-        $pool = $this->createPool($payload);
-        $this->logger->info('Pool created (card hook)', ['pool_id' => $pool['id']]);
-
-        // 2. Shape the pre-held sources exactly as persistContributions()
-        // expects, and drop anything with a non-positive amount (same
-        // rule execute() applies to normally-discovered contributions).
-        $rawContributions = array_values(array_filter(array_map(function ($s) use ($pool) {
-            return [
-                'institution' => $s['institution'],
-                'asset_type' => $s['asset_type'] ?? 'ACCOUNT',
-                'source_identifier' => $s['source_identifier'],
-                'source_identifier_type' => $s['source_identifier_type'] ?? 'auto',
-                'amount' => (float)($s['amount'] ?? 0),
-                'actual_amount' => (float)($s['amount'] ?? 0),
-                'requested_amount' => (float)($s['amount'] ?? 0),
-                'currency' => $pool['currency'] ?? 'BWP',
-                '_hold_reference' => $s['hold_reference'] ?? null,
-            ];
-        }, $preHeldSources), fn($c) => $c['amount'] > 0));
-
-        if (empty($rawContributions)) {
-            throw new RuntimeException("No positive-amount pre-held contributions to execute");
-        }
-
-        foreach ($rawContributions as $c) {
-            if (empty($c['_hold_reference'])) {
-                throw new RuntimeException("Missing hold_reference for pre-held source: {$c['institution']}");
-            }
-        }
-
-        // 3. Persist contributions the normal way (pool_contributions
-        // rows, sub-references, etc.) so downstream reporting/reconciliation
-        // sees a card-hook-funded pool exactly like any other pool.
-        $contributions = $this->persistContributions($pool, $rawContributions);
-
-        // 4. Build the $holds shape placeHolds() would normally produce,
-        // and mark each contribution HELD directly — skip verifySources()
-        // and placeHolds() entirely, since CardService::hookSourcesToCard()
-        // already did real verify+hold for these at hook time.
-        $holds = [];
-        foreach ($contributions as $index => $contribution) {
-            $holdRef = $rawContributions[$index]['_hold_reference'];
-
-            if (isset($contribution['_contribution_id'])) {
-                try {
-                    $this->contributionRepository->updateHoldReference(
-                        $contribution['_contribution_id'],
-                        $holdRef
-                    );
-                    $this->contributionRepository->updateStatus(
-                        $contribution['_contribution_id'],
-                        ContributionStatus::HELD
-                    );
-                } catch (Exception $e) {
-                    $this->logger->warning('Failed to update pre-held contribution status', [
-                        'contribution_id' => $contribution['_contribution_id'],
-                        'error' => $e->getMessage()
-                    ]);
+                if (isset($contribution['_contribution_id'])) {
+                    try {
+                        $this->contributionRepository->updateHoldReference(
+                            $contribution['_contribution_id'],
+                            $holdRef
+                        );
+                        $this->contributionRepository->updateStatus(
+                            $contribution['_contribution_id'],
+                            ContributionStatus::HELD
+                        );
+                    } catch (Exception $e) {
+                        $this->logger->warning('Failed to update pre-held contribution status', [
+                            'contribution_id' => $contribution['_contribution_id'],
+                            'error' => $e->getMessage()
+                        ]);
+                    }
                 }
+
+                $holds[] = [
+                    'index' => $index,
+                    'institution' => $contribution['institution'],
+                    'hold_reference' => $holdRef,
+                    'amount' => $contribution['amount'],
+                    'source_payload' => $contribution,
+                ];
             }
 
-            $holds[] = [
-                'index' => $index,
-                'institution' => $contribution['institution'],
-                'hold_reference' => $holdRef,
-                'amount' => $contribution['amount'],
-                'source_payload' => $contribution,
-            ];
-        }
+            // 5. Jump straight to HOLDING -> FUNDED (holds already real).
+            $this->stateMachine->transition($pool, PoolStatus::HOLDING->value);
+            $this->stateMachine->transition($pool, PoolStatus::FUNDED->value);
 
-        // 5. Jump straight to HOLDING -> FUNDED (holds already real).
-        $this->stateMachine->transition($pool, PoolStatus::HOLDING->value);
-        $this->stateMachine->transition($pool, PoolStatus::FUNDED->value);
+            $verifications = array_map(fn($h) => [
+                'index' => $h['index'],
+                'institution' => $h['institution'],
+                'verified' => true,
+            ], $holds);
 
-        $verifications = array_map(fn($h) => [
-            'index' => $h['index'],
-            'institution' => $h['institution'],
-            'verified' => true,
-        ], $holds);
+            // 6. Master signature, destination execution — identical to
+            // the normal path from here on.
+            $masterSignature = $this->aggregateSigner->signAggregate($pool, $holds, $verifications);
+            $this->logger->info('Master signature generated (card hook)');
 
-        // 6. Master signature, destination execution — identical to
-        // the normal path from here on.
-        $masterSignature = $this->aggregateSigner->signAggregate($pool, $holds, $verifications);
-        $this->logger->info('Master signature generated (card hook)');
+            $this->stateMachine->transition($pool, PoolStatus::DESTINATION_PENDING->value);
+            $destinationResult = $this->executeDestination($pool, $contributions, $masterSignature, $holds);
+            $this->logger->info('Destination executed (card hook)', ['success' => $destinationResult['success'] ?? false]);
 
-        $this->stateMachine->transition($pool, PoolStatus::DESTINATION_PENDING->value);
-        $destinationResult = $this->executeDestination($pool, $contributions, $masterSignature, $holds);
-        $this->logger->info('Destination executed (card hook)', ['success' => $destinationResult['success'] ?? false]);
+            if (!($destinationResult['success'] ?? false)) {
+                throw new RuntimeException(
+                    "Destination credit failed: " . ($destinationResult['message'] ?? 'Unknown error')
+                );
+            }
 
-        if (!($destinationResult['success'] ?? false)) {
-            throw new RuntimeException(
-                "Destination credit failed: " . ($destinationResult['message'] ?? 'Unknown error')
-            );
-        }
+            $isDeferred = ($destinationResult['_defer_debit'] ?? false) === true;
 
-        $isDeferred = ($destinationResult['_defer_debit'] ?? false) === true;
+            if ($isDeferred) {
+                // CASHOUT or IDENTITY destination — same deferred-debit
+                // handling as the normal execute() path.
+                $deferredStatus = $destinationResult['_defer_status'] ?? PoolStatus::PENDING_CASHOUT->value;
+                $this->stateMachine->transition($pool, $deferredStatus);
+                $this->poolRepository->updateStatus($pool['id'], $deferredStatus);
 
-        if ($isDeferred) {
-            // CASHOUT or IDENTITY destination — same deferred-debit
-            // handling as the normal execute() path.
-            $deferredStatus = $destinationResult['_defer_status'] ?? PoolStatus::PENDING_CASHOUT->value;
-            $this->stateMachine->transition($pool, $deferredStatus);
-            $this->poolRepository->updateStatus($pool['id'], $deferredStatus);
+                if ($transactionStartedHere) {
+                    $this->db->commit();
+                    $this->logger->debug('Committed transaction in PoolCoordinator (card hook, deferred)');
+                }
+
+                return [
+                    'success' => true,
+                    'pool_id' => $pool['id'],
+                    'reference' => $pool['reference'],
+                    'status' => $deferredStatus,
+                    'total_amount' => $pool['amount'],
+                    'currency' => $pool['currency'] ?? 'BWP',
+                    'source_count' => count($contributions),
+                    'destination_result' => $destinationResult,
+                    'message' => $deferredStatus === PoolStatus::PENDING_CASHOUT->value
+                        ? 'Cashout code generated. Sources will be debited once the code is redeemed.'
+                        : 'Identity claim pending. Sources will be debited once the claim is confirmed.',
+                ];
+            }
+
+            // 7. Ordinary deposit path — debit all sources, settle, invoice.
+            $this->stateMachine->transition($pool, PoolStatus::DESTINATION_COMPLETED->value);
+            $completion = $this->completeDeferredPool($pool, $holds, $contributions);
 
             if ($transactionStartedHere) {
                 $this->db->commit();
-                $this->logger->debug('Committed transaction in PoolCoordinator (card hook, deferred)');
+                $this->logger->debug('Committed transaction in PoolCoordinator (card hook)');
             }
 
-            return [
-                'success' => true,
-                'pool_id' => $pool['id'],
-                'reference' => $pool['reference'],
-                'status' => $deferredStatus,
-                'total_amount' => $pool['amount'],
-                'currency' => $pool['currency'] ?? 'BWP',
-                'source_count' => count($contributions),
-                'destination_result' => $destinationResult,
-                'message' => $deferredStatus === PoolStatus::PENDING_CASHOUT->value
-                    ? 'Cashout code generated. Sources will be debited once the code is redeemed.'
-                    : 'Identity claim pending. Sources will be debited once the claim is confirmed.',
-            ];
+            return $this->buildResponse($pool, $contributions, $destinationResult, $completion['settlement'], $completion['invoices']);
+
+        } catch (Exception $e) {
+            if ($transactionStartedHere && $this->db->inTransaction()) {
+                $this->db->rollBack();
+                $this->logger->debug('Rolled back transaction in PoolCoordinator (card hook)');
+            }
+
+            $this->logger->error('Card hook pool execution failed', ['error' => $e->getMessage()]);
+
+            // Deliberately NOT releasing the pre-held sources here. Those
+            // holds belong to the card hook (card_pool_hook_sources), not
+            // to this pool attempt — the same hook may be retried with a
+            // corrected contribution session. Releasing on a pool-level
+            // failure is CardContributionSessionService's decision (or the
+            // hook's own natural expiry), not PoolCoordinator's.
+            $this->rollback($pool ?? null);
+
+            throw new RuntimeException("Card hook pool execution failed: " . $e->getMessage());
         }
-
-        // 7. Ordinary deposit path — debit all sources, settle, invoice.
-        $this->stateMachine->transition($pool, PoolStatus::DESTINATION_COMPLETED->value);
-        $completion = $this->completeDeferredPool($pool, $holds, $contributions);
-
-        if ($transactionStartedHere) {
-            $this->db->commit();
-            $this->logger->debug('Committed transaction in PoolCoordinator (card hook)');
-        }
-
-        return $this->buildResponse($pool, $contributions, $destinationResult, $completion['settlement'], $completion['invoices']);
-
-    } catch (Exception $e) {
-        if ($transactionStartedHere && $this->db->inTransaction()) {
-            $this->db->rollBack();
-            $this->logger->debug('Rolled back transaction in PoolCoordinator (card hook)');
-        }
-
-        $this->logger->error('Card hook pool execution failed', ['error' => $e->getMessage()]);
-
-        // Deliberately NOT releasing the pre-held sources here. Those
-        // holds belong to the card hook (card_pool_hook_sources), not
-        // to this pool attempt — the same hook may be retried with a
-        // corrected contribution session. Releasing on a pool-level
-        // failure is CardContributionSessionService's decision (or the
-        // hook's own natural expiry), not PoolCoordinator's.
-        $this->rollback($pool ?? null);
-
-        throw new RuntimeException("Card hook pool execution failed: " . $e->getMessage());
     }
-}
-    
 }
