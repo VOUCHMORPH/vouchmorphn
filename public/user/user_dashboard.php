@@ -2391,10 +2391,6 @@ function selectSavedSource(sourceId) {
         const displayName = config?.label || source.asset_type;
         showMessage(`${displayName} selected: ${inst?.name || source.institution}`, 'success');
         
-        // ============================================================
-        // ADD THIS ONE LINE inside selectSavedSource(), in the setTimeout()
-        // block right after the existing showMessage() call:
-        // ============================================================
         const existingHookLink = document.getElementById('hookToCardEntryPoint');
         if (existingHookLink) existingHookLink.remove();
         document.getElementById('sourceSelectedHelp')?.insertAdjacentHTML('afterend',
@@ -2448,6 +2444,7 @@ function renderMySourcesLegacy() {
                     <div>
                         <span class="source-status ${statusClass}">${statusLabel}</span>
                         ${isActive ? `<button class="btn-primary btn-sm" onclick="useSourceForSwap('${source.id}')" style="margin-left:8px;">Use</button>` : ''}
+                        ${isActive ? `<button class="btn-secondary btn-sm" onclick="hookSavedSourceToCard('${source.id}')" style="margin-left:4px;">Hook to card</button>` : ''}
                         ${isActive ? `<button class="btn-danger-outline" onclick="removeSource('${source.id}')" style="margin-left:4px;">Remove</button>` : ''}
                     </div>
                 </div>
@@ -2475,6 +2472,41 @@ function useSourceForSwap(sourceId) {
     openSourceModal();
     toggleSourcePanel('WALLET');
     setTimeout(() => { selectSavedSource(sourceId); }, 200);
+}
+
+// ============================================================
+// Hook a saved source directly to a card — persistent button in My sources
+// ============================================================
+function hookSavedSourceToCard(sourceId) {
+    const source = userSources.find(s => s.id === sourceId);
+    if (!source) { showMessage('Source not found.', 'error'); return; }
+
+    // Prep the same state fields openHookToCardChooser() / confirmHookSource()
+    // read from — mirrors what selectSavedSource() does, without touching
+    // the swap-amount UI at all since hooking isn't a swap.
+    state.fromInst = source.institution;
+    state.fromAsset = source.asset_type;
+
+    const config = getAssetConfig(source.asset_type);
+    const idField = (config?.fields || []).find(f =>
+        f.vault_field !== 'pin' && f.name !== 'amount' &&
+        (f.name === 'account_number' || f.name === 'identifier' || f.name === 'account' ||
+         f.name === 'phone_number' || f.name === 'phone' || f.name === 'card_number' ||
+         f.name === 'wallet_account' || f.name === 'wallet_address' || f.name === 'order_number' ||
+         f.name === 'cheque_number' || f.name === 'atm_code' || f.name === 'voucher_number' ||
+         f.name === 'source_identifier' || f.name === 'wallet_id')
+    );
+    const pinField = (config?.fields || []).find(f => f.vault_field === 'pin');
+
+    state.fromFields = {};
+    if (idField) state.fromFields[idField.name] = source.identifier || source.source_identifier || '';
+    if (pinField) {
+        const pin = source.pin || source.source_pin || '';
+        if (pin) state.fromFields[pinField.name] = pin;
+    }
+
+    closeModal();
+    openHookToCardChooser();
 }
 
 function openAddSource() {
@@ -3813,9 +3845,7 @@ async function resolveScannedQr(raw) {
 }
 
 // ============================================================
-// ADD THIS BLOCK to user_dashboard.php's <script> section,
-// anywhere near the existing openScanToHookModal() / resolveScannedQr()
-// functions (search for "SCAN SOMEONE ELSE'S CARD QR TO HOOK TO IT").
+// Hook-chooser block — moved here, right after resolveScannedQr()
 // ============================================================
 
 function openHookToCardChooser() {
@@ -3879,7 +3909,7 @@ async function submitManualCardNumber() {
             </div>
         </div>`);
 }
-    
+
 // ------------------------------------------------------------
 // Contribution sessions — owner creates, everyone watches live
 // ------------------------------------------------------------
