@@ -4,13 +4,17 @@ declare(strict_types=1);
 /**
  * VouchMorph Card — My Card
  *
- * Auto-provisions a zero-cost INACTIVE card on first call if the user
- * doesn't have one yet. Everything after auth is wrapped in a single
- * try/catch so a failure ANYWHERE (missing config, a throwing
- * constructor, a DB error) always comes back as real JSON with the
- * actual message and a proper status code — never a corrupted 200
- * response, which is what a stray uncaught exception produces when
- * headers were already sent before it was thrown.
+ * IMPORTANT: require_once for a missing file is a PHP compile-time
+ * fatal error — it happens before this script even starts executing
+ * and CANNOT be caught by try/catch, no matter where the try/catch
+ * is placed. That's what silently corrupts the response into
+ * "HTTP 200 with garbage body" instead of a clean error: headers were
+ * already sent (200 + Content-Type: json), then the require blew up
+ * before any JSON could be printed.
+ *
+ * Fix: verify every required file actually exists FIRST, and fail
+ * with a clean, specific JSON error naming the missing file if not —
+ * before attempting a single require_once.
  */
 
 define('ROOT_PATH', dirname(__DIR__, 4));
@@ -27,13 +31,39 @@ if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
     exit();
 }
 
-$container = require_once ROOT_PATH . '/src/bootstrap.php';
+$requiredFiles = [
+    ROOT_PATH . '/src/bootstrap.php',
+    ROOT_PATH . '/src/Domain/Services/CardService.php',
+    ROOT_PATH . '/src/Domain/Services/CardContributionSessionService.php',
+    ROOT_PATH . '/src/Domain/Services/ContributionCalculator.php',
+    ROOT_PATH . '/src/Infrastructure/QRcodes/QrCodeService.php',
+    ROOT_PATH . '/src/Infrastructure/QRcodes/Contracts/QrPayload.php',
+    ROOT_PATH . '/src/Infrastructure/QRcodes/Contracts/QrAdapterInterface.php',
+    ROOT_PATH . '/src/Infrastructure/QRcodes/Adapters/VouchMorphHookQrAdapter.php',
+    ROOT_PATH . '/src/Application/Utils/SessionManager.php',
+];
+
+$missing = array_values(array_filter($requiredFiles, fn($f) => !file_exists($f)));
+if (!empty($missing)) {
+    http_response_code(500);
+    echo json_encode([
+        'success' => false,
+        'error' => 'Server misconfiguration: required file(s) not deployed.',
+        'missing_files' => array_map(fn($f) => str_replace(ROOT_PATH, '', $f), $missing),
+    ]);
+    exit();
+}
+
 require_once ROOT_PATH . '/src/Domain/Services/CardService.php';
 require_once ROOT_PATH . '/src/Domain/Services/CardContributionSessionService.php';
 require_once ROOT_PATH . '/src/Domain/Services/ContributionCalculator.php';
 require_once ROOT_PATH . '/src/Infrastructure/QRcodes/QrCodeService.php';
+require_once ROOT_PATH . '/src/Infrastructure/QRcodes/Contracts/QrPayload.php';
+require_once ROOT_PATH . '/src/Infrastructure/QRcodes/Contracts/QrAdapterInterface.php';
 require_once ROOT_PATH . '/src/Infrastructure/QRcodes/Adapters/VouchMorphHookQrAdapter.php';
 require_once ROOT_PATH . '/src/Application/Utils/SessionManager.php';
+
+$container = require_once ROOT_PATH . '/src/bootstrap.php';
 
 use Domain\Services\CardService;
 use Domain\Services\CardContributionSessionService;
@@ -59,11 +89,6 @@ if (!$userId) {
     exit();
 }
 
-// ============================================================
-// Everything below can legitimately throw (missing PAN_HMAC_KEY,
-// missing container bindings, DB errors, etc.) — catch ALL of it here
-// so the response is always well-formed JSON, never a corrupted 200.
-// ============================================================
 try {
     $db = $container->get(PDO::class);
     $cardConfig = $container->get('countryConfig') ?? [];
@@ -71,8 +96,6 @@ try {
 
     $cardService = new CardService($db, $countryCode, $cardConfig);
 
-    // Auto-provision: idempotent, zero-cost, zero-hold. Every user ends
-    // up with exactly one card, INACTIVE until they pay to activate it.
     $provision = $cardService->provisionUserCard($userId, $userName);
     if (!($provision['success'] ?? false)) {
         throw new RuntimeException('provisionUserCard did not return success');
@@ -105,8 +128,6 @@ try {
             $qrService->registerAdapter(new VouchMorphHookQrAdapter());
             $qrPayload = $qrService->encode(new QrPayload('hook', ['card_suffix' => $cardSuffix]), 'VOUCHMORPH_HOOK_V1');
         } catch (\Throwable $e) {
-            // QR generation failing shouldn't take down the whole
-            // endpoint — the card view still works without it.
             error_log("[My.php] QR encode failed: " . $e->getMessage());
         }
 
@@ -192,9 +213,6 @@ try {
     echo json_encode([
         'success' => false,
         'error' => $e->getMessage(),
-        // Included so this is diagnosable from the dashboard's error
-        // display without needing Railway log access — remove once
-        // this is stable if you don't want file/line exposed to clients.
         'debug' => [
             'file' => basename($e->getFile()),
             'line' => $e->getLine(),
