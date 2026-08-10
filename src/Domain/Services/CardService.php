@@ -1450,9 +1450,23 @@ class CardService
                 throw new RuntimeException("Card cannot be activated from its current status: {$card['lifecycle_status']}");
             }
 
-            $activationFee = (float)($this->config['activation_fee'] ?? self::DEFAULT_ACTIVATION_FEE);
             $currency = $card['currency'] ?? 'BWP';
             $institution = $sourcePayload['institution'] ?? null;
+
+            if ($this->feeService !== null) {
+                try {
+                    $feeResult = $this->feeService->calculateFees('CARD_ACTIVATION', 0, [
+                        'source_institution' => $institution,
+                        'destination_institution' => 'VOUCHMORPH',
+                    ]);
+                    $activationFee = (float)($feeResult['total_fee'] ?? self::DEFAULT_ACTIVATION_FEE);
+                } catch (\Throwable $e) {
+                    error_log("[CardService] CARD_ACTIVATION fee lookup via FeeService failed, using default: " . $e->getMessage());
+                    $activationFee = (float)($this->config['activation_fee'] ?? self::DEFAULT_ACTIVATION_FEE);
+                }
+            } else {
+                $activationFee = (float)($this->config['activation_fee'] ?? self::DEFAULT_ACTIVATION_FEE);
+            }
 
             if (empty($institution)) {
                 throw new RuntimeException("Source institution is required to activate.");
@@ -1488,7 +1502,23 @@ class CardService
                 }
                 throw new RuntimeException("Could not charge the activation fee: " . ($debitResult['message'] ?? 'unknown error'));
             }
-
+       try {
+                $swapService->invoicePlatformFee(
+                    $reference,
+                    $institution,
+                    'CARD_ACTIVATION_FEE',
+                    $activationFee,
+                    $currency
+                );
+            } catch (Exception $settleErr) {
+                // Non-fatal — the customer has already been debited and the
+                // card must still activate. Same discipline as every other
+                // tracking/settlement write in this codebase: log loudly,
+                // don't let a settlement-recording failure block the swap
+                // that already succeeded.
+                error_log("[CardService] activateCard: failed to invoice CARD_ACTIVATION_FEE to VOUCHMORPH: " . $settleErr->getMessage());
+            }
+            
             $stmt = $this->db->prepare("
                 UPDATE message_cards
                 SET lifecycle_status = 'ACTIVE', activated_at = NOW(), fee_amount = fee_amount + :fee
