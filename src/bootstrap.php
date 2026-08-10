@@ -300,39 +300,65 @@ $container->setFactory('Domain\Services\MultiSourceFeeCalculator', function ($c)
     );
 });
 
+// ============================================================
+// CIRCULAR DEPENDENCY FIX
+// ============================================================
+// FeeService and ForexService each optionally/required reference the
+// other. Container::get() only caches an instance AFTER its factory
+// closure returns, so having each factory call $c->get() on the other
+// creates infinite recursion the first time either is resolved:
+//   get(FeeService) -> factory -> get(ForexService) -> factory ->
+//   get(FeeService) [not cached yet, still mid-construction] -> factory
+//   -> get(ForexService) -> ... forever, until PHP OOMs.
+// This is exactly what caused "Allowed memory size ... exhausted" here.
+//
+// Fix: make construction ONE-DIRECTIONAL (ForexService depends on
+// FeeService at construction time; FeeService does NOT depend on
+// ForexService at construction time), then wire the back-reference
+// afterward via FeeService::setForexService() — no more requesting
+// each other mid-construction, so no more recursion.
+// ============================================================
+
 // FeeService's real constructor is
 // (array $feeRegistry, array $countryConfig, string $defaultCurrency = null, ?ForexService $forexService = null)
+// Built WITHOUT ForexService here on purpose — see note above. The
+// back-reference is set by the ForexService factory below, once both
+// exist.
 $container->setFactory('Domain\Services\FeeService', function ($c) {
     $feesConfig = $c->get('fees');
     $countryConfig = $c->get('countryConfig');
     $currency = $c->get('settings')['currency'] ?? 'BWP';
 
-    // ForexService is optional to FeeService's constructor. Resolve it
-    // defensively — if its own factory fails for any reason, don't let
-    // that break FeeService for callers (like CardService) that only
-    // need flat-fee lookups and never touch forex at all.
-    $forexService = null;
-    try {
-        $forexService = $c->get('Domain\Services\ForexService');
-    } catch (\Throwable $e) {
-        error_log("[Bootstrap] FeeService factory: ForexService unavailable, continuing without it: " . $e->getMessage());
-    }
-
-    return new \Domain\Services\FeeService($feesConfig, $countryConfig, $currency, $forexService);
+    return new \Domain\Services\FeeService($feesConfig, $countryConfig, $currency, null);
 });
 
 $container->setFactory('Domain\Services\ForexService', function ($c) {
-    return new \Domain\Services\ForexService(
+    // Safe to resolve FeeService here: FeeService's factory (above)
+    // never calls back into ForexService, so this cannot recurse.
+    $feeService = $c->get('Domain\Services\FeeService');
+
+    $forexService = new \Domain\Services\ForexService(
         $c->get(PDO::class),
         $c->get('countryConfig'),
         $c->get('participants'),
-        $c->get('Domain\Services\FeeService')
+        $feeService
     );
+
+    // Wire the back-reference now that both instances fully exist.
+    try {
+        $feeService->setForexService($forexService);
+    } catch (\Throwable $e) {
+        error_log("[Bootstrap] Could not wire ForexService back into FeeService: " . $e->getMessage());
+    }
+
+    return $forexService;
 });
 
 // CardService now receives FeeService/ForexService so activation and
 // load fees are sourced from fees.json instead of falling back to
-// hardcoded defaults.
+// hardcoded defaults. Safe to resolve both here: neither of their
+// factories calls back into the container mid-construction (see the
+// circular-dependency fix above), so this cannot recurse.
 $container->setFactory('Domain\Services\CardService', function ($c) {
     $vouchmorphConfig = $c->get('participants')['vouchmorph'] ?? [];
 
@@ -369,6 +395,17 @@ $container->setFactory('Domain\Services\SwapService', function ($c) {
         'multi_source' => ['enabled' => true, 'extra_source_fee' => 1.00, 'max_total_fee' => 15.00],
     ];
 
+    // NOTE: SwapService's constructor signature as originally shared is
+    // (PDO $swapDB, array $config, string $country, $logger = null) —
+    // it does NOT currently accept FeeService/ForexService as
+    // constructor params; it builds its own internal FeeService/
+    // ForexService instances from $config. If SwapService's
+    // constructor is later changed to accept them (e.g. to fix the
+    // internal CardService-with-no-FeeService issue noted separately),
+    // resolve them here the same safe way CardService does above and
+    // pass them through — do not call $c->get() for either inside
+    // SwapService's own code paths that run during ITS construction,
+    // to avoid reintroducing the same circular recursion.
     return new \Domain\Services\SwapService(
         $c->get(PDO::class),
         $fullConfig,
