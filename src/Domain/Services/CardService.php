@@ -1254,49 +1254,52 @@ class CardService
      */
     private function logTransaction(array $data): void
     {
+        $savepointName = 'sp_logtx_' . uniqid();
         try {
-            // Redact sensitive fields
+            $this->db->exec("SAVEPOINT {$savepointName}");
+        } catch (Exception $e) {
+            error_log("Failed to create savepoint for logTransaction: " . $e->getMessage());
+            return;
+        }
+
+        try {
             $logData = $data;
             unset($logData['cvv'], $logData['pin'], $logData['card_number'], $logData['dynamic_code']);
-            
+
             $stmt = $this->db->prepare("
                 INSERT INTO card_transactions (
-                    card_id,
-                    transaction_type,
-                    amount,
-                    fee_amount,
-                    auth_code,
-                    auth_status,
-                    merchant_name,
-                    merchant_id,
-                    terminal_id,
-                    atm_id,
-                    channel,
-                    settlement_queue_id,
-                    reference,
-                    response_code,
-                    response_message
+                    card_id, transaction_type, amount, fee_amount, auth_code,
+                    auth_status, merchant_name, merchant_id, terminal_id, atm_id,
+                    channel, settlement_queue_id, reference, response_code, response_message
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ");
-            
+
             $stmt->execute([
-                $data['card_id'],
-                $data['type'],
-                $data['amount'],
-                $data['fee_amount'] ?? 0,
-                $data['auth_code'] ?? null,
-                $data['auth_status'] ?? 'APPROVED',
-                $data['merchant_name'] ?? null,
-                $data['merchant_id'] ?? null,
-                $data['terminal_id'] ?? null,
-                $data['atm_id'] ?? null,
-                $data['channel'] ?? null,
-                $data['settlement_id'] ?? null,
-                $data['reference'] ?? null,
-                $data['response_code'] ?? '00',
+                $data['card_id'], $data['type'], $data['amount'], $data['fee_amount'] ?? 0,
+                $data['auth_code'] ?? null, $data['auth_status'] ?? 'APPROVED',
+                $data['merchant_name'] ?? null, $data['merchant_id'] ?? null,
+                $data['terminal_id'] ?? null, $data['atm_id'] ?? null,
+                $data['channel'] ?? null, $data['settlement_id'] ?? null,
+                $data['reference'] ?? null, $data['response_code'] ?? '00',
                 $data['response_message'] ?? 'Approved'
             ]);
+
+            $this->db->exec("RELEASE SAVEPOINT {$savepointName}");
         } catch (Exception $e) {
+            // Undo ONLY this insert's effect — critically, this clears
+            // Postgres's aborted-transaction state so the OUTER
+            // transaction (e.g. activateCard()'s lifecycle_status
+            // update, already-succeeded before this call) can still
+            // commit normally. A plain catch here, without this
+            // ROLLBACK TO SAVEPOINT, does NOT achieve that — the outer
+            // commit() would silently no-op instead of throwing,
+            // exactly as happened in production just now.
+            try {
+                $this->db->exec("ROLLBACK TO SAVEPOINT {$savepointName}");
+                $this->db->exec("RELEASE SAVEPOINT {$savepointName}");
+            } catch (Exception $rollbackError) {
+                error_log("ROLLBACK TO SAVEPOINT also failed for logTransaction: " . $rollbackError->getMessage());
+            }
             error_log("Failed to log transaction: " . $e->getMessage());
         }
     }
