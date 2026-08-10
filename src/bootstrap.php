@@ -9,12 +9,25 @@
 // 1. DEFINE PATHS
 // ============================================================================
 
-define('ROOT_PATH', dirname(__DIR__));
-define('SRC_PATH', ROOT_PATH . '/src');
-define('CONFIG_PATH', ROOT_PATH . '/config');
-define('PUBLIC_PATH', ROOT_PATH . '/public');
-define('STORAGE_PATH', ROOT_PATH . '/storage');
-define('VENDOR_PATH', ROOT_PATH . '/vendor');
+// FIX: Check if ROOT_PATH is already defined to prevent warnings
+if (!defined('ROOT_PATH')) {
+    define('ROOT_PATH', dirname(__DIR__));
+}
+if (!defined('SRC_PATH')) {
+    define('SRC_PATH', ROOT_PATH . '/src');
+}
+if (!defined('CONFIG_PATH')) {
+    define('CONFIG_PATH', ROOT_PATH . '/config');
+}
+if (!defined('PUBLIC_PATH')) {
+    define('PUBLIC_PATH', ROOT_PATH . '/public');
+}
+if (!defined('STORAGE_PATH')) {
+    define('STORAGE_PATH', ROOT_PATH . '/storage');
+}
+if (!defined('VENDOR_PATH')) {
+    define('VENDOR_PATH', ROOT_PATH . '/vendor');
+}
 
 // ============================================================================
 // 2. LOAD COMPOSER AUTOLOADER
@@ -195,7 +208,7 @@ $container->set('cardConfig', $cardConfig);
 $container->set('communication', $communication);
 
 // ============================================================================
-// 11. REGISTER DOMAIN SERVICES
+// 11. REGISTER DOMAIN SERVICES - FIXED
 // ============================================================================
 
 $container->setFactory('Domain\Services\Settlement\HybridSettlementStrategy', function($c) {
@@ -215,10 +228,26 @@ $container->setFactory('Domain\Services\MultiSourceFeeCalculator', function($c) 
     );
 });
 
+// ============================================================
+// FIXED: FeeService factory with correct argument types
+// ============================================================
 $container->setFactory('Domain\Services\FeeService', function($c) {
     $feesConfig = $c->get('fees');
+    $countryConfig = $c->get('countryConfig');
     $currency = $c->get('settings')['currency'] ?? 'BWP';
-    return new \Domain\Services\FeeService($feesConfig, $currency);
+
+    // ForexService is optional to FeeService's constructor. Resolve it
+    // defensively — if its own factory has an incompatible signature,
+    // don't let that break FeeService for callers (like CardService)
+    // that only need flat-fee lookups.
+    $forexService = null;
+    try {
+        $forexService = $c->get('Domain\Services\ForexService');
+    } catch (\Throwable $e) {
+        error_log("[Bootstrap] FeeService factory: ForexService unavailable, continuing without it: " . $e->getMessage());
+    }
+
+    return new \Domain\Services\FeeService($feesConfig, $countryConfig, $currency, $forexService);
 });
 
 $container->setFactory('Domain\Services\ForexService', function($c) {
@@ -230,15 +259,38 @@ $container->setFactory('Domain\Services\ForexService', function($c) {
     );
 });
 
+// ============================================================
+// FIXED: CardService factory with FeeService and ForexService injected
+// ============================================================
 $container->setFactory('Domain\Services\CardService', function($c) {
     $vouchmorphConfig = $c->get('participants')['vouchmorph'] ?? [];
+
+    $feeService = null;
+    try {
+        $feeService = $c->get('Domain\Services\FeeService');
+    } catch (\Throwable $e) {
+        error_log("[Bootstrap] CardService factory: FeeService unavailable, activation fee will fall back to default: " . $e->getMessage());
+    }
+
+    $forexService = null;
+    try {
+        $forexService = $c->get('Domain\Services\ForexService');
+    } catch (\Throwable $e) {
+        error_log("[Bootstrap] CardService factory: ForexService unavailable, continuing without it: " . $e->getMessage());
+    }
+
     return new \Domain\Services\CardService(
         $c->get(PDO::class),
         $c->get('countryCode'),
-        $vouchmorphConfig
+        $vouchmorphConfig,
+        $feeService,
+        $forexService
     );
 });
 
+// ============================================================
+// FIXED: SwapService factory with FeeService and ForexService injected
+// ============================================================
 $container->setFactory('Domain\Services\SwapService', function($c) {
     $fullConfig = [
         'participants' => $c->get('participants'),
@@ -248,17 +300,33 @@ $container->setFactory('Domain\Services\SwapService', function($c) {
         'communication' => $c->get('communication'),
         'multi_source' => ['enabled' => true, 'extra_source_fee' => 1.00, 'max_total_fee' => 15.00]
     ];
+
+    // Get FeeService and ForexService to pass to SwapService constructor
+    // so it can pass them to its internal CardService instance
+    $feeService = null;
+    try {
+        $feeService = $c->get('Domain\Services\FeeService');
+    } catch (\Throwable $e) {
+        error_log("[Bootstrap] SwapService factory: FeeService unavailable: " . $e->getMessage());
+    }
+
+    $forexService = null;
+    try {
+        $forexService = $c->get('Domain\Services\ForexService');
+    } catch (\Throwable $e) {
+        error_log("[Bootstrap] SwapService factory: ForexService unavailable: " . $e->getMessage());
+    }
  
     return new \Domain\Services\SwapService(
         $c->get(PDO::class),
         $fullConfig,
-        $c->get('countryCode')
+        $c->get('countryCode'),
+        $feeService,
+        $forexService
         // $logger intentionally omitted -> defaults to null ->
         // SwapService builds its own working default logger internally.
     );
 });
- 
-
 
 $container->setFactory('Domain\Services\MultiSourceSwapExecutor', function($c) {
     return new \Domain\Services\MultiSourceSwapExecutor(
