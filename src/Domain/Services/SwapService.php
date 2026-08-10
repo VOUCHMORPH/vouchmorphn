@@ -207,10 +207,10 @@ if (!empty($commConfig)) {
     $this->smsService = new SmsNotificationService($this->swapDB, $commConfig);
 }
         
-        $vouchmorphConfig = $this->participants['vouchmorph'] ?? [];
-        if (!empty($vouchmorphConfig)) {
-            $this->cardService = new CardService($this->swapDB, $this->countryCode, $vouchmorphConfig);
-        }
+       $vouchmorphConfig = $this->participants['vouchmorph'] ?? [];
+if (!empty($vouchmorphConfig)) {
+    $this->cardService = new CardService($this->swapDB, $this->countryCode, $vouchmorphConfig, $this->feeService, $this->forexService);
+}
         
         error_log("[SwapService] Initializing Multi-Source components...");
         
