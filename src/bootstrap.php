@@ -9,7 +9,6 @@
 // 1. DEFINE PATHS
 // ============================================================================
 
-// FIX: Check if ROOT_PATH is already defined to prevent warnings
 if (!defined('ROOT_PATH')) {
     define('ROOT_PATH', dirname(__DIR__));
 }
@@ -66,52 +65,88 @@ $countrySlug = strtolower($countryName);
 error_log("[Bootstrap] Running for country: {$countryName} ({$countryCode})");
 
 // ============================================================================
-// 5. TIMEZONE SETTING - FIXED (no CountryRegistry to avoid memory leak)
+// 5. TIMEZONE SETTING
 // ============================================================================
+//
+// HARDENED: the previous version could, under some code paths, finish
+// this section without $timezone ever actually being assigned (e.g. an
+// exception thrown mid-function, or a stale/partially-deployed copy of
+// this file during a rolling deploy). When that happened, PHP raised
+// "Undefined variable $timezone" as a WARNING (not fatal), execution
+// continued with $timezone effectively '', and
+// `$db->exec("SET timezone = ''")` further down then made Postgres
+// reject the connection outright with SQLSTATE[22023] — turning a
+// harmless timezone hiccup into a full outage where $db became null
+// and every container consumer failed with a confusing
+// "Service not found in container: PDO" error instead of the real
+// cause.
+//
+// getValidTimezone() below is now wrapped so it CANNOT return anything
+// but a valid, non-empty timezone string — even in the exception path —
+// and $timezone is assigned via a defensive fallback assignment as a
+// second line of defense, so this section can never leave $timezone
+// undefined.
 
-function getValidTimezone(string $countryCode = null): string
+function getValidTimezone(?string $countryCode = null): string
 {
-    $envKeys = ['APP_TIMEZONE', 'TIMEZONE', 'TZ'];
-    foreach ($envKeys as $key) {
-        $value = $_ENV[$key] ?? getenv($key);
-        if ($value && is_string($value) && in_array($value, timezone_identifiers_list())) {
-            return $value;
+    $fallback = 'UTC';
+
+    try {
+        $envKeys = ['APP_TIMEZONE', 'TIMEZONE', 'TZ'];
+        foreach ($envKeys as $key) {
+            $value = $_ENV[$key] ?? getenv($key);
+            if ($value && is_string($value) && in_array($value, timezone_identifiers_list(), true)) {
+                return $value;
+            }
         }
-    }
-    
-    // Simple mapping based on country code - no CountryRegistry call
-    if ($countryCode) {
-        $timezoneMap = [
-            'BW' => 'Africa/Gaborone',
-            'ZA' => 'Africa/Johannesburg',
-            'NA' => 'Africa/Windhoek',
-            'ZM' => 'Africa/Lusaka',
-            'ZW' => 'Africa/Harare',
-            'MW' => 'Africa/Blantyre',
-            'MZ' => 'Africa/Maputo',
-            'LS' => 'Africa/Maseru',
-            'SZ' => 'Africa/Mbabane',
-            'KE' => 'Africa/Nairobi',
-            'UG' => 'Africa/Kampala',
-            'TZ' => 'Africa/Dar_es_Salaam',
-            'NG' => 'Africa/Lagos',
-            'GH' => 'Africa/Accra',
-            'US' => 'America/New_York',
-            'GB' => 'Europe/London',
-        ];
-        
-        if (isset($timezoneMap[$countryCode])) {
-            return $timezoneMap[$countryCode];
+
+        // Simple mapping based on country code — no CountryRegistry call
+        // (avoids the memory-leak-prone path that used to live here).
+        if ($countryCode) {
+            $timezoneMap = [
+                'BW' => 'Africa/Gaborone',
+                'ZA' => 'Africa/Johannesburg',
+                'NA' => 'Africa/Windhoek',
+                'ZM' => 'Africa/Lusaka',
+                'ZW' => 'Africa/Harare',
+                'MW' => 'Africa/Blantyre',
+                'MZ' => 'Africa/Maputo',
+                'LS' => 'Africa/Maseru',
+                'SZ' => 'Africa/Mbabane',
+                'KE' => 'Africa/Nairobi',
+                'UG' => 'Africa/Kampala',
+                'TZ' => 'Africa/Dar_es_Salaam',
+                'NG' => 'Africa/Lagos',
+                'GH' => 'Africa/Accra',
+                'US' => 'America/New_York',
+                'GB' => 'Europe/London',
+            ];
+
+            if (isset($timezoneMap[$countryCode])) {
+                return $timezoneMap[$countryCode];
+            }
         }
+
+        return $fallback;
+
+    } catch (\Throwable $e) {
+        // Whatever went wrong, NEVER let this function fail to return a
+        // valid timezone string — that's what silently poisoned the DB
+        // connection before.
+        error_log("[Bootstrap] getValidTimezone() threw, falling back to {$fallback}: " . $e->getMessage());
+        return $fallback;
     }
-    
-    return 'UTC';
 }
 
-// ============================================================
-// CRITICAL FIX: Call the function to set $timezone
-// ============================================================
+// Defensive assignment: even if the call above somehow returned an
+// empty/invalid value, coalesce to UTC rather than let $timezone end
+// up '' or undefined.
 $timezone = getValidTimezone($countryCode);
+if (empty($timezone) || !in_array($timezone, timezone_identifiers_list(), true)) {
+    error_log("[Bootstrap] getValidTimezone() returned an invalid value ('" . var_export($timezone, true) . "') - forcing UTC");
+    $timezone = 'UTC';
+}
+
 date_default_timezone_set($timezone);
 error_log("[Bootstrap] Timezone set to: {$timezone}");
 
@@ -124,20 +159,21 @@ $db = null;
 try {
     // Use DBConnection class - ONLY reads DATABASE_URL
     $db = \Core\Database\DBConnection::getConnection();
-    
+
     if (!$db) {
         throw new \Exception("DBConnection returned null");
     }
-    
-    // Set timezone on the connection
+
+    // $timezone is guaranteed non-empty and valid by this point (see
+    // section 5 above), so this can no longer receive an empty string.
     $db->exec("SET timezone = '{$timezone}'");
-    
+
     error_log("[Bootstrap] Database connection successful for {$countryName}");
-    
+
 } catch (\Exception $e) {
     error_log("[Bootstrap] Database connection failed: " . $e->getMessage());
     $db = null;
-    
+
     // In production, don't die - let app handle gracefully
     if (getenv('APP_ENV') !== 'production') {
         die("Database connection failed: " . $e->getMessage());
@@ -179,35 +215,50 @@ class Container
 {
     private array $instances = [];
     private array $factories = [];
-    
+
     public function set(string $id, $instance): void
     {
         $this->instances[$id] = $instance;
     }
-    
+
     public function setFactory(string $id, callable $factory): void
     {
         $this->factories[$id] = $factory;
     }
-    
+
     public function get(string $id)
     {
-        if (isset($this->instances[$id])) {
+        // FIX: previously used isset(), which returns FALSE for a
+        // registered value that is null (e.g. PDO::class when the DB
+        // connection failed). That made a real "database not connected"
+        // condition surface as the misleading "Service not found in
+        // container: PDO" — sending anyone debugging it toward the
+        // wrong subsystem. array_key_exists() correctly distinguishes
+        // "never registered" from "registered as null".
+        if (array_key_exists($id, $this->instances)) {
+            if ($this->instances[$id] === null) {
+                throw new \Exception(
+                    "Service '{$id}' is registered but null — most likely the database " .
+                    "connection failed at bootstrap (check earlier '[Bootstrap] Database " .
+                    "connection failed' log lines for the real cause) rather than this " .
+                    "service being missing."
+                );
+            }
             return $this->instances[$id];
         }
-        
+
         if (isset($this->factories[$id])) {
             $instance = ($this->factories[$id])($this);
             $this->instances[$id] = $instance;
             return $instance;
         }
-        
+
         throw new \Exception("Service not found in container: " . $id);
     }
-    
+
     public function has(string $id): bool
     {
-        return isset($this->instances[$id]) || isset($this->factories[$id]);
+        return array_key_exists($id, $this->instances) || isset($this->factories[$id]);
     }
 }
 
@@ -229,38 +280,37 @@ $container->set('cardConfig', $cardConfig);
 $container->set('communication', $communication);
 
 // ============================================================================
-// 11. REGISTER DOMAIN SERVICES - FIXED
+// 11. REGISTER DOMAIN SERVICES
 // ============================================================================
 
-$container->setFactory('Domain\Services\Settlement\HybridSettlementStrategy', function($c) {
+$container->setFactory('Domain\Services\Settlement\HybridSettlementStrategy', function ($c) {
     return new \Domain\Services\Settlement\HybridSettlementStrategy(
         $c->get(PDO::class)
     );
 });
 
-$container->setFactory('Domain\Services\ContributionCalculator', function($c) {
+$container->setFactory('Domain\Services\ContributionCalculator', function ($c) {
     return new \Domain\Services\ContributionCalculator();
 });
 
-$container->setFactory('Domain\Services\MultiSourceFeeCalculator', function($c) {
+$container->setFactory('Domain\Services\MultiSourceFeeCalculator', function ($c) {
     return new \Domain\Services\MultiSourceFeeCalculator(
         $c->get('countryConfig'),
         $c->get('countryCode')
     );
 });
 
-// ============================================================
-// FIXED: FeeService factory with correct argument types
-// ============================================================
-$container->setFactory('Domain\Services\FeeService', function($c) {
+// FeeService's real constructor is
+// (array $feeRegistry, array $countryConfig, string $defaultCurrency = null, ?ForexService $forexService = null)
+$container->setFactory('Domain\Services\FeeService', function ($c) {
     $feesConfig = $c->get('fees');
     $countryConfig = $c->get('countryConfig');
     $currency = $c->get('settings')['currency'] ?? 'BWP';
 
     // ForexService is optional to FeeService's constructor. Resolve it
-    // defensively — if its own factory has an incompatible signature,
-    // don't let that break FeeService for callers (like CardService)
-    // that only need flat-fee lookups.
+    // defensively — if its own factory fails for any reason, don't let
+    // that break FeeService for callers (like CardService) that only
+    // need flat-fee lookups and never touch forex at all.
     $forexService = null;
     try {
         $forexService = $c->get('Domain\Services\ForexService');
@@ -271,7 +321,7 @@ $container->setFactory('Domain\Services\FeeService', function($c) {
     return new \Domain\Services\FeeService($feesConfig, $countryConfig, $currency, $forexService);
 });
 
-$container->setFactory('Domain\Services\ForexService', function($c) {
+$container->setFactory('Domain\Services\ForexService', function ($c) {
     return new \Domain\Services\ForexService(
         $c->get(PDO::class),
         $c->get('countryConfig'),
@@ -280,10 +330,10 @@ $container->setFactory('Domain\Services\ForexService', function($c) {
     );
 });
 
-// ============================================================
-// FIXED: CardService factory with FeeService and ForexService injected
-// ============================================================
-$container->setFactory('Domain\Services\CardService', function($c) {
+// CardService now receives FeeService/ForexService so activation and
+// load fees are sourced from fees.json instead of falling back to
+// hardcoded defaults.
+$container->setFactory('Domain\Services\CardService', function ($c) {
     $vouchmorphConfig = $c->get('participants')['vouchmorph'] ?? [];
 
     $feeService = null;
@@ -309,47 +359,26 @@ $container->setFactory('Domain\Services\CardService', function($c) {
     );
 });
 
-// ============================================================
-// FIXED: SwapService factory with FeeService and ForexService injected
-// ============================================================
-$container->setFactory('Domain\Services\SwapService', function($c) {
+$container->setFactory('Domain\Services\SwapService', function ($c) {
     $fullConfig = [
         'participants' => $c->get('participants'),
         'fees' => $c->get('fees'),
         'currency' => $c->get('settings')['currency'] ?? 'BWP',
         'atm_notes' => $c->get('atmNotes'),
         'communication' => $c->get('communication'),
-        'multi_source' => ['enabled' => true, 'extra_source_fee' => 1.00, 'max_total_fee' => 15.00]
+        'multi_source' => ['enabled' => true, 'extra_source_fee' => 1.00, 'max_total_fee' => 15.00],
     ];
 
-    // Get FeeService and ForexService to pass to SwapService constructor
-    // so it can pass them to its internal CardService instance
-    $feeService = null;
-    try {
-        $feeService = $c->get('Domain\Services\FeeService');
-    } catch (\Throwable $e) {
-        error_log("[Bootstrap] SwapService factory: FeeService unavailable: " . $e->getMessage());
-    }
-
-    $forexService = null;
-    try {
-        $forexService = $c->get('Domain\Services\ForexService');
-    } catch (\Throwable $e) {
-        error_log("[Bootstrap] SwapService factory: ForexService unavailable: " . $e->getMessage());
-    }
- 
     return new \Domain\Services\SwapService(
         $c->get(PDO::class),
         $fullConfig,
-        $c->get('countryCode'),
-        $feeService,
-        $forexService
+        $c->get('countryCode')
         // $logger intentionally omitted -> defaults to null ->
         // SwapService builds its own working default logger internally.
     );
 });
 
-$container->setFactory('Domain\Services\MultiSourceSwapExecutor', function($c) {
+$container->setFactory('Domain\Services\MultiSourceSwapExecutor', function ($c) {
     return new \Domain\Services\MultiSourceSwapExecutor(
         $c->get(PDO::class),
         $c->get('Domain\Services\SwapService'),
