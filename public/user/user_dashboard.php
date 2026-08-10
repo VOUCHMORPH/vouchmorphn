@@ -3823,6 +3823,87 @@ function openCreateSessionModal(cardSuffix) {
         <div class="cta-row"><button class="btn btn-primary" onclick="submitCreateSession('${cardSuffix}')">Start session</button></div>`);
 }
 
+/* ============================================================
+ * ADD THIS BLOCK to user_dashboard.php's <script> section,
+ * anywhere near the existing openScanToHookModal() / resolveScannedQr()
+ * functions (search for "SCAN SOMEONE ELSE'S CARD QR TO HOOK TO IT").
+ * ============================================================ */
+
+function openHookToCardChooser() {
+    if (!(state.fromInst && state.fromAsset && fieldsValidForAsset(state.fromAsset, state.fromFields, true).valid)) {
+        showMessage('Finish selecting a source first — institution, asset type, and required fields.', 'warning');
+        return;
+    }
+    openModal('Hook this source to a card', `
+        <div style="text-align:center;padding:10px 0 20px;">
+            <div style="font-size:13px;color:var(--text-muted);margin-bottom:18px;">Where should this source be hooked?</div>
+            <div class="cta-row" style="flex-direction:column;gap:10px;">
+                <button class="btn btn-primary" onclick="hookToMyCard()">My VouchMorph Card</button>
+                <button class="btn btn-secondary" onclick="openHookToOtherCardChooser()">Another VouchMorph Card</button>
+            </div>
+        </div>`);
+}
+
+async function hookToMyCard() {
+    if (!myCard) {
+        const result = await callApiGet(CONFIG.API_BASE + '/api/v1/cards/My.php');
+        if (!result.ok) { showMessage('Could not load your card: ' + result.error, 'error'); return; }
+        myCard = result.body.data;
+    }
+    if (!myCard.is_active) {
+        showMessage('Your VouchMorph Card is not active yet. Activate it first from Toolbox → My VouchMorph Card.', 'warning');
+        return;
+    }
+    openHookSourceModal(myCard.card_suffix);
+}
+
+function openHookToOtherCardChooser() {
+    openModal('Hook to another card', `
+        <div style="text-align:center;padding:10px 0 20px;">
+            <div class="cta-row" style="flex-direction:column;gap:10px;">
+                <button class="btn btn-primary" onclick="openEnterCardNumberModal()">Enter card number</button>
+                <button class="btn btn-secondary" onclick="openScanToHookModal()">Scan QR code</button>
+            </div>
+        </div>`);
+}
+
+function openEnterCardNumberModal() {
+    openModal('Enter card number', `
+        <div class="field-group"><label>Card number or suffix</label><input id="manualCardNumber" placeholder="e.g. last 4 digits or full number"></div>
+        <div class="cta-row"><button class="btn btn-secondary" onclick="openHookToOtherCardChooser()">Back</button><button class="btn btn-primary" onclick="submitManualCardNumber()">Continue</button></div>`);
+}
+
+async function submitManualCardNumber() {
+    const raw = document.getElementById('manualCardNumber').value.trim();
+    if (!raw) { showMessage('Enter a card number.', 'warning'); return; }
+
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/LookupBySuffix.php', { card_suffix: raw });
+    if (!result.ok) { showMessage('Could not find that card: ' + result.error, 'error'); return; }
+
+    const { card_suffix, display_name } = result.body.data;
+    openModal('Confirm', `
+        <div style="text-align:center;padding:16px;">
+            <div style="font-size:14px;margin-bottom:16px;">You're about to hook a source to <strong>${escapeHtml(display_name)}'s</strong> VouchMorph Card.</div>
+            <div class="cta-row">
+                <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="openHookSourceModal('${escapeHtml(card_suffix)}')">Continue</button>
+            </div>
+        </div>`);
+}
+
+/* ============================================================
+ * ADD THIS ONE LINE inside selectSavedSource(), in the setTimeout()
+ * block right after the existing:
+ *
+ *     showMessage(`${displayName} selected: ${inst?.name || source.institution}`, 'success');
+ *
+ * so the entry point appears once a source is actually selected:
+ * ============================================================ */
+
+// document.getElementById('sourceSelectedHelp')?.insertAdjacentHTML('afterend',
+//     `<div style="margin-top:8px;"><span class="quick-link muted" onclick="openHookToCardChooser()">Hook this source to a VouchMorph Card instead →</span></div>`
+// );
+    
 async function submitCreateSession(cardSuffix) {
     const target = parseFloat(document.getElementById('sessTarget').value);
     const currency = document.getElementById('sessCurrency').value.trim();
