@@ -7312,8 +7312,39 @@ private function loadAtmNotesStrict(array $countryConfig, string $countryFallbac
 
         $holdPlaced = $result['hold_placed'] ?? false;
 
-        if ($holdPlaced) {
-            $holdId = $this->createLocalHold($payload, $institution, $result['hold_reference'] ?? null);
+       if ($holdPlaced) {
+            try {
+                $holdId = $this->createLocalHold($payload, $institution, $result['hold_reference'] ?? null);
+            } catch (\Throwable $localHoldError) {
+                // The bank-side hold is REAL and already placed. Failing to
+                // record it locally must never leave it silently dangling —
+                // attempt an emergency release immediately rather than
+                // orphaning real held funds with zero VouchMorph trace.
+                $this->logger->critical("Local hold record failed AFTER a real hold was placed at {$institution} - attempting emergency release", [
+                    'institution' => $institution,
+                    'hold_reference' => $result['hold_reference'] ?? null,
+                    'error' => $localHoldError->getMessage(),
+                ]);
+                try {
+                    $adapter = $this->adapterFactory->getAdapter($institution);
+                    $adapter->releaseHold([
+                        'hold_reference' => $result['hold_reference'] ?? null,
+                        'action' => 'RELEASE_HOLD',
+                        'reason' => 'Local hold recording failed - emergency release',
+                    ], []);
+                    $this->logger->warning("Emergency release succeeded for orphaned hold", ['hold_reference' => $result['hold_reference'] ?? null]);
+                } catch (\Throwable $releaseError) {
+                    $this->logger->emergency("EMERGENCY RELEASE ALSO FAILED - real money is held at {$institution} with NO local record. Manual intervention required.", [
+                        'institution' => $institution,
+                        'hold_reference' => $result['hold_reference'] ?? null,
+                        'release_error' => $releaseError->getMessage(),
+                    ]);
+                }
+                throw new RuntimeException(
+                    "Hold was placed at {$institution} (reference: " . ($result['hold_reference'] ?? 'unknown') . ") " .
+                    "but could not be recorded locally: " . $localHoldError->getMessage() . ". An emergency release was attempted."
+                );
+            }
             $this->currentHoldId = $holdId;
             $this->currentHoldReference = $result['hold_reference'] ?? $this->currentHoldReference;
             $this->currentHoldInstitution = $institution;
