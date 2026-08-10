@@ -33,7 +33,7 @@ class FeeService
         } else {
             $excludeKeys = ['regulatory', 'currency', 'country_code', 'country', 'currency_symbol', 'fee_structure', 'revenue_split', 'destination_fees', 'base_currency'];
             $this->productConfig = [];
-            foreach ($countryConfig as $key => $value) {
+            foreach ($feeRegistry as $key => $value) {
                 if (!in_array($key, $excludeKeys) && is_array($value) && (isset($value['fee_components']) || isset($value['distribution']))) {
                     $this->productConfig[$key] = $value;
                 }
