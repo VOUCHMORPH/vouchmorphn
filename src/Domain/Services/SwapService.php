@@ -9536,6 +9536,33 @@ public function getFeeService(): FeeService
 {
     return $this->feeService;
 }
+
+/**
+     * Invoices a flat platform-owned fee to VouchMorph's own settlement
+     * position, debited against the given source institution. Exposed
+     * publicly so callers like CardService::activateCard() — which hold
+     * a SwapService instance but not a HybridSettlementStrategy of their
+     * own — can settle a fee the same way PoolCoordinator and the
+     * standard swap flows already do for PLATFORM_FEE/VOUCHMORPH_FEE,
+     * instead of debiting the customer and crediting nobody.
+     */
+    public function invoicePlatformFee(
+        string $reference,
+        string $sourceInstitution,
+        string $feeType,
+        float $amount,
+        string $currency
+    ): array {
+        return $this->settlement->invoiceFee(
+            $reference,
+            $sourceInstitution,
+            $this->getParticipantId('VOUCHMORPH'),
+            $feeType,
+            $amount,
+            $currency
+        );
+    }
+ 
     public function getParticipantId(string $institution): int
     {
         foreach ($this->participants as $code => $participant) {
