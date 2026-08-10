@@ -66,10 +66,6 @@ $countrySlug = strtolower($countryName);
 error_log("[Bootstrap] Running for country: {$countryName} ({$countryCode})");
 
 // ============================================================================
-// 5. TIMEZONE SETTING
-// ============================================================================
-
-// ============================================================================
 // 5. TIMEZONE SETTING - FIXED (no CountryRegistry to avoid memory leak)
 // ============================================================================
 
@@ -110,6 +106,40 @@ function getValidTimezone(string $countryCode = null): string
     }
     
     return 'UTC';
+}
+
+// CALL THE FUNCTION - THIS WAS MISSING!
+$timezone = getValidTimezone($countryCode);
+date_default_timezone_set($timezone);
+error_log("[Bootstrap] Timezone set to: {$timezone}");
+
+// ============================================================================
+// 6. CREATE DATABASE CONNECTION - SINGLE SOURCE OF TRUTH
+// ============================================================================
+
+$db = null;
+
+try {
+    // Use DBConnection class - ONLY reads DATABASE_URL
+    $db = \Core\Database\DBConnection::getConnection();
+    
+    if (!$db) {
+        throw new \Exception("DBConnection returned null");
+    }
+    
+    // Set timezone on the connection
+    $db->exec("SET timezone = '{$timezone}'");
+    
+    error_log("[Bootstrap] Database connection successful for {$countryName}");
+    
+} catch (\Exception $e) {
+    error_log("[Bootstrap] Database connection failed: " . $e->getMessage());
+    $db = null;
+    
+    // In production, don't die - let app handle gracefully
+    if (getenv('APP_ENV') !== 'production') {
+        die("Database connection failed: " . $e->getMessage());
+    }
 }
 // ============================================================================
 // 6. CREATE DATABASE CONNECTION - SINGLE SOURCE OF TRUTH
