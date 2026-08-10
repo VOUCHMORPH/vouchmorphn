@@ -91,10 +91,14 @@ if (!$userId) {
 
 try {
     $db = $container->get(PDO::class);
-    $cardConfig = $container->get('countryConfig') ?? [];
-    $countryCode = $container->get('countryCode');
 
-    $cardService = new CardService($db, $countryCode, $cardConfig);
+    // Use the container's own CardService factory, which correctly
+    // scopes config to the vouchmorph participant entry -- NOT the
+    // whole countryConfig blob. CardService::activateCard()'s
+    // activation_fee lookup reads from $this->config internally, so
+    // this is where that value actually needs to come from.
+    $cardService = $container->get('Domain\Services\CardService');
+    $vouchmorphConfig = $container->get('participants')['vouchmorph'] ?? [];
 
     $provision = $cardService->provisionUserCard($userId, $userName);
     if (!($provision['success'] ?? false)) {
@@ -104,7 +108,7 @@ try {
     $cardSuffix = $provision['card_suffix'];
 
     $stmt = $db->prepare("
-        SELECT card_suffix, cardholder_name, status, funding_mode, currency
+        SELECT card_suffix, cardholder_name, lifecycle_status, funding_mode, currency
         FROM message_cards WHERE card_suffix = :suffix
     ");
     $stmt->execute([':suffix' => $cardSuffix]);
@@ -114,8 +118,8 @@ try {
         throw new RuntimeException("Provisioned card {$cardSuffix} not found immediately after insert.");
     }
 
-    $isActive = ($card['status'] === 'ACTIVE');
-    $activationFee = (float)($cardConfig['activation_fee'] ?? 5.00);
+    $isActive = ($card['lifecycle_status'] === 'ACTIVE');
+    $activationFee = (float)($vouchmorphConfig['activation_fee'] ?? 5.00);
 
     $qrPayload = null;
     $hook = null;
@@ -196,7 +200,7 @@ try {
             'has_card' => true,
             'card_suffix' => $cardSuffix,
             'cardholder_name' => $card['cardholder_name'],
-            'status' => $card['status'],
+            'status' => $card['lifecycle_status'],
             'is_active' => $isActive,
             'funding_mode' => $card['funding_mode'] ?? 'HOOKED',
             'currency' => $card['currency'] ?? 'BWP',
