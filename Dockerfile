@@ -27,6 +27,9 @@ RUN pecl install yaml && docker-php-ext-enable yaml
 RUN php -m | grep -q yaml || (echo "ERROR: yaml extension not installed" && exit 1)
 RUN echo "extension=pdo_pgsql.so" > /usr/local/etc/php/conf.d/20-pdo_pgsql.ini \
     && echo "extension=pgsql.so" > /usr/local/etc/php/conf.d/20-pgsql.ini
+RUN echo "display_errors = Off" >> /usr/local/etc/php/conf.d/99-production.ini \
+    && echo "log_errors = On" >> /usr/local/etc/php/conf.d/99-production.ini \
+    && echo "error_log = /dev/stderr" >> /usr/local/etc/php/conf.d/99-production.ini
 RUN echo "clear_env = no" >> /usr/local/etc/php-fpm.d/www.conf
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 WORKDIR /var/www/html
