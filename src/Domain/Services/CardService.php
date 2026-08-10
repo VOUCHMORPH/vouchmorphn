@@ -1483,6 +1483,10 @@ class CardService
             } else {
                 $activationFee = (float)($this->config['activation_fee'] ?? self::DEFAULT_ACTIVATION_FEE);
             }
+            if ($activationFee <= 0) {
+                error_log("[CardService] activateCard: computed activation fee was {$activationFee} — refusing to place a zero/negative-amount hold. Check fees.json CARD_ACTIVATION config.");
+                throw new RuntimeException("Card activation fee could not be determined. Please contact support.");
+            }
 
             if (empty($institution)) {
                 throw new RuntimeException("Source institution is required to activate.");
