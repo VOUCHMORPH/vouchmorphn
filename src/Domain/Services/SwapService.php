@@ -252,6 +252,11 @@ public function getAdapterFactory(): \Infrastructure\Adapters\InstitutionAdapter
     return $this->adapterFactory;
 }
 
+ public function setCurrentSwapReference(string $reference): void
+    {
+        $this->currentSwapRef = $reference;
+    }
+ 
 public function getParticipants(): array
 {
     return $this->participants;
