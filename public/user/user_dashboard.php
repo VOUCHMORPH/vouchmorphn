@@ -178,6 +178,8 @@ foreach ($assets as $assetKey => $assetConfig) {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>VouchMorph – Swap</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
 <style>
 :root {
     --bg: #FAF9F6;
@@ -2710,7 +2712,7 @@ function renderToolbox() {
                 { label: 'Add source', action: 'openAddSource()' },
                 { label: 'Pending sources', badge: pendingCount > 0 ? pendingCount : null, action: 'openPendingSources()' },
                 { label: 'Swap history', action: 'openSwapHistory()' },
-                { label: 'VouchMorph Card', action: "quickSetSwapType('MULTI_SOURCE'); setTimeout(() => tabSetMultiDest('vmcard'), 100);" },
+                { label: 'My VouchMorph Card', action: 'openMyCardModal()' },
             ]
         },
         {
@@ -3472,6 +3474,13 @@ function openHelpModal() {
                 <li>Type the total amount — it splits evenly across your sources, or pick Ratio, Smart, or Manual.</li>
                 <li>Pick where it settles: an account/wallet/card, an identity, or a VouchMorph Card.</li>
             </ol>
+            <p style="font-weight:700;margin-bottom:6px;">Your VouchMorph Card</p>
+            <ol style="padding-left:18px;margin-bottom:16px;">
+                <li>Open Toolbox &rarr; My VouchMorph Card. Every account gets one automatically.</li>
+                <li>It starts inactive — activate it once with a small one-time fee from any linked source.</li>
+                <li>Once active, other VouchMorph users can hook their own sources to your card by scanning its QR code, and you can hook your sources to theirs the same way.</li>
+                <li>When multiple people are hooked, the card owner starts a payment, picks how contributions should split (Equal, Ratio, Smart, or Manual), and everyone watches the live progress until it's fully covered — then the owner executes it.</li>
+            </ol>
             <p style="font-weight:700;margin-bottom:6px;">Claiming money sent to you</p>
             <ol style="padding-left:18px;margin-bottom:16px;">
                 <li>Open Toolbox &rarr; Finalize identity swap.</li>
@@ -3524,6 +3533,7 @@ function openModal(title, bodyHtml) {
 
 function closeModal() {
     document.getElementById('modal').classList.remove('active');
+    stopSessionPolling();
     returnAllMovableNodesHome();
     updateSelectionChips();
     refreshUI();
@@ -3537,6 +3547,369 @@ function showMessage(text, type = 'info') {
 }
 
 function escapeHtml(str) { const div = document.createElement('div'); div.textContent = str == null ? '' : String(str); return div.innerHTML; }
+
+// ============================================================
+// VOUCHMORPH CARD — hooking, QR, activation, contribution sessions
+// ============================================================
+
+let myCard = null;
+let activeSessionPollTimer = null;
+let html5QrScanner = null;
+
+async function callApiGet(endpoint) {
+    let url = endpoint;
+    if (CONFIG.IS_TEST_MODE) url += (url.includes('?') ? '&' : '?') + 'test_mode=1';
+    let response, body;
+    try {
+        response = await fetch(url, { method: 'GET', headers: buildHeaders(), credentials: 'include' });
+    } catch (networkErr) {
+        return { ok: false, error: 'Network error: could not reach ' + url + ' (' + networkErr.message + ')' };
+    }
+    try { body = await response.json(); } catch (parseErr) {
+        return { ok: false, error: 'Server returned a non-JSON response (HTTP ' + response.status + ')' };
+    }
+    if (!response.ok || body.success === false) return { ok: false, error: body.error || ('HTTP ' + response.status), body };
+    return { ok: true, body };
+}
+
+// ------------------------------------------------------------
+// Entry point — Toolbox → My VouchMorph Card. Every account has a
+// card auto-provisioned server-side on first call; it may still be
+// INACTIVE, which is a normal, expected state, not an error.
+// ------------------------------------------------------------
+async function openMyCardModal() {
+    openModal('My VouchMorph Card', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading...</div>');
+    const result = await callApiGet(CONFIG.API_BASE + '/api/v1/cards/My.php');
+    if (!result.ok) {
+        document.getElementById('modalBody').innerHTML = `<div style="color:var(--danger);padding:12px;">${escapeHtml(result.error)}</div>`;
+        return;
+    }
+    myCard = result.body.data;
+    document.getElementById('modalBody').innerHTML = renderMyCardModal();
+    if (myCard.is_active && myCard.qr_payload) {
+        renderCardQr(myCard.qr_payload);
+    }
+    if (myCard.active_session) {
+        startSessionPolling(myCard.active_session.session_id);
+    }
+}
+
+function renderMyCardModal() {
+    if (!myCard.is_active) {
+        return `
+            <div style="text-align:center;padding:10px 0 20px;">
+                <div style="font-weight:700;font-size:16px;margin-bottom:6px;">Your VouchMorph Card is ready</div>
+                <div style="font-size:12px;color:var(--text-muted);max-width:320px;margin:0 auto 18px;">
+                    It's issued but not active yet — activate it once with a small one-time fee from any of your linked sources, and it's ready to use.
+                </div>
+                <div style="font-family:var(--font-mono);font-size:14px;font-weight:700;margin-bottom:4px;">•••• ${escapeHtml(myCard.card_suffix)}</div>
+                <div style="font-size:12px;color:var(--text-dim);margin-bottom:18px;">Activation fee: ${formatMoney(myCard.activation_fee, myCard.currency)}</div>
+                <div class="cta-row"><button class="btn btn-primary" onclick="openActivateCardModal()">Activate my card</button></div>
+            </div>`;
+    }
+
+    const hook = myCard.hook;
+    const contributorsHtml = hook && hook.contributors.length
+        ? hook.contributors.map(c => `
+            <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:12px;">
+                <span>${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)} · ${escapeHtml(c.source_identifier)} ${c.is_me ? '<strong>(you)</strong>' : ''}</span>
+                <span style="font-family:var(--font-mono);font-weight:600;">${formatMoney(c.held_amount, hook.currency)}</span>
+            </div>`).join('')
+        : `<div style="font-size:12px;color:var(--text-dim);">No sources hooked yet.</div>`;
+
+    return `
+        <div style="text-align:center;margin-bottom:16px;">
+            <div id="cardQrContainer" style="display:inline-block;padding:12px;background:#fff;border:1px solid var(--border-strong);"></div>
+            <div style="font-size:11px;color:var(--text-dim);margin-top:8px;">Scan to hook a source to this card</div>
+            <div style="font-family:var(--font-mono);font-size:13px;font-weight:700;margin-top:4px;">•••• ${escapeHtml(myCard.card_suffix)}</div>
+        </div>
+
+        <div style="border-top:1px solid var(--border);padding-top:14px;margin-top:14px;">
+            <div class="field-label" style="margin-bottom:8px;">Hooked sources ${hook ? `— ${formatMoney(hook.total_held, hook.currency)} total, expires ${new Date(hook.expires_at).toLocaleString()}` : ''}</div>
+            ${contributorsHtml}
+        </div>
+
+        <div class="cta-row" style="margin-top:16px;">
+            <button class="btn btn-secondary" onclick="openHookSourceModal(myCard.card_suffix)">Hook a source</button>
+            ${hook && hook.contributors.length ? `<button class="btn btn-primary" onclick="openCreateSessionModal(myCard.card_suffix)">Start a payment</button>` : ''}
+        </div>
+
+        <div id="sessionStatusArea" style="margin-top:16px;">${myCard.active_session ? renderSessionStatus(myCard.active_session) : ''}</div>
+
+        <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px;">
+            <span class="quick-link" onclick="openScanToHookModal()">Hook to someone else's card (scan their QR)</span>
+        </div>`;
+}
+
+function renderCardQr(payloadText) {
+    const el = document.getElementById('cardQrContainer');
+    if (!el || typeof QRCode === 'undefined') return;
+    el.innerHTML = '';
+    new QRCode(el, { text: payloadText, width: 180, height: 180 });
+}
+
+// ------------------------------------------------------------
+// Activation — one-time fee from any source, flips INACTIVE -> ACTIVE
+// ------------------------------------------------------------
+function openActivateCardModal() {
+    const modalBody = document.getElementById('modalBody');
+    modalBody.innerHTML = '';
+    modalBody.appendChild(document.getElementById('fromSection'));
+    const feeNote = document.createElement('div');
+    feeNote.style.cssText = 'font-size:12px;color:var(--text-dim);text-align:center;margin-top:10px;';
+    feeNote.textContent = `A one-time ${formatMoney(myCard.activation_fee, myCard.currency)} activation fee will be charged from the source you select.`;
+    modalBody.appendChild(feeNote);
+    const btnRow = document.createElement('div');
+    btnRow.className = 'cta-row';
+    btnRow.style.marginTop = '14px';
+    btnRow.innerHTML = `<button type="button" class="btn btn-primary" onclick="confirmActivateCard('${myCard.card_suffix}')">Pay and activate</button>`;
+    modalBody.appendChild(btnRow);
+    document.getElementById('modalTitle').textContent = 'Activate your card';
+    document.getElementById('modal').classList.add('active');
+}
+
+async function confirmActivateCard(cardSuffix) {
+    const hasSource = !!(state.fromInst && state.fromAsset && fieldsValidForAsset(state.fromAsset, state.fromFields, true).valid);
+    if (!hasSource) { showMessage('Finish selecting the source — institution, asset type, and required fields.', 'warning'); return; }
+
+    const idField = (getAssetConfig(state.fromAsset)?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+    const identifier = idField ? state.fromFields[idField.name] : null;
+    const pin = extractPinFromFields(state.fromAsset, state.fromFields);
+
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/Activate.php', {
+        card_suffix: cardSuffix,
+        institution: state.fromInst,
+        asset_type: state.fromAsset,
+        identifier: identifier,
+        pin: pin || undefined,
+    });
+
+    if (!result.ok) { showMessage('Activation failed: ' + result.error, 'error'); return; }
+    showMessage('Card activated!', 'success');
+    closeModal();
+    openMyCardModal();
+}
+
+// ------------------------------------------------------------
+// Hooking a source to a card (yours or someone else's)
+// ------------------------------------------------------------
+function openHookSourceModal(targetCardSuffix) {
+    const modalBody = document.getElementById('modalBody');
+    modalBody.innerHTML = '';
+    modalBody.appendChild(document.getElementById('fromSection'));
+    const btnRow = document.createElement('div');
+    btnRow.className = 'cta-row';
+    btnRow.style.marginTop = '20px';
+    btnRow.innerHTML = `<button type="button" class="btn btn-primary" onclick="confirmHookSource('${targetCardSuffix}')">Hook this source</button>`;
+    modalBody.appendChild(btnRow);
+    document.getElementById('modalTitle').textContent = 'Hook a source';
+    document.getElementById('modal').classList.add('active');
+}
+
+async function confirmHookSource(targetCardSuffix) {
+    const hasSource = !!(state.fromInst && state.fromAsset && fieldsValidForAsset(state.fromAsset, state.fromFields, true).valid);
+    if (!hasSource) { showMessage('Finish selecting the source — institution, asset type, and required fields.', 'warning'); return; }
+
+    const idField = (getAssetConfig(state.fromAsset)?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+    const identifier = idField ? state.fromFields[idField.name] : null;
+    const pin = extractPinFromFields(state.fromAsset, state.fromFields);
+
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/hook.php', {
+        card_suffix: targetCardSuffix,
+        sources: [{
+            institution: state.fromInst,
+            asset_type: state.fromAsset,
+            identifier: identifier,
+            wallet_pin: pin || undefined,
+            pin: pin || undefined,
+        }],
+    });
+
+    if (!result.ok) { showMessage('Hook failed: ' + result.error, 'error'); return; }
+    showMessage('Source hooked successfully.', 'success');
+    closeModal();
+    openMyCardModal();
+}
+
+// ------------------------------------------------------------
+// Scan someone else's card QR to hook to it
+// ------------------------------------------------------------
+function openScanToHookModal() {
+    openModal('Scan a card', `
+        <div id="qrScannerRegion" style="width:100%;"></div>
+        <div style="text-align:center;margin:12px 0;font-size:11px;color:var(--text-dim);">or</div>
+        <div class="field-group"><label>Paste the card's code manually</label><input id="manualQrPaste" placeholder="Paste QR text if you can't scan"></div>
+        <div class="cta-row"><button class="btn btn-primary" onclick="submitManualQr()">Continue</button></div>`);
+
+    try {
+        html5QrScanner = new Html5Qrcode('qrScannerRegion');
+        html5QrScanner.start(
+            { facingMode: 'environment' },
+            { fps: 10, qrbox: 220 },
+            (decodedText) => {
+                html5QrScanner.stop().catch(() => {});
+                resolveScannedQr(decodedText);
+            },
+            () => {}
+        ).catch((e) => {
+            console.warn('[card-qr] camera scan unavailable, manual paste only:', e);
+        });
+    } catch (e) {
+        console.warn('[card-qr] Html5Qrcode not available, manual paste only:', e);
+    }
+}
+
+function submitManualQr() {
+    const raw = document.getElementById('manualQrPaste').value.trim();
+    if (!raw) { showMessage('Paste the code first, or use the camera scanner above.', 'warning'); return; }
+    resolveScannedQr(raw);
+}
+
+async function resolveScannedQr(raw) {
+    if (html5QrScanner) { try { await html5QrScanner.stop(); } catch (e) {} }
+
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/ResolveQr.php', { raw });
+    if (!result.ok) { showMessage('Could not read that code: ' + result.error, 'error'); return; }
+
+    const { card_suffix, display_name } = result.body.data;
+    openModal('Confirm', `
+        <div style="text-align:center;padding:16px;">
+            <div style="font-size:14px;margin-bottom:16px;">You're about to hook a source to <strong>${escapeHtml(display_name)}'s</strong> VouchMorph Card.</div>
+            <div class="cta-row">
+                <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="openHookSourceModal('${escapeHtml(card_suffix)}')">Continue</button>
+            </div>
+        </div>`);
+}
+
+// ------------------------------------------------------------
+// Contribution sessions — owner creates, everyone watches live
+// ------------------------------------------------------------
+function openCreateSessionModal(cardSuffix) {
+    const instOptions = Object.keys(PARTICIPANTS).map(c => `<option value="${c}">${PARTICIPANTS[c]?.name || c}</option>`).join('');
+    openModal('Start a payment', `
+        <div class="field-group"><label>Amount needed at destination</label><input type="number" id="sessTarget" min="0.01" step="0.01" placeholder="0.00"></div>
+        <div class="field-group"><label>Currency</label><input id="sessCurrency" value="${myCard.hook?.currency || myCard.currency || 'BWP'}"></div>
+        <div class="field-group"><label>Destination institution</label><select id="sessToInst"><option value="">Select</option>${instOptions}</select></div>
+        <div class="field-group"><label>Destination account/wallet number</label><input id="sessToIdentifier" placeholder="Account number or phone"></div>
+        <div class="field-group"><label>Strategy — how should contributions split?</label>
+            <select id="sessStrategy">
+                <option value="EQUAL">Equal — split evenly across hooked sources</option>
+                <option value="RATIO">Ratio — proportional to each source's balance</option>
+                <option value="SMART" selected>Smart — VouchMorph balances it automatically</option>
+                <option value="MANUAL">Manual — each person enters their own amount</option>
+            </select>
+        </div>
+        <div style="font-size:11px;color:var(--text-dim);margin-bottom:12px;">Everyone currently hooked will see this in real time. You decide the strategy; they follow it — under Manual, each person enters their own share.</div>
+        <div class="cta-row"><button class="btn btn-primary" onclick="submitCreateSession('${cardSuffix}')">Start session</button></div>`);
+}
+
+async function submitCreateSession(cardSuffix) {
+    const target = parseFloat(document.getElementById('sessTarget').value);
+    const currency = document.getElementById('sessCurrency').value.trim();
+    const toInst = document.getElementById('sessToInst').value;
+    const toIdentifier = document.getElementById('sessToIdentifier').value.trim();
+    const strategy = document.getElementById('sessStrategy').value;
+
+    if (!(target > 0)) { showMessage('Enter the amount needed.', 'warning'); return; }
+    if (!toInst || !toIdentifier) { showMessage('Select a destination institution and enter an account/wallet number.', 'warning'); return; }
+
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/Create.php', {
+        card_suffix: cardSuffix,
+        target_amount: target,
+        currency: currency,
+        strategy: strategy,
+        to_institution: toInst,
+        destination_identifier: toIdentifier,
+    });
+
+    if (!result.ok) { showMessage('Could not start session: ' + result.error, 'error'); return; }
+    showMessage('Session started.', 'success');
+    openMyCardModal();
+}
+
+function renderSessionStatus(session) {
+    const preview = session.preview || { total_target: session.target_amount, total_covered: 0, remaining: session.target_amount, contributors: [] };
+    const pct = preview.total_target > 0 ? Math.min(100, (preview.total_covered / preview.total_target) * 100) : 0;
+
+    const rowsHtml = (preview.contributors || []).map(c => `
+        <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:12px;border-bottom:1px solid var(--border);">
+            <span>${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)} · ${escapeHtml(c.source_identifier)}${c.below_minimum ? ' <span style="color:var(--warning);">(below minimum)</span>' : ''}</span>
+            <span style="font-family:var(--font-mono);font-weight:600;">${formatMoney(c.amount, session.currency)}</span>
+        </div>`).join('');
+
+    const manualInput = session.strategy === 'MANUAL' ? `
+        <div class="field-group" style="margin-top:10px;">
+            <label>Your contribution</label>
+            <div style="display:flex;gap:8px;">
+                <input type="number" id="myManualAmount" min="0" step="0.01" placeholder="0.00" style="flex:1;">
+                <button class="btn btn-secondary btn-sm" onclick="submitMyManualAmount(${session.session_id})">Set</button>
+            </div>
+        </div>` : '';
+
+    return `
+        <div style="border-top:1px solid var(--border);padding-top:14px;">
+            <div class="field-label" style="margin-bottom:6px;">Payment in progress — ${escapeHtml(session.strategy)}</div>
+            <div class="comp-bar-track"><div class="comp-bar-seg" style="width:${pct}%;background:var(--accent);"></div></div>
+            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:10px;">
+                <span>${formatMoney(preview.total_covered, session.currency)} of ${formatMoney(preview.total_target, session.currency)}</span>
+                <span style="color:var(--text-dim);">${preview.remaining > 0 ? formatMoney(preview.remaining, session.currency) + ' remaining' : 'Fully covered'}</span>
+            </div>
+            ${rowsHtml}
+            ${manualInput}
+            <div class="cta-row" style="margin-top:14px;">
+                <button class="btn btn-secondary" onclick="cancelSession(${session.session_id})">Cancel</button>
+                <button class="btn btn-primary" ${session.can_execute ? '' : 'disabled'} onclick="executeSession(${session.session_id})">
+                    ${session.can_execute ? 'Execute payment' : 'Waiting for full coverage…'}
+                </button>
+            </div>
+        </div>`;
+}
+
+function startSessionPolling(sessionId) {
+    stopSessionPolling();
+    activeSessionPollTimer = setInterval(async () => {
+        const result = await callApiGet(CONFIG.API_BASE + '/api/v1/cards/ContributionStatus.php?session_id=' + sessionId);
+        if (!result.ok) return;
+        const session = result.body.data;
+        const area = document.getElementById('sessionStatusArea');
+        if (area) area.innerHTML = renderSessionStatus(session);
+        if (['COMPLETED', 'CANCELLED', 'EXPIRED', 'FAILED'].includes(session.status)) {
+            stopSessionPolling();
+        }
+    }, 3000);
+}
+
+function stopSessionPolling() {
+    if (activeSessionPollTimer) { clearInterval(activeSessionPollTimer); activeSessionPollTimer = null; }
+}
+
+async function submitMyManualAmount(sessionId) {
+    const amount = parseFloat(document.getElementById('myManualAmount').value);
+    if (isNaN(amount) || amount < 0) { showMessage('Enter a valid amount.', 'warning'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/Contribute.php', { session_id: sessionId, amount });
+    if (!result.ok) { showMessage('Could not set contribution: ' + result.error, 'error'); return; }
+    const area = document.getElementById('sessionStatusArea');
+    if (area) area.innerHTML = renderSessionStatus(result.body.data);
+}
+
+async function executeSession(sessionId) {
+    if (!confirm('Execute this payment now?')) return;
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/execute.php', { session_id: sessionId });
+    if (!result.ok) { showMessage('Execution failed: ' + result.error, 'error'); return; }
+    stopSessionPolling();
+    showMessage('Payment executed successfully.', 'success');
+    closeModal();
+}
+
+async function cancelSession(sessionId) {
+    if (!confirm('Cancel this payment session?')) return;
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/cancel.php', { session_id: sessionId, reason: 'Cancelled by owner' });
+    if (!result.ok) { showMessage('Could not cancel: ' + result.error, 'error'); return; }
+    stopSessionPolling();
+    showMessage('Session cancelled.', 'info');
+    openMyCardModal();
+}
 
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
 </script>
