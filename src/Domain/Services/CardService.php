@@ -73,12 +73,16 @@ class CardService
         // ============================================================
         // FIXED: PAN HMAC key from KeyVault - NO HARDCODED FALLBACK
         // ============================================================
+               $envPanHmacKey = getenv('PAN_HMAC_KEY');
+        $envPanHmacKey = $envPanHmacKey === false ? null : $envPanHmacKey;
+ 
         try {
             $keyVault = KeyVault::getInstance();
-            $this->panHmacKey = $keyVault->getKey('pan_hmac_key') ?? getenv('PAN_HMAC_KEY');
+            $this->panHmacKey = $keyVault->getKey('pan_hmac_key') ?? $envPanHmacKey;
         } catch (Exception $e) {
-            $this->panHmacKey = getenv('PAN_HMAC_KEY');
+            $this->panHmacKey = $envPanHmacKey;
         }
+
         
         if (empty($this->panHmacKey) || strlen($this->panHmacKey) < 32) {
             throw new RuntimeException(
