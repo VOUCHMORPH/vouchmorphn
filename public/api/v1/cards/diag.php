@@ -208,6 +208,40 @@ try {
 }
 flush_results($step6);
 
+
+// ------------------------------------------------------------
+// STEP 6.5: third-party dependency classes CardService needs
+// (only loadable via Composer's autoloader -- unlike this codebase's
+// own Domain\Services\* classes, which are require_once'd manually
+// everywhere, third-party packages like Google2FA have many internal
+// files and can ONLY come from vendor/autoload.php)
+// ------------------------------------------------------------
+echo "STEP 6.5: third-party dependency classes\n" . str_repeat('-', 60) . "\n";
+$step65 = [];
+
+$vendorAutoload = ROOT_PATH . '/vendor/autoload.php';
+if (file_exists($vendorAutoload)) {
+    step_pass($step65, 'vendor/autoload.php exists on disk');
+} else {
+    step_fail($step65, 'vendor/autoload.php exists on disk', "NOT FOUND at {$vendorAutoload} -- composer install has likely never run, or vendor/ isn't deployed");
+}
+
+$depClasses = [
+    'PragmaRX\\Google2FA\\Google2FA' => 'composer require pragmarx/google2fa',
+    'Security\\Encryption\\KeyVault' => '(your own class -- check its file is require_once somewhere reachable, or add to this diagnostic\'s required-files list)',
+    'Infrastructure\\Cards\\CardNumberGenerator' => '(your own class -- CardService.php require_once\'s this directly, should already work if CardService.php loaded)',
+    'Domain\\Helpers\\CardHelper' => '(your own class -- CardService.php require_once\'s this directly, should already work if CardService.php loaded)',
+];
+
+foreach ($depClasses as $class => $howToFix) {
+    if (class_exists($class)) {
+        step_pass($step65, "class_exists({$class})");
+    } else {
+        step_fail($step65, "class_exists({$class})", "NOT FOUND -- fix: {$howToFix}");
+    }
+}
+flush_results($step65);
+
 // ------------------------------------------------------------
 // STEP 7: actually try provisionUserCard() with a throwaway test user id
 // ------------------------------------------------------------
