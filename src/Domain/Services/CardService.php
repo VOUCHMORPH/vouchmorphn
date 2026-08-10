@@ -702,6 +702,22 @@ class CardService
             'is_authorization' => true
         ];
     }
+    
+    public function getActivationFeeAmount(?string $institution = null): float
+    {
+        if ($this->feeService !== null) {
+            try {
+                $feeResult = $this->feeService->calculateFees('CARD_ACTIVATION', 0, [
+                    'source_institution' => $institution ?? 'UNKNOWN',
+                    'destination_institution' => 'VOUCHMORPH',
+                ]);
+                return (float)($feeResult['total_fee'] ?? self::DEFAULT_ACTIVATION_FEE);
+            } catch (\Throwable $e) {
+                error_log("[CardService] getActivationFeeAmount fallback: " . $e->getMessage());
+            }
+        }
+        return (float)($this->config['activation_fee'] ?? self::DEFAULT_ACTIVATION_FEE);
+    }
 
     /**
      * FIXED: VRN signing key now sourced from KeyVault, no hardcoded fallback.
