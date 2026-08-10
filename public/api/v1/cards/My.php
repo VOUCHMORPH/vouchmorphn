@@ -63,7 +63,7 @@ require_once ROOT_PATH . '/src/Infrastructure/QRcodes/Contracts/QrAdapterInterfa
 require_once ROOT_PATH . '/src/Infrastructure/QRcodes/Adapters/VouchMorphHookQrAdapter.php';
 require_once ROOT_PATH . '/src/Application/Utils/SessionManager.php';
 
-$container = require_once ROOT_PATH . '/src/bootstrap.php';
+$container = require ROOT_PATH . '/src/bootstrap.php';
 
 use Domain\Services\CardService;
 use Domain\Services\CardContributionSessionService;
