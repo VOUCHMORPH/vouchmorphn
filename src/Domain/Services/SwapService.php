@@ -9582,14 +9582,14 @@ public function getFeeService(): FeeService
      * standard swap flows already do for PLATFORM_FEE/VOUCHMORPH_FEE,
      * instead of debiting the customer and crediting nobody.
      */
-    public function invoicePlatformFee(
+   public function invoicePlatformFee(
         string $reference,
         string $sourceInstitution,
         string $feeType,
         float $amount,
         string $currency
-    ): array {
-        return $this->settlement->invoiceFee(
+    ) {
+        $result = $this->settlement->invoiceFee(
             $reference,
             $sourceInstitution,
             $this->getParticipantId('VOUCHMORPH'),
@@ -9597,6 +9597,16 @@ public function getFeeService(): FeeService
             $amount,
             $currency
         );
+
+        // HybridSettlementStrategy::invoiceFee() isn't guaranteed to
+        // return an array in every code path (confirmed: it returned a
+        // plain string here) — normalize rather than declare a return
+        // type this method doesn't actually control, which previously
+        // turned a successful settlement call into a hard TypeError.
+        if (!is_array($result)) {
+            return ['success' => true, 'raw_result' => $result];
+        }
+        return $result;
     }
  
     public function getParticipantId(string $institution): int
