@@ -119,8 +119,8 @@ try {
     }
 
     $isActive = ($card['lifecycle_status'] === 'ACTIVE');
-    $activationFee = (float)($vouchmorphConfig['activation_fee'] ?? 5.00);
-
+    $activationFee = $cardService->getActivationFeeAmount();
+    
     $qrPayload = null;
     $hook = null;
     $contributors = [];
