@@ -66,12 +66,11 @@ $countrySlug = strtolower($countryName);
 error_log("[Bootstrap] Running for country: {$countryName} ({$countryCode})");
 
 // ============================================================================
-// 5. TIMEZONE SETTING - FIXED
+// 5. TIMEZONE SETTING - FIXED (no CountryRegistry to avoid memory leak)
 // ============================================================================
 
 function getValidTimezone(string $countryCode = null): string
 {
-    // Check environment variables first
     $envKeys = ['APP_TIMEZONE', 'TIMEZONE', 'TZ'];
     foreach ($envKeys as $key) {
         $value = $_ENV[$key] ?? getenv($key);
@@ -80,7 +79,7 @@ function getValidTimezone(string $countryCode = null): string
         }
     }
     
-    // Country code to timezone mapping
+    // Simple mapping based on country code - no CountryRegistry call
     if ($countryCode) {
         $timezoneMap = [
             'BW' => 'Africa/Gaborone',
@@ -109,7 +108,9 @@ function getValidTimezone(string $countryCode = null): string
     return 'UTC';
 }
 
-// CALL THE FUNCTION TO SET $timezone
+// ============================================================
+// CRITICAL FIX: Call the function to set $timezone
+// ============================================================
 $timezone = getValidTimezone($countryCode);
 date_default_timezone_set($timezone);
 error_log("[Bootstrap] Timezone set to: {$timezone}");
