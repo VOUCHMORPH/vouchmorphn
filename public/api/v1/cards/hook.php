@@ -11,6 +11,17 @@ declare(strict_types=1);
  *
  * This can take as long as it needs (no card-swipe SLA here) since nothing
  * is waiting at a merchant terminal - it's the user tapping a button.
+ *
+ * AUTH FIX: previously required BOTH SessionManager login AND an
+ * X-API-Key header matching a bank participant's machine credential.
+ * The X-API-Key check belongs on machine-to-machine endpoints (a bank
+ * calling in, an ATM callback) - not here, where the caller is the
+ * user's own browser after logging in, exactly like Activate.php and
+ * My.php. The frontend never sends X-API-Key on this call (see
+ * buildHeaders() in the dashboard), so that check could never pass -
+ * this wasn't a missing key on the client side, it was a stray check
+ * that didn't belong on this endpoint. Removed; session auth alone is
+ * the correct and sufficient boundary here.
  */
 
 define('ROOT_PATH', dirname(__DIR__, 4));
@@ -42,25 +53,6 @@ SessionManager::start();
 if (!SessionManager::isLoggedIn()) {
     http_response_code(401);
     echo json_encode(['success' => false, 'error' => 'Not logged in']);
-    exit();
-}
-
-// ============================================================
-// AUTHENTICATION - same pattern as authorize.php
-// ============================================================
-$headers = function_exists('getallheaders') ? getallheaders() : [];
-$headersLower = array_change_key_case($headers, CASE_LOWER);
-$providedKey = $headersLower['x-api-key'] ?? null;
-
-$validKeys = array_filter([getenv('API_KEY_SYSTEM')]);
-foreach ($container->get('participants') as $code => $participant) {
-    $val = getenv('API_KEY_' . strtoupper($code));
-    if ($val) $validKeys[] = $val;
-}
-
-if (!$providedKey || !in_array($providedKey, $validKeys, true)) {
-    http_response_code(401);
-    echo json_encode(['success' => false, 'error' => 'Unauthorized: invalid or missing API key']);
     exit();
 }
 
