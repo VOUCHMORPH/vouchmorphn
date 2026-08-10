@@ -173,8 +173,7 @@ $this->certificateManager = \Infrastructure\Crypto\CertificateManagerFactory::ge
         $this->feesConfig = $countryConfig['fees'] ?? [];
         
         // ✅ STRICT: Load atm_notes with NO fallbacks
-        $this->loadAtmNotesStrict($country);
-        
+        $this->loadAtmNotesStrict($countryConfig, $country);        
         error_log("[SwapService] Loaded fees config from LoadCountry");
         error_log("[SwapService] Config keys: " . implode(', ', array_keys($this->feesConfig)));
         
@@ -6840,33 +6839,57 @@ public function isApprovedAgent(int $userId): bool
      * STRICT loader - NO FALLBACKS
      * Must find atm_notes.json in country folder
      */
-    private function loadAtmNotesStrict(string $country): void
+private function loadAtmNotesStrict(array $countryConfig, string $countryFallback): void
     {
-        $countryFolder = __DIR__ . '/../../Core/Config/Countries/' . $country;
+        // Prefer atm_notes LoadCountry already resolved and loaded — it
+        // already solved the "country code vs folder name" mismatch that
+        // was the actual bug here (Countries/BW/atm_notes.json doesn't
+        // exist; Countries/Botswana/atm_notes.json does, and LoadCountry
+        // already found it a moment earlier in this same constructor).
+        if (!empty($countryConfig['atm_notes']) && is_array($countryConfig['atm_notes'])) {
+            $this->atmNotes = $countryConfig['atm_notes'];
+            foreach ($this->atmNotes as $currency => $denominations) {
+                if (!is_array($denominations) || empty($denominations)) {
+                    throw new RuntimeException(
+                        "Currency '{$currency}' in atm_notes has no denominations. " .
+                        "Each currency must have an array of note values."
+                    );
+                }
+                rsort($denominations);
+                $this->atmNotes[$currency] = $denominations;
+            }
+            error_log("[SwapService] Loaded ATM notes from countryConfig (already resolved by LoadCountry): " . json_encode($this->atmNotes));
+            return;
+        }
+
+        // Fallback: derive the folder name the same way LoadCountry does —
+        // prefer countryConfig['country'] (the real folder name), never
+        // the raw constructor argument alone.
+        $countryFolderName = $countryConfig['country'] ?? $countryFallback;
+        $countryFolder = __DIR__ . '/../../Core/Config/Countries/' . $countryFolderName;
         $atmNotesPath = $countryFolder . '/atm_notes.json';
-        
+
         if (!file_exists($atmNotesPath)) {
             throw new RuntimeException(
                 "Required file not found: {$atmNotesPath}. " .
-                "Country '{$country}' must have atm_notes.json in its config folder."
+                "Country '{$countryFolderName}' must have atm_notes.json in its config folder."
             );
         }
-        
+
         $content = file_get_contents($atmNotesPath);
         if ($content === false) {
             throw new RuntimeException("Failed to read atm_notes.json from {$countryFolder}");
         }
-        
+
         $this->atmNotes = json_decode($content, true);
-        
+
         if (!is_array($this->atmNotes) || empty($this->atmNotes)) {
             throw new RuntimeException(
                 "Invalid atm_notes.json in {$countryFolder}. " .
                 "Must contain a valid JSON object with currency denominations."
             );
         }
-        
-        // Validate each currency has denominations
+
         foreach ($this->atmNotes as $currency => $denominations) {
             if (!is_array($denominations) || empty($denominations)) {
                 throw new RuntimeException(
@@ -6874,15 +6897,12 @@ public function isApprovedAgent(int $userId): bool
                     "Each currency must have an array of note values."
                 );
             }
-            
-            // Sort descending for proper calculation
             rsort($denominations);
             $this->atmNotes[$currency] = $denominations;
         }
-        
+
         error_log("[SwapService] Loaded ATM notes from {$atmNotesPath}: " . json_encode($this->atmNotes));
     }
-
     private function validateCashoutAmount(float $requestedAmount, string $currency): array
     {
         // ✅ STRICT: Must have denominations
