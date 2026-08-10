@@ -69,6 +69,10 @@ error_log("[Bootstrap] Running for country: {$countryName} ({$countryCode})");
 // 5. TIMEZONE SETTING
 // ============================================================================
 
+// ============================================================================
+// 5. TIMEZONE SETTING - FIXED (no CountryRegistry to avoid memory leak)
+// ============================================================================
+
 function getValidTimezone(string $countryCode = null): string
 {
     $envKeys = ['APP_TIMEZONE', 'TIMEZONE', 'TZ'];
@@ -79,21 +83,34 @@ function getValidTimezone(string $countryCode = null): string
         }
     }
     
-    // Use country timezone from registry if available
+    // Simple mapping based on country code - no CountryRegistry call
     if ($countryCode) {
-        $registry = \Core\Config\CountryRegistry::getInstance();
-        $countryInfo = $registry->getCountry($countryCode);
-        if (isset($countryInfo['config']['timezone'])) {
-            return $countryInfo['config']['timezone'];
+        $timezoneMap = [
+            'BW' => 'Africa/Gaborone',
+            'ZA' => 'Africa/Johannesburg',
+            'NA' => 'Africa/Windhoek',
+            'ZM' => 'Africa/Lusaka',
+            'ZW' => 'Africa/Harare',
+            'MW' => 'Africa/Blantyre',
+            'MZ' => 'Africa/Maputo',
+            'LS' => 'Africa/Maseru',
+            'SZ' => 'Africa/Mbabane',
+            'KE' => 'Africa/Nairobi',
+            'UG' => 'Africa/Kampala',
+            'TZ' => 'Africa/Dar_es_Salaam',
+            'NG' => 'Africa/Lagos',
+            'GH' => 'Africa/Accra',
+            'US' => 'America/New_York',
+            'GB' => 'Europe/London',
+        ];
+        
+        if (isset($timezoneMap[$countryCode])) {
+            return $timezoneMap[$countryCode];
         }
     }
     
     return 'UTC';
 }
-
-$timezone = getValidTimezone($countryCode);
-date_default_timezone_set($timezone);
-
 // ============================================================================
 // 6. CREATE DATABASE CONNECTION - SINGLE SOURCE OF TRUTH
 // ============================================================================
