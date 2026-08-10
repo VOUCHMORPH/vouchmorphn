@@ -40,11 +40,13 @@ require_once __DIR__ . '/vendor/autoload.php';
 require_once __DIR__ . '/src/Core/Database/DBConnection.php';
 require_once __DIR__ . '/src/Domain/Services/BatchExecutionQueueService.php';
 require_once __DIR__ . '/src/Domain/Services/SwapService.php';
+require_once __DIR__ . '/src/Domain/Services/DepartmentService.php';
 require_once __DIR__ . '/src/Core/Config/LoadCountry.php';
 
 use Core\Database\DBConnection;
 use Domain\Services\BatchExecutionQueueService;
 use Domain\Services\SwapService;
+use Domain\Services\DepartmentService;
 use Core\Config\LoadCountry;
 
 $workerId = $argv[1] ?? ('worker-' . getmypid());
@@ -74,6 +76,7 @@ $logger = new class {
     public function log($l, $m, array $c = []) { error_log("[worker][{$l}] {$m} " . json_encode($c)); }
 };
 $swapService = new SwapService($pdo, $fullCountryConfig, $countryName, $logger);
+$departmentService = new DepartmentService($pdo, $logger);
 
 error_log("[worker:{$workerId}] Started. Claim size: {$batchClaimSize}, poll interval: {$pollIntervalSeconds}s, country: {$countryName}");
 
@@ -98,7 +101,7 @@ while (!$shouldStop) {
     error_log("[worker:{$workerId}] Claimed " . count($jobs) . " job(s)");
 
     foreach ($jobs as $job) {
-        processJob($pdo, $queue, $swapService, $job, $workerId);
+        processJob($pdo, $queue, $swapService, $departmentService, $job, $workerId);
 
         if (function_exists('pcntl_signal_dispatch')) {
             pcntl_signal_dispatch();
@@ -123,7 +126,7 @@ exit(0);
  * department ration bookkeeping the old synchronous path did, just
  * scoped to one destination instead of the whole batch at once.
  */
-function processJob(PDO $pdo, BatchExecutionQueueService $queue, SwapService $swapService, array $job, string $workerId): void
+function processJob(PDO $pdo, BatchExecutionQueueService $queue, SwapService $swapService, DepartmentService $departmentService, array $job, string $workerId): void
 {
     $jobId = (int)$job['id'];
 
@@ -163,7 +166,7 @@ function processJob(PDO $pdo, BatchExecutionQueueService $queue, SwapService $sw
         if ($isIdentity) {
             processIdentityJob($pdo, $queue, $swapService, $job, $dest, $jobId);
         } else {
-            processInstitutionJob($pdo, $queue, $swapService, $job, $dest, $jobId);
+            processInstitutionJob($pdo, $queue, $swapService, $departmentService, $job, $dest, $jobId);
         }
 
     } catch (\Throwable $e) {
@@ -224,8 +227,28 @@ function processIdentityJob(PDO $pdo, BatchExecutionQueueService $queue, SwapSer
     }
 }
 
-function processInstitutionJob(PDO $pdo, BatchExecutionQueueService $queue, SwapService $swapService, array $job, array $dest, int $jobId): void
+function processInstitutionJob(PDO $pdo, BatchExecutionQueueService $queue, SwapService $swapService, DepartmentService $departmentService, array $job, array $dest, int $jobId): void
 {
+    // ============================================================
+    // RULE 2 PRE-CHECK — sub-department spending guardrail. Runs before
+    // anything else, including building the swap payload below: a
+    // transaction already known to bust the sub-department's or the Main
+    // Central Government Account's local ledger must never reach the
+    // external adapter at all.
+    // ============================================================
+    if (!empty($dest['department_id'])) {
+        try {
+            $departmentService->assertTransactionFitsSpendingLimits(
+                (int)$dest['department_id'],
+                (float)$dest['amount']
+            );
+        } catch (\RuntimeException $e) {
+            $queue->markFailed($jobId, $e->getMessage());
+            markDestinationFailed($pdo, (int)$dest['id'], $e->getMessage());
+            return;
+        }
+    }
+
     // Same MULTI_DESTINATION payload shape review_batch.php built for
     // its whole-batch call, just with exactly one destination — see the
     // architectural note at the top of this file for why.
@@ -279,20 +302,44 @@ function processInstitutionJob(PDO $pdo, BatchExecutionQueueService $queue, Swap
         if (in_array($status, ['SUCCESS', 'COMPLETED'], true)) {
             $queue->markCompleted($jobId, $destResult['transaction_reference'] ?? null);
 
-            // Same ration bookkeeping the synchronous path did — now
-            // incremental, per destination, as each job actually
-            // completes, rather than summed once at the end of a whole
-            // batch. Numerically equivalent; just spread over time.
+            // RULE 3 — atomic, locked ledger update now that the payout
+            // has actually happened. See DepartmentService::
+            // recordApprovedDepartmentSpend for why this can't be inside
+            // the same transaction as executeAtomicSwap above.
+            //
+            // Pre-existing risk, not introduced by this change: if this
+            // worker crashes between the destination-status UPDATE above
+            // and this call completing, a retry of this job will see the
+            // destination already SUCCESS (the "already done" guard in
+            // processJob) and skip straight to markCompleted() without
+            // ever re-entering this function — silently skipping the
+            // ledger write for that one destination. Identical risk
+            // already existed around the old increment block this
+            // replaces; fixing it depends on the stuck-job recovery cron
+            // this file's header comment already flags as not yet built.
             if (!empty($dest['department_id'])) {
                 try {
-                    $upd = $pdo->prepare("
-                        UPDATE departments
-                        SET amount_disbursed_ytd = amount_disbursed_ytd + :amt, updated_at = NOW()
-                        WHERE id = :id
-                    ");
-                    $upd->execute([':amt' => (float)$dest['amount'], ':id' => $dest['department_id']]);
+                    $spendResult = $departmentService->recordApprovedDepartmentSpend(
+                        (int)$dest['department_id'],
+                        (float)$dest['amount'],
+                        null, // no authenticated user in a CLI worker context
+                        [
+                            'job_id' => $jobId,
+                            'destination_id' => (int)$dest['id'],
+                            'batch_id' => (int)($dest['batch_id'] ?? 0),
+                            'transaction_reference' => $destResult['transaction_reference'] ?? null,
+                        ]
+                    );
+                    if ($spendResult['race_detected']) {
+                        error_log("[worker] BUDGET OVERRUN RACE for destination {$dest['id']} (department {$dest['department_id']}) — payout already sent, flagged in organization_audit_logs for manual reconciliation.");
+                    }
                 } catch (\Throwable $e) {
-                    error_log("[worker] Failed to update department amount_disbursed_ytd for destination {$dest['id']}: " . $e->getMessage());
+                    // Money already moved — this can only be a DB/infra
+                    // failure recording it, never a rejection. Same "log
+                    // and move on" treatment the old increment block
+                    // used, so a bookkeeping hiccup never gets confused
+                    // with a payout failure.
+                    error_log("[worker] Failed to record department spend for destination {$dest['id']}: " . $e->getMessage());
                 }
             }
         } else {
