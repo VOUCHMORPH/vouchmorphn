@@ -36,6 +36,11 @@ use PragmaRX\Google2FA\Google2FA;
  * - PIN/CVV material is never logged in plaintext
  * - TOTP secrets are encrypted with AES-256-GCM using KeyVault
  * - TOTP secrets are NEVER returned after issuance (one-time reveal only)
+ * 
+ * SCHEMA NOTES (from Diag.php Step 6):
+ * - message_cards uses `lifecycle_status` (not `status`)
+ * - message_cards uses `created_at` (not `issued_at`)
+ * - `financial_status` also exists but is separate from lifecycle
  */
 class CardService
 {
@@ -54,7 +59,7 @@ class CardService
     private const MONTHLY_SPEND_LIMIT = 50000;
     private const ATM_DAILY_LIMIT = 2000;
     private const POS_MAX_TRANSACTION = 5000;
-    private const DEFAULT_ACTIVATION_FEE = 5.00; // NEW: activation fee constant
+    private const DEFAULT_ACTIVATION_FEE = 5.00;
     
     public function __construct(
         PDO $db, 
@@ -72,8 +77,9 @@ class CardService
         
         // ============================================================
         // FIXED: PAN HMAC key from KeyVault - NO HARDCODED FALLBACK
+        // Fix getenv() false vs null type mismatch
         // ============================================================
-               $envPanHmacKey = getenv('PAN_HMAC_KEY');
+        $envPanHmacKey = getenv('PAN_HMAC_KEY');
         $envPanHmacKey = $envPanHmacKey === false ? null : $envPanHmacKey;
  
         try {
@@ -83,7 +89,6 @@ class CardService
             $this->panHmacKey = $envPanHmacKey;
         }
 
-        
         if (empty($this->panHmacKey) || strlen($this->panHmacKey) < 32) {
             throw new RuntimeException(
                 'PAN HMAC key is missing or too short (min 32 bytes required). ' .
@@ -179,7 +184,7 @@ class CardService
     {
         $stmt = $this->db->prepare("
             SELECT totp_secret_encrypted, totp_secret_iv, totp_secret_tag
-            FROM message_cards WHERE card_suffix = ? AND status = 'ACTIVE'
+            FROM message_cards WHERE card_suffix = ? AND lifecycle_status = 'ACTIVE'
         ");
         $stmt->execute([$cardSuffix]);
         $card = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -277,6 +282,7 @@ class CardService
      * FIXED: Uses HMAC-SHA256 for PAN hashing
      * FIXED: Now applies card issuance fees
      * FIXED: Generates TOTP secret for dynamic code verification
+     * FIXED: Uses lifecycle_status and created_at (not status and issued_at)
      */
     public function issueCard(array $data): array
     {
@@ -339,6 +345,7 @@ class CardService
             $encryptedSecret = $this->encryptTotpSecret($totpSecret);
             
             // PCI-DSS COMPLIANCE: cvv_hash REMOVED - replaced with TOTP secret
+            // SCHEMA FIX: use lifecycle_status and created_at
             $cardStmt = $this->db->prepare("
                 INSERT INTO message_cards (
                     card_number_hash,
@@ -350,8 +357,8 @@ class CardService
                     initial_amount,
                     remaining_amount,
                     currency,
-                    status,
-                    issued_at,
+                    lifecycle_status,
+                    created_at,
                     expiry_year,
                     expiry_month,
                     daily_limit,
@@ -445,6 +452,7 @@ class CardService
      * Load funds onto an existing card (link hold to card)
      * 
      * FIXED: Now applies fees and forex on card loads
+     * FIXED: Uses lifecycle_status (not status)
      */
     public function loadCard(array $data): array
     {
@@ -462,7 +470,7 @@ class CardService
             $cardStmt = $this->db->prepare("
                 SELECT * FROM message_cards 
                 WHERE card_suffix = :suffix 
-                AND status IN ('ASSIGNED', 'DELIVERED', 'ACTIVE')
+                AND lifecycle_status IN ('ASSIGNED', 'DELIVERED', 'ACTIVE')
                 FOR UPDATE
             ");
             $cardStmt->execute([':suffix' => $data['card_suffix']]);
@@ -501,7 +509,7 @@ class CardService
                     initial_amount = initial_amount + :amount,
                     remaining_amount = remaining_amount + :amount,
                     fee_amount = COALESCE(fee_amount, 0) + :fee,
-                    status = 'ACTIVE',
+                    lifecycle_status = 'ACTIVE',
                     activated_at = COALESCE(activated_at, NOW()),
                     updated_at = NOW(),
                     metadata = COALESCE(metadata, '{}'::jsonb) || :metadata::jsonb
@@ -649,7 +657,7 @@ class CardService
             $cardStmt = $this->db->prepare("
                 SELECT * FROM message_cards 
                 WHERE card_suffix = ? 
-                AND status = 'ACTIVE'
+                AND lifecycle_status = 'ACTIVE'
                 LIMIT 1
             ");
             $cardStmt->execute([$cardSuffix]);
@@ -696,43 +704,44 @@ class CardService
     }
 
     /**
- * FIXED: VRN signing key now sourced from KeyVault, no hardcoded fallback.
- * Fails loudly if the key is missing/too short rather than silently
- * signing with a value visible in source control.
- */
-private function generateVRN($cardSuffix, $amount, $holdReference): array
-{
-    $timestamp = date('YmdHis');
-    $random = bin2hex(random_bytes(4));
-    $uniqueId = substr(md5($cardSuffix . $amount . $holdReference . $timestamp), 0, 8);
-    
-    $vrn = "VRN-{$timestamp}-{$random}-{$uniqueId}";
-    
-    $vrnSigningKey = KeyVault::getInstance()->getKey('vrn_signing_key') ?? getenv('VRN_SIGNING_KEY');
-    if (empty($vrnSigningKey) || strlen($vrnSigningKey) < 32) {
-        throw new RuntimeException(
-            'VRN signing key is missing or too short (min 32 bytes required). ' .
-            'Refusing to fall back to a hardcoded default.'
+     * FIXED: VRN signing key now sourced from KeyVault, no hardcoded fallback.
+     * Fails loudly if the key is missing/too short rather than silently
+     * signing with a value visible in source control.
+     */
+    private function generateVRN($cardSuffix, $amount, $holdReference): array
+    {
+        $timestamp = date('YmdHis');
+        $random = bin2hex(random_bytes(4));
+        $uniqueId = substr(md5($cardSuffix . $amount . $holdReference . $timestamp), 0, 8);
+        
+        $vrn = "VRN-{$timestamp}-{$random}-{$uniqueId}";
+        
+        $vrnSigningKey = KeyVault::getInstance()->getKey('vrn_signing_key') ?? getenv('VRN_SIGNING_KEY');
+        if (empty($vrnSigningKey) || strlen($vrnSigningKey) < 32) {
+            throw new RuntimeException(
+                'VRN signing key is missing or too short (min 32 bytes required). ' .
+                'Refusing to fall back to a hardcoded default.'
+            );
+        }
+        
+        $signature = hash_hmac('sha256', 
+            $vrn . $cardSuffix . $amount . $holdReference, 
+            $vrnSigningKey
         );
+        
+        return [
+            'vrn' => $vrn,
+            'signature' => $signature,
+            'format' => 'ISO-8583-COMPLIANT'
+        ];
     }
-    
-    $signature = hash_hmac('sha256', 
-        $vrn . $cardSuffix . $amount . $holdReference, 
-        $vrnSigningKey
-    );
-    
-    return [
-        'vrn' => $vrn,
-        'signature' => $signature,
-        'format' => 'ISO-8583-COMPLIANT'
-    ];
-}
     
     /**
      * Authorize a transaction (called by ATM/POS/online)
      * 
      * FIXED: CVV check REPLACED with TOTP dynamic code verification
      * FIXED: Uses HMAC-SHA256 for PAN lookup
+     * FIXED: Uses lifecycle_status (not status)
      */
     public function authorizeTransaction(array $data): array
     {
@@ -747,7 +756,7 @@ private function generateVRN($cardSuffix, $amount, $holdReference): array
                 FROM message_cards mc
                 JOIN hold_transactions ht ON mc.hold_reference = ht.hold_reference
                 WHERE mc.card_number_hash = ?
-                AND mc.status = 'ACTIVE'
+                AND mc.lifecycle_status = 'ACTIVE'
                 FOR UPDATE
             ");
             $cardStmt->execute([$cardHash]);
@@ -965,6 +974,8 @@ private function generateVRN($cardSuffix, $amount, $holdReference): array
     
     /**
      * Block a card
+     * 
+     * FIXED: Uses lifecycle_status (not status)
      */
     public function blockCard(string $cardNumber, string $reason): array
     {
@@ -975,11 +986,11 @@ private function generateVRN($cardSuffix, $amount, $holdReference): array
             
             $cardStmt = $this->db->prepare("
                 UPDATE message_cards 
-                SET status = 'BLOCKED',
+                SET lifecycle_status = 'BLOCKED',
                     blocked_at = NOW(),
                     block_reason = ?
                 WHERE card_number_hash = ?
-                AND status = 'ACTIVE'
+                AND lifecycle_status = 'ACTIVE'
                 RETURNING card_id, hold_reference
             ");
             $cardStmt->execute([$reason, $cardHash]);
@@ -1317,7 +1328,7 @@ private function generateVRN($cardSuffix, $amount, $holdReference): array
     }
 
     // ============================================================
-    // PROVISION & ACTIVATE CARDS - NEW METHODS
+    // PROVISION & ACTIVATE CARDS - FIXED FOR REAL SCHEMA
     // ============================================================
 
     /**
@@ -1326,12 +1337,14 @@ private function generateVRN($cardSuffix, $amount, $holdReference): array
      * charged — the card is minted INACTIVE and stays that way until
      * activateCard() is called. Idempotent: if the user already has a
      * card (any status), returns it instead of minting a second one.
+     * 
+     * SCHEMA FIX: Uses lifecycle_status (not status) and created_at (not issued_at)
      */
     public function provisionUserCard(int $userId, string $cardholderName): array
     {
         $stmt = $this->db->prepare("
-            SELECT card_suffix, status FROM message_cards
-            WHERE user_id = :uid ORDER BY issued_at DESC LIMIT 1
+            SELECT card_suffix, lifecycle_status FROM message_cards
+            WHERE user_id = :uid ORDER BY created_at DESC LIMIT 1
         ");
         $stmt->execute([':uid' => $userId]);
         $existing = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -1339,7 +1352,7 @@ private function generateVRN($cardSuffix, $amount, $holdReference): array
             return [
                 'success' => true,
                 'card_suffix' => $existing['card_suffix'],
-                'status' => $existing['status'],
+                'status' => $existing['lifecycle_status'],
                 'newly_created' => false,
             ];
         }
@@ -1354,7 +1367,7 @@ private function generateVRN($cardSuffix, $amount, $holdReference): array
             INSERT INTO message_cards (
                 card_number_hash, card_suffix, hold_reference, swap_reference,
                 user_id, cardholder_name, initial_amount, remaining_amount,
-                currency, status, issued_at, expiry_year, expiry_month,
+                currency, lifecycle_status, created_at, expiry_year, expiry_month,
                 daily_limit, monthly_limit, atm_daily_limit, fee_amount,
                 funding_mode, metadata,
                 totp_secret_encrypted, totp_secret_iv, totp_secret_tag
@@ -1406,6 +1419,8 @@ private function generateVRN($cardSuffix, $amount, $holdReference): array
      * codebase — not a full executeAtomicSwap(), since this is an
      * internal fee collection, not a customer-facing swap that needs
      * swap_type routing.
+     * 
+     * SCHEMA FIX: Uses lifecycle_status (not status)
      */
     public function activateCard(
         string $cardSuffix,
@@ -1417,7 +1432,7 @@ private function generateVRN($cardSuffix, $amount, $holdReference): array
 
         try {
             $stmt = $this->db->prepare("
-                SELECT card_id, status, currency FROM message_cards
+                SELECT card_id, lifecycle_status, currency FROM message_cards
                 WHERE card_suffix = :suffix AND user_id = :uid
                 FOR UPDATE
             ");
@@ -1427,12 +1442,12 @@ private function generateVRN($cardSuffix, $amount, $holdReference): array
             if (!$card) {
                 throw new RuntimeException("Card not found or does not belong to you.");
             }
-            if ($card['status'] === 'ACTIVE') {
+            if ($card['lifecycle_status'] === 'ACTIVE') {
                 $this->db->commit();
                 return ['success' => true, 'already_active' => true, 'card_suffix' => $cardSuffix, 'message' => 'Card is already active.'];
             }
-            if ($card['status'] !== 'INACTIVE') {
-                throw new RuntimeException("Card cannot be activated from its current status: {$card['status']}");
+            if ($card['lifecycle_status'] !== 'INACTIVE') {
+                throw new RuntimeException("Card cannot be activated from its current status: {$card['lifecycle_status']}");
             }
 
             $activationFee = (float)($this->config['activation_fee'] ?? self::DEFAULT_ACTIVATION_FEE);
@@ -1466,9 +1481,6 @@ private function generateVRN($cardSuffix, $amount, $holdReference): array
             ]), $institution);
 
             if (!($debitResult['debited'] ?? false)) {
-                // Debit failed after a real hold was placed — release it
-                // rather than leaving the customer's money stuck for a fee
-                // that was never actually taken.
                 try {
                     $swapService->releaseHold($verifyPayload, $institution, null, $holdResult['hold_reference']);
                 } catch (Exception $releaseErr) {
@@ -1479,7 +1491,7 @@ private function generateVRN($cardSuffix, $amount, $holdReference): array
 
             $stmt = $this->db->prepare("
                 UPDATE message_cards
-                SET status = 'ACTIVE', activated_at = NOW(), fee_amount = fee_amount + :fee
+                SET lifecycle_status = 'ACTIVE', activated_at = NOW(), fee_amount = fee_amount + :fee
                 WHERE card_id = :id
             ");
             $stmt->execute([':fee' => $activationFee, ':id' => $card['card_id']]);
@@ -1531,6 +1543,8 @@ private function generateVRN($cardSuffix, $amount, $holdReference): array
      * owner_user_id + credentials from the request body alone as proof
      * of consent. The consent check runs as its own pass BEFORE any
      * holds are placed, so a consent failure costs nothing (no rollback needed).
+     * 
+     * SCHEMA FIX: Uses lifecycle_status (not status)
      */
     public function hookSourcesToCard(
         string $cardSuffix,
@@ -1541,7 +1555,7 @@ private function generateVRN($cardSuffix, $amount, $holdReference): array
         // ============================================================
         // FIX: GUARD - Check card status BEFORE any holds are placed
         // ============================================================
-        $stmt = $this->db->prepare("SELECT status FROM message_cards WHERE card_suffix = :suffix");
+        $stmt = $this->db->prepare("SELECT lifecycle_status FROM message_cards WHERE card_suffix = :suffix");
         $stmt->execute([':suffix' => $cardSuffix]);
         $cardStatus = $stmt->fetchColumn();
 
