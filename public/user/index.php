@@ -289,43 +289,37 @@ section.no-border { border-bottom: none; }
 .photo-slot img { filter: grayscale(0.35) sepia(0.18) contrast(1.03); }
 
 /* ============================================================
-   FOUNDER'S NOTE — a letter, not a bio card. Styled like the
-   inside cover of a bank's annual report: portrait on the left,
-   signed letter on the right, one pulled line in brass.
+   TEAM MESSAGE — a short note, not a bio card. Styled like the
+   inside cover of a bank's annual report: signed letter, centered,
+   one pulled line in brass. No portrait — signed by the team.
    ============================================================ */
-.letter { display: grid; grid-template-columns: 0.85fr 1.4fr; gap: var(--sp-9); align-items: start; }
-.letter-portrait { aspect-ratio: 4 / 5; }
-.letter-portrait .placeholder-copy .need { color: var(--brass-deep); }
-.letter-cred { margin-top: var(--sp-4); }
-.letter-cred .name { font-family: var(--f-display); font-size: 17px; font-weight: 600; }
-.letter-cred .role { font-family: var(--f-cond); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-300); margin-top: 2px; }
-
+.letter { max-width: 640px; margin: 0 auto; text-align: center; }
 .letter-body .script-accent { font-size: 30px; color: var(--brass-deep); display: block; margin-bottom: var(--sp-4); }
-.letter-body p { color: var(--ink-700); font-size: 15px; margin-bottom: var(--sp-4); max-width: 560px; }
+.letter-body p { color: var(--ink-700); font-size: 15px; margin-bottom: var(--sp-4); text-align: left; }
 .letter-pull {
     font-family: var(--f-display); font-style: italic; font-size: 21px; font-weight: 500;
     color: var(--ink-900); border-left: 3px solid var(--brass); padding-left: var(--sp-5);
-    margin: var(--sp-6) 0; max-width: 480px;
+    margin: var(--sp-6) 0; text-align: left;
 }
-.letter-sign { margin-top: var(--sp-7); display: flex; align-items: center; gap: var(--sp-5); }
+.letter-sign { margin-top: var(--sp-7); display: flex; align-items: center; justify-content: center; gap: var(--sp-5); }
 .letter-sign .script-accent { font-size: 34px; margin-bottom: 0; }
-.letter-sign .sign-meta { border-left: 1.5px solid var(--line-strong); padding-left: var(--sp-5); }
+.letter-sign .sign-meta { border-left: 1.5px solid var(--line-strong); padding-left: var(--sp-5); text-align: left; }
 .letter-sign .sign-meta .name { font-family: var(--f-cond); font-weight: 700; font-size: 13px; color: var(--ink-900); }
 .letter-sign .sign-meta .role { font-family: var(--f-cond); font-size: 11px; color: var(--ink-300); text-transform: uppercase; letter-spacing: 0.06em; margin-top: 2px; }
 
-@media (max-width: 800px) { .letter { grid-template-columns: 1fr; } .letter-portrait { max-width: 260px; } }
-
 /* ============================================================
-   PROOF STRIP — three real-world photos (agent, ATM, customer),
-   taped in like receipt stubs rather than a slick gallery, to keep
-   the "financial life, not stock photography" feel.
+   PROOF STRIP — three flat vector illustrations (agent, ATM,
+   phone) standing in for real photography until it exists. Same
+   ink/brass/mint palette as the rest of the page so they read as
+   brand artwork, not stock clip-art.
    ============================================================ */
-.proof-strip { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--sp-6); }
 .proof-card { background: var(--panel); border: 1.5px solid var(--line-strong); padding: var(--sp-3) var(--sp-3) var(--sp-4); transform: rotate(var(--tilt, 0deg)); }
 .proof-card:nth-child(1) { --tilt: -1.4deg; }
 .proof-card:nth-child(2) { --tilt: 0.8deg; }
 .proof-card:nth-child(3) { --tilt: -0.6deg; }
-.proof-card .photo-slot { aspect-ratio: 4 / 3; }
+.illustration-slot { aspect-ratio: 4 / 3; background: var(--brass-tint); display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.illustration-slot svg { width: 78%; height: 78%; }
+.proof-strip { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--sp-6); }
 .proof-card .cap { margin-top: var(--sp-3); font-family: var(--f-cond); font-size: 12px; font-weight: 700; color: var(--ink-700); text-align: center; }
 .proof-card .cap .sub { display: block; font-weight: 400; color: var(--ink-300); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; margin-top: 2px; }
 @media (max-width: 780px) { .proof-strip { grid-template-columns: 1fr; max-width: 320px; margin: 0 auto; } }
@@ -390,7 +384,7 @@ footer .wrap { display: flex; justify-content: space-between; align-items: cente
         </a>
         <div class="nav-links">
             <a href="#ledger">Why VouchMorph</a>
-            <a href="#letter">Founder's Note</a>
+            <a href="#letter">Our Message</a>
             <a href="#features">Features</a>
             <a href="#how-it-works">How It Works</a>
             <a href="#waitlist">Early Access</a>
@@ -475,42 +469,27 @@ footer .wrap { display: flex; justify-content: space-between; align-items: cente
     </div>
 </section>
 
-<!-- FOUNDER'S NOTE -->
+<!-- TEAM MESSAGE -->
 <section id="letter">
     <div class="wrap">
-        <div class="section-head reveal">
-            <span class="eyebrow">From The Founder</span>
+        <div class="section-head center reveal" style="margin-left:auto;margin-right:auto;">
+            <span class="eyebrow">A Message From The Team</span>
             <h2>Why we're building this</h2>
         </div>
 
         <div class="letter reveal">
-            <div>
-                <div class="photo-slot is-placeholder letter-portrait">
-                    <span class="photo-tag">Photo — Founder</span>
-                    <div class="placeholder-copy">
-                        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.8-4.5 5-6.5 8-6.5s6.2 2 8 6.5"/></svg>
-                        <div class="need">Portrait, 4:5</div>
-                        <div class="spec">Real photo of founder/CEO<br>e.g. 1000×1250px, natural light</div>
-                    </div>
-                </div>
-                <div class="letter-cred">
-                    <div class="name">[Founder Name]</div>
-                    <div class="role">Founder &amp; CEO, VouchMorph</div>
-                </div>
-            </div>
-
             <div class="letter-body">
                 <span class="script-accent">Dear reader,</span>
-                <p>I grew up watching my mother send money home through three different agents because no single wallet reached everyone she needed to pay. That wasn't a technology problem — the technology already existed in every one of those wallets. It was a walls problem.</p>
-                <p>VouchMorph doesn't ask anyone to leave their bank, their network, or their agent. It asks them to agree on one ledger, so the money you already have can finally move the way you actually live — across networks, across accounts, across a counter at any ATM.</p>
+                <p>We built VouchMorph because too many of us have watched money get stuck — sent home through three different agents because no single wallet reached everyone it needed to. That was never a technology problem. Every one of those wallets already worked fine on its own. It was a walls problem.</p>
+                <p>VouchMorph doesn't ask anyone to leave their bank, their network, or their agent. It asks them to agree on one ledger, so the money people already have can finally move the way they actually live — across networks, across accounts, across a counter at any ATM.</p>
                 <div class="letter-pull">We're not building a new wallet. We're building the room where all your existing wallets can finally talk to each other.</div>
-                <p>We're doing this inside the Bank of Botswana's regulatory sandbox, deliberately, so that trust is earned before scale — not the other way around. If you've felt the friction of moving your own money, this is for you.</p>
+                <p>We're doing this inside the Bank of Botswana's regulatory sandbox, deliberately, so trust is earned before scale — not the other way around. If you've felt the friction of moving your own money, this is for you.</p>
 
                 <div class="letter-sign">
-                    <span class="script-accent">Signature</span>
+                    <span class="script-accent">VouchMorph</span>
                     <div class="sign-meta">
-                        <div class="name">[Founder Name]</div>
-                        <div class="role">Founder &amp; CEO</div>
+                        <div class="name">The VouchMorph Team</div>
+                        <div class="role">Gaborone, Botswana</div>
                     </div>
                 </div>
             </div>
@@ -611,7 +590,7 @@ footer .wrap { display: flex; justify-content: space-between; align-items: cente
     </div>
 </section>
 
-<!-- PROOF STRIP — real-world photography -->
+<!-- PROOF STRIP — flat vector illustrations, real photography to follow -->
 <section class="no-border" style="padding-top: 0;">
     <div class="wrap">
         <div class="section-head center reveal" style="margin-left:auto;margin-right:auto;">
@@ -620,35 +599,52 @@ footer .wrap { display: flex; justify-content: space-between; align-items: cente
         </div>
         <div class="proof-strip reveal">
             <div class="proof-card">
-                <div class="photo-slot is-placeholder">
-                    <span class="photo-tag">Photo — Agent</span>
-                    <div class="placeholder-copy">
-                        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 21V10l9-6 9 6v11"/><path d="M9 21v-6h6v6"/></svg>
-                        <div class="need">Landscape, 4:3</div>
-                        <div class="spec">Agent handing over cash<br>at a real partner location</div>
-                    </div>
+                <div class="illustration-slot">
+                    <svg viewBox="0 0 220 160" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                        <rect x="20" y="118" width="180" height="10" rx="2" fill="var(--ink-900)"/>
+                        <rect x="20" y="108" width="180" height="10" fill="var(--brass)"/>
+                        <circle cx="62" cy="58" r="18" fill="var(--ink-900)"/>
+                        <path d="M34 108c0-20 12-32 28-32s28 12 28 32" fill="var(--ink-900)"/>
+                        <circle cx="158" cy="58" r="18" fill="var(--brass-deep)"/>
+                        <path d="M130 108c0-20 12-32 28-32s28 12 28 32" fill="var(--brass-deep)"/>
+                        <rect x="92" y="78" width="36" height="24" rx="3" fill="var(--brass)" stroke="var(--paper)" stroke-width="2"/>
+                        <line x1="98" y1="86" x2="122" y2="86" stroke="var(--paper)" stroke-width="2"/>
+                        <line x1="98" y1="94" x2="122" y2="94" stroke="var(--paper)" stroke-width="2"/>
+                        <path d="M82 90h5M133 90h5" stroke="var(--mint)" stroke-width="3" stroke-linecap="round"/>
+                    </svg>
                 </div>
                 <div class="cap">Partner Agent<span class="sub">Gaborone</span></div>
             </div>
             <div class="proof-card">
-                <div class="photo-slot is-placeholder">
-                    <span class="photo-tag">Photo — ATM</span>
-                    <div class="placeholder-copy">
-                        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="9" width="18" height="12" rx="1"/><path d="M7 9V6a5 5 0 0 1 10 0v3"/></svg>
-                        <div class="need">Landscape, 4:3</div>
-                        <div class="spec">Customer cashing out<br>at a partner ATM</div>
-                    </div>
+                <div class="illustration-slot">
+                    <svg viewBox="0 0 220 160" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                        <rect x="60" y="10" width="100" height="140" rx="10" fill="var(--ink-900)"/>
+                        <rect x="74" y="26" width="72" height="46" rx="4" fill="var(--brass-tint)"/>
+                        <rect x="80" y="34" width="36" height="6" rx="2" fill="var(--brass-deep)"/>
+                        <rect x="80" y="46" width="50" height="6" rx="2" fill="var(--ink-300)"/>
+                        <rect x="80" y="56" width="30" height="6" rx="2" fill="var(--ink-300)"/>
+                        <rect x="80" y="82" width="60" height="8" rx="2" fill="var(--ink-700)"/>
+                        <rect x="86" y="104" width="48" height="10" rx="2" fill="var(--ink-700)"/>
+                        <rect x="92" y="97" width="14" height="17" rx="1" fill="var(--brass)"/>
+                        <rect x="108" y="95" width="14" height="19" rx="1" fill="var(--brass-deep)"/>
+                        <circle cx="150" cy="30" r="14" fill="var(--mint)"/>
+                        <path d="M144 30l4 4 8-8" stroke="var(--paper)" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
                 </div>
                 <div class="cap">Cash Pickup<span class="sub">Any Partner ATM</span></div>
             </div>
             <div class="proof-card">
-                <div class="photo-slot is-placeholder">
-                    <span class="photo-tag">Photo — Customer</span>
-                    <div class="placeholder-copy">
-                        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="2" width="16" height="20" rx="2"/><path d="M9 18h6"/></svg>
-                        <div class="need">Landscape, 4:3</div>
-                        <div class="spec">Real customer using<br>VouchMorph on their phone</div>
-                    </div>
+                <div class="illustration-slot">
+                    <svg viewBox="0 0 220 160" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                        <rect x="72" y="8" width="76" height="144" rx="14" fill="var(--ink-900)"/>
+                        <rect x="82" y="24" width="56" height="112" rx="4" fill="var(--brass-tint)"/>
+                        <circle cx="98" cy="60" r="12" fill="var(--brass-deep)"/>
+                        <circle cx="122" cy="60" r="12" fill="var(--mint)"/>
+                        <path d="M92 78c8 10 28 10 36 0" stroke="var(--ink-900)" stroke-width="3" fill="none" stroke-linecap="round"/>
+                        <path d="M86 96h48" stroke="var(--ink-300)" stroke-width="4" stroke-linecap="round"/>
+                        <path d="M86 108h32" stroke="var(--ink-300)" stroke-width="4" stroke-linecap="round"/>
+                        <circle cx="110" cy="18" r="3" fill="var(--paper)"/>
+                    </svg>
                 </div>
                 <div class="cap">A Real Swap<span class="sub">On Their Own Phone</span></div>
             </div>
