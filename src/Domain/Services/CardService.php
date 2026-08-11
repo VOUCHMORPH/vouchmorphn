@@ -1672,9 +1672,19 @@ class CardService
                     'amount' => $balance,
                     'currency' => $source['currency'] ?? $currency,
                     'hold_reason' => 'CARD_POOL_HOOK_' . $hookReference,
+                    // FIX: SwapService::extractSourceIdentifier() looks for
+                    // 'source_identifier' (and several aliases), never the
+                    // plain 'identifier' key that hook.php's request payload
+                    // actually uses. Without this, source_identifier resolves
+                    // to null and the bank rejects verification with
+                    // "Account number required" even though the request
+                    // clearly included one under a different key name.
+                    'source_identifier' => $source['identifier'] ?? $source['source_identifier'] ?? null,
+                    'source_identifier_type' => $source['identifier_type'] ?? $source['source_identifier_type'] ?? 'auto',
                 ]);
 
                 $verifyResult = $swapService->verifyAssetSigned($holdPayload, $source['institution']);
+                
                 if (!($verifyResult['verified'] ?? false)) {
                     throw new RuntimeException("Verification failed for {$source['institution']}: " . ($verifyResult['message'] ?? 'unknown'));
                 }
