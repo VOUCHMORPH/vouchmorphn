@@ -1595,211 +1595,223 @@ class CardService
      * 
      * SCHEMA FIX: Uses lifecycle_status (not status)
      */
-    public function hookSourcesToCard(
-        string $cardSuffix,
-        array $sources,
-        SwapService $swapService,
-        int $cardOwnerUserId
-    ): array {
-        // ============================================================
-        // FIX: GUARD - Check card status BEFORE any holds are placed
-        // ============================================================
-        $stmt = $this->db->prepare("SELECT lifecycle_status FROM message_cards WHERE card_suffix = :suffix");
-        $stmt->execute([':suffix' => $cardSuffix]);
-        $cardStatus = $stmt->fetchColumn();
+  public function hookSourcesToCard(
+    string $cardSuffix,
+    array $sources,
+    SwapService $swapService,
+    int $cardOwnerUserId
+): array {
+    // ============================================================
+    // FIX: GUARD - Check card status BEFORE any holds are placed
+    // ============================================================
+    $stmt = $this->db->prepare("SELECT lifecycle_status FROM message_cards WHERE card_suffix = :suffix");
+    $stmt->execute([':suffix' => $cardSuffix]);
+    $cardStatus = $stmt->fetchColumn();
 
-        if ($cardStatus === false) {
-            return ['success' => false, 'error' => 'Card not found.'];
-        }
-        if ($cardStatus !== 'ACTIVE') {
-            return [
-                'success' => false,
-                'error' => $cardStatus === 'INACTIVE'
-                    ? 'This card has not been activated yet — the card owner needs to activate it before sources can be hooked.'
-                    : "This card is {$cardStatus} and cannot accept hooks.",
-            ];
-        }
-
-        $this->db->beginTransaction();
-        $placedHolds = [];
-
-        try {
-            if (count($sources) < 1) {
-                throw new RuntimeException("At least one source is required to hook");
-            }
-
-            // ============================================================
-            // CONSENT GATE - runs BEFORE any holds are placed
-            // ============================================================
-            foreach ($sources as $source) {
-                $sourceOwnerId = (int)($source['owner_user_id'] ?? $cardOwnerUserId);
-
-                if ($sourceOwnerId !== $cardOwnerUserId) {
-                    $consentStmt = $this->db->prepare("
-                        SELECT 1 FROM user_authorized_sources
-                        WHERE user_id = :owner_id
-                          AND institution = :institution
-                          AND status = 'active'
-                        LIMIT 1
-                    ");
-                    $consentStmt->execute([
-                        ':owner_id' => $sourceOwnerId,
-                        ':institution' => $source['institution'],
-                    ]);
-
-                    if (!$consentStmt->fetchColumn()) {
-                        throw new RuntimeException(
-                            "Source owned by user {$sourceOwnerId} at {$source['institution']} " .
-                            "has not consented to be linked - reject rather than hold blind. " .
-                            "The source owner must complete source-linking consent before this card can hook their funds."
-                        );
-                    }
-                }
-            }
-
-            $hookReference = 'HOOK_' . bin2hex(random_bytes(8));
-              $swapService->setCurrentSwapReference($hookReference);
-
-            $totalHeld = 0.0;
-            $minExpirySeconds = PHP_INT_MAX;
-            $currency = $sources[0]['currency'] ?? 'BWP';
-
-            foreach ($sources as $source) {
-                $balance = $swapService->getSourceAvailableBalance($source);
-                if ($balance <= 0) {
-                    throw new RuntimeException("Source {$source['institution']} has no available balance to hook");
-                }
-
-                // The source owner authorizes a specific amount at hook time
-                // — this is a deliberate cap, never a silent "hold everything"
-                // default. Re-validated here independently of whatever the
-                // frontend showed, against BOTH the live balance and
-                // VouchMorph's own country-wide transaction ceiling — a
-                // client-supplied number is advisory input, never trusted
-                // authorization on its own.
-                $requestedAmount = isset($source['authorized_amount'])
-                    ? (float)$source['authorized_amount']
-                    : null;
-
-                $maxLimit = $this->feeService !== null
-                    ? $this->feeService->getMaxTransactionLimit()['amount']
-                    : $balance; // no FeeService available — fall back to balance-only cap
-
-                $hardCap = min($balance, $maxLimit);
-
-                if ($requestedAmount === null) {
-                    throw new RuntimeException(
-                        "An authorized amount is required to hook {$source['institution']} — " .
-                        "the source owner must specify how much to make available (up to {$hardCap})."
-                    );
-                }
-                if ($requestedAmount <= 0) {
-                    throw new RuntimeException("Authorized amount for {$source['institution']} must be greater than zero.");
-                }
-                if ($requestedAmount > $hardCap + 0.01) {
-                    throw new RuntimeException(
-                        "Requested amount ({$requestedAmount}) exceeds what can be authorized for {$source['institution']} " .
-                        "(available balance: {$balance}, VouchMorph limit: {$maxLimit}, cap: {$hardCap})."
-                    );
-                }
-
-                $holdPayload = array_merge($source, [
-                    'amount' => $requestedAmount,
-                    'currency' => $source['currency'] ?? $currency,
-                    'hold_reason' => 'CARD_POOL_HOOK_' . $hookReference,
-                    'source_identifier' => $source['identifier'] ?? $source['source_identifier'] ?? null,
-                    'source_identifier_type' => $source['identifier_type'] ?? $source['source_identifier_type'] ?? 'auto',
-                ]);
-
-                $verifyResult = $swapService->verifyAssetSigned($holdPayload, $source['institution']);
-                
-                if (!($verifyResult['verified'] ?? false)) {
-                    throw new RuntimeException("Verification failed for {$source['institution']}: " . ($verifyResult['message'] ?? 'unknown'));
-                }
-
-                $holdResult = $swapService->placeHoldSigned($holdPayload, $source['institution'], $verifyResult);
-                if (!($holdResult['hold_placed'] ?? false)) {
-                    throw new RuntimeException("Hold failed for {$source['institution']}: " . ($holdResult['message'] ?? 'unknown'));
-                }
-
-                $placedHolds[] = [
-                    'source' => $source,
-                    'hold_reference' => $holdResult['hold_reference'] ?? null,
-                    'hold_id' => $holdResult['local_hold_id'] ?? null,
-                    'amount' => $requestedAmount,  
-                    ];
-
-                $totalHeld += $requestedAmount;
-                 try {
-                    $expirySeconds = AssetTypeRegistry::getHoldExpiry($source['asset_type'] ?? 'ACCOUNT');
-                } catch (\Throwable $registryError) {
-                    error_log("[CardService] AssetTypeRegistry::getHoldExpiry() failed, using default 3600s: " . $registryError->getMessage());
-                    $expirySeconds = 3600; // conservative 1-hour default
-                }
-                $minExpirySeconds = min($minExpirySeconds, $expirySeconds);
-            }
-
-            $expiresAt = date('Y-m-d H:i:s', time() + $minExpirySeconds);
-
-            $hookStmt = $this->db->prepare("
-                INSERT INTO card_pool_hooks (hook_reference, card_suffix, user_id, total_held_amount, currency, status, expires_at)
-                VALUES (?, ?, ?, ?, ?, 'HOOKED', ?)
-                RETURNING id
-            ");
-            $hookStmt->execute([$hookReference, $cardSuffix, $cardOwnerUserId, $totalHeld, $currency, $expiresAt]);
-            $hookId = $hookStmt->fetchColumn();
-
-            foreach ($placedHolds as $held) {
-                $sourceStmt = $this->db->prepare("
-                    INSERT INTO card_pool_hook_sources
-                        (hook_id, owner_user_id, institution, asset_type, source_identifier, held_amount, hold_reference, status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 'HELD')
-                ");
-                $sourceStmt->execute([
-                    $hookId,
-                    $held['source']['owner_user_id'] ?? $cardOwnerUserId,
-                    $held['source']['institution'],
-                    $held['source']['asset_type'] ?? 'ACCOUNT',
-                    $held['source']['identifier'] ?? '',
-                    $held['amount'],
-                    $held['hold_reference'],
-                ]);
-            }
-
-            $this->db->commit();
-
-            return [
-                'success' => true,
-                'hook_reference' => $hookReference,
-                'total_held' => $totalHeld,
-                'currency' => $currency,
-                'expires_at' => $expiresAt,
-                'source_count' => count($placedHolds),
-                'message' => 'Hook successful - all sources held',
-            ];
-
-        } catch (\Throwable $e) {
-            if ($this->db->inTransaction()) {
-                $this->db->rollBack();
-            }
-
-            foreach ($placedHolds as $held) {
-                try {
-$swapService->releaseHold(
-                        $held['source'],
-                        $held['source']['institution'],
-                        isset($held['hold_id']) ? (string)$held['hold_id'] : null,
-                        $held['hold_reference'] ?? null
-                    );                } catch (\Throwable $releaseErr) {
-                    error_log("[CardService] Failed to release hold during hook rollback: " . $releaseErr->getMessage());
-                }
-            }
-
-            error_log("[CardService] hookSourcesToCard failed: " . $e->getMessage());
-            return ['success' => false, 'error' => $e->getMessage(), 'message' => 'Hook failed - no sources were held'];
-        }
+    if ($cardStatus === false) {
+        return ['success' => false, 'error' => 'Card not found.'];
+    }
+    if ($cardStatus !== 'ACTIVE') {
+        return [
+            'success' => false,
+            'error' => $cardStatus === 'INACTIVE'
+                ? 'This card has not been activated yet — the card owner needs to activate it before sources can be hooked.'
+                : "This card is {$cardStatus} and cannot accept hooks.",
+        ];
     }
 
+    $this->db->beginTransaction();
+    $placedHolds = [];
+
+    try {
+        if (count($sources) < 1) {
+            throw new RuntimeException("At least one source is required to hook");
+        }
+
+        // ============================================================
+        // FIX: BLOCK VOUCHMORPH SOURCES AT HOOK TIME
+        // ============================================================
+        foreach ($sources as $source) {
+            if (strtoupper($source['institution'] ?? '') === 'VOUCHMORPH' || ($source['asset_type'] ?? '') === 'VOUCHMORPH_CARD') {
+                throw new RuntimeException(
+                    "A VouchMorph Card cannot be hooked to another VouchMorph Card. " .
+                    "Hook the underlying account, wallet, or card-network source instead."
+                );
+            }
+        }
+
+        // ============================================================
+        // CONSENT GATE - runs BEFORE any holds are placed
+        // ============================================================
+        foreach ($sources as $source) {
+            $sourceOwnerId = (int)($source['owner_user_id'] ?? $cardOwnerUserId);
+
+            if ($sourceOwnerId !== $cardOwnerUserId) {
+                $consentStmt = $this->db->prepare("
+                    SELECT 1 FROM user_authorized_sources
+                    WHERE user_id = :owner_id
+                      AND institution = :institution
+                      AND status = 'active'
+                    LIMIT 1
+                ");
+                $consentStmt->execute([
+                    ':owner_id' => $sourceOwnerId,
+                    ':institution' => $source['institution'],
+                ]);
+
+                if (!$consentStmt->fetchColumn()) {
+                    throw new RuntimeException(
+                        "Source owned by user {$sourceOwnerId} at {$source['institution']} " .
+                        "has not consented to be linked - reject rather than hold blind. " .
+                        "The source owner must complete source-linking consent before this card can hook their funds."
+                    );
+                }
+            }
+        }
+
+        $hookReference = 'HOOK_' . bin2hex(random_bytes(8));
+        $swapService->setCurrentSwapReference($hookReference);
+
+        $totalHeld = 0.0;
+        $minExpirySeconds = PHP_INT_MAX;
+        $currency = $sources[0]['currency'] ?? 'BWP';
+
+        foreach ($sources as $source) {
+            $balance = $swapService->getSourceAvailableBalance($source);
+            if ($balance <= 0) {
+                throw new RuntimeException("Source {$source['institution']} has no available balance to hook");
+            }
+
+            // The source owner authorizes a specific amount at hook time
+            // — this is a deliberate cap, never a silent "hold everything"
+            // default. Re-validated here independently of whatever the
+            // frontend showed, against BOTH the live balance and
+            // VouchMorph's own country-wide transaction ceiling — a
+            // client-supplied number is advisory input, never trusted
+            // authorization on its own.
+            $requestedAmount = isset($source['authorized_amount'])
+                ? (float)$source['authorized_amount']
+                : null;
+
+            $maxLimit = $this->feeService !== null
+                ? $this->feeService->getMaxTransactionLimit()['amount']
+                : $balance; // no FeeService available — fall back to balance-only cap
+
+            $hardCap = min($balance, $maxLimit);
+
+            if ($requestedAmount === null) {
+                throw new RuntimeException(
+                    "An authorized amount is required to hook {$source['institution']} — " .
+                    "the source owner must specify how much to make available (up to {$hardCap})."
+                );
+            }
+            if ($requestedAmount <= 0) {
+                throw new RuntimeException("Authorized amount for {$source['institution']} must be greater than zero.");
+            }
+            if ($requestedAmount > $hardCap + 0.01) {
+                throw new RuntimeException(
+                    "Requested amount ({$requestedAmount}) exceeds what can be authorized for {$source['institution']} " .
+                    "(available balance: {$balance}, VouchMorph limit: {$maxLimit}, cap: {$hardCap})."
+                );
+            }
+
+            $holdPayload = array_merge($source, [
+                'amount' => $requestedAmount,
+                'currency' => $source['currency'] ?? $currency,
+                'hold_reason' => 'CARD_POOL_HOOK_' . $hookReference,
+                'source_identifier' => $source['identifier'] ?? $source['source_identifier'] ?? null,
+                'source_identifier_type' => $source['identifier_type'] ?? $source['source_identifier_type'] ?? 'auto',
+            ]);
+
+            $verifyResult = $swapService->verifyAssetSigned($holdPayload, $source['institution']);
+            
+            if (!($verifyResult['verified'] ?? false)) {
+                throw new RuntimeException("Verification failed for {$source['institution']}: " . ($verifyResult['message'] ?? 'unknown'));
+            }
+
+            $holdResult = $swapService->placeHoldSigned($holdPayload, $source['institution'], $verifyResult);
+            if (!($holdResult['hold_placed'] ?? false)) {
+                throw new RuntimeException("Hold failed for {$source['institution']}: " . ($holdResult['message'] ?? 'unknown'));
+            }
+
+            $placedHolds[] = [
+                'source' => $source,
+                'hold_reference' => $holdResult['hold_reference'] ?? null,
+                'hold_id' => $holdResult['local_hold_id'] ?? null,
+                'amount' => $requestedAmount,  
+            ];
+
+            $totalHeld += $requestedAmount;
+            try {
+                $expirySeconds = AssetTypeRegistry::getHoldExpiry($source['asset_type'] ?? 'ACCOUNT');
+            } catch (\Throwable $registryError) {
+                error_log("[CardService] AssetTypeRegistry::getHoldExpiry() failed, using default 3600s: " . $registryError->getMessage());
+                $expirySeconds = 3600; // conservative 1-hour default
+            }
+            $minExpirySeconds = min($minExpirySeconds, $expirySeconds);
+        }
+
+        $expiresAt = date('Y-m-d H:i:s', time() + $minExpirySeconds);
+
+        $hookStmt = $this->db->prepare("
+            INSERT INTO card_pool_hooks (hook_reference, card_suffix, user_id, total_held_amount, currency, status, expires_at)
+            VALUES (?, ?, ?, ?, ?, 'HOOKED', ?)
+            RETURNING id
+        ");
+        $hookStmt->execute([$hookReference, $cardSuffix, $cardOwnerUserId, $totalHeld, $currency, $expiresAt]);
+        $hookId = $hookStmt->fetchColumn();
+
+        foreach ($placedHolds as $held) {
+            $sourceStmt = $this->db->prepare("
+                INSERT INTO card_pool_hook_sources
+                    (hook_id, owner_user_id, institution, asset_type, source_identifier, held_amount, hold_reference, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'HELD')
+            ");
+            $sourceStmt->execute([
+                $hookId,
+                $held['source']['owner_user_id'] ?? $cardOwnerUserId,
+                $held['source']['institution'],
+                $held['source']['asset_type'] ?? 'ACCOUNT',
+                $held['source']['identifier'] ?? '',
+                $held['amount'],
+                $held['hold_reference'],
+            ]);
+        }
+
+        $this->db->commit();
+
+        return [
+            'success' => true,
+            'hook_reference' => $hookReference,
+            'total_held' => $totalHeld,
+            'currency' => $currency,
+            'expires_at' => $expiresAt,
+            'source_count' => count($placedHolds),
+            'message' => 'Hook successful - all sources held',
+        ];
+
+    } catch (\Throwable $e) {
+        if ($this->db->inTransaction()) {
+            $this->db->rollBack();
+        }
+
+        foreach ($placedHolds as $held) {
+            try {
+                $swapService->releaseHold(
+                    $held['source'],
+                    $held['source']['institution'],
+                    isset($held['hold_id']) ? (string)$held['hold_id'] : null,
+                    $held['hold_reference'] ?? null
+                );
+            } catch (\Throwable $releaseErr) {
+                error_log("[CardService] Failed to release hold during hook rollback: " . $releaseErr->getMessage());
+            }
+        }
+
+        error_log("[CardService] hookSourcesToCard failed: " . $e->getMessage());
+        return ['success' => false, 'error' => $e->getMessage(), 'message' => 'Hook failed - no sources were held'];
+    }
+}
     /**
      * FAST PATH ONLY. Called at swipe time. No bank calls - a local check
      * against currently-valid held totals. This is what has to happen in
