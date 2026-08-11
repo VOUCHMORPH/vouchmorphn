@@ -131,7 +131,7 @@ try {
     http_response_code($result['success'] ? 200 : 422);
     echo json_encode($result, JSON_PRETTY_PRINT);
 
-} catch (Exception $e) {
+} catch (\Throwable $e) {
     error_log("[CardHook] Hook failed: " . $e->getMessage());
     http_response_code(500);
     echo json_encode([
