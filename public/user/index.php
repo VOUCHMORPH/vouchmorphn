@@ -256,6 +256,81 @@ section.no-border { border-bottom: none; }
 @media (max-width: 900px) { .stub-connector { display: none; } }
 
 /* ============================================================
+   PHOTO SLOTS — everywhere the page wants a real photograph
+   instead of an icon or illustration. Rendered as a clearly-marked
+   placeholder (dashed frame + corner tag + caption) so it's obvious
+   what to shoot/license and where it goes — the image version of
+   the "replace this logo" note. Drop a real <img> in and remove
+   .is-placeholder to go live; the frame styling still applies.
+   ============================================================ */
+.photo-slot {
+    position: relative;
+    background: var(--brass-tint);
+    border: 1.5px dashed var(--line-strong);
+    overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+    text-align: center;
+}
+.photo-slot img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.photo-slot.is-placeholder .placeholder-copy { padding: var(--sp-5); }
+.photo-slot .placeholder-copy .ico { width: 26px; height: 26px; margin: 0 auto var(--sp-3); stroke: var(--brass-deep); fill: none; stroke-width: 1.4; }
+.photo-slot .placeholder-copy .need { font-family: var(--f-cond); font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--brass-deep); }
+.photo-slot .placeholder-copy .spec { font-family: var(--f-mono); font-size: 10.5px; color: var(--ink-300); margin-top: 4px; }
+.photo-tag {
+    position: absolute; top: 10px; left: 10px; z-index: 2;
+    font-family: var(--f-mono); font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase;
+    background: var(--paper); border: 1px solid var(--line-strong); color: var(--ink-500);
+    padding: 3px 7px;
+}
+/* Real photography, once dropped in, gets a quiet duotone pass so
+   every image reads as one consistent brand rather than stock-photo
+   grab-bag — this is the only place color imagery is allowed on an
+   otherwise ink/brass/paper page. */
+.photo-slot img { filter: grayscale(0.35) sepia(0.18) contrast(1.03); }
+
+/* ============================================================
+   FOUNDER'S NOTE — a letter, not a bio card. Styled like the
+   inside cover of a bank's annual report: portrait on the left,
+   signed letter on the right, one pulled line in brass.
+   ============================================================ */
+.letter { display: grid; grid-template-columns: 0.85fr 1.4fr; gap: var(--sp-9); align-items: start; }
+.letter-portrait { aspect-ratio: 4 / 5; }
+.letter-portrait .placeholder-copy .need { color: var(--brass-deep); }
+.letter-cred { margin-top: var(--sp-4); }
+.letter-cred .name { font-family: var(--f-display); font-size: 17px; font-weight: 600; }
+.letter-cred .role { font-family: var(--f-cond); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-300); margin-top: 2px; }
+
+.letter-body .script-accent { font-size: 30px; color: var(--brass-deep); display: block; margin-bottom: var(--sp-4); }
+.letter-body p { color: var(--ink-700); font-size: 15px; margin-bottom: var(--sp-4); max-width: 560px; }
+.letter-pull {
+    font-family: var(--f-display); font-style: italic; font-size: 21px; font-weight: 500;
+    color: var(--ink-900); border-left: 3px solid var(--brass); padding-left: var(--sp-5);
+    margin: var(--sp-6) 0; max-width: 480px;
+}
+.letter-sign { margin-top: var(--sp-7); display: flex; align-items: center; gap: var(--sp-5); }
+.letter-sign .script-accent { font-size: 34px; margin-bottom: 0; }
+.letter-sign .sign-meta { border-left: 1.5px solid var(--line-strong); padding-left: var(--sp-5); }
+.letter-sign .sign-meta .name { font-family: var(--f-cond); font-weight: 700; font-size: 13px; color: var(--ink-900); }
+.letter-sign .sign-meta .role { font-family: var(--f-cond); font-size: 11px; color: var(--ink-300); text-transform: uppercase; letter-spacing: 0.06em; margin-top: 2px; }
+
+@media (max-width: 800px) { .letter { grid-template-columns: 1fr; } .letter-portrait { max-width: 260px; } }
+
+/* ============================================================
+   PROOF STRIP — three real-world photos (agent, ATM, customer),
+   taped in like receipt stubs rather than a slick gallery, to keep
+   the "financial life, not stock photography" feel.
+   ============================================================ */
+.proof-strip { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--sp-6); }
+.proof-card { background: var(--panel); border: 1.5px solid var(--line-strong); padding: var(--sp-3) var(--sp-3) var(--sp-4); transform: rotate(var(--tilt, 0deg)); }
+.proof-card:nth-child(1) { --tilt: -1.4deg; }
+.proof-card:nth-child(2) { --tilt: 0.8deg; }
+.proof-card:nth-child(3) { --tilt: -0.6deg; }
+.proof-card .photo-slot { aspect-ratio: 4 / 3; }
+.proof-card .cap { margin-top: var(--sp-3); font-family: var(--f-cond); font-size: 12px; font-weight: 700; color: var(--ink-700); text-align: center; }
+.proof-card .cap .sub { display: block; font-weight: 400; color: var(--ink-300); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; margin-top: 2px; }
+@media (max-width: 780px) { .proof-strip { grid-template-columns: 1fr; max-width: 320px; margin: 0 auto; } }
+
+/* ============================================================
    TRUST STRIP
    ============================================================ */
 .trust-strip { display: flex; flex-wrap: wrap; gap: var(--sp-8); justify-content: center; padding: var(--sp-7) 0; }
@@ -315,6 +390,7 @@ footer .wrap { display: flex; justify-content: space-between; align-items: cente
         </a>
         <div class="nav-links">
             <a href="#ledger">Why VouchMorph</a>
+            <a href="#letter">Founder's Note</a>
             <a href="#features">Features</a>
             <a href="#how-it-works">How It Works</a>
             <a href="#waitlist">Early Access</a>
@@ -393,6 +469,49 @@ footer .wrap { display: flex; justify-content: space-between; align-items: cente
                     <div class="ledger-entry"><span class="mark">✓</span><span class="txt">Any participating ATM accepts your ID</span></div>
                     <div class="ledger-entry"><span class="mark">✓</span><span class="txt">A voucher becomes cash in any wallet, instantly</span></div>
                     <div class="ledger-entry"><span class="mark">✓</span><span class="txt">Any agent becomes your agent</span></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- FOUNDER'S NOTE -->
+<section id="letter">
+    <div class="wrap">
+        <div class="section-head reveal">
+            <span class="eyebrow">From The Founder</span>
+            <h2>Why we're building this</h2>
+        </div>
+
+        <div class="letter reveal">
+            <div>
+                <div class="photo-slot is-placeholder letter-portrait">
+                    <span class="photo-tag">Photo — Founder</span>
+                    <div class="placeholder-copy">
+                        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.8-4.5 5-6.5 8-6.5s6.2 2 8 6.5"/></svg>
+                        <div class="need">Portrait, 4:5</div>
+                        <div class="spec">Real photo of founder/CEO<br>e.g. 1000×1250px, natural light</div>
+                    </div>
+                </div>
+                <div class="letter-cred">
+                    <div class="name">[Founder Name]</div>
+                    <div class="role">Founder &amp; CEO, VouchMorph</div>
+                </div>
+            </div>
+
+            <div class="letter-body">
+                <span class="script-accent">Dear reader,</span>
+                <p>I grew up watching my mother send money home through three different agents because no single wallet reached everyone she needed to pay. That wasn't a technology problem — the technology already existed in every one of those wallets. It was a walls problem.</p>
+                <p>VouchMorph doesn't ask anyone to leave their bank, their network, or their agent. It asks them to agree on one ledger, so the money you already have can finally move the way you actually live — across networks, across accounts, across a counter at any ATM.</p>
+                <div class="letter-pull">We're not building a new wallet. We're building the room where all your existing wallets can finally talk to each other.</div>
+                <p>We're doing this inside the Bank of Botswana's regulatory sandbox, deliberately, so that trust is earned before scale — not the other way around. If you've felt the friction of moving your own money, this is for you.</p>
+
+                <div class="letter-sign">
+                    <span class="script-accent">Signature</span>
+                    <div class="sign-meta">
+                        <div class="name">[Founder Name]</div>
+                        <div class="role">Founder &amp; CEO</div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -487,6 +606,51 @@ footer .wrap { display: flex; justify-content: space-between; align-items: cente
                 <span class="step-tag">Entry 03</span>
                 <h3>Transact</h3>
                 <p>Send, withdraw, deposit, cash out — across any network, anywhere it's accepted.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- PROOF STRIP — real-world photography -->
+<section class="no-border" style="padding-top: 0;">
+    <div class="wrap">
+        <div class="section-head center reveal" style="margin-left:auto;margin-right:auto;">
+            <span class="eyebrow">On The Ground</span>
+            <h2>Not a concept. A counter, an ATM, a real handoff.</h2>
+        </div>
+        <div class="proof-strip reveal">
+            <div class="proof-card">
+                <div class="photo-slot is-placeholder">
+                    <span class="photo-tag">Photo — Agent</span>
+                    <div class="placeholder-copy">
+                        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 21V10l9-6 9 6v11"/><path d="M9 21v-6h6v6"/></svg>
+                        <div class="need">Landscape, 4:3</div>
+                        <div class="spec">Agent handing over cash<br>at a real partner location</div>
+                    </div>
+                </div>
+                <div class="cap">Partner Agent<span class="sub">Gaborone</span></div>
+            </div>
+            <div class="proof-card">
+                <div class="photo-slot is-placeholder">
+                    <span class="photo-tag">Photo — ATM</span>
+                    <div class="placeholder-copy">
+                        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="9" width="18" height="12" rx="1"/><path d="M7 9V6a5 5 0 0 1 10 0v3"/></svg>
+                        <div class="need">Landscape, 4:3</div>
+                        <div class="spec">Customer cashing out<br>at a partner ATM</div>
+                    </div>
+                </div>
+                <div class="cap">Cash Pickup<span class="sub">Any Partner ATM</span></div>
+            </div>
+            <div class="proof-card">
+                <div class="photo-slot is-placeholder">
+                    <span class="photo-tag">Photo — Customer</span>
+                    <div class="placeholder-copy">
+                        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="2" width="16" height="20" rx="2"/><path d="M9 18h6"/></svg>
+                        <div class="need">Landscape, 4:3</div>
+                        <div class="spec">Real customer using<br>VouchMorph on their phone</div>
+                    </div>
+                </div>
+                <div class="cap">A Real Swap<span class="sub">On Their Own Phone</span></div>
             </div>
         </div>
     </div>
