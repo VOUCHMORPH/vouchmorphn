@@ -218,6 +218,10 @@ input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-app
 input[type=number] { -moz-appearance: textfield; }
 .fade-in-up { animation: fadeInUp 0.4s ease forwards; }
 @keyframes fadeInUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes popIn { 0% { transform: scale(0.85); opacity: 0; } 60% { transform: scale(1.04); opacity: 1; } 100% { transform: scale(1); } }
+@keyframes ringDraw { from { stroke-dashoffset: var(--ring-from); } to { stroke-dashoffset: var(--ring-to); } }
+@keyframes confettiFall { 0% { transform: translateY(-10px) rotate(0deg); opacity: 1; } 100% { transform: translateY(140px) rotate(280deg); opacity: 0; } }
+@keyframes softPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
 
 .role-badge { font-size: 9px; color: var(--primary); border: 1px solid var(--border-strong); padding: 3px 8px; text-transform: uppercase; font-weight: 700; letter-spacing: 0.04em; }
 .agent-badge { font-size: 9px; color: #fff; background: var(--accent-2); padding: 3px 8px; text-transform: uppercase; font-weight: 700; }
@@ -253,7 +257,7 @@ input[type=number] { -moz-appearance: textfield; }
 @media (min-width: 640px) { .user-chip-text { display: flex; } }
 .user-chip-name { font-size: 13px; font-weight: 600; color: var(--text); }
 .user-chip-role { font-size: 11px; color: var(--text-dim); }
-.user-avatar { width: 32px; height: 32px; background: var(--primary); color: #fff; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.user-avatar { width: 32px; height: 32px; background: var(--primary); color: #fff; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; position: relative; }
 .logout-btn { font-size: 12px; font-weight: 600; color: var(--text-dim); text-decoration: none; padding: 8px 6px; }
 .logout-btn:hover { color: var(--danger); }
 
@@ -264,6 +268,25 @@ input[type=number] { -moz-appearance: textfield; }
 .message.success { background: rgba(31,138,84,0.08); border-left: 3px solid var(--success); color: var(--success); }
 .message.error { background: rgba(198,40,40,0.08); border-left: 3px solid var(--danger); color: var(--danger); }
 .message.warning { background: rgba(184,134,11,0.08); border-left: 3px solid var(--warning); color: #8a6508; }
+
+/* Progress ring — Zeigarnik / goal-gradient onboarding nudge */
+.progress-card { background: var(--surface); border: 1px solid var(--border); padding: 16px 18px; margin-bottom: 18px; display: flex; align-items: center; gap: 14px; cursor: pointer; transition: var(--transition); }
+.progress-card:hover { border-color: var(--border-strong); background: var(--surface-muted); }
+.progress-ring-wrap { position: relative; width: 52px; height: 52px; flex-shrink: 0; }
+.progress-ring-wrap svg { transform: rotate(-90deg); }
+.progress-ring-pct { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 800; font-family: var(--font-mono); color: var(--primary); }
+.progress-card-text { flex: 1; min-width: 0; }
+.progress-card-title { font-size: 13px; font-weight: 700; color: var(--text); }
+.progress-card-sub { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.progress-card-arrow { font-size: 16px; color: var(--text-dim); flex-shrink: 0; }
+
+/* Repeat-last-swap quick card — turns 6 taps into 1 */
+.repeat-card { background: var(--primary); color: #fff; padding: 14px 16px; margin-bottom: 18px; display: flex; align-items: center; gap: 12px; cursor: pointer; transition: var(--transition); }
+.repeat-card:hover { background: var(--accent); }
+.repeat-card-icon { width: 34px; height: 34px; background: rgba(255,255,255,0.15); display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; }
+.repeat-card-text { flex: 1; min-width: 0; }
+.repeat-card-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.85; }
+.repeat-card-sub { font-size: 14px; font-weight: 700; margin-top: 2px; }
 
 .ledger-card { background: var(--surface); border: 1px solid var(--border); padding: 1.75rem; }
 .ledger-eyebrow { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-dim); margin-bottom: 14px; font-family: var(--font-mono); text-align: center; }
@@ -277,6 +300,7 @@ input[type=number] { -moz-appearance: textfield; }
 .ledger-row-label { font-size: 12px; color: var(--text-muted); display: flex; align-items: center; gap: 8px; }
 .ledger-row-value { font-size: 13px; font-weight: 600; color: var(--text-dim); display: flex; align-items: center; gap: 6px; }
 .ledger-row-value.filled { color: var(--text); }
+.row-icon { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; font-size: 13px; flex-shrink: 0; }
 
 .ledger-links { display: flex; justify-content: center; gap: 20px; margin-top: 16px; }
 .ledger-link { font-size: 12px; font-weight: 600; color: var(--text-muted); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; background: none; border: none; font-family: var(--font); }
@@ -302,17 +326,26 @@ input[type=number] { -moz-appearance: textfield; }
 .quick-link.muted { color: var(--text-dim); font-weight: 500; text-transform: none; letter-spacing: 0; border: none; padding: 4px 0; }
 .quick-link.danger { color: var(--danger); border-color: rgba(198,40,40,0.3); }
 .quick-link.selected { background: var(--primary); color: #fff; border-color: var(--primary); }
+.quick-link.recommended { border-color: var(--accent); position: relative; }
+.recommended-badge { position: absolute; top: -8px; right: -6px; background: var(--accent); color: #fff; font-size: 8px; padding: 1px 5px; font-weight: 800; letter-spacing: 0.03em; }
 
 .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid rgba(255,255,255,0.4); border-top-color: #fff; border-radius: 50%; animation: spin 0.7s linear infinite; margin-right: 6px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(4,18,14,0.5); z-index: 1000; align-items: center; justify-content: center; padding: 20px; }
 .modal-overlay.active { display: flex; }
-.modal { background: var(--surface); max-width: 480px; width: 100%; max-height: 90vh; overflow-y: auto; border: 1px solid var(--border-strong); }
+.modal { background: var(--surface); max-width: 480px; width: 100%; max-height: 90vh; overflow-y: auto; border: 1px solid var(--border-strong); animation: popIn 0.22s ease; }
 .modal-header { display: flex; justify-content: space-between; align-items: center; padding: 16px 22px; background: var(--surface-muted); border-bottom: 1px solid var(--border); }
 .modal-header h2 { font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text); font-family: var(--font-mono); }
 .modal-close { background: none; border: none; color: var(--text-muted); font-size: 20px; cursor: pointer; line-height: 1; padding: 4px; }
 #modalBody { padding: 22px; }
+
+/* Small confirm overlay — replaces native confirm() so it matches the rest of the app */
+.confirm-overlay { display: none; position: fixed; inset: 0; background: rgba(4,18,14,0.55); z-index: 1100; align-items: center; justify-content: center; padding: 20px; }
+.confirm-overlay.active { display: flex; }
+.confirm-box { background: var(--surface); border: 1px solid var(--border-strong); max-width: 340px; width: 100%; padding: 20px; animation: popIn 0.18s ease; text-align: center; }
+.confirm-box p { font-size: 13px; color: var(--text); margin-bottom: 16px; line-height: 1.5; }
+.confirm-box .cta-row { margin-top: 0; }
 
 .tab-hero { text-align: center; padding: 6px 0 14px; border-bottom: 1px solid var(--border); margin-bottom: 14px; }
 .tab-hero-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 700; color: var(--text-dim); font-family: var(--font-mono); }
@@ -325,9 +358,11 @@ input[type=number] { -moz-appearance: textfield; }
 .tab-status-line.ok { color: var(--success); border-color: var(--success); }
 .tab-status-line.warn { color: #8a6508; border-color: var(--warning); }
 .tab-status-line.bad { color: var(--danger); border-color: var(--danger); }
-.tab-strategy-row { display: flex; gap: 0; margin-bottom: 16px; border: 1px solid var(--border-strong); }
+.tab-status-line .quick-link { margin-left: 8px; }
+.tab-strategy-row { display: flex; gap: 0; margin-bottom: 6px; border: 1px solid var(--border-strong); }
 .tab-strategy-row .quick-link { flex: 1; justify-content: center; border: none; border-right: 1px solid var(--border-strong); }
 .tab-strategy-row .quick-link:last-child { border-right: none; }
+.tab-strategy-hint { text-align: center; font-size: 11px; color: var(--text-dim); margin-bottom: 14px; }
 .tab-source-list { transition: opacity 0.35s ease; }
 .tab-source-card { border: 1px solid var(--border); padding: 14px; margin-bottom: 8px; background: var(--surface); }
 .tab-source-empty { border: 1px dashed var(--border-strong); padding: 14px; margin-bottom: 8px; background: var(--surface-muted); }
@@ -352,16 +387,19 @@ input[type=number] { -moz-appearance: textfield; }
 .preview-security-icon { width: 34px; height: 34px; background: var(--primary); display: flex; align-items: center; justify-content: center; color: #fff; font-size: 15px; flex-shrink: 0; }
 .preview-security-text strong { display: block; font-size: 12px; margin-bottom: 4px; }
 .preview-security-text p { font-size: 11px; color: var(--text-muted); line-height: 1.5; }
+.preview-reassure { text-align: center; font-size: 11px; color: var(--text-dim); margin-top: 10px; }
 .modal-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 20px; }
 .modal-actions .btn-secondary { flex: 0 0 auto; text-transform: none; border: none; background: transparent; color: var(--text-muted); font-size: 12px; }
 .modal-actions .btn-primary { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
 
-.result-box { text-align: center; padding: 10px 0; }
+.result-box { text-align: center; padding: 10px 0; position: relative; overflow: visible; }
 .result-box .icon { font-size: 42px; color: var(--success); margin-bottom: 8px; }
 .result-box .result-title { font-size: 20px; font-weight: 600; margin-bottom: 8px; }
 .result-box .result-sub { font-size: 12px; color: var(--text-muted); margin-bottom: 16px; font-family: var(--font-mono); }
 .result-box .atm-code { margin: 16px 0; padding: 18px; background: var(--surface-muted); border: 1px solid var(--border); }
 .result-box .atm-code .code { font-size: 24px; font-weight: 700; font-family: var(--font-mono); letter-spacing: 4px; color: var(--accent); }
+.result-stat { background: var(--accent-soft); border-left: 3px solid var(--accent); padding: 10px 14px; margin-top: 14px; font-size: 12px; color: var(--primary); text-align: left; }
+.confetti-piece { position: absolute; top: 10%; width: 6px; height: 6px; background: var(--accent); animation: confettiFall 1.1s ease-in forwards; }
 
 .field-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; display: block; margin-bottom: 6px; font-weight: 700; letter-spacing: 0.05em; }
 .field-group { margin-bottom: 14px; }
@@ -369,6 +407,7 @@ input[type=number] { -moz-appearance: textfield; }
 .field-group input, .field-group select { width: 100%; padding: 12px 14px; background: var(--surface); border: 1px solid var(--border-strong); color: var(--text); font-size: 14px; font-family: var(--font); }
 .field-group input:focus, .field-group select:focus { outline: none; border-color: var(--accent); }
 .field-group .help { font-size: 11px; color: var(--text-dim); margin-top: 5px; }
+.field-group .help.error-help { color: var(--danger); font-weight: 600; }
 .asset-fields { margin: 8px 0 14px; padding: 14px; background: var(--surface-muted); border: 1px solid var(--border); }
 .identity-field { margin: 8px 0 14px; padding: 14px; background: var(--accent-soft); border: 1px dashed var(--accent); }
 
@@ -487,6 +526,9 @@ input[type=number] { -moz-appearance: textfield; }
 <div class="container">
 <div id="mainMessage" class="message"></div>
 
+<div id="progressCardHolder"></div>
+<div id="repeatCardHolder"></div>
+
 <div class="ledger-card fade-in-up">
     <div class="ledger-eyebrow">Move money</div>
     <div class="ledger-sentence">
@@ -499,11 +541,11 @@ input[type=number] { -moz-appearance: textfield; }
 
     <div class="ledger-rows">
         <div class="ledger-row" onclick="openSourceModal()">
-            <span class="ledger-row-label">Source</span>
+            <span class="ledger-row-label"><span class="row-icon" id="sourceRowIcon">💳</span>Source</span>
             <span class="ledger-row-value" id="sourceRowText">Not selected &rsaquo;</span>
         </div>
         <div class="ledger-row" onclick="openDestinationModal()" style="border-bottom:none;">
-            <span class="ledger-row-label">Destination</span>
+            <span class="ledger-row-label"><span class="row-icon" id="destRowIcon">🎯</span>Destination</span>
             <span class="ledger-row-value" id="destRowText">Not selected &rsaquo;</span>
         </div>
     </div>
@@ -539,13 +581,13 @@ input[type=number] { -moz-appearance: textfield; }
             <label>Source type</label>
             <div class="source-type-buttons" id="sourceTypeButtons">
                 <button type="button" class="source-type-btn" data-cat="WALLET" onclick="toggleSourcePanel('WALLET')">
-                    <span class="btn-label">Wallet / Account <span class="count" id="walletBtnCount" style="display:none;">0</span></span>
+                    <span class="btn-label">💳 Wallet / Account <span class="count" id="walletBtnCount" style="display:none;">0</span></span>
                 </button>
                 <button type="button" class="source-type-btn" data-cat="CARD" onclick="toggleSourcePanel('CARD')">
-                    <span class="btn-label">Card</span>
+                    <span class="btn-label">🪪 Card</span>
                 </button>
                 <button type="button" class="source-type-btn" data-cat="VOUCHER" onclick="toggleSourcePanel('VOUCHER')">
-                    <span class="btn-label">Voucher</span>
+                    <span class="btn-label">🎟️ Voucher</span>
                 </button>
             </div>
         </div>
@@ -586,8 +628,8 @@ input[type=number] { -moz-appearance: textfield; }
 <div id="destinationSectionHolder" style="display:none;">
     <div id="toSection">
         <div class="quick-actions" id="destTypeToggle">
-            <span class="quick-link" id="depositToggleBtn" onclick="setSwapType('DEPOSIT')">Deposit</span>
-            <span class="quick-link" id="cashoutToggleBtn" onclick="setSwapType('CASHOUT')">Cashout</span>
+            <span class="quick-link" id="depositToggleBtn" onclick="setSwapType('DEPOSIT')">🏦 To an account</span>
+            <span class="quick-link" id="cashoutToggleBtn" onclick="setSwapType('CASHOUT')">💵 Cash pickup</span>
         </div>
 
         <div id="toInstAssetGroupSlot">
@@ -610,10 +652,11 @@ input[type=number] { -moz-appearance: textfield; }
             <div class="field-group">
                 <label>Delivery method</label>
                 <select id="deliveryMethodSelect" onchange="setDeliveryMethod(this.value)">
-                    <option value="ATM">ATM</option>
-                    <option value="AGENT">Agent</option>
-                    <option value="VOUCHER">Voucher</option>
+                    <option value="ATM">ATM — get a code, withdraw cash at any partner ATM</option>
+                    <option value="AGENT">Agent — get a code, collect cash from a nearby agent</option>
+                    <option value="VOUCHER">Voucher — get a code, redeem it anywhere vouchers are accepted</option>
                 </select>
+                <div class="help" id="deliveryMethodHelp">You'll receive a code by SMS to withdraw cash at any partner ATM.</div>
             </div>
             <div class="field-group">
                 <label>Beneficiary phone <span style="color:var(--danger);">*</span></label>
@@ -677,6 +720,16 @@ input[type=number] { -moz-appearance: textfield; }
     </div>
 </div>
 
+<div class="confirm-overlay" id="confirmOverlay">
+    <div class="confirm-box">
+        <p id="confirmBoxText"></p>
+        <div class="cta-row">
+            <button class="btn btn-secondary" id="confirmBoxCancel">Cancel</button>
+            <button class="btn btn-primary" id="confirmBoxOk">Confirm</button>
+        </div>
+    </div>
+</div>
+
 <script>
 const CONFIG = {
     API_KEY: '<?php echo htmlspecialchars($apiKey); ?>',
@@ -705,6 +758,18 @@ const ASSET_TYPE_ALIASES = {
     'CRYPTO': 'CRYPTO'
 };
 
+// Small pictogram set so recognition doesn't depend purely on reading —
+// matters most for lower-literacy / lower-confidence users.
+const ASSET_ICONS = {
+    'ACCOUNT': '🏦', 'WALLET': '💳', 'MNO-WALLET': '📱', 'BANK-WALLET': '🏦',
+    'CARD': '🪪', 'VOUCHER': '🎟️', 'ATM': '🏧', 'POSTAL-ORDER': '✉️',
+    'CHEQUE': '🧾', 'CRYPTO': '🪙'
+};
+function assetIcon(type) {
+    if (!type) return '💠';
+    return ASSET_ICONS[String(type).toUpperCase()] || '💠';
+}
+
 function getAssetConfig(type) {
     if (!type) return null;
     if (ASSETS[type]) return ASSETS[type];
@@ -725,6 +790,37 @@ function getAssetConfig(type) {
         if (key.includes(normalized) || normalized.includes(key)) return ASSETS[key];
     }
     return null;
+}
+
+// ============================================================
+// Friendly error mapping — never show raw regex/pattern text to
+// users. Falls back to each field's own help_text, then a plain
+// generic message. This is used everywhere a field validation
+// failure would otherwise leak technical detail into the UI.
+// ============================================================
+function friendlyFieldMessage(assetType, fieldName, reason) {
+    const config = getAssetConfig(assetType);
+    const field = (config?.fields || []).find(f => f.name === fieldName);
+    const label = field?.label || fieldName || 'This field';
+    if (!reason) return `${label} is required.`;
+    if (reason === 'required but empty') return `${label} is required.`;
+    if (field?.help_text) return `${label}: ${field.help_text}`;
+    // Generic, human phrasing instead of surfacing the regex itself
+    if (fieldName === 'phone' || fieldName === 'phone_number') return `${label} should be a valid phone number, e.g. +267 71 234 567.`;
+    if (fieldName === 'account_number' || fieldName === 'account') return `${label} looks off — double check the number and try again.`;
+    return `${label} doesn't look right — please check it and try again.`;
+}
+function friendlyApiError(raw) {
+    if (!raw) return "Something didn't go through. Please try again.";
+    const map = [
+        [/network error/i, "Couldn't reach VouchMorph — check your connection and try again."],
+        [/timeout/i, "That took too long. Please try again."],
+        [/insufficient/i, "There isn't enough balance on that source for this amount."],
+        [/limit/i, "That amount is outside what this institution allows."],
+        [/non-json/i, "VouchMorph had a hiccup on our end. Please try again in a moment."],
+    ];
+    for (const [re, msg] of map) if (re.test(raw)) return msg;
+    return raw;
 }
 
 let state = {
@@ -762,6 +858,151 @@ function maskIdentifier(value) {
     return str.slice(0, 3) + '•'.repeat(Math.max(0, str.length - 6)) + str.slice(-3);
 }
 
+// ============================================================
+// Lightweight local "journey" tracker — powers the progress ring,
+// repeat-last-swap card, and the post-swap stat line. This is a
+// client-side best-effort layer for psychological reinforcement
+// (goal-gradient, habit loop, self-signaling); it is NOT a source
+// of truth and should be backed by real server-side stats later.
+// ============================================================
+const Journey = {
+    KEY: 'vm_journey_v1',
+    read() {
+        try {
+            const raw = localStorage.getItem(this.KEY);
+            return raw ? JSON.parse(raw) : { swapsThisMonth: 0, monthStamp: '', lastSwap: null, cardNamed: false };
+        } catch (e) { return { swapsThisMonth: 0, monthStamp: '', lastSwap: null, cardNamed: false }; }
+    },
+    write(data) { try { localStorage.setItem(this.KEY, JSON.stringify(data)); } catch (e) {} },
+    recordSwap(payload, previewData) {
+        const data = this.read();
+        const stamp = new Date().toISOString().slice(0, 7);
+        if (data.monthStamp !== stamp) { data.monthStamp = stamp; data.swapsThisMonth = 0; }
+        data.swapsThisMonth += 1;
+        data.lastSwap = {
+            payload,
+            amount: previewData?.preview?.amount_requested ?? payload.amount,
+            currency: previewData?.preview?.source_currency ?? payload.currency,
+            when: Date.now(),
+            label: describeSwapForRepeat(payload)
+        };
+        this.write(data);
+        return data;
+    },
+    monthlyTotal() { return this.read().swapsThisMonth || 0; }
+};
+
+function describeSwapForRepeat(payload) {
+    const type = payload.swap_type;
+    if (type === 'IDENTITY') return `To identity ${maskIdentifier(payload.identity_value || '')}`;
+    if (type === 'CASHOUT') return `Cash pickup via ${payload.delivery_method || 'ATM'}`;
+    if (type === 'MULTI_SOURCE') return `Combined sources swap`;
+    const instName = PARTICIPANTS[payload.to_institution]?.name || payload.to_institution || 'destination';
+    return `To ${instName}`;
+}
+
+// ============================================================
+// Setup progress ring — goal-gradient nudge shown until the
+// person has completed the core "trust" milestones. Disappears
+// once all steps are done so it never feels nagging.
+// ============================================================
+function computeProgressSteps() {
+    return [
+        { done: userSources.length > 0, label: 'Add a source' },
+        { done: savedIdentities.length > 0, label: 'Register an identity' },
+        { done: !!(SessionUser && SessionUser.has_pin), label: 'Set a transaction PIN' },
+        { done: Journey.monthlyTotal() > 0 || !!Journey.read().lastSwap, label: 'Make your first swap' },
+    ];
+}
+function renderProgressCard() {
+    const holder = document.getElementById('progressCardHolder');
+    if (!holder) return;
+    const steps = computeProgressSteps();
+    const doneCount = steps.filter(s => s.done).length;
+    if (doneCount >= steps.length) { holder.innerHTML = ''; return; }
+    const pct = Math.round((doneCount / steps.length) * 100);
+    const r = 22, circumference = 2 * Math.PI * r;
+    const offset = circumference - (pct / 100) * circumference;
+    const nextStep = steps.find(s => !s.done);
+    holder.innerHTML = `
+        <div class="progress-card fade-in-up" onclick="openToolbox()">
+            <div class="progress-ring-wrap">
+                <svg width="52" height="52" viewBox="0 0 52 52">
+                    <circle cx="26" cy="26" r="${r}" fill="none" stroke="var(--border)" stroke-width="4" />
+                    <circle cx="26" cy="26" r="${r}" fill="none" stroke="var(--accent)" stroke-width="4"
+                        stroke-dasharray="${circumference}" stroke-dashoffset="${circumference}" stroke-linecap="round"
+                        style="--ring-from:${circumference};--ring-to:${offset};animation:ringDraw 0.8s ease forwards;" />
+                </svg>
+                <div class="progress-ring-pct">${pct}%</div>
+            </div>
+            <div class="progress-card-text">
+                <div class="progress-card-title">Getting set up — ${doneCount}/${steps.length} done</div>
+                <div class="progress-card-sub">${nextStep ? 'Next: ' + nextStep.label : "You're all set"}</div>
+            </div>
+            <div class="progress-card-arrow">&rsaquo;</div>
+        </div>`;
+}
+
+function renderRepeatCard() {
+    const holder = document.getElementById('repeatCardHolder');
+    if (!holder) return;
+    const last = Journey.read().lastSwap;
+    if (!last) { holder.innerHTML = ''; return; }
+    holder.innerHTML = `
+        <div class="repeat-card fade-in-up" onclick="repeatLastSwap()">
+            <div class="repeat-card-icon">↻</div>
+            <div class="repeat-card-text">
+                <div class="repeat-card-title">Repeat last swap</div>
+                <div class="repeat-card-sub">${escapeHtml(last.label)} · ${formatMoney(last.amount, last.currency)}</div>
+            </div>
+            <div class="progress-card-arrow" style="color:#fff;opacity:0.8;">&rsaquo;</div>
+        </div>`;
+}
+
+// One tap turns a multi-step flow into a single confirm — this is
+// the single highest-leverage habit-loop shortcut in the app.
+async function repeatLastSwap() {
+    const last = Journey.read().lastSwap;
+    if (!last) return;
+    state.swapPayload = { ...last.payload, reference: 'SWAP_' + Date.now(), idempotency_key: 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8) };
+    const btn = document.getElementById('reviewBtn');
+    showMessage('Preparing your repeat swap…', 'info');
+    const result = await callApi(CONFIG.PREVIEW_ENDPOINT, state.swapPayload);
+    if (!result.ok) { showMessage('Could not repeat that swap: ' + friendlyApiError(result.error), 'error'); return; }
+    showPreviewModal(result.body);
+}
+
+// ============================================================
+// Custom confirm modal — replaces native confirm() so destructive
+// actions match the rest of the app's visual language instead of
+// breaking into an OS-native popup.
+// ============================================================
+function showConfirm(message, onConfirm) {
+    const overlay = document.getElementById('confirmOverlay');
+    document.getElementById('confirmBoxText').textContent = message;
+    overlay.classList.add('active');
+    const okBtn = document.getElementById('confirmBoxOk');
+    const cancelBtn = document.getElementById('confirmBoxCancel');
+    const cleanup = () => { overlay.classList.remove('active'); okBtn.onclick = null; cancelBtn.onclick = null; };
+    okBtn.onclick = () => { cleanup(); onConfirm(); };
+    cancelBtn.onclick = () => { cleanup(); };
+}
+
+// Small confetti burst for peak-end moments — kept minimal/monochrome-accent, not gimmicky.
+function fireConfetti(container) {
+    if (!container) return;
+    const colors = ['var(--accent)', 'var(--accent-2)', 'var(--primary)'];
+    for (let i = 0; i < 14; i++) {
+        const piece = document.createElement('div');
+        piece.className = 'confetti-piece';
+        piece.style.left = (10 + Math.random() * 80) + '%';
+        piece.style.background = colors[i % colors.length];
+        piece.style.animationDelay = (Math.random() * 0.2) + 's';
+        container.appendChild(piece);
+        setTimeout(() => piece.remove(), 1400);
+    }
+}
+
 async function getUserSources() {
     try {
         const resp = await fetch(CONFIG.API_BASE + '/user/sources.php', { method: 'GET', credentials: 'include', headers: { 'Accept': 'application/json' } });
@@ -782,6 +1023,7 @@ async function refreshSourceCount() {
         else { walletBtnCount.style.display = 'none'; }
     }
     if (sourcePanelOpenCat === 'WALLET') renderSavedSourceChips();
+    renderProgressCard();
     return sources;
 }
 document.addEventListener('DOMContentLoaded', refreshSourceCount);
@@ -803,32 +1045,38 @@ function returnAllMovableNodesHome() {
 
 function updateSelectionChips() {
     const sourceEl = document.getElementById('sourceRowText');
+    const sourceIcon = document.getElementById('sourceRowIcon');
     if (sourceEl) {
         if (state.fromInst && state.fromAsset) {
             const instName = PARTICIPANTS[state.fromInst]?.name || state.fromInst;
             sourceEl.textContent = instName;
             sourceEl.classList.add('filled');
+            if (sourceIcon) sourceIcon.textContent = assetIcon(state.fromAsset);
         } else {
             sourceEl.textContent = 'Not selected \u203a';
             sourceEl.classList.remove('filled');
+            if (sourceIcon) sourceIcon.textContent = '💳';
         }
     }
     const destEl = document.getElementById('destRowText');
+    const destIcon = document.getElementById('destRowIcon');
     if (destEl) {
         if (state.swapType === 'IDENTITY') {
-            if (state.toIdentityValue) { destEl.textContent = 'Identity: ' + maskIdentifier(state.toIdentityValue); destEl.classList.add('filled'); }
-            else { destEl.textContent = 'Not selected \u203a'; destEl.classList.remove('filled'); }
+            if (state.toIdentityValue) { destEl.textContent = 'Identity: ' + maskIdentifier(state.toIdentityValue); destEl.classList.add('filled'); if (destIcon) destIcon.textContent = '🪪'; }
+            else { destEl.textContent = 'Not selected \u203a'; destEl.classList.remove('filled'); if (destIcon) destIcon.textContent = '🎯'; }
         } else if (state.swapType === 'MULTI_SOURCE') {
             const activeCount = state.multiSources.filter(s => s.institution && s.amount > 0).length;
-            if (activeCount > 0) { destEl.textContent = activeCount + ' combined source(s)'; destEl.classList.add('filled'); }
-            else { destEl.textContent = 'Not selected \u203a'; destEl.classList.remove('filled'); }
+            if (activeCount > 0) { destEl.textContent = activeCount + ' combined source(s)'; destEl.classList.add('filled'); if (destIcon) destIcon.textContent = '🧩'; }
+            else { destEl.textContent = 'Not selected \u203a'; destEl.classList.remove('filled'); if (destIcon) destIcon.textContent = '🎯'; }
         } else if (state.toInst) {
             const instName = PARTICIPANTS[state.toInst]?.name || state.toInst;
             destEl.textContent = instName;
             destEl.classList.add('filled');
+            if (destIcon) destIcon.textContent = state.swapType === 'CASHOUT' ? '💵' : assetIcon(state.toAsset);
         } else {
             destEl.textContent = 'Not selected \u203a';
             destEl.classList.remove('filled');
+            if (destIcon) destIcon.textContent = '🎯';
         }
     }
 }
@@ -1070,8 +1318,8 @@ async function viewWalletBalance() {
     if (!result.success) {
         document.getElementById('modalBody').innerHTML = `
             <div style="text-align:center;padding:20px;color:var(--danger);">
-                <div style="font-weight:700;">Failed to load balances</div>
-                <div style="font-size:12px;color:var(--text-muted);margin-top:8px;">${escapeHtml(result.error)}</div>
+                <div style="font-weight:700;">Couldn't load your balances</div>
+                <div style="font-size:12px;color:var(--text-muted);margin-top:8px;">${escapeHtml(friendlyApiError(result.error))}</div>
                 <button class="btn btn-primary btn-sm" onclick="viewWalletBalance()" style="margin-top:12px;">
                     Retry
                 </button>
@@ -1126,17 +1374,20 @@ async function viewWalletBalance() {
             balanceDisplay = formatMoney(balance.balance, balance.currency);
             currency = balance.currency;
         } else {
-            balanceDisplay = `<span style="color:var(--text-muted);font-size:12px;">${escapeHtml(balance.error || 'Unavailable')}</span>`;
+            balanceDisplay = `<span style="color:var(--text-muted);font-size:12px;">${escapeHtml(friendlyApiError(balance.error) || 'Unavailable')}</span>`;
         }
         
         html += `
             <div style="border:1px solid var(--border);padding:13px;margin-bottom:8px;background:#fff;">
                 <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
-                    <div>
-                        <div style="font-weight:700;">${escapeHtml(instName)}</div>
-                        <div style="font-size:12px;color:var(--text-muted);">
-                            ${escapeHtml(assetLabel)} · ${escapeHtml(source.identifier)}
-                            ${source.account_name ? ` · ${escapeHtml(source.account_name)}` : ''}
+                    <div style="display:flex;align-items:center;gap:10px;">
+                        <span class="row-icon" style="font-size:18px;">${assetIcon(source.asset_type)}</span>
+                        <div>
+                            <div style="font-weight:700;">${escapeHtml(instName)}</div>
+                            <div style="font-size:12px;color:var(--text-muted);">
+                                ${escapeHtml(assetLabel)} · ${escapeHtml(source.identifier)}
+                                ${source.account_name ? ` · ${escapeHtml(source.account_name)}` : ''}
+                            </div>
                         </div>
                     </div>
                     <div style="text-align:right;">
@@ -1183,7 +1434,7 @@ async function refreshSourceBalance(sourceId) {
         showMessage(`Balance updated: ${formatMoney(data.balance, data.currency)}`, 'success');
         viewWalletBalance();
     } else {
-        showMessage(`Failed to fetch balance: ${result.error}`, 'error');
+        showMessage(`Couldn't fetch that balance: ${friendlyApiError(result.error)}`, 'error');
         viewWalletBalance();
     }
 }
@@ -1305,6 +1556,8 @@ document.addEventListener('DOMContentLoaded', function() {
     loadAgentStatus();
     loadUserSources();
     updateSelectionChips();
+    renderProgressCard();
+    renderRepeatCard();
 });
 
 function buildHeaders() {
@@ -1348,7 +1601,7 @@ function assetHasAmountField(assetType) { return (getAssetConfig(assetType)?.fie
 function renderDynamicFields(containerId, assetType, prefix, onChange, includePin) {
     const container = document.getElementById(containerId);
     const config = getAssetConfig(assetType);
-    if (!config) { container.innerHTML = `<div class="help" style="color:var(--danger);">Unknown asset type: ${assetType}</div>`; return; }
+    if (!config) { container.innerHTML = `<div class="help" style="color:var(--danger);">This account type isn't supported yet.</div>`; return; }
     let fields = config.fields || [];
     if (!includePin) fields = fields.filter(f => f.vault_field !== 'pin');
     fields = fields.filter(f => f.name !== 'amount');
@@ -1383,7 +1636,7 @@ function fieldsValidForAsset(assetType, values, includePin) {
     const config = getAssetConfig(assetType);
     if (!config) {
         console.warn('No config found for asset type:', assetType);
-        return { valid: false, reason: 'Asset type not found: ' + assetType };
+        return { valid: false, reason: 'not_supported', friendlyMessage: "That account type isn't supported yet." };
     }
     
     let fields = config.fields || [];
@@ -1420,7 +1673,7 @@ function fieldsValidForAsset(assetType, values, includePin) {
                         if (alphanumericMatch) return true;
                     }
                     failedField = f.name;
-                    failedReason = `pattern mismatch (value: "${val}", pattern: ${pattern})`;
+                    failedReason = 'pattern_mismatch';
                     return false;
                 }
             } catch (e) {
@@ -1431,7 +1684,7 @@ function fieldsValidForAsset(assetType, values, includePin) {
     });
     
     if (!result) {
-        return { valid: false, field: failedField, reason: failedReason };
+        return { valid: false, field: failedField, reason: failedReason, friendlyMessage: friendlyFieldMessage(assetType, failedField, failedReason) };
     }
     
     return { valid: true };
@@ -1470,7 +1723,19 @@ function selectToAsset(type) {
     refreshUI();
 }
 function updateToField(name, value) { state.toFields[name] = value; refreshUI(); }
-function setDeliveryMethod(method) { state.deliveryMethod = method; refreshUI(); }
+function setDeliveryMethod(method) {
+    state.deliveryMethod = method;
+    const help = document.getElementById('deliveryMethodHelp');
+    if (help) {
+        const copy = {
+            ATM: "You'll receive a code by SMS to withdraw cash at any partner ATM.",
+            AGENT: "You'll receive a code by SMS — show it to any partner agent to collect cash.",
+            VOUCHER: "You'll receive a voucher code by SMS, redeemable anywhere VouchMorph vouchers are accepted."
+        };
+        help.textContent = copy[method] || '';
+    }
+    refreshUI();
+}
 
 function setSwapType(type) {
     state.swapType = type;
@@ -1535,6 +1800,12 @@ function isFixedAssetType(assetType) {
 function voucherTotalExceedsTarget() {
     const voucherTotal = state.multiSources.filter(s => isFixedAssetType(s.assetType)).reduce((sum, s) => sum + (s.amount || 0), 0);
     return state.tabTotalAmount > 0 && voucherTotal > state.tabTotalAmount + 0.01;
+}
+function fixVoucherOverflow() {
+    const voucherTotal = state.multiSources.filter(s => isFixedAssetType(s.assetType)).reduce((sum, s) => sum + (s.amount || 0), 0);
+    state.tabTotalAmount = voucherTotal;
+    if (state.contributionStrategy === 'EQUAL') autoSplitEven();
+    reopenTabBuilder();
 }
 function hasDuplicateInstitution() {
     const insts = state.multiSources.filter(s => s.institution).map(s => s.institution);
@@ -1821,7 +2092,7 @@ function renderTabBuilder() {
 
     let statusHtml = '';
     if (voucherTotalExceedsTarget()) {
-        statusHtml = `<div class="tab-status-line bad">Voucher total exceeds your tab amount — remove a voucher or raise the total</div>`;
+        statusHtml = `<div class="tab-status-line bad">Your voucher is bigger than the tab amount. <span class="quick-link muted" style="text-decoration:underline;" onclick="fixVoucherOverflow()">Fix it for me →</span></div>`;
     } else if (strategy === 'USER_SPECIFIED' && state.tabTotalAmount > 0) {
         if (remaining === 0) {
             statusHtml = `<div class="tab-status-line ok">Fully allocated across ${state.multiSources.filter(s => s.institution).length} source(s)</div>`;
@@ -1831,7 +2102,7 @@ function renderTabBuilder() {
     } else if (strategy === 'RATIO') {
         statusHtml = `<div class="tab-status-line warn">Estimated split — recalculated from live balances when you swap</div>`;
     } else if (strategy === 'SMART') {
-        statusHtml = `<div class="tab-status-line ok">VouchMorph will balance this across your sources automatically</div>`;
+        statusHtml = `<div class="tab-status-line ok">✓ You don't need to do anything — we'll balance this across your sources automatically</div>`;
     }
 
     if (hasDuplicateInstitution() && strategy === 'USER_SPECIFIED') {
@@ -1848,13 +2119,14 @@ function renderTabBuilder() {
             <div class="tab-hero-sub">${activeCount} source(s) added</div>
         </div>
         ${renderCircuitDiagram()}
-        ${statusHtml}
         <div class="tab-strategy-row">
+            <button class="quick-link ${strategy==='SMART'?'selected':''} recommended" onclick="setContributionStrategy('SMART')">Smart<span class="recommended-badge">Best</span></button>
             <button class="quick-link ${strategy==='EQUAL'?'selected':''}" onclick="setContributionStrategy('EQUAL')">Equal</button>
             <button class="quick-link ${strategy==='RATIO'?'selected':''}" onclick="setContributionStrategy('RATIO')">Ratio</button>
-            <button class="quick-link ${strategy==='SMART'?'selected':''}" onclick="setContributionStrategy('SMART')">Smart</button>
             <button class="quick-link ${strategy==='USER_SPECIFIED'?'selected':''}" onclick="setContributionStrategy('USER_SPECIFIED')">Manual</button>
         </div>
+        <div class="tab-strategy-hint">Not sure? Smart is recommended — we'll balance it for you.</div>
+        ${statusHtml}
 
         <div id="tabSourceList" class="tab-source-list" style="opacity:0;">${cards}</div>
         <button class="quick-link" style="width:100%;justify-content:center;padding:12px;margin-top:4px;" onclick="addMultiSourceRow(); reopenTabBuilder();">+ Add another source</button>
@@ -1876,9 +2148,9 @@ function renderTabSourceCard(src, idx) {
             <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px;">Source ${idx + 1} — not set up yet</div>
             <div class="quick-actions">
                 <span class="quick-link" onclick="pickSavedSourceForTab(${src.id})">Use a saved source</span>
-                <span class="quick-link muted" onclick="tabSourceManual(${src.id}, 'ACCOUNT')">Account</span>
-                <span class="quick-link muted" onclick="tabSourceManual(${src.id}, 'CARD')">Card</span>
-                <span class="quick-link muted" onclick="tabSourceManual(${src.id}, 'VOUCHER')">Voucher</span>
+                <span class="quick-link muted" onclick="tabSourceManual(${src.id}, 'ACCOUNT')">🏦 Account</span>
+                <span class="quick-link muted" onclick="tabSourceManual(${src.id}, 'CARD')">🪪 Card</span>
+                <span class="quick-link muted" onclick="tabSourceManual(${src.id}, 'VOUCHER')">🎟️ Voucher</span>
             </div>
         </div>`;
     }
@@ -1903,7 +2175,7 @@ function renderTabSourceCard(src, idx) {
     return `<div class="tab-source-card">
         <div style="display:flex;justify-content:space-between;align-items:center;">
             <div style="display:flex;align-items:center;gap:8px;">
-                <span style="width:10px;height:10px;background:var(--primary);flex-shrink:0;"></span>
+                <span class="row-icon" style="font-size:16px;">${assetIcon(src.assetType)}</span>
                 <div><div style="font-weight:700;font-size:13px;">${escapeHtml(instName)}</div><div style="font-size:11px;color:var(--text-dim);">${escapeHtml(getAssetConfig(src.assetType)?.label || src.assetType || '')}</div></div>
             </div>
             ${state.multiSources.length > 2 ? `<button class="btn-danger-outline" onclick="removeMultiSourceRow(${src.id}); reopenTabBuilder();">Remove</button>` : ''}
@@ -1993,16 +2265,16 @@ function getSwapReadiness() {
         }
         if (!multiSourcesValid()) {
             state.multiSources.forEach((s, idx) => {
-                if (!s.institution) missingFields.push(`Source ${idx + 1}: institution not selected`);
-                if (!s.assetType) missingFields.push(`Source ${idx + 1}: asset type not selected`);
-                if (!(s.amount > 0)) missingFields.push(`Source ${idx + 1}: amount not set`);
+                if (!s.institution) missingFields.push(`Source ${idx + 1}: pick an institution`);
+                if (!s.assetType) missingFields.push(`Source ${idx + 1}: pick an asset type`);
+                if (!(s.amount > 0)) missingFields.push(`Source ${idx + 1}: enter an amount`);
                 const config = getAssetConfig(s.assetType);
                 if (config) {
                     const fields = config.fields || [];
                     const requiredFields = fields.filter(f => f.required && f.name !== 'amount' && f.vault_field !== 'pin');
                     requiredFields.forEach(f => {
                         if (!s.fields[f.name] || String(s.fields[f.name]).trim().length === 0) {
-                            missingFields.push(`Source ${idx + 1}: ${f.label} (${f.name}) required`);
+                            missingFields.push(`Source ${idx + 1}: ${friendlyFieldMessage(s.assetType, f.name, 'required but empty')}`);
                         }
                     });
                 }
@@ -2019,7 +2291,7 @@ function getSwapReadiness() {
             else if (!state.toAsset) reasons.push('select a destination asset type');
             else if (!fieldsValidForAsset(state.toAsset, state.toFields, false).valid) {
                 const result = fieldsValidForAsset(state.toAsset, state.toFields, false);
-                missingFields.push(`Destination: ${result.field || 'unknown field'} - ${result.reason || 'required'}`);
+                missingFields.push(`Destination: ${result.friendlyMessage || 'please fill this in'}`);
                 reasons.push('fill in the required destination fields');
             }
         }
@@ -2040,14 +2312,14 @@ function getSwapReadiness() {
     if (state.fromInst && state.fromAsset) {
         const validation = fieldsValidForAsset(state.fromAsset, state.fromFields, true);
         if (!validation.valid) {
-            missingFields.push(`Source: ${validation.field || 'unknown field'} - ${validation.reason || 'required'}`);
+            missingFields.push(`Source: ${validation.friendlyMessage || 'please fill this in'}`);
             reasons.push('fill in the required source fields');
         }
     }
     
     if (state.swapType === 'IDENTITY') {
         if (!state.toIdentityValue) {
-            missingFields.push('Identity: identity value required');
+            missingFields.push('Identity: enter who you\'re sending to');
             reasons.push('enter the identity value to swap to');
         }
     } else if (state.swapType === 'CASHOUT') {
@@ -2056,7 +2328,7 @@ function getSwapReadiness() {
         } else if (state.toInst && state.toAsset) {
             const validation = fieldsValidForAsset(state.toAsset, state.toFields, false);
             if (!validation.valid) {
-                missingFields.push(`Destination: ${validation.field || 'unknown field'} - ${validation.reason || 'required'}`);
+                missingFields.push(`Destination: ${validation.friendlyMessage || 'please fill this in'}`);
                 reasons.push('fill in the required destination fields');
             }
         }
@@ -2068,7 +2340,7 @@ function getSwapReadiness() {
         } else {
             const validation = fieldsValidForAsset(state.toAsset, state.toFields, false);
             if (!validation.valid) {
-                missingFields.push(`Destination: ${validation.field || 'unknown field'} - ${validation.reason || 'required'}`);
+                missingFields.push(`Destination: ${validation.friendlyMessage || 'please fill this in'}`);
                 reasons.push('fill in the required destination fields');
             }
         }
@@ -2094,7 +2366,7 @@ function refreshUI() {
         } else {
             let msg = '';
             if (readiness.missingFields && readiness.missingFields.length > 0) {
-                msg += 'Missing: ' + readiness.missingFields.join('; ');
+                msg += readiness.missingFields.join('; ');
             } else {
                 msg += readiness.reasons.join(', ');
             }
@@ -2130,7 +2402,7 @@ async function previewSwap() {
     btn.disabled = false;
     btn.innerHTML = original;
     refreshUI();
-    if (!result.ok) { showMessage('Preview failed: ' + result.error, 'error'); return; }
+    if (!result.ok) { showMessage('Preview failed: ' + friendlyApiError(result.error), 'error'); return; }
     showPreviewModal(result.body);
 }
 function showPreviewModal(previewData) {
@@ -2138,26 +2410,28 @@ function showPreviewModal(previewData) {
     const swapType = state.swapPayload.swap_type;
     const netAmount = data.net_amount_destination_currency || data.net_amount;
     const destCurrency = data.destination_currency || data.source_currency;
+    const swapTypeLabel = { DEPOSIT: 'To an account', CASHOUT: 'Cash pickup', IDENTITY: 'To an identity', MULTI_SOURCE: 'Combined sources' }[swapType] || swapType.replace(/_/g, ' ');
     const bodyHtml = `
         <div class="review-hero">
-            <div class="review-hero-label">Settlement amount</div>
+            <div class="review-hero-label">You'll receive</div>
             <div class="review-hero-amount">${formatMoney(netAmount, destCurrency)}</div>
-            <div class="review-hero-note">Real-time quote active</div>
+            <div class="review-hero-note">Live quote — locked in for a few minutes</div>
         </div>
         <div class="preview-box">
-            <div class="preview-row"><span>Protocol type</span><span class="value">${swapType.replace(/_/g, ' ')}</span></div>
-            <div class="preview-row"><span>Source entity</span><span class="value">${escapeHtml(data.source_institution || '—')}</span></div>
-            <div class="preview-row"><span>Destination entity</span><span class="value">${escapeHtml(data.destination_institution || '—')}</span></div>
-            <div class="preview-row"><span>Principal amount</span><span class="value">${formatMoney(data.amount_requested, data.source_currency)}</span></div>
-            <div class="preview-row"><span>Transaction fee</span><span class="value">${formatMoney(data.total_fee, data.source_currency)}</span></div>
+            <div class="preview-row"><span>Swap type</span><span class="value">${escapeHtml(swapTypeLabel)}</span></div>
+            <div class="preview-row"><span>From</span><span class="value">${escapeHtml(data.source_institution || '—')}</span></div>
+            <div class="preview-row"><span>To</span><span class="value">${escapeHtml(data.destination_institution || '—')}</span></div>
+            <div class="preview-row"><span>Amount</span><span class="value">${formatMoney(data.amount_requested, data.source_currency)}</span></div>
+            <div class="preview-row"><span>Fee</span><span class="value">${formatMoney(data.total_fee, data.source_currency)}</span></div>
         </div>
         <div class="preview-security">
-            <div class="preview-security-icon"></div>
+            <div class="preview-security-icon">🔒</div>
             <div class="preview-security-text">
-                <strong>Encrypted settlement guaranteed</strong>
-                <p>This transaction is protected by VouchMorph's audit-grade multi-layer encryption. All funds are cleared through institutional protocols.</p>
+                <strong>Your money is protected</strong>
+                <p>This swap is encrypted end-to-end and only moves once you tap Confirm below. Nothing happens until then.</p>
             </div>
         </div>
+        <div class="preview-reassure">Nothing is final until you confirm — you can still back out.</div>
         <div class="modal-actions">
             <button class="btn btn-secondary" onclick="closeModal()">Discard</button>
             <button class="btn btn-primary" onclick="confirmSwap()">Confirm and swap</button>
@@ -2177,27 +2451,36 @@ async function confirmSwap() {
     btn.disabled = false;
     btn.innerHTML = original;
     refreshUI();
-    if (!result.ok) { showMessage('Swap failed: ' + result.error, 'error'); return; }
-    showResultModal(result.body);
+    if (!result.ok) { showMessage('Swap failed: ' + friendlyApiError(result.error), 'error'); return; }
+    const journeyData = Journey.recordSwap(payload, state.lastPreview);
+    renderRepeatCard();
+    renderProgressCard();
+    showResultModal(result.body, journeyData);
 }
-function showResultModal(response) {
+function showResultModal(response, journeyData) {
     const data = response.data || {};
     const swapType = state.swapPayload.swap_type;
     const reference = response.swap_reference || data.reference || '—';
     let inner = '';
     if (swapType === 'CASHOUT') {
-        inner = `<div class="result-box"><div class="icon">&#10003;</div><div class="result-title">Cashout code generated</div><div class="result-sub">Reference: ${escapeHtml(reference)}</div>${data.atm_code || data.voucher_number ? `<div class="atm-code"><div class="code">${escapeHtml(data.atm_code || data.voucher_number || '')}</div></div>` : ''}<div style="margin-top:12px;"><div style="font-size:22px;font-weight:600;font-family:var(--font-mono);">${formatMoney(data.amount ?? state.swapPayload.amount, state.swapPayload.currency)}</div></div>`;
+        inner = `<div class="result-box" id="resultBoxRoot"><div class="icon">✓</div><div class="result-title">Nice! Your cashout code is ready</div><div class="result-sub">Reference: ${escapeHtml(reference)}</div>${data.atm_code || data.voucher_number ? `<div class="atm-code"><div class="code">${escapeHtml(data.atm_code || data.voucher_number || '')}</div></div>` : ''}<div style="margin-top:12px;"><div style="font-size:22px;font-weight:600;font-family:var(--font-mono);">${formatMoney(data.amount ?? state.swapPayload.amount, state.swapPayload.currency)}</div></div>`;
     } else if (swapType === 'IDENTITY') {
         const claimPinBox = data.claim_pin ? `
             <div class="atm-code" style="margin-top:12px;">
                 <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Backup PIN — only share this if the recipient doesn't get the SMS</div>
                 <div class="code">${escapeHtml(data.claim_pin)}</div>
             </div>` : '';
-        inner = `<div class="result-box"><div class="icon">&#10003;</div><div class="result-title">Identity swap initiated</div><div class="result-sub">Reference: ${escapeHtml(reference)}</div><div style="margin:12px 0;font-size:13px;"><strong>${escapeHtml(data.identity_type || state.swapPayload.identity_type)}: ${escapeHtml(data.identity_value || state.swapPayload.identity_value)}</strong></div><div style="font-size:22px;font-weight:600;font-family:var(--font-mono);">${formatMoney(data.amount ?? state.swapPayload.amount, data.currency || state.swapPayload.currency)}</div>${claimPinBox}`;
+        inner = `<div class="result-box" id="resultBoxRoot"><div class="icon">✓</div><div class="result-title">Sent! They'll be notified now</div><div class="result-sub">Reference: ${escapeHtml(reference)}</div><div style="margin:12px 0;font-size:13px;"><strong>${escapeHtml(data.identity_type || state.swapPayload.identity_type)}: ${escapeHtml(data.identity_value || state.swapPayload.identity_value)}</strong></div><div style="font-size:22px;font-weight:600;font-family:var(--font-mono);">${formatMoney(data.amount ?? state.swapPayload.amount, data.currency || state.swapPayload.currency)}</div>${claimPinBox}`;
     } else {
-        inner = `<div class="result-box"><div class="icon">&#10003;</div><div class="result-title">Swap completed</div><div class="result-sub">Reference: ${escapeHtml(reference)}</div><div style="font-size:22px;font-weight:600;font-family:var(--font-mono);margin-top:12px;">${formatMoney(data.amount ?? state.swapPayload.amount, data.currency || data.destination_currency || state.swapPayload.destination_currency || state.swapPayload.currency)}</div>`;
+        inner = `<div class="result-box" id="resultBoxRoot"><div class="icon">✓</div><div class="result-title">Nice! Your money's on its way</div><div class="result-sub">Reference: ${escapeHtml(reference)}</div><div style="font-size:22px;font-weight:600;font-family:var(--font-mono);margin-top:12px;">${formatMoney(data.amount ?? state.swapPayload.amount, data.currency || data.destination_currency || state.swapPayload.destination_currency || state.swapPayload.currency)}</div>`;
     }
-    openModal('Swap result', `${inner}<div class="cta-row" style="margin-top:16px;"><button class="btn btn-primary" onclick="closeModal(); location.reload();">Done</button></div></div>`);
+    const swapCount = journeyData?.swapsThisMonth || 1;
+    const statLine = swapCount > 1
+        ? `<div class="result-stat">You've made ${swapCount} swaps this month. You've got the hang of this. 🎉</div>`
+        : `<div class="result-stat">That's your swap — nicely done. It'll show up in Activity any time you want to check on it.</div>`;
+    openModal('Swap result', `${inner}${statLine}<div class="cta-row" style="margin-top:16px;"><button class="btn btn-primary" onclick="closeModal(); location.reload();">Done</button></div></div>`);
+    // Peak-end moment — small celebratory confetti burst on the success screen only.
+    setTimeout(() => fireConfetti(document.getElementById('resultBoxRoot')), 150);
 }
 
 const IDENTITY_TYPE_LABELS = { national_id: 'National ID', birth_certificate: 'Birth Certificate', voter_id: 'Voter ID', phone: 'Phone Number', email: 'Email' };
@@ -2239,6 +2522,7 @@ async function loadUserSources() {
             if (userSources.length > 0) { walletBtnCount.style.display = 'inline-block'; walletBtnCount.textContent = userSources.length; }
             else { walletBtnCount.style.display = 'none'; }
         }
+        renderProgressCard();
     }
     const pendingResult = await callApi(CONFIG.API_BASE + '/api/v1/sources/pending.php', {});
     if (pendingResult.ok) { pendingSources = pendingResult.body.data || []; updateToolboxBadge(); }
@@ -2274,7 +2558,7 @@ function renderSavedSourceChips() {
         return `
             <div class="saved-source-row ${isSelected ? 'active' : ''}" onclick="selectSavedSource('${source.id}')">
                 <div class="row-main">
-                    <div class="row-inst">${escapeHtml(instName)}</div>
+                    <div class="row-inst">${assetIcon(source.asset_type)} ${escapeHtml(instName)}</div>
                     <div class="row-ident">${escapeHtml(identifier)}${source.account_name ? ' · ' + escapeHtml(source.account_name) : ''}</div>
                 </div>
                 <span class="row-check">✓</span>
@@ -2424,8 +2708,16 @@ function openMySourcesLegacy() {
     openModal('My sources', renderMySourcesLegacy());
 }
 function renderMySourcesLegacy() {
+    const activePending = pendingSources.filter(p => ['pending_confirmation', 'pending', 'proposed', 'otp_pending', 'oauth_pending'].includes(p.status));
+    const pendingBanner = activePending.length > 0 ? `
+        <div style="background:var(--accent-soft);border-left:3px solid var(--accent);padding:10px 14px;margin-bottom:14px;font-size:12px;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+            <span>${activePending.length} source(s) still verifying</span>
+            <span class="quick-link muted" onclick="openPendingSources()">View →</span>
+        </div>` : '';
+
     if (userSources.length === 0) {
         return `
+            ${pendingBanner}
             <div style="text-align:center;padding:20px;">
                 <div style="font-weight:700;margin:8px 0;">No sources added yet</div>
                 <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px;">Link your bank accounts, wallets, or cards to use them as swap sources.</div>
@@ -2440,7 +2732,7 @@ function renderMySourcesLegacy() {
         return `
             <div class="source-card">
                 <div class="source-header">
-                    <div class="source-institution">${escapeHtml(PARTICIPANTS[source.institution]?.name || source.institution)}</div>
+                    <div class="source-institution">${assetIcon(source.asset_type)} ${escapeHtml(PARTICIPANTS[source.institution]?.name || source.institution)}</div>
                     <div>
                         <span class="source-status ${statusClass}">${statusLabel}</span>
                         ${isActive ? `<button class="btn-primary btn-sm" onclick="useSourceForSwap('${source.id}')" style="margin-left:8px;">Use</button>` : ''}
@@ -2457,6 +2749,7 @@ function renderMySourcesLegacy() {
             </div>`;
     }).join('');
     return `
+        ${pendingBanner}
         <div style="margin-bottom:16px;">
             <button class="btn btn-primary btn-sm" onclick="openAddSource()">Add new source</button>
             <span style="font-size:12px;color:var(--text-muted);margin-left:12px;">${userSources.length} source(s) linked</span>
@@ -2524,17 +2817,20 @@ function openAddSource() {
         </div>
         <div class="field-group" id="addSourceAssetGroup" style="display:none;">
             <label>Asset type</label>
-            <select id="addSourceAssetType"></select>
+            <select id="addSourceAssetType" onchange="onAddSourceAssetTypeChange(this.value)"></select>
             <div class="help">Users can only add Accounts, Wallets, or Cards.</div>
         </div>
         <div class="field-group">
             <label>Identifier</label>
             <input id="addSourceIdentifier" placeholder="Account number, phone, or card number">
-            <div class="help">The number that identifies your account at this institution.</div>
+            <div class="help" id="addSourceIdentifierHelp">The number that identifies your account at this institution.</div>
         </div>
         <div class="field-group">
             <label>Account name (optional)</label>
             <input id="addSourceAccountName" placeholder="e.g. My Main Account">
+        </div>
+        <div style="background:var(--accent-soft);border-left:3px solid var(--accent);padding:10px 14px;font-size:12px;margin-bottom:14px;color:var(--primary);">
+            🔒 Your details are encrypted and only used to verify you own this account — VouchMorph never stores your bank password.
         </div>
         <div id="addSourceOtpFields" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
             <div style="font-size:12px;font-weight:700;margin-bottom:8px;">Verify with OTP</div>
@@ -2548,7 +2844,7 @@ function openAddSource() {
             <button class="btn btn-secondary" onclick="openMySourcesLegacy()">Cancel</button>
             <button class="btn btn-primary" id="addSourceSubmitBtn" onclick="submitAddSource()">Link source</button>
         </div>`;
-    openModal('Add source', body);
+    openModal('Add source — step 1 of 2: Link', body);
 }
 
 let addSourceState = { attemptId: null, requiresOtp: false, requiresRedirect: false, redirectUrl: null, institution: null, assetType: null, identifier: null };
@@ -2557,9 +2853,33 @@ function onAddSourceInstChange(code) {
     const group = document.getElementById('addSourceAssetGroup');
     const sel = document.getElementById('addSourceAssetType');
     if (!code) { group.style.display = 'none'; sel.innerHTML = ''; return; }
-    const eligibleTypes = ['ACCOUNT', 'WALLET', 'CARD'];
-    sel.innerHTML = eligibleTypes.map(t => `<option value="${t}">${getAssetConfig(t)?.label || t}</option>`).join('');
+    const inst = PARTICIPANTS[code];
+    const allTypes = inst?.asset_types || [];
+    const eligible = allTypes.filter(t => ['ACCOUNT', 'WALLET', 'CARD', 'MNO-WALLET', 'BANK-WALLET'].includes(String(t).toUpperCase()));
+    if (eligible.length === 0) {
+        sel.innerHTML = `<option value="">This institution doesn't support self-service linking yet</option>`;
+        group.style.display = 'block';
+        return;
+    }
+    sel.innerHTML = eligible.map(t => `<option value="${t}">${assetIcon(t)} ${getAssetConfig(t)?.label || t}</option>`).join('');
     group.style.display = 'block';
+    onAddSourceAssetTypeChange(eligible[0]);
+}
+function onAddSourceAssetTypeChange(type) {
+    const idInput = document.getElementById('addSourceIdentifier');
+    const help = document.getElementById('addSourceIdentifierHelp');
+    if (!idInput) return;
+    const t = String(type).toUpperCase();
+    const copy = {
+        'ACCOUNT': ['e.g. 0011223344', 'Your bank account number.'],
+        'CARD': ['e.g. 16-digit card number', 'The number on the front of your card.'],
+        'WALLET': ['e.g. +267 71 234 567', 'The phone number your wallet is registered to.'],
+        'MNO-WALLET': ['e.g. +267 71 234 567', 'The phone number your mobile wallet is registered to.'],
+        'BANK-WALLET': ['e.g. 0011223344', 'Your bank wallet account number.'],
+    };
+    const [ph, h] = copy[t] || ['Account number, phone, or card number', 'The number that identifies your account at this institution.'];
+    idInput.placeholder = ph;
+    if (help) help.textContent = h;
 }
 
 async function submitAddSource() {
@@ -2579,7 +2899,7 @@ async function submitAddSource() {
     const result = await callApi(CONFIG.API_BASE + '/user/add_source.php', { institution, asset_type: assetType, identifier, account_name: accountName || undefined });
 
     btn.disabled = false; btn.textContent = original;
-    if (!result.ok) { showMessage('Failed to add source: ' + result.error, 'error'); return; }
+    if (!result.ok) { showMessage('Could not add that source: ' + friendlyApiError(result.error), 'error'); return; }
 
     const data = result.body.data || {};
     addSourceState.attemptId = data.attempt_id || null;
@@ -2594,6 +2914,7 @@ async function submitAddSource() {
         return;
     }
     if (data.requires_otp) {
+        document.getElementById('modalTitle').textContent = 'Add source — step 2 of 2: Verify';
         document.getElementById('addSourceOtpFields').style.display = 'block';
         document.getElementById('otpMessage').textContent = data.message || 'A verification code has been sent to your registered phone.';
         document.getElementById('addSourceSubmitBtn').style.display = 'none';
@@ -2616,18 +2937,19 @@ async function completeSourceOtp() {
     const result = await callApi(CONFIG.API_BASE + '/user/verify_source.php', { attempt_id: addSourceState.attemptId, otp, user_id: CONFIG.USER_ID });
 
     btn.disabled = false; btn.textContent = original;
-    if (!result.ok) { showMessage('Verification failed: ' + result.error, 'error'); return; }
-    showMessage('Source verified and activated!', 'success');
+    if (!result.ok) { showMessage('That code didn\'t work: ' + friendlyApiError(result.error), 'error'); return; }
+    showMessage('Source verified and activated! 🎉', 'success');
     setTimeout(() => { loadUserSources(); openMySourcesLegacy(); }, 1500);
 }
 
 async function removeSource(sourceId) {
-    if (!confirm('Remove this source? You can add it again later.')) return;
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/sources/delete.php', { source_id: sourceId });
-    if (!result.ok) { showMessage('Failed to remove source: ' + result.error, 'error'); return; }
-    showMessage('Source removed.', 'success');
-    loadUserSources();
-    openMySourcesLegacy();
+    showConfirm('Remove this source? You can add it again later.', async () => {
+        const result = await callApi(CONFIG.API_BASE + '/api/v1/sources/delete.php', { source_id: sourceId });
+        if (!result.ok) { showMessage('Could not remove that source: ' + friendlyApiError(result.error), 'error'); return; }
+        showMessage('Source removed.', 'success');
+        loadUserSources();
+        openMySourcesLegacy();
+    });
 }
 
 function openPendingSources() {
@@ -2639,8 +2961,8 @@ async function loadPendingSources() {
     if (!result.ok) {
         document.getElementById('modalBody').innerHTML = `
             <div style="text-align:center;padding:20px;color:var(--danger);">
-                <div style="font-weight:700;">Failed to load pending sources</div>
-                <div style="font-size:12px;color:var(--text-muted);margin-top:8px;">${escapeHtml(result.error)}</div>
+                <div style="font-weight:700;">Couldn't load pending sources</div>
+                <div style="font-size:12px;color:var(--text-muted);margin-top:8px;">${escapeHtml(friendlyApiError(result.error))}</div>
                 <button class="btn btn-primary btn-sm" onclick="loadPendingSources()" style="margin-top:12px;">Retry</button>
             </div>`;
         return;
@@ -2691,7 +3013,7 @@ function renderPendingSources() {
                     ${source.otp_expires_at ? ` · OTP expires: ${new Date(source.otp_expires_at).toLocaleString()}` : ''}
                     ${source.expires_at ? ` · Expires: ${new Date(source.expires_at).toLocaleString()}` : ''}
                 </div>
-                ${source.error_message ? `<div style="font-size:11px;color:var(--danger);margin-top:4px;">Error: ${escapeHtml(source.error_message)}</div>` : ''}
+                ${source.error_message ? `<div style="font-size:11px;color:var(--danger);margin-top:4px;">${escapeHtml(friendlyApiError(source.error_message))}</div>` : ''}
             </div>`;
     });
     html += `</div>`;
@@ -2710,29 +3032,31 @@ function getSourceTypeLabel(source) {
     return typeMap[source.type] || source.type;
 }
 async function deletePendingSource(type, sourceId) {
-    if (!confirm('Delete this pending source? It can be re-added later.')) return;
-    const btn = document.querySelector(`[onclick*="deletePendingSource('${type}', ${sourceId})"]`);
-    const originalText = btn ? btn.textContent : 'Delete';
-    if (btn) { btn.textContent = 'Deleting...'; btn.disabled = true; }
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/sources/delete.php', { type, source_id: sourceId });
-    if (btn) { btn.textContent = originalText; btn.disabled = false; }
-    if (!result.ok) { showMessage('Failed to delete source: ' + result.error, 'error'); return; }
-    showMessage(result.body.data?.message || 'Source deleted successfully.', 'success');
-    loadPendingSources();
+    showConfirm('Delete this pending source? It can be re-added later.', async () => {
+        const btn = document.querySelector(`[onclick*="deletePendingSource('${type}', ${sourceId})"]`);
+        const originalText = btn ? btn.textContent : 'Delete';
+        if (btn) { btn.textContent = 'Deleting...'; btn.disabled = true; }
+        const result = await callApi(CONFIG.API_BASE + '/api/v1/sources/delete.php', { type, source_id: sourceId });
+        if (btn) { btn.textContent = originalText; btn.disabled = false; }
+        if (!result.ok) { showMessage('Could not delete that source: ' + friendlyApiError(result.error), 'error'); return; }
+        showMessage(result.body.data?.message || 'Source deleted successfully.', 'success');
+        loadPendingSources();
+    });
 }
 async function retryPendingSource(type, sourceId) {
-    if (!confirm('Retry this source? This will start a new verification attempt.')) return;
-    const btn = document.querySelector(`[onclick*="retryPendingSource('${type}', ${sourceId})"]`);
-    const originalText = btn ? btn.textContent : 'Retry';
-    if (btn) { btn.textContent = 'Retrying...'; btn.disabled = true; }
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/sources/retry.php', { type, source_id: sourceId });
-    if (btn) { btn.textContent = originalText; btn.disabled = false; }
-    if (!result.ok) { showMessage('Failed to retry source: ' + result.error, 'error'); return; }
-    const data = result.body.data || {};
-    if (data.requires_redirect) { showMessage(data.message || 'Redirecting to bank...', 'info'); setTimeout(() => { window.location.href = data.redirect_url; }, 1500); return; }
-    if (data.requires_otp) { showMessage(data.message || 'OTP sent. Enter the code to verify.', 'success'); loadPendingSources(); return; }
-    showMessage(data.message || 'Source retry initiated successfully.', 'success');
-    loadPendingSources();
+    showConfirm('Retry this source? This will start a new verification attempt.', async () => {
+        const btn = document.querySelector(`[onclick*="retryPendingSource('${type}', ${sourceId})"]`);
+        const originalText = btn ? btn.textContent : 'Retry';
+        if (btn) { btn.textContent = 'Retrying...'; btn.disabled = true; }
+        const result = await callApi(CONFIG.API_BASE + '/api/v1/sources/retry.php', { type, source_id: sourceId });
+        if (btn) { btn.textContent = originalText; btn.disabled = false; }
+        if (!result.ok) { showMessage('Could not retry that source: ' + friendlyApiError(result.error), 'error'); return; }
+        const data = result.body.data || {};
+        if (data.requires_redirect) { showMessage(data.message || 'Redirecting to bank...', 'info'); setTimeout(() => { window.location.href = data.redirect_url; }, 1500); return; }
+        if (data.requires_otp) { showMessage(data.message || 'OTP sent. Enter the code to verify.', 'success'); loadPendingSources(); return; }
+        showMessage(data.message || 'Source retry initiated successfully.', 'success');
+        loadPendingSources();
+    });
 }
 
 async function openToolbox() {
@@ -2745,24 +3069,31 @@ function renderToolbox() {
     const pendingCount = pendingSources.length;
     const claimCount = pendingClaims.length;
     const isAgent = !!(SessionUser && SessionUser.is_agent);
+    const steps = computeProgressSteps();
+    const doneCount = steps.filter(s => s.done).length;
+
+    const progressHtml = doneCount < steps.length ? `
+        <div style="background:var(--surface-muted);border:1px solid var(--border);padding:12px 14px;margin-bottom:18px;">
+            <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:var(--text-dim);margin-bottom:6px;">Getting set up — ${doneCount}/${steps.length}</div>
+            ${steps.map(s => `<div style="font-size:12px;color:${s.done ? 'var(--success)' : 'var(--text-muted)'};padding:2px 0;">${s.done ? '✓' : '○'} ${s.label}</div>`).join('')}
+        </div>` : '';
 
     const groups = [
         {
             title: 'Money',
             rows: [
-                { label: 'View balance', action: 'viewWalletBalance()' },
-                { label: 'My sources', action: 'openMySourcesLegacy()' },
-                { label: 'Add source', action: 'openAddSource()' },
-                { label: 'Pending sources', badge: pendingCount > 0 ? pendingCount : null, action: 'openPendingSources()' },
-                { label: 'Swap history', action: 'openSwapHistory()' },
-                { label: 'My VouchMorph Card', action: 'openMyCardModal()' },
+                { icon: '💰', label: 'View balance', action: 'viewWalletBalance()' },
+                { icon: '💳', label: 'My sources', badge: pendingCount > 0 ? pendingCount : null, action: 'openMySourcesLegacy()' },
+                { icon: '➕', label: 'Add source', action: 'openAddSource()' },
+                { icon: '📜', label: 'Swap history', action: 'openSwapHistory()' },
+                { icon: '🪪', label: 'My VouchMorph Card', action: 'openMyCardModal()' },
             ]
         },
         {
             title: 'Identity',
             rows: [
-                { label: 'Finalize identity swap', badge: claimCount > 0 ? claimCount : null, action: isAgent ? 'openAgentFinalizeIdentityModal()' : 'openFinalizeIdentityModal()' },
-                { label: 'Register identity', action: 'openAddIdentityModal()' },
+                { icon: '📥', label: 'Finalize identity swap', badge: claimCount > 0 ? claimCount : null, action: isAgent ? 'openAgentFinalizeIdentityModal()' : 'openFinalizeIdentityModal()' },
+                { icon: '🪪', label: 'Register identity', action: 'openAddIdentityModal()' },
             ]
         },
     ];
@@ -2771,8 +3102,8 @@ function renderToolbox() {
         groups.push({
             title: 'Agent',
             rows: [
-                { label: 'Agent tools', action: 'openAgentToolsModal()' },
-                { label: 'Agent destinations', action: 'openAgentModal()' },
+                { icon: '🧰', label: 'Agent tools', action: 'openAgentToolsModal()' },
+                { icon: '🏢', label: 'Agent destinations', action: 'openAgentModal()' },
             ]
         });
     }
@@ -2780,17 +3111,18 @@ function renderToolbox() {
     groups.push({
         title: 'Account',
         rows: [
-            { label: 'My profile', action: 'openProfileModal()' },
-            { label: 'Help', action: 'openHelpModal()' },
-            { label: 'Terms and conditions', action: 'openTermsModal()' },
+            { icon: '👤', label: 'My profile', action: 'openProfileModal()' },
+            { icon: '❓', label: 'Help', action: 'openHelpModal()' },
+            { icon: '📄', label: 'Terms and conditions', action: 'openTermsModal()' },
         ]
     });
 
-    return groups.map(g => `
+    return progressHtml + groups.map(g => `
         <div class="toolbox-group">
             <div class="toolbox-group-title">${g.title}</div>
             <div class="toolbox-list">${g.rows.map(r => `
                 <div class="toolbox-row" onclick="${r.action}">
+                    <span class="toolbox-row-icon">${r.icon || ''}</span>
                     <span class="toolbox-row-label">${r.label}</span>
                     ${r.badge ? `<span class="toolbox-badge" style="display:inline-flex;">${r.badge}</span>` : ''}
                 </div>`).join('')}</div>
@@ -2860,7 +3192,7 @@ async function submitDirectClaim() {
     
     if (!swapRef) { showMessage('Please enter the swap reference.', 'warning'); return; }
     if (!pin) { showMessage('Please enter your claim PIN.', 'warning'); return; }
-    if (!/^\d{4,6}$/.test(pin)) { showMessage('PIN must be 4-6 digits.', 'warning'); return; }
+    if (!/^\d{4,6}$/.test(pin)) { showMessage('Your PIN should be 4 to 6 digits.', 'warning'); return; }
     
     const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/claim_identity.php', {
         swap_reference: swapRef,
@@ -2868,12 +3200,12 @@ async function submitDirectClaim() {
     });
     
     if (!result.ok) { 
-        showMessage('Claim failed: ' + result.error, 'error'); 
+        showMessage('That claim didn\'t go through: ' + friendlyApiError(result.error), 'error'); 
         return; 
     }
     
     closeModal();
-    showMessage('Funds claimed successfully!', 'success');
+    showMessage('Funds claimed successfully! 🎉', 'success');
     checkPendingClaims();
 }
 
@@ -2909,8 +3241,8 @@ async function submitClaim(swapReference) {
         if (!payload.destination_institution || !payload.destination_identifier) { showMessage('Select a destination institution and enter an account/wallet number.', 'warning'); return; }
     }
     const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/claim_identity.php', payload);
-    if (!result.ok) { showMessage('Claim failed: ' + result.error, 'error'); return; }
-    closeModal(); showMessage('Funds claimed successfully!', 'success'); checkPendingClaims();
+    if (!result.ok) { showMessage('That claim didn\'t go through: ' + friendlyApiError(result.error), 'error'); return; }
+    closeModal(); showMessage('Funds claimed successfully! 🎉', 'success'); checkPendingClaims();
 }
 
 function openAddIdentityModal() {
@@ -3024,7 +3356,7 @@ async function submitRegisterIdentity() {
     });
     
     if (!result.ok) { 
-        showMessage('Could not register identity: ' + result.error, 'error'); 
+        showMessage('Could not register that identity: ' + friendlyApiError(result.error), 'error'); 
         return; 
     }
     
@@ -3040,7 +3372,9 @@ async function submitRegisterIdentity() {
         return;
     }
     
+    savedIdentities.push({ type: identityType, value: identityValue });
     showMessage(data.message || 'Identity submitted for review.', 'success');
+    renderProgressCard();
     setTimeout(() => closeModal(), 2000);
 }
 
@@ -3062,7 +3396,7 @@ async function submitAgentIdentity() {
     });
     
     if (!result.ok) {
-        showMessage('Failed to register identity: ' + result.error, 'error');
+        showMessage('Could not register that identity: ' + friendlyApiError(result.error), 'error');
         return;
     }
     
@@ -3083,11 +3417,12 @@ async function submitVerifyIdentityOtp() {
     });
     
     if (!result.ok) {
-        showMessage('Verification failed: ' + result.error, 'error');
+        showMessage('That code didn\'t work: ' + friendlyApiError(result.error), 'error');
         return;
     }
     
-    showMessage('Identity verified. You can now receive swaps.', 'success');
+    showMessage('Identity verified. You can now receive swaps. 🎉', 'success');
+    renderProgressCard();
     setTimeout(() => closeModal(), 2000);
 }
 
@@ -3101,6 +3436,7 @@ async function getCurrentUserRole() {
     }
     const badge = document.getElementById('agentBadge');
     if (badge) badge.style.display = SessionUser.is_agent ? 'inline-block' : 'none';
+    renderProgressCard();
     return SessionUser;
 }
 
@@ -3117,7 +3453,7 @@ async function openAgentModal() {
     openModal('Agent account', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading...</div>');
     await getCurrentUserRole();
     const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/status.php', {});
-    if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="color:var(--danger);">Failed to load agent status: ${escapeHtml(result.error)}</div>`; return; }
+    if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="color:var(--danger);">Couldn't load agent status: ${escapeHtml(friendlyApiError(result.error))}</div>`; return; }
     agentStatus = result.body.data;
     agentStatus.is_agent = SessionUser.is_agent;
     document.getElementById('modalBody').innerHTML = renderAgentModal();
@@ -3154,11 +3490,12 @@ function renderAgentModal() {
 }
 
 async function cancelAgentDestination(destinationId) {
-    if (!confirm('Cancel this registration? You can register again later.')) return;
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/cancel_destination.php', { destination_id: destinationId });
-    if (!result.ok) { showMessage('Failed to cancel: ' + result.error, 'error'); return; }
-    showMessage('Registration cancelled successfully.', 'success');
-    openAgentModal();
+    showConfirm('Cancel this registration? You can register again later.', async () => {
+        const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/cancel_destination.php', { destination_id: destinationId });
+        if (!result.ok) { showMessage('Could not cancel: ' + friendlyApiError(result.error), 'error'); return; }
+        showMessage('Registration cancelled successfully.', 'success');
+        openAgentModal();
+    });
 }
 
 async function submitAgentDestination() {
@@ -3169,7 +3506,7 @@ async function submitAgentDestination() {
     if (!institution || !identifier) { showMessage('Select an institution and enter your account number.', 'warning'); return; }
     if (!assetType) { showMessage('Select whether this is an Account, Wallet, or Card.', 'warning'); return; }
     const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/propose_destination.php', { institution, asset_type: assetType, identifier, account_name: accountName || undefined });
-    if (!result.ok) { showMessage('Could not register: ' + result.error, 'error'); return; }
+    if (!result.ok) { showMessage('Could not register: ' + friendlyApiError(result.error), 'error'); return; }
     const data = result.body.data;
     if (data.requires_redirect) { showMessage(data.message || 'Redirecting you to your bank to confirm this account...', 'info'); window.location.href = data.redirect_url; return; }
     if (!data.requires_otp) { showMessage(data.message, data.otp_supported ? 'success' : 'warning'); openAgentModal(); return; }
@@ -3190,7 +3527,7 @@ async function verifyAgentOtp(attemptId) {
     const otp = document.getElementById('agentOtpCode').value.trim();
     if (!otp) { showMessage('Enter the verification code.', 'warning'); return; }
     const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/verify_destination_otp.php', { attempt_id: attemptId, otp });
-    if (!result.ok) { showMessage('Verification failed: ' + result.error, 'error'); return; }
+    if (!result.ok) { showMessage('That code didn\'t work: ' + friendlyApiError(result.error), 'error'); return; }
     showMessage(result.body.data.message || 'Account verified and registered.', 'success');
     openAgentModal();
 }
@@ -3245,7 +3582,7 @@ async function searchAgentClaim() {
     if (!identityValue) { showMessage('Enter the document number to search.', 'warning'); return; }
     resultsBox.innerHTML = '<div style="text-align:center;padding:16px;"><div class="spinner"></div> Searching...</div>';
     const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/search_claim.php', { identity_type: identityType, identity_value: identityValue });
-    if (!result.ok) { resultsBox.innerHTML = `<div style="color:var(--danger);">${escapeHtml(result.error)}</div>`; return; }
+    if (!result.ok) { resultsBox.innerHTML = `<div style="color:var(--danger);">${escapeHtml(friendlyApiError(result.error))}</div>`; return; }
     const data = result.body.data;
     if (!data) { resultsBox.innerHTML = '<div style="font-size:12px;color:var(--text-dim);">No pending payment found for this identity.</div>'; return; }
     agentSearchData = data;
@@ -3338,7 +3675,7 @@ async function submitAgentFinalizeAggregated(identityType, identityValue, totalA
     if (!pin) { showMessage('Enter the client\'s claim PIN.', 'warning'); return; }
     if (isNaN(cashNowAmount) || cashNowAmount < 0 || cashNowAmount > totalAmount) { showMessage(`Cash amount must be between 0 and ${totalAmount}.`, 'warning'); return; }
     const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/finalize_claim.php', { identity_type: identityType, identity_value: identityValue, pin, identity_document_verified: true, destination_account_id: parseInt(destinationAccountId, 10), cash_now_amount: cashNowAmount });
-    if (!result.ok) { showMessage('Failed: ' + result.error, 'error'); return; }
+    if (!result.ok) { showMessage('That claim didn\'t go through: ' + friendlyApiError(result.error), 'error'); return; }
     const data = result.body.data || {};
     closeModal();
     const netDeposited = data.actually_claimed_net || totalAmount;
@@ -3366,14 +3703,18 @@ async function openSwapHistory() {
         return;
     }
     const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/history.php', { user_id: CONFIG.USER_ID, limit: 50 });
-    if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">Failed to load swap history: ${escapeHtml(result.error)}</div>`; return; }
+    if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">Couldn't load swap history: ${escapeHtml(friendlyApiError(result.error))}</div>`; return; }
     renderSwapHistory(result.body);
 }
 
 function renderSwapHistory(data) {
     const swaps = data.data || data.swaps || [];
     if (swaps.length === 0) { 
-        document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:30px;color:var(--text-muted);"><div style="font-weight:700;">No swaps found</div></div>`; 
+        document.getElementById('modalBody').innerHTML = `
+            <div style="text-align:center;padding:30px;color:var(--text-muted);">
+                <div style="font-weight:700;">No swaps yet</div>
+                <div style="font-size:12px;margin-top:8px;">Once you make your first swap, it'll show up here.</div>
+            </div>`; 
         return; 
     }
     let historyHtml = `<div style="max-height:60vh;overflow-y:auto;"><div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Showing ${swaps.length} swap(s)</div>`;
@@ -3402,7 +3743,7 @@ function renderSwapHistory(data) {
 async function viewSwapDetail(reference) {
     openModal('Swap details', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading details...</div>');
     const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/details.php', { reference: reference });
-    if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">Failed to load swap details: ${escapeHtml(result.error)}</div>`; return; }
+    if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">Couldn't load swap details: ${escapeHtml(friendlyApiError(result.error))}</div>`; return; }
     renderSwapDetail(result.body);
 }
 
@@ -3489,11 +3830,13 @@ function useSavedIdentity(idx) {
 async function setTransactionPin() {
     const pin = document.getElementById('newPin').value.trim();
     const confirmPin = document.getElementById('confirmPin').value.trim();
-    if (!/^\d{4,6}$/.test(pin)) { showMessage('PIN must be 4-6 digits.', 'warning'); return; }
-    if (pin !== confirmPin) { showMessage('PIN and confirmation do not match.', 'warning'); return; }
+    if (!/^\d{4,6}$/.test(pin)) { showMessage('Your PIN should be 4 to 6 digits.', 'warning'); return; }
+    if (pin !== confirmPin) { showMessage('Those two PINs don\'t match — try again.', 'warning'); return; }
     const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/set_pin.php', { pin, confirm_pin: confirmPin });
-    if (!result.ok) { showMessage('Could not set PIN: ' + result.error, 'error'); return; }
-    showMessage('Transaction PIN set. Keep it private.', 'success');
+    if (!result.ok) { showMessage('Could not set your PIN: ' + friendlyApiError(result.error), 'error'); return; }
+    if (SessionUser) SessionUser.has_pin = true;
+    showMessage('Transaction PIN set. Keep it private. 🎉', 'success');
+    renderProgressCard();
     closeModal();
 }
 
@@ -3503,8 +3846,8 @@ function openHelpModal() {
             <p style="font-weight:700;margin-bottom:6px;">Swapping money</p>
             <ol style="padding-left:18px;margin-bottom:16px;">
                 <li>Tap "Source" — choose Wallet/Account, Card, or Voucher.</li>
-                <li>Tap "Destination" — Deposit or Cashout.</li>
-                <li>Enter the amount at the top, review the fee, and confirm.</li>
+                <li>Tap "Destination" — To an account, or Cash pickup.</li>
+                <li>Enter the amount at the top, review the fee, and confirm. Nothing moves until you tap Confirm.</li>
             </ol>
             <p style="font-weight:700;margin-bottom:6px;">Swapping to an identity</p>
             <ol style="padding-left:18px;margin-bottom:16px;">
@@ -3514,7 +3857,7 @@ function openHelpModal() {
             <p style="font-weight:700;margin-bottom:6px;">Combining multiple sources</p>
             <ol style="padding-left:18px;margin-bottom:16px;">
                 <li>Tap "Combine sources" below the amount.</li>
-                <li>Type the total amount — it splits evenly across your sources, or pick Ratio, Smart, or Manual.</li>
+                <li>Type the total amount — "Smart" (recommended) balances it across your sources for you automatically. Equal, Ratio, and Manual are also available.</li>
                 <li>Pick where it settles: an account/wallet/card, an identity, or a VouchMorph Card.</li>
             </ol>
             <p style="font-weight:700;margin-bottom:6px;">Your VouchMorph Card</p>
@@ -3522,12 +3865,16 @@ function openHelpModal() {
                 <li>Open Toolbox &rarr; My VouchMorph Card. Every account gets one automatically.</li>
                 <li>It starts inactive — activate it once with a small one-time fee from any linked source.</li>
                 <li>Once active, other VouchMorph users can hook their own sources to your card by scanning its QR code, and you can hook your sources to theirs the same way.</li>
-                <li>When multiple people are hooked, the card owner starts a payment, picks how contributions should split (Equal, Ratio, Smart, or Manual), and everyone watches the live progress until it's fully covered — then the owner executes it.</li>
+                <li>When multiple people are hooked, the card owner starts a payment, picks how contributions should split (Smart is the easy default), and everyone watches the live progress until it's fully covered — then the owner executes it.</li>
             </ol>
             <p style="font-weight:700;margin-bottom:6px;">Claiming money sent to you</p>
             <ol style="padding-left:18px;margin-bottom:16px;">
                 <li>Open Toolbox &rarr; Finalize identity swap.</li>
                 <li>Enter your claim PIN and choose how to receive it.</li>
+            </ol>
+            <p style="font-weight:700;margin-bottom:6px;">Repeating a swap</p>
+            <ol style="padding-left:18px;margin-bottom:16px;">
+                <li>After your first swap, a "Repeat last swap" shortcut appears on the home screen — one tap takes you straight to review.</li>
             </ol>
             <p style="font-weight:700;margin-bottom:6px;">Agent access</p>
             <ol style="padding-left:18px;">
@@ -3548,7 +3895,7 @@ function openTermsModal() {
             <p style="margin-bottom:14px;">Applicable fees are shown before you confirm any swap. Fees vary by swap type, delivery method, and destination institution.</p>
             <p style="font-weight:700;margin-bottom:6px;">4. Identity swaps</p>
             <p style="margin-bottom:14px;">Money sent to an identity (national ID, phone, email, etc.) is held for the recipient for a limited window and requires verification to claim.</p>
-            <p style="margin-top:16px;color:var(--text-dim);font-size:11px;">This is placeholder text for structure only — replace with your reviewed legal terms before launch.</p>
+            <p style="margin-top:16px;color:var(--danger);font-size:11px;font-weight:700;">⚠ Placeholder — replace with reviewed legal terms and a recorded consent flow before this goes live with real funds.</p>
         </div>`);
 }
 
@@ -3629,7 +3976,7 @@ async function openMyCardModal() {
             document.getElementById('modalBody').innerHTML = `
                 <div style="color:var(--danger);padding:12px;">
                     <div style="font-weight:700;margin-bottom:6px;">Couldn't load your card</div>
-                    <div style="font-size:12px;">${escapeHtml(result.error)}</div>
+                    <div style="font-size:12px;">${escapeHtml(friendlyApiError(result.error))}</div>
                     <button class="btn btn-secondary btn-sm" onclick="openMyCardModal()" style="margin-top:12px;">Retry</button>
                 </div>`;
             return;
@@ -3667,6 +4014,7 @@ function renderMyCardModal() {
                 <div style="font-family:var(--font-mono);font-size:14px;font-weight:700;margin-bottom:4px;">•••• ${escapeHtml(myCard.card_suffix)}</div>
                 <div style="font-size:12px;color:var(--text-dim);margin-bottom:18px;">Activation fee: ${formatMoney(myCard.activation_fee, myCard.currency)}</div>
                 <div class="cta-row"><button class="btn btn-primary" onclick="openActivateCardModal()">Activate my card</button></div>
+                <div style="margin-top:14px;"><span class="quick-link muted" onclick="openHelpModal()">How does this work? →</span></div>
             </div>`;
     }
 
@@ -3679,11 +4027,14 @@ function renderMyCardModal() {
             </div>`).join('')
         : `<div style="font-size:12px;color:var(--text-dim);">No sources hooked yet.</div>`;
 
+    const cardName = myCard.display_name || (Journey.read().cardNamed ? Journey.read().cardNamed : null);
+
     return `
         <div style="text-align:center;margin-bottom:16px;">
             <div id="cardQrContainer" style="display:inline-block;padding:12px;background:#fff;border:1px solid var(--border-strong);"></div>
             <div style="font-size:11px;color:var(--text-dim);margin-top:8px;">Scan to hook a source to this card</div>
             <div style="font-family:var(--font-mono);font-size:13px;font-weight:700;margin-top:4px;">•••• ${escapeHtml(myCard.card_suffix)}</div>
+            ${cardName ? `<div style="font-size:13px;font-weight:700;color:var(--accent);margin-top:4px;">"${escapeHtml(cardName)}"</div>` : `<div style="margin-top:6px;"><span class="quick-link muted" onclick="openNameCardModal()">Give your card a name →</span></div>`}
         </div>
 
         <div style="border-top:1px solid var(--border);padding-top:14px;margin-top:14px;">
@@ -3701,6 +4052,25 @@ function renderMyCardModal() {
         <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px;">
             <span class="quick-link" onclick="openScanToHookModal()">Hook to someone else's card (scan their QR)</span>
         </div>`;
+}
+
+// Personalizing the card is a small endowment-effect nudge — once
+// it has a name, it feels owned rather than issued, and people
+// protect/return to things they've personalized.
+function openNameCardModal() {
+    openModal('Name your card', `
+        <div style="text-align:center;padding:6px 0 10px;font-size:12px;color:var(--text-muted);">Give your card a name — just for you, shown wherever you see it.</div>
+        <div class="field-group"><label>Card name</label><input id="cardNameInput" placeholder="e.g. Thabo's Card" maxlength="30"></div>
+        <div class="cta-row"><button class="btn btn-secondary" onclick="openMyCardModal()">Cancel</button><button class="btn btn-primary" onclick="saveCardName()">Save</button></div>`);
+}
+function saveCardName() {
+    const name = document.getElementById('cardNameInput').value.trim();
+    if (!name) { showMessage('Enter a name first.', 'warning'); return; }
+    const data = Journey.read();
+    data.cardNamed = name;
+    Journey.write(data);
+    showMessage(`Saved — meet "${name}". 🎉`, 'success');
+    openMyCardModal();
 }
 
 function renderCardQr(payloadText) {
@@ -3746,8 +4116,8 @@ async function confirmActivateCard(cardSuffix) {
         pin: pin || undefined,
     });
 
-    if (!result.ok) { showMessage('Activation failed: ' + result.error, 'error'); return; }
-    showMessage('Card activated!', 'success');
+    if (!result.ok) { showMessage('Activation didn\'t go through: ' + friendlyApiError(result.error), 'error'); return; }
+    showMessage('Card activated! 🎉', 'success');
     closeModal();
     openMyCardModal();
 }
@@ -3773,7 +4143,7 @@ async function openHookSourceModal(targetCardSuffix) {
     });
 
     if (!advice.ok) {
-        document.getElementById('modalBody').innerHTML = `<div style="color:var(--danger);padding:12px;">Could not check your balance: ${escapeHtml(advice.error)}</div>`;
+        document.getElementById('modalBody').innerHTML = `<div style="color:var(--danger);padding:12px;">Couldn't check your balance: ${escapeHtml(friendlyApiError(advice.error))}</div>`;
         return;
     }
 
@@ -3819,8 +4189,8 @@ async function confirmHookSource(targetCardSuffix, recommendedCap) {
         }],
     });
 
-    if (!result.ok) { showMessage('Hook failed: ' + result.error, 'error'); return; }
-    showMessage('Source hooked successfully.', 'success');
+    if (!result.ok) { showMessage('That hook didn\'t go through: ' + friendlyApiError(result.error), 'error'); return; }
+    showMessage('Source hooked successfully. 🎉', 'success');
     closeModal();
     openMyCardModal();
 }
@@ -3862,7 +4232,7 @@ async function resolveScannedQr(raw) {
     if (html5QrScanner) { try { await html5QrScanner.stop(); } catch (e) {} }
 
     const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/ResolveQr.php', { raw });
-    if (!result.ok) { showMessage('Could not read that code: ' + result.error, 'error'); return; }
+    if (!result.ok) { showMessage('Couldn\'t read that code: ' + friendlyApiError(result.error), 'error'); return; }
 
     const { card_suffix, display_name } = result.body.data;
     openModal('Confirm', `
@@ -3897,7 +4267,7 @@ function openHookToCardChooser() {
 async function hookToMyCard() {
     if (!myCard) {
         const result = await callApiGet(CONFIG.API_BASE + '/api/v1/cards/My.php');
-        if (!result.ok) { showMessage('Could not load your card: ' + result.error, 'error'); return; }
+        if (!result.ok) { showMessage('Couldn\'t load your card: ' + friendlyApiError(result.error), 'error'); return; }
         myCard = result.body.data;
     }
     if (!myCard.is_active) {
@@ -3928,7 +4298,7 @@ async function submitManualCardNumber() {
     if (!raw) { showMessage('Enter a card number.', 'warning'); return; }
 
     const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/LookupBySuffix.php', { card_suffix: raw });
-    if (!result.ok) { showMessage('Could not find that card: ' + result.error, 'error'); return; }
+    if (!result.ok) { showMessage('Couldn\'t find that card: ' + friendlyApiError(result.error), 'error'); return; }
 
     const { card_suffix, display_name } = result.body.data;
     openModal('Confirm', `
@@ -3948,14 +4318,14 @@ function openCreateSessionModal(cardSuffix) {
     const instOptions = Object.keys(PARTICIPANTS).map(c => `<option value="${c}">${PARTICIPANTS[c]?.name || c}</option>`).join('');
     openModal('Start a payment', `
         <div class="field-group"><label>Amount needed at destination</label><input type="number" id="sessTarget" min="0.01" step="0.01" placeholder="0.00"></div>
-        <div class="field-group"><label>Currency</label><input id="sessCurrency" value="${myCard.hook?.currency || myCard.currency || 'BWP'}"></div>
+        <div class="field-group"><label>Currency</label><select id="sessCurrency">${[...new Set(Object.values(PARTICIPANTS).map(p => p?.limits?.currency).filter(Boolean))].map(c => `<option value="${c}" ${c === (myCard.hook?.currency || myCard.currency) ? 'selected' : ''}>${c}</option>`).join('') || `<option value="${myCard.hook?.currency || myCard.currency || 'BWP'}">${myCard.hook?.currency || myCard.currency || 'BWP'}</option>`}</select></div>
         <div class="field-group"><label>Destination institution</label><select id="sessToInst"><option value="">Select</option>${instOptions}</select></div>
         <div class="field-group"><label>Destination account/wallet number</label><input id="sessToIdentifier" placeholder="Account number or phone"></div>
         <div class="field-group"><label>Strategy — how should contributions split?</label>
             <select id="sessStrategy">
+                <option value="SMART" selected>Smart (recommended) — VouchMorph balances it automatically</option>
                 <option value="EQUAL">Equal — split evenly across hooked sources</option>
                 <option value="RATIO">Ratio — proportional to each source's balance</option>
-                <option value="SMART" selected>Smart — VouchMorph balances it automatically</option>
                 <option value="MANUAL">Manual — each person enters their own amount</option>
             </select>
         </div>
@@ -3982,7 +4352,7 @@ async function submitCreateSession(cardSuffix) {
         destination_identifier: toIdentifier,
     });
 
-    if (!result.ok) { showMessage('Could not start session: ' + result.error, 'error'); return; }
+    if (!result.ok) { showMessage('Couldn\'t start that session: ' + friendlyApiError(result.error), 'error'); return; }
     showMessage('Session started.', 'success');
     openMyCardModal();
 }
@@ -3993,7 +4363,7 @@ function renderSessionStatus(session) {
 
     const rowsHtml = (preview.contributors || []).map(c => `
         <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:12px;border-bottom:1px solid var(--border);">
-            <span>${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)} · ${escapeHtml(c.source_identifier)}${c.below_minimum ? ' <span style="color:var(--warning);">(below minimum)</span>' : ''}</span>
+            <span>${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)} · ${escapeHtml(c.source_identifier)}${c.below_minimum ? ' <span style="color:var(--warning);" title="This source\'s share is below the institution\'s minimum swap amount">(below minimum — won\'t be included)</span>' : ''}</span>
             <span style="font-family:var(--font-mono);font-weight:600;">${formatMoney(c.amount, session.currency)}</span>
         </div>`).join('');
 
@@ -4012,7 +4382,7 @@ function renderSessionStatus(session) {
             <div class="comp-bar-track"><div class="comp-bar-seg" style="width:${pct}%;background:var(--accent);"></div></div>
             <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:10px;">
                 <span>${formatMoney(preview.total_covered, session.currency)} of ${formatMoney(preview.total_target, session.currency)}</span>
-                <span style="color:var(--text-dim);">${preview.remaining > 0 ? formatMoney(preview.remaining, session.currency) + ' remaining' : 'Fully covered'}</span>
+                <span style="color:var(--text-dim);">${preview.remaining > 0 ? formatMoney(preview.remaining, session.currency) + ' remaining' : 'Fully covered — ready to go! 🎉'}</span>
             </div>
             ${rowsHtml}
             ${manualInput}
@@ -4047,27 +4417,29 @@ async function submitMyManualAmount(sessionId) {
     const amount = parseFloat(document.getElementById('myManualAmount').value);
     if (isNaN(amount) || amount < 0) { showMessage('Enter a valid amount.', 'warning'); return; }
     const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/Contribute.php', { session_id: sessionId, amount });
-    if (!result.ok) { showMessage('Could not set contribution: ' + result.error, 'error'); return; }
+    if (!result.ok) { showMessage('Couldn\'t set that contribution: ' + friendlyApiError(result.error), 'error'); return; }
     const area = document.getElementById('sessionStatusArea');
     if (area) area.innerHTML = renderSessionStatus(result.body.data);
 }
 
 async function executeSession(sessionId) {
-    if (!confirm('Execute this payment now?')) return;
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/execute.php', { session_id: sessionId });
-    if (!result.ok) { showMessage('Execution failed: ' + result.error, 'error'); return; }
-    stopSessionPolling();
-    showMessage('Payment executed successfully.', 'success');
-    closeModal();
+    showConfirm('Execute this payment now?', async () => {
+        const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/execute.php', { session_id: sessionId });
+        if (!result.ok) { showMessage('Execution didn\'t go through: ' + friendlyApiError(result.error), 'error'); return; }
+        stopSessionPolling();
+        showMessage('Payment executed successfully. 🎉', 'success');
+        closeModal();
+    });
 }
 
 async function cancelSession(sessionId) {
-    if (!confirm('Cancel this payment session?')) return;
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/cancel.php', { session_id: sessionId, reason: 'Cancelled by owner' });
-    if (!result.ok) { showMessage('Could not cancel: ' + result.error, 'error'); return; }
-    stopSessionPolling();
-    showMessage('Session cancelled.', 'info');
-    openMyCardModal();
+    showConfirm('Cancel this payment session?', async () => {
+        const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/cancel.php', { session_id: sessionId, reason: 'Cancelled by owner' });
+        if (!result.ok) { showMessage('Couldn\'t cancel: ' + friendlyApiError(result.error), 'error'); return; }
+        stopSessionPolling();
+        showMessage('Session cancelled.', 'info');
+        openMyCardModal();
+    });
 }
 
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
