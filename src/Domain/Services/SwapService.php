@@ -4553,6 +4553,557 @@ return $result;
         }
     }
 
+ <?php
+/**
+ * ============================================================================
+ * NEW METHODS TO ADD TO SwapService.php
+ * ============================================================================
+ * Add these near the existing identity-swap helper section (alongside
+ * storeIdentityHold(), createEarmarkedBalance(), etc.). They replace
+ * createEarmarkedBalance()/getOpenEarmarkedSummary()/
+ * validateEarmarkedWithdrawal()/consumeEarmarkedBalance() for any NEW claim
+ * going through the aggregated flow — those four methods can stay in place
+ * untouched for now to keep any already-open earmarked balances resolvable
+ * under the old logic, but nothing new should call createEarmarkedBalance()
+ * after this lands.
+ * ============================================================================
+ */
+
+// ============================================================================
+// PER-INSTITUTION RECEIVING/HOLDING ACCOUNT CONFIG
+// ============================================================================
+
+/**
+ * Reads the receiving/holding account pair configured for an institution +
+ * currency (see participants.yaml `identity_accounts` block). Throws if the
+ * institution hasn't been onboarded for identity-swap consolidation, so a
+ * claim fails loudly and immediately rather than attempting to deposit into
+ * an account that doesn't exist.
+ */
+private function getIdentityHoldingAccounts(string $institution, string $currency): array
+{
+    $participant = $this->participants[$institution] ?? $this->participants[strtoupper($institution)] ?? null;
+
+    if ($participant === null) {
+        throw new RuntimeException("Unknown institution: {$institution}");
+    }
+
+    $supportsHolding = $participant['capabilities']['identity_holding'] ?? false;
+    if (!$supportsHolding) {
+        throw new RuntimeException(
+            "{$institution} has not been onboarded to support identity-swap consolidation " .
+            "(no receiving/holding accounts configured). Contact VouchMorph ops to complete " .
+            "onboarding before claims can settle at this institution."
+        );
+    }
+
+    $accounts = $participant['identity_accounts'][$currency] ?? null;
+    if ($accounts === null || empty($accounts['receiving_identifier']) || empty($accounts['holding_identifier'])) {
+        throw new RuntimeException(
+            "{$institution} supports identity holding but has no receiving/holding accounts " .
+            "configured for currency {$currency}. Add an identity_accounts.{$currency} block " .
+            "to participants.yaml for this institution."
+        );
+    }
+
+    return [
+        'receiving_identifier' => $accounts['receiving_identifier'],
+        'receiving_identifier_type' => $accounts['receiving_identifier_type'] ?? 'account_number',
+        'holding_identifier' => $accounts['holding_identifier'],
+        'holding_identifier_type' => $accounts['holding_identifier_type'] ?? 'account_number',
+    ];
+}
+
+// ============================================================================
+// SWITCH FAST-PATH — skip receiving/holding entirely when every institution
+// involved shares a common switch, since the switch's own settlement already
+// nets/confirms atomically. Mirrors the `settlement.switches` field already
+// read elsewhere (see admin_dashboard.php's Participants view).
+//
+// ⚠️ STUB: the actual switch-execution call below (attemptSwitchConsolidation)
+// assumes a SwitchExecutionStrategy-shaped adapter call that I have not seen
+// in this codebase — only referenced in comments (recordExternalRailExecution's
+// docblock, confirmCashout()'s $mode variable). Confirm the real method
+// signature before enabling this path; until then it should stay behind a
+// feature flag (see USE_SWITCH_FAST_PATH below) defaulting to false.
+// ============================================================================
+
+private const USE_SWITCH_FAST_PATH = false; // flip once the real switch call is verified
+
+/**
+ * Returns the switch code common to every given institution, or null if
+ * they don't all share one. An empty/missing `settlement.switches` on any
+ * institution means "not eligible" — never guess a shared switch.
+ */
+private function getCommonSwitch(array $institutions): ?string
+{
+    $switchSets = [];
+    foreach (array_unique($institutions) as $inst) {
+        $participant = $this->participants[$inst] ?? null;
+        $switches = $participant['settlement']['switches'] ?? [];
+        if (empty($switches)) {
+            return null; // this institution has no switch at all — can't be a common one
+        }
+        $switchSets[] = $switches;
+    }
+
+    if (empty($switchSets)) {
+        return null;
+    }
+
+    $common = array_shift($switchSets);
+    foreach ($switchSets as $set) {
+        $common = array_intersect($common, $set);
+        if (empty($common)) {
+            return null;
+        }
+    }
+
+    return $common[0] ?? null;
+}
+
+/**
+ * Attempts to settle an identity claim via a shared switch instead of the
+ * receiving/holding flow. Returns null if not eligible (caller should fall
+ * back to executeIdentityClaimWithSplit's normal path) or if the fast path
+ * is disabled via USE_SWITCH_FAST_PATH.
+ *
+ * ⚠️ NOT WIRED TO A REAL SWITCH ADAPTER YET — see class docblock above.
+ */
+private function attemptSwitchConsolidation(
+    array $sourceInstitutions,
+    string $destinationInstitution,
+    array $holds,
+    string $reference
+): ?array {
+    if (!self::USE_SWITCH_FAST_PATH) {
+        return null;
+    }
+
+    $allInstitutions = array_merge($sourceInstitutions, [$destinationInstitution]);
+    $switchCode = $this->getCommonSwitch($allInstitutions);
+    if ($switchCode === null) {
+        return null;
+    }
+
+    $this->logger->info("Identity claim eligible for switch fast-path", [
+        'reference' => $reference,
+        'switch' => $switchCode,
+        'institutions' => $allInstitutions,
+    ]);
+
+    // TODO: replace with the real switch adapter call once
+    // SwitchExecutionStrategy's actual interface is confirmed. Left
+    // unimplemented deliberately — do not guess a method signature for a
+    // financial settlement call.
+    throw new RuntimeException(
+        "Switch fast-path is not yet wired to a real switch adapter. " .
+        "Set SwapService::USE_SWITCH_FAST_PATH = false (already default) until this is implemented."
+    );
+}
+
+// ============================================================================
+// STEP 1: DEBIT SOURCE, DEPOSIT INTO RECEIVING ACCOUNT
+// ============================================================================
+
+/**
+ * Finalizes ONE hold by debiting its source and depositing the net amount
+ * into the destination institution's RECEIVING account (never the merchant
+ * account, never the holding account directly). Records the attempt in
+ * identity_receiving_deposits so a partial-consolidation failure has a
+ * durable trail of what actually landed.
+ *
+ * This replaces the deposit-to-merchant portion of the old
+ * completeIdentitySwapAsDeposit() for the consolidation path. The hold's
+ * source-side debit logic (verify, reuse hold, debit) is unchanged — only
+ * the destination changes.
+ */
+private function depositHoldToReceiving(
+    array $identitySwap,
+    string $destinationInstitution,
+    string $consolidationReference
+): array {
+    $sourcePayload = json_decode($identitySwap['source_payload'], true);
+    $sourceInstitution = $identitySwap['source_institution'];
+    $currency = $identitySwap['currency'] ?? 'BWP';
+
+    $accounts = $this->getIdentityHoldingAccounts($destinationInstitution, $currency);
+
+    $sourcePayload['from_institution'] = $sourceInstitution;
+    $sourcePayload['source_institution'] = $sourceInstitution;
+    $sourcePayload['amount'] = (float)$identitySwap['amount'];
+    $sourcePayload['currency'] = $currency;
+    $sourcePayload['asset_type'] = $identitySwap['source_asset_type'] ?? 'ACCOUNT';
+
+    // Re-verify funds are still available before moving anything — same
+    // discipline as finalizeIdentityHoldNoPin() already applies.
+    $verificationResult = $this->verifyAssetSigned($sourcePayload, $sourceInstitution);
+    if (!($verificationResult['verified'] ?? false)) {
+        throw new RuntimeException("Source funds no longer available for hold {$identitySwap['hold_id']}. Claim cancelled for this hold.");
+    }
+
+    $this->currentHoldReference = $identitySwap['hold_reference'];
+    $this->currentHoldId = $identitySwap['hold_id'];
+
+    $depositPayload = [
+        'swap_type' => 'DEPOSIT',
+        'reference' => $identitySwap['swap_reference'] . '_RECV',
+        'from_institution' => $sourceInstitution,
+        'source_institution' => $sourceInstitution,
+        'source_identifier' => $identitySwap['source_identifier'],
+        'asset_type' => $identitySwap['source_asset_type'] ?? 'ACCOUNT',
+        'amount' => (float)$identitySwap['amount'],
+        'currency' => $currency,
+        'to_institution' => $destinationInstitution,
+        'destination_institution' => $destinationInstitution,
+        'destination_identifier' => $accounts['receiving_identifier'],
+        'destination_identifier_type' => $accounts['receiving_identifier_type'],
+        'destination_asset_type' => 'ACCOUNT',
+        '_skip_hold' => true, // reusing the hold already placed at claim-initiation time
+        '_identity_consolidation' => true,
+        '_consolidation_reference' => $consolidationReference,
+    ];
+
+    $recvId = $this->recordReceivingDepositAttempt(
+        $consolidationReference,
+        (int)$identitySwap['hold_id'],
+        $destinationInstitution,
+        $currency,
+        $accounts['receiving_identifier'],
+        (float)$identitySwap['amount']
+    );
+
+    try {
+        $result = $this->executeSignedDeposit($depositPayload);
+
+        $netAmount = $result['amount'] ?? $identitySwap['amount'];
+        $this->updateReceivingDepositStatus($recvId, 'landed', $result['deposit_reference'] ?? null);
+
+        $this->updateIdentityHoldStatus($identitySwap['hold_id'], 'completed', [
+            'final_destination_type' => 'HOLDING_CONSOLIDATED',
+            'consolidation_reference' => $consolidationReference,
+        ]);
+        $this->updateHoldStatus($identitySwap['hold_id'], 'DEBITED');
+
+        return ['success' => true, 'net_amount' => (float)$netAmount, 'hold_id' => $identitySwap['hold_id']];
+
+    } catch (\Throwable $e) {
+        $this->updateReceivingDepositStatus($recvId, 'failed', null);
+        throw $e;
+    }
+}
+
+private function recordReceivingDepositAttempt(
+    string $consolidationReference,
+    int $holdId,
+    string $institution,
+    string $currency,
+    string $receivingIdentifier,
+    float $amount
+): int {
+    $stmt = $this->swapDB->prepare("
+        INSERT INTO identity_receiving_deposits (
+            consolidation_reference, hold_id, institution, currency,
+            receiving_identifier, amount, status
+        ) VALUES (:ref, :hold_id, :inst, :ccy, :recv, :amt, 'pending')
+        RETURNING id
+    ");
+    $stmt->execute([
+        ':ref' => $consolidationReference, ':hold_id' => $holdId, ':inst' => $institution,
+        ':ccy' => $currency, ':recv' => $receivingIdentifier, ':amt' => $amount,
+    ]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    return $row ? (int)$row['id'] : 0;
+}
+
+private function updateReceivingDepositStatus(int $id, string $status, ?string $txRef): void
+{
+    try {
+        $stmt = $this->swapDB->prepare("
+            UPDATE identity_receiving_deposits
+            SET status = :status, transaction_reference = :tx_ref,
+                confirmed_at = CASE WHEN :status2 = 'landed' THEN NOW() ELSE confirmed_at END
+            WHERE id = :id
+        ");
+        $stmt->execute([':status' => $status, ':status2' => $status, ':tx_ref' => $txRef, ':id' => $id]);
+    } catch (\Throwable $e) {
+        error_log("[SwapService] Failed to update identity_receiving_deposits id={$id}: " . $e->getMessage());
+    }
+}
+
+// ============================================================================
+// STEP 2: SWEEP RECEIVING -> HOLDING
+// ============================================================================
+
+/**
+ * Confirms every expected receiving-account deposit for this consolidation
+ * landed, then instructs the bank to sweep the confirmed total from their
+ * receiving account into their holding account.
+ *
+ * ⚠️ NEW ADAPTER ACTION REQUIRED: 'INTERNAL_SWEEP'. This is deliberately
+ * NOT modeled as a debit()+credit() pair using the existing customer-hold
+ * primitives — those assume a hold_reference tied to a customer's own
+ * money. A sweep between two of the bank's OWN internal accounts is a
+ * different operation and needs its own adapter method. Confirm with each
+ * bank whether they can support this before enabling consolidation for
+ * that institution (see getIdentityHoldingAccounts()'s capability gate).
+ */
+private function sweepReceivingToHolding(
+    string $institution,
+    string $currency,
+    string $consolidationReference
+): float {
+    $accounts = $this->getIdentityHoldingAccounts($institution, $currency);
+
+    $stmt = $this->swapDB->prepare("
+        SELECT COUNT(*) AS total, SUM(CASE WHEN status = 'landed' THEN amount ELSE 0 END) AS landed_amount,
+               SUM(CASE WHEN status = 'landed' THEN 1 ELSE 0 END) AS landed_count
+        FROM identity_receiving_deposits WHERE consolidation_reference = :ref
+    ");
+    $stmt->execute([':ref' => $consolidationReference]);
+    $summary = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    $expected = (int)$summary['total'];
+    $landed = (int)$summary['landed_count'];
+    $landedAmount = (float)($summary['landed_amount'] ?? 0);
+
+    if ($landed === 0) {
+        throw new RuntimeException("No confirmed deposits landed for consolidation {$consolidationReference} — nothing to sweep.");
+    }
+    if ($landed < $expected) {
+        $this->logger->warning("Sweeping partial consolidation — not all legs landed", [
+            'consolidation_reference' => $consolidationReference,
+            'expected' => $expected, 'landed' => $landed,
+        ]);
+        // Proceeding with what landed rather than blocking indefinitely.
+        // The failed leg(s) remain visible in identity_receiving_deposits
+        // for manual follow-up / retry.
+    }
+
+    $adapter = $this->adapterFactory->getAdapter($institution);
+
+    $sweepPayload = [
+        'action' => 'INTERNAL_SWEEP',
+        'reference' => $consolidationReference . '_SWEEP',
+        'from_identifier' => $accounts['receiving_identifier'],
+        'to_identifier' => $accounts['holding_identifier'],
+        'amount' => $landedAmount,
+        'currency' => $currency,
+        'reason' => 'Identity claim consolidation',
+    ];
+
+    if (!method_exists($adapter, 'internalSweep')) {
+        throw new RuntimeException(
+            "{$institution}'s adapter does not implement internalSweep() — this institution's " .
+            "adapter needs to be extended before identity-swap consolidation can complete there."
+        );
+    }
+
+    $result = $adapter->internalSweep($sweepPayload, [
+        'consolidation_reference' => $consolidationReference,
+        'institution' => $institution,
+    ]);
+
+    if (!($result['success'] ?? false)) {
+        throw new RuntimeException("Sweep to holding account failed: " . ($result['message'] ?? 'Unknown error'));
+    }
+
+    return $landedAmount;
+}
+
+// ============================================================================
+// STEP 3a: PAY OUT FROM HOLDING TO THE REAL DESTINATION (merchant deposit)
+// ============================================================================
+
+private function payHoldingToMerchant(
+    string $institution,
+    string $currency,
+    float $amount,
+    string $destIdentifier,
+    string $destIdentifierType,
+    string $destAssetType,
+    string $reference
+): array {
+    $accounts = $this->getIdentityHoldingAccounts($institution, $currency);
+
+    $payload = [
+        'reference' => $reference,
+        'amount' => $amount,
+        'currency' => $currency,
+        'destination_identifier' => $destIdentifier,
+        'destination_identifier_type' => $destIdentifierType,
+        'destination_asset_type' => $destAssetType,
+        'to_institution' => $institution,
+        'destination_institution' => $institution,
+        // Source is the bank's OWN holding account, not a VouchMorph
+        // pool and not a customer — mirrors the VM_POOL pattern used
+        // elsewhere in creditDestination() for internally-sourced credits.
+        'from_institution' => $institution,
+        'source_institution' => $institution,
+        'source_identifier' => $accounts['holding_identifier'],
+        'source_type' => 'IDENTITY_HOLDING_ACCOUNT',
+        'action' => 'PROCESS_DEPOSIT_WITH_PROOF',
+    ];
+
+    if ($destAssetType === 'ACCOUNT') {
+        $payload['account_number'] = $destIdentifier;
+        $payload['destination_account'] = $destIdentifier;
+    } else {
+        $payload['phone'] = $destIdentifier;
+        $payload['wallet_phone'] = $destIdentifier;
+    }
+
+    $adapter = $this->adapterFactory->getAdapter($institution);
+    $result = $adapter->credit($payload, [
+        'destination_institution' => $institution,
+        'destination_identifier' => $destIdentifier,
+        'source_type' => 'IDENTITY_HOLDING_ACCOUNT',
+    ]);
+
+    if (!($result['credited'] ?? false)) {
+        throw new RuntimeException("Payout from holding to destination failed: " . ($result['message'] ?? 'Unknown error'));
+    }
+
+    return [
+        'success' => true,
+        'transaction_reference' => $result['transaction_reference'] ?? null,
+    ];
+}
+
+// ============================================================================
+// STEP 3b: PAY OUT FROM HOLDING AS A CASHOUT CODE (ATM/agent)
+// ============================================================================
+
+private function generateCashoutFromHolding(
+    string $institution,
+    string $currency,
+    float $amount,
+    string $deliveryMethod,
+    ?string $beneficiaryPhone,
+    string $reference
+): array {
+    $accounts = $this->getIdentityHoldingAccounts($institution, $currency);
+
+    $payload = [
+        'reference' => $reference,
+        'amount' => $amount,
+        'currency' => $currency,
+        'delivery_method' => $deliveryMethod,
+        'beneficiary_phone' => $beneficiaryPhone,
+        'from_institution' => $institution,
+        'source_institution' => $institution,
+        'source_identifier' => $accounts['holding_identifier'],
+        'source_type' => 'IDENTITY_HOLDING_ACCOUNT',
+        'to_institution' => $institution,
+        'destination_institution' => $institution,
+        'action' => 'GENERATE_TOKEN',
+    ];
+
+    $adapter = $this->adapterFactory->getAdapter($institution);
+    $result = $adapter->generateCashoutToken($payload, [
+        'source_institution' => $institution,
+        'destination_institution' => $institution,
+        'source_type' => 'IDENTITY_HOLDING_ACCOUNT',
+    ]);
+
+    if (!($result['success'] ?? false)) {
+        throw new RuntimeException("Cashout generation from holding failed: " . ($result['message'] ?? 'Unknown error'));
+    }
+
+    if ($beneficiaryPhone && isset($result['atm_pin']) && $this->smsService) {
+        try {
+            $this->smsService->sendCashoutCode($beneficiaryPhone, $result['atm_pin'], $amount, $result['voucher_number'] ?? null);
+        } catch (Exception $e) {
+            error_log("[SwapService] SMS failed but continuing: " . $e->getMessage());
+        }
+    }
+
+    return [
+        'success' => true,
+        'transaction_reference' => $result['transaction_reference'] ?? null,
+        'swap_code' => $result['voucher_number'] ?? $result['swap_code'] ?? null,
+        'atm_code' => $result['atm_pin'] ?? null,
+        'expires_at' => $result['expires_at'] ?? date('Y-m-d H:i:s', strtotime('+24 hours')),
+    ];
+}
+
+// ============================================================================
+// STEP 4: PLACE A REAL HOLD ON WHATEVER'S LEFT IN THE HOLDING ACCOUNT
+// ============================================================================
+
+/**
+ * Replaces createEarmarkedBalance(). Places an actual bank-side hold on the
+ * remaining balance in the institution's HOLDING account, tied to the
+ * identity, and records it in identity_holding_positions. No dust-threshold
+ * math needed — the remainder isn't sitting in a spendable account anymore.
+ */
+private function placeHoldOnHoldingRemainder(
+    string $institution,
+    string $currency,
+    float $amount,
+    string $identityType,
+    string $identityValue,
+    array $sourceHoldIds,
+    string $consolidationReference
+): int {
+    $accounts = $this->getIdentityHoldingAccounts($institution, $currency);
+
+    $holdPayload = [
+        'action' => 'PLACE_HOLD',
+        'reference' => $consolidationReference . '_REMAIN_HOLD',
+        'asset_type' => 'ACCOUNT',
+        'amount' => $amount,
+        'currency' => $currency,
+        'source_identifier' => $accounts['holding_identifier'],
+        'source_identifier_type' => $accounts['holding_identifier_type'],
+        'hold_reason' => 'IDENTITY_HOLDING_REMAINDER',
+        // Deliberately no expiry cap here — see file header note on
+        // indefinite/bank-agreed holds. If a bank requires a concrete
+        // expiry on their end for their own dormancy handling, confirm
+        // that value with them and set it explicitly rather than reusing
+        // the 24h customer-hold default.
+        'timestamp' => time(),
+        'from_institution' => $institution,
+        'source_institution' => $institution,
+    ];
+
+    $adapter = $this->adapterFactory->getAdapter($institution);
+    $result = $adapter->placeHold($holdPayload, [
+        'institution' => $institution,
+        'source_type' => 'IDENTITY_HOLDING_ACCOUNT',
+    ]);
+
+    if (!($result['hold_placed'] ?? false)) {
+        throw new RuntimeException("Failed to place hold on holding account remainder: " . ($result['message'] ?? 'Unknown error'));
+    }
+
+    $stmt = $this->swapDB->prepare("
+        INSERT INTO identity_holding_positions (
+            identity_type, identity_value, institution, currency,
+            holding_identifier, hold_reference, amount, source_hold_ids,
+            consolidation_reference, status
+        ) VALUES (
+            :type, :value, :inst, :ccy, :holding_id, :hold_ref, :amount,
+            :source_holds::jsonb, :consol_ref, 'open'
+        ) RETURNING id
+    ");
+    $stmt->execute([
+        ':type' => $identityType, ':value' => $identityValue, ':inst' => $institution,
+        ':ccy' => $currency, ':holding_id' => $accounts['holding_identifier'],
+        ':hold_ref' => $result['hold_reference'] ?? null, ':amount' => $amount,
+        ':source_holds' => json_encode($sourceHoldIds), ':consol_ref' => $consolidationReference,
+    ]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    $positionId = $row ? (int)$row['id'] : 0;
+
+    $this->logger->info("Identity holding position created", [
+        'position_id' => $positionId, 'identity_type' => $identityType, 'identity_value' => $identityValue,
+        'institution' => $institution, 'amount' => $amount,
+    ]);
+
+    return $positionId;
+}
+ 
 /**
  * Called once identity-swap money has actually landed in a
  * destination account (after a successful DEPOSIT finalization).
@@ -5705,6 +6256,148 @@ public function finalizeAggregatedIdentityClaim(
     return $response;
 }
 
+public function finalizeAggregatedIdentityClaimSelfService(
+    string $identityType,
+    string $identityValue,
+    string $pin,
+    int $confirmedById,
+    string $destinationType,
+    array $destinationDetails
+): array {
+    $destinationType = strtoupper($destinationType);
+    if (!in_array($destinationType, ['CASHOUT', 'DEPOSIT'], true)) {
+        throw new RuntimeException("destination_type must be 'CASHOUT' or 'DEPOSIT'");
+    }
+
+    // 1. Get ALL pending, non-expired holds for this identity.
+    $stmt = $this->swapDB->prepare("
+        SELECT * FROM identity_swap_holds
+        WHERE identity_type = :identity_type AND identity_value = :identity_value
+          AND status = 'pending' AND hold_expires_at > NOW()
+        ORDER BY created_at ASC
+    ");
+    $stmt->execute([':identity_type' => $identityType, ':identity_value' => $identityValue]);
+    $pendingHolds = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    if (empty($pendingHolds)) {
+        throw new RuntimeException("No pending balance found for this identity.");
+    }
+
+    // 2. Currency check — same rule as the agent-aggregated path. A
+    // claim spanning multiple currencies can't be paid out as one
+    // destination instruction.
+    $currencies = array_unique(array_column($pendingHolds, 'currency'));
+    if (count($currencies) > 1) {
+        throw new RuntimeException(
+            "This identity has pending balances in multiple currencies (" . implode(', ', $currencies) . "). " .
+            "Claim each currency separately, or contact VouchMorph support."
+        );
+    }
+    $currency = $currencies[0] ?? 'BWP';
+
+    // 3. PIN check ONCE against any hold with a PIN hash — the "green
+    // light". verifyIdentityClaimPin() itself figures out whether this
+    // is an account_pin (registered owner, self-service) or otp_pin
+    // (unregistered identity) claim and validates accordingly; either
+    // way, on success it marks EVERY pending hold for this identity
+    // as authorized.
+    $holdWithPin = null;
+    foreach ($pendingHolds as $hold) {
+        if (!empty($hold['otp_pin_hash'])) {
+            $holdWithPin = $hold;
+            break;
+        }
+    }
+    if (!$holdWithPin) {
+        throw new RuntimeException(
+            "No PIN has been set for this identity yet. If this identity is registered to your " .
+            "account, log in and finalize with your transaction PIN instead. Otherwise, ask the " .
+            "sender to check the claim PIN was sent, or contact VouchMorph support."
+        );
+    }
+    // confirmedByType is hard-locked to 'user' — this method is self-
+    // service only. Agent-assisted claims go through
+    // finalizeAggregatedIdentityClaim() instead, never this one.
+    $this->verifyIdentityClaimPin($holdWithPin, $pin, 'user');
+
+    $beneficiaryPhone = $holdWithPin['otp_pin_sent_to'] ?? null;
+    if (empty($beneficiaryPhone)) {
+        $latestSourcePayload = json_decode($holdWithPin['source_payload'], true);
+        $beneficiaryPhone = $latestSourcePayload['notification_phone']
+            ?? $latestSourcePayload['beneficiary_phone']
+            ?? null;
+    }
+
+    // 4. Finalize EACH hold independently, all to the SAME destination.
+    // Every call after the PIN check above is authorized via
+    // _skip_pin_verification — the identity is already marked
+    // authorized by markIdentityHoldsAuthorized() inside
+    // verifyIdentityClaimPin(), same green-light mechanism the agent
+    // path uses.
+    $results = [];
+    $failedHolds = [];
+    $totalNet = 0.0;
+
+    foreach ($pendingHolds as $hold) {
+        $confirmationPayload = array_merge($destinationDetails, [
+            'confirmed_by_type' => 'user',
+            'confirmed_by_id' => $confirmedById,
+            'confirmation_method' => 'dashboard',
+            'destination_type' => $destinationType,
+            'client_phone' => $beneficiaryPhone,
+            'beneficiary_phone' => $beneficiaryPhone,
+            '_skip_pin_verification' => true,
+            '_authorized_by' => 'identity_authorization',
+        ]);
+
+        try {
+            $result = $this->executeSingleHoldTransaction($hold, $confirmationPayload);
+            $netAmount = $result['result']['amount'] ?? $hold['amount'];
+
+            $results[] = [
+                'hold_id' => $hold['hold_id'],
+                'swap_reference' => $hold['swap_reference'],
+                'gross_amount' => (float)$hold['amount'],
+                'net_amount' => (float)$netAmount,
+                'status' => 'completed',
+                'transaction_reference' => $result['transaction_reference'] ?? null,
+                'swap_code' => $result['result']['swap_code'] ?? null,
+                'atm_code' => $result['result']['atm_code'] ?? null,
+            ];
+            $totalNet += (float)$netAmount;
+
+        } catch (Exception $e) {
+            error_log("[SwapService] finalizeAggregatedIdentityClaimSelfService: hold {$hold['hold_id']} FAILED: " . $e->getMessage());
+            $failedHolds[] = [
+                'hold_id' => $hold['hold_id'],
+                'swap_reference' => $hold['swap_reference'],
+                'gross_amount' => (float)$hold['amount'],
+                'status' => 'failed',
+                'error' => $e->getMessage(),
+            ];
+            // CONTINUE to the next hold — one failure must not block
+            // the rest, same discipline as the agent-aggregated path.
+        }
+    }
+
+    if (empty($results)) {
+        throw new RuntimeException(
+            "All underlying swaps failed to finalize — nothing was claimed. See individual errors and retry."
+        );
+    }
+
+    return [
+        'status' => empty($failedHolds) ? 'success' : 'partial_success',
+        'identity_type' => $identityType,
+        'identity_value' => $identityValue,
+        'currency' => $currency,
+        'destination_type' => $destinationType,
+        'swap_count' => count($pendingHolds),
+        'total_claimed_net' => round($totalNet, 2),
+        'successful_claims' => $results,
+        'failed_claims' => $failedHolds,
+    ];
+}
 /**
  * Execute a single hold as its own independent transaction
  * This ensures that if one hold fails, others are not affected
