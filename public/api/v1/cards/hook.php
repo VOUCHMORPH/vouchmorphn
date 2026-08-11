@@ -102,8 +102,14 @@ foreach ($input['sources'] as $idx => $src) {
             exit();
         }
     }
+ if (!isset($src['authorized_amount']) || !is_numeric($src['authorized_amount']) || (float)$src['authorized_amount'] <= 0) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'error' => "sources[{$idx}].authorized_amount is required and must be greater than zero"]);
+        exit();
+    }
     $sources[] = array_merge($src, [
         'owner_user_id' => (int)($src['owner_user_id'] ?? $cardOwnerUserId),
+        'authorized_amount' => (float)$src['authorized_amount'],
     ]);
 }
 
