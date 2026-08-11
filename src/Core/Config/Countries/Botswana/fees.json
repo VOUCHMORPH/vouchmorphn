@@ -1,5 +1,10 @@
 {
   "base_currency": "BWP",
+  "limits": {
+    "max_single_transaction": 7000.00,
+    "currency": "BWP",
+    "description": "Hard cap applied uniformly to every VouchMorph-initiated money movement in this country — swaps, cashouts, card hooks, activations. Not an institution-specific limit (those live in participants.yaml); this is VouchMorph's own risk ceiling."
+  },
   "CASHOUT": {
     "description": "Cashout swap fee - client pays P10 upfront",
     "fee_components": {
