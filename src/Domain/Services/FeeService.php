@@ -169,7 +169,21 @@ class FeeService
             error_log("  VouchMorph profit per unit: {$this->context['vouchmorph_fx_profit']}");
         }
     }
-    
+    /**
+     * VouchMorph's own country-wide transaction ceiling — separate from
+     * any institution's own limits.max_amount in participants.yaml.
+     * Applied uniformly to every money-movement type, including card
+     * hooks. Falls back to a conservative default if fees.json hasn't
+     * declared one yet, rather than silently having no ceiling at all.
+     */
+    public function getMaxTransactionLimit(): array
+    {
+        $limits = $this->feeRegistry['limits'] ?? [];
+        return [
+            'amount' => (float)($limits['max_single_transaction'] ?? 7000.00),
+            'currency' => $limits['currency'] ?? $this->baseCurrency,
+        ];
+    }
     /**
      * Get participant country from participants.yaml
      * Country codes: BW = Botswana, ZA = South Africa, etc.
