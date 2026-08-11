@@ -3755,22 +3755,53 @@ async function confirmActivateCard(cardSuffix) {
 // ------------------------------------------------------------
 // Hooking a source to a card (yours or someone else's)
 // ------------------------------------------------------------
-function openHookSourceModal(targetCardSuffix) {
-    const modalBody = document.getElementById('modalBody');
-    modalBody.innerHTML = '';
-    modalBody.appendChild(document.getElementById('fromSection'));
-    const btnRow = document.createElement('div');
-    btnRow.className = 'cta-row';
-    btnRow.style.marginTop = '20px';
-    btnRow.innerHTML = `<button type="button" class="btn btn-primary" onclick="confirmHookSource('${targetCardSuffix}')">Hook this source</button>`;
-    modalBody.appendChild(btnRow);
+async function openHookSourceModal(targetCardSuffix) {
+    if (!(state.fromInst && state.fromAsset && fieldsValidForAsset(state.fromAsset, state.fromFields, true).valid)) {
+        showMessage('Finish selecting a source first — institution, asset type, and required fields.', 'warning');
+        return;
+    }
+
+    const idField = (getAssetConfig(state.fromAsset)?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+    const identifier = idField ? state.fromFields[idField.name] : null;
+
+    openModal('Hook a source', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Checking balance…</div>');
+
+    const advice = await callApi(CONFIG.API_BASE + '/api/v1/cards/GetHookAdvice.php', {
+        institution: state.fromInst,
+        asset_type: state.fromAsset,
+        identifier: identifier,
+    });
+
+    if (!advice.ok) {
+        document.getElementById('modalBody').innerHTML = `<div style="color:var(--danger);padding:12px;">Could not check your balance: ${escapeHtml(advice.error)}</div>`;
+        return;
+    }
+
+    const { available_balance, vouchmorph_max_transaction, currency, recommended_cap } = advice.body.data;
+
     document.getElementById('modalTitle').textContent = 'Hook a source';
-    document.getElementById('modal').classList.add('active');
+    document.getElementById('modalBody').innerHTML = `
+        <div style="text-align:center;padding:6px 0 18px;">
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">Available balance: <strong>${formatMoney(available_balance, currency)}</strong></div>
+            <div style="font-size:11px;color:var(--text-dim);">VouchMorph's per-transaction limit: ${formatMoney(vouchmorph_max_transaction, currency)}</div>
+        </div>
+        <div class="field-group">
+            <label>Amount to authorize for this card</label>
+            <input type="number" id="hookAuthorizedAmount" min="0.01" max="${recommended_cap}" step="0.01" value="${recommended_cap}">
+            <div class="help">You can hook up to ${formatMoney(recommended_cap, currency)}. This is the most this card can ever draw from this source.</div>
+        </div>
+        <div class="cta-row"><button type="button" class="btn btn-primary" onclick="confirmHookSource('${targetCardSuffix}', ${recommended_cap})">Hook this source</button></div>`;
 }
 
-async function confirmHookSource(targetCardSuffix) {
-    const hasSource = !!(state.fromInst && state.fromAsset && fieldsValidForAsset(state.fromAsset, state.fromFields, true).valid);
-    if (!hasSource) { showMessage('Finish selecting the source — institution, asset type, and required fields.', 'warning'); return; }
+async function confirmHookSource(targetCardSuffix, recommendedCap) {
+    const amountInput = document.getElementById('hookAuthorizedAmount');
+    const authorizedAmount = parseFloat(amountInput?.value);
+
+    if (!(authorizedAmount > 0)) { showMessage('Enter an amount to authorize.', 'warning'); return; }
+    if (authorizedAmount > recommendedCap + 0.01) {
+        showMessage(`You can authorize at most ${formatMoney(recommendedCap, '')} for this source.`, 'warning');
+        return;
+    }
 
     const idField = (getAssetConfig(state.fromAsset)?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
     const identifier = idField ? state.fromFields[idField.name] : null;
@@ -3782,6 +3813,7 @@ async function confirmHookSource(targetCardSuffix) {
             institution: state.fromInst,
             asset_type: state.fromAsset,
             identifier: identifier,
+            authorized_amount: authorizedAmount,
             wallet_pin: pin || undefined,
             pin: pin || undefined,
         }],
@@ -3792,7 +3824,6 @@ async function confirmHookSource(targetCardSuffix) {
     closeModal();
     openMyCardModal();
 }
-
 // ------------------------------------------------------------
 // Scan someone else's card QR to hook to it
 // ------------------------------------------------------------
