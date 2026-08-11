@@ -1785,8 +1785,12 @@ class CardService
 
             foreach ($placedHolds as $held) {
                 try {
-                    $swapService->releaseHold($held['source'], $held['source']['institution'], $held['hold_id'] ?? null, $held['hold_reference'] ?? null);
-                } catch (\Throwable $releaseErr) {
+$swapService->releaseHold(
+                        $held['source'],
+                        $held['source']['institution'],
+                        isset($held['hold_id']) ? (string)$held['hold_id'] : null,
+                        $held['hold_reference'] ?? null
+                    );                } catch (\Throwable $releaseErr) {
                     error_log("[CardService] Failed to release hold during hook rollback: " . $releaseErr->getMessage());
                 }
             }
