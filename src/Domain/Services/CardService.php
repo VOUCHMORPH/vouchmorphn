@@ -1730,7 +1730,12 @@ class CardService
                     ];
 
                 $totalHeld += $requestedAmount;
-                $expirySeconds = AssetTypeRegistry::getHoldExpiry($source['asset_type'] ?? 'ACCOUNT');
+                 try {
+                    $expirySeconds = AssetTypeRegistry::getHoldExpiry($source['asset_type'] ?? 'ACCOUNT');
+                } catch (\Throwable $registryError) {
+                    error_log("[CardService] AssetTypeRegistry::getHoldExpiry() failed, using default 3600s: " . $registryError->getMessage());
+                    $expirySeconds = 3600; // conservative 1-hour default
+                }
                 $minExpirySeconds = min($minExpirySeconds, $expirySeconds);
             }
 
