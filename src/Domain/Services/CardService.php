@@ -1658,6 +1658,8 @@ class CardService
             }
 
             $hookReference = 'HOOK_' . bin2hex(random_bytes(8));
+              $swapService->setCurrentSwapReference($hookReference);
+
             $totalHeld = 0.0;
             $minExpirySeconds = PHP_INT_MAX;
             $currency = $sources[0]['currency'] ?? 'BWP';
