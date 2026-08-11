@@ -1668,17 +1668,43 @@ class CardService
                     throw new RuntimeException("Source {$source['institution']} has no available balance to hook");
                 }
 
+                // The source owner authorizes a specific amount at hook time
+                // — this is a deliberate cap, never a silent "hold everything"
+                // default. Re-validated here independently of whatever the
+                // frontend showed, against BOTH the live balance and
+                // VouchMorph's own country-wide transaction ceiling — a
+                // client-supplied number is advisory input, never trusted
+                // authorization on its own.
+                $requestedAmount = isset($source['authorized_amount'])
+                    ? (float)$source['authorized_amount']
+                    : null;
+
+                $maxLimit = $this->feeService !== null
+                    ? $this->feeService->getMaxTransactionLimit()['amount']
+                    : $balance; // no FeeService available — fall back to balance-only cap
+
+                $hardCap = min($balance, $maxLimit);
+
+                if ($requestedAmount === null) {
+                    throw new RuntimeException(
+                        "An authorized amount is required to hook {$source['institution']} — " .
+                        "the source owner must specify how much to make available (up to {$hardCap})."
+                    );
+                }
+                if ($requestedAmount <= 0) {
+                    throw new RuntimeException("Authorized amount for {$source['institution']} must be greater than zero.");
+                }
+                if ($requestedAmount > $hardCap + 0.01) {
+                    throw new RuntimeException(
+                        "Requested amount ({$requestedAmount}) exceeds what can be authorized for {$source['institution']} " .
+                        "(available balance: {$balance}, VouchMorph limit: {$maxLimit}, cap: {$hardCap})."
+                    );
+                }
+
                 $holdPayload = array_merge($source, [
-                    'amount' => $balance,
+                    'amount' => $requestedAmount,
                     'currency' => $source['currency'] ?? $currency,
                     'hold_reason' => 'CARD_POOL_HOOK_' . $hookReference,
-                    // FIX: SwapService::extractSourceIdentifier() looks for
-                    // 'source_identifier' (and several aliases), never the
-                    // plain 'identifier' key that hook.php's request payload
-                    // actually uses. Without this, source_identifier resolves
-                    // to null and the bank rejects verification with
-                    // "Account number required" even though the request
-                    // clearly included one under a different key name.
                     'source_identifier' => $source['identifier'] ?? $source['source_identifier'] ?? null,
                     'source_identifier_type' => $source['identifier_type'] ?? $source['source_identifier_type'] ?? 'auto',
                 ]);
@@ -1698,10 +1724,10 @@ class CardService
                     'source' => $source,
                     'hold_reference' => $holdResult['hold_reference'] ?? null,
                     'hold_id' => $holdResult['local_hold_id'] ?? null,
-                    'amount' => $balance,
-                ];
+                    'amount' => $requestedAmount,  
+                    ];
 
-                $totalHeld += $balance;
+                $totalHeld += $requestedAmount;
                 $expirySeconds = AssetTypeRegistry::getHoldExpiry($source['asset_type'] ?? 'ACCOUNT');
                 $minExpirySeconds = min($minExpirySeconds, $expirySeconds);
             }
