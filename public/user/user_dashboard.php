@@ -3864,7 +3864,7 @@ function openHelpModal() {
             <ol style="padding-left:18px;margin-bottom:16px;">
                 <li>Open Toolbox &rarr; My VouchMorph Card. Every account gets one automatically.</li>
                 <li>It starts inactive — activate it once with a small one-time fee from any linked source.</li>
-                <li>Once active, other VouchMorph users can hook their own sources to your card by scanning its QR code, and you can hook your sources to theirs the same way.</li>
+                <li>Once active, other VouchMorph users can hook their own sources to your card by scanning its QR code, and you can hook your sources to theirs the same way. Hooking places a 24-hour hold that releases automatically once spent or once the 24 hours pass — there's no way to release it early, so only hook what you're comfortable tying up.</li>
                 <li>When multiple people are hooked, the card owner starts a payment, picks how contributions should split (Smart is the easy default), and everyone watches the live progress until it's fully covered — then the owner executes it.</li>
             </ol>
             <p style="font-weight:700;margin-bottom:6px;">Claiming money sent to you</p>
@@ -4038,7 +4038,8 @@ function renderMyCardModal() {
         </div>
 
         <div style="border-top:1px solid var(--border);padding-top:14px;margin-top:14px;">
-            <div class="field-label" style="margin-bottom:8px;">Hooked sources ${hook ? `— ${formatMoney(hook.total_held, hook.currency)} total, expires ${new Date(hook.expires_at).toLocaleString()}` : ''}</div>
+            <div class="field-label" style="margin-bottom:8px;">Hooked sources ${hook ? `— ${formatMoney(hook.total_held, hook.currency)} total` : ''}</div>
+            ${hook ? `<div class="help" style="margin-bottom:10px;">Held until ${new Date(hook.expires_at).toLocaleString()} — releases automatically after 24 hours if it isn't spent first. There's no way to release it early once hooked.</div>` : ''}
             ${contributorsHtml}
         </div>
 
@@ -4160,6 +4161,9 @@ async function openHookSourceModal(targetCardSuffix) {
             <input type="number" id="hookAuthorizedAmount" min="0.01" max="${recommended_cap}" step="0.01" value="${recommended_cap}">
             <div class="help">You can hook up to ${formatMoney(recommended_cap, currency)}. This is the most this card can ever draw from this source.</div>
         </div>
+        <div style="background:var(--surface-muted);border-left:3px solid var(--warning);padding:12px 14px;margin-bottom:16px;font-size:12px;color:var(--text-muted);">
+            This places a real 24-hour hold on this amount. It releases automatically after 24 hours if it isn't spent — <strong>there's no way to release it early once you hook it.</strong> Only hook an amount you're comfortable having tied up for the full day.
+        </div>
         <div class="cta-row"><button type="button" class="btn btn-primary" onclick="confirmHookSource('${targetCardSuffix}', ${recommended_cap})">Hook this source</button></div>`;
 }
 
@@ -4173,6 +4177,17 @@ async function confirmHookSource(targetCardSuffix, recommendedCap) {
         return;
     }
 
+    // Unlike a swap, a hook cannot be reviewed-then-discarded — there is
+    // no unhook endpoint, so this confirm is the only checkpoint before a
+    // real 24-hour hold goes on the person's money. Make that explicit
+    // here rather than only in the help text above the input.
+    showConfirm(
+        `Hold ${formatMoney(authorizedAmount, '')} on this source for up to 24 hours? This can't be undone early — it only releases when spent or when the 24 hours passes.`,
+        () => executeHookSource(targetCardSuffix, authorizedAmount)
+    );
+}
+
+async function executeHookSource(targetCardSuffix, authorizedAmount) {
     const idField = (getAssetConfig(state.fromAsset)?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
     const identifier = idField ? state.fromFields[idField.name] : null;
     const pin = extractPinFromFields(state.fromAsset, state.fromFields);
@@ -4190,7 +4205,7 @@ async function confirmHookSource(targetCardSuffix, recommendedCap) {
     });
 
     if (!result.ok) { showMessage('That hook didn\'t go through: ' + friendlyApiError(result.error), 'error'); return; }
-    showMessage('Source hooked successfully. 🎉', 'success');
+    showMessage('Source hooked for 24 hours. 🎉', 'success');
     closeModal();
     openMyCardModal();
 }
@@ -4433,11 +4448,11 @@ async function executeSession(sessionId) {
 }
 
 async function cancelSession(sessionId) {
-    showConfirm('Cancel this payment session?', async () => {
+    showConfirm('Cancel this payment session? The hooked sources stay held for a new session or the swipe fast-path — this only cancels the payment attempt itself, not the holds.', async () => {
         const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/cancel.php', { session_id: sessionId, reason: 'Cancelled by owner' });
         if (!result.ok) { showMessage('Couldn\'t cancel: ' + friendlyApiError(result.error), 'error'); return; }
         stopSessionPolling();
-        showMessage('Session cancelled.', 'info');
+        showMessage('Session cancelled — hooked sources are still held for next time.', 'info');
         openMyCardModal();
     });
 }
