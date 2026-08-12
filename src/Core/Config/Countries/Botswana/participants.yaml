@@ -29,6 +29,7 @@ participants:
       source: true
       deposit: true
       cashout: true
+      identity_holding: true    # NEW — gates getIdentityHoldingAccounts()
 
     hold_model: NATIVE          # real hold/authorization API
 
@@ -52,6 +53,25 @@ participants:
       enabled: true
       supported_currencies: [BWP, ZAR, USD]
       settlement_cycles: { BWP: "T+0", ZAR: "T+1", USD: "T+2" }
+
+    # NEW — destination-side role: where consolidated identity-swap
+    # money lands before payout/remainder-hold. One entry per currency.
+    identity_accounts:
+      BWP:
+        receiving_identifier: "REPLACE_WITH_REAL_RECEIVING_ACCOUNT_NUMBER"
+        receiving_identifier_type: "account_number"
+        holding_identifier: "REPLACE_WITH_REAL_HOLDING_ACCOUNT_NUMBER"
+        holding_identifier_type: "account_number"
+
+    # NEW — source-side role: where debited hold proceeds land at THIS
+    # institution before being moved onward (via switch or direct) to a
+    # destination. Required for settleToDestinationReceiving() — both
+    # the switch path (as origin_account_number) and the direct
+    # fallback (as the credit's declared source) use this.
+    settlement_account:
+      BWP:
+        identifier: "REPLACE_WITH_REAL_SETTLEMENT_ACCOUNT_NUMBER"
+        identifier_type: "account_number"
 
   # ----------------------------------------------------------
   # ABSA - Independent DIRECT bank, technically hosted on
@@ -77,6 +97,7 @@ participants:
       source: true
       deposit: true
       cashout: true
+      identity_holding: true    # NEW — gates getIdentityHoldingAccounts()
 
     hold_model: NATIVE
 
@@ -104,6 +125,22 @@ participants:
       supported_currencies: [BWP, ZAR, USD]
       settlement_cycles: { BWP: "T+0", ZAR: "T+1", USD: "T+2" }
 
+    # NEW — destination-side role: where consolidated identity-swap
+    # money lands before payout/remainder-hold.
+    identity_accounts:
+      BWP:
+        receiving_identifier: "REPLACE_WITH_REAL_RECEIVING_ACCOUNT_NUMBER"
+        receiving_identifier_type: "account_number"
+        holding_identifier: "REPLACE_WITH_REAL_HOLDING_ACCOUNT_NUMBER"
+        holding_identifier_type: "account_number"
+
+    # NEW — source-side role: where debited hold proceeds land at THIS
+    # institution before being moved onward.
+    settlement_account:
+      BWP:
+        identifier: "REPLACE_WITH_REAL_SETTLEMENT_ACCOUNT_NUMBER"
+        identifier_type: "account_number"
+
   # ----------------------------------------------------------
   # SACCUSSALIS - Commercial bank
   # ----------------------------------------------------------
@@ -127,6 +164,7 @@ participants:
       source: true
       deposit: true
       cashout: true
+      identity_holding: true    # NEW — gates getIdentityHoldingAccounts()
 
     hold_model: NATIVE
 
@@ -149,6 +187,22 @@ participants:
       supported_currencies: [BWP, ZAR, EUR, USD]
       settlement_cycles: { BWP: "T+0", ZAR: "T+1", EUR: "T+2" }
 
+    # NEW — destination-side role: where consolidated identity-swap
+    # money lands before payout/remainder-hold.
+    identity_accounts:
+      BWP:
+        receiving_identifier: "REPLACE_WITH_REAL_RECEIVING_ACCOUNT_NUMBER"
+        receiving_identifier_type: "account_number"
+        holding_identifier: "REPLACE_WITH_REAL_HOLDING_ACCOUNT_NUMBER"
+        holding_identifier_type: "account_number"
+
+    # NEW — source-side role: where debited hold proceeds land at THIS
+    # institution before being moved onward.
+    settlement_account:
+      BWP:
+        identifier: "REPLACE_WITH_REAL_SETTLEMENT_ACCOUNT_NUMBER"
+        identifier_type: "account_number"
+
   # ----------------------------------------------------------
   # CAZACOM - Mobile network operator, also technical host for MTN
   # ----------------------------------------------------------
@@ -169,7 +223,8 @@ participants:
     capabilities:
       source: true
       deposit: true
-      cashout: false            
+      cashout: false
+      identity_holding: true    # NEW — gates getIdentityHoldingAccounts() for MNOs
 
     hold_model: NATIVE
 
@@ -206,7 +261,25 @@ participants:
         - { tier: 2, max_balance: 50000, daily_limit: 10000 }
         - { tier: 3, max_balance: 100000, daily_limit: 50000 }
 
-  
+    # NEW — destination-side role: where consolidated identity-swap
+    # money lands before payout/remainder-hold.
+    identity_accounts:
+      BWP:
+        receiving_identifier: "REPLACE_WITH_REAL_RECEIVING_WALLET_ID"
+        receiving_identifier_type: "wallet_id"
+        holding_identifier: "REPLACE_WITH_REAL_HOLDING_WALLET_ID"
+        holding_identifier_type: "wallet_id"
+
+    # NEW — source-side role: where debited hold proceeds land at THIS
+    # institution before being moved onward.
+    settlement_account:
+      BWP:
+        identifier: "REPLACE_WITH_REAL_SETTLEMENT_WALLET_ID"
+        identifier_type: "wallet_id"
+
+  # ----------------------------------------------------------
+  # MTN - Mobile network operator (technically hosted on CAZACOM)
+  # ----------------------------------------------------------
   MTN:
     provider_code: MTN
     id: MTNBWX1
@@ -226,6 +299,7 @@ participants:
       source: true              
       deposit: true
       cashout: false
+      identity_holding: true    # NEW — gates getIdentityHoldingAccounts() for MNOs
 
     hold_model: NATIVE         
 
@@ -266,6 +340,22 @@ participants:
       enabled: true
       code_expiry_minutes: 30
 
+    # NEW — destination-side role: where consolidated identity-swap
+    # money lands before payout/remainder-hold.
+    identity_accounts:
+      BWP:
+        receiving_identifier: "REPLACE_WITH_REAL_RECEIVING_WALLET_ID"
+        receiving_identifier_type: "wallet_id"
+        holding_identifier: "REPLACE_WITH_REAL_HOLDING_WALLET_ID"
+        holding_identifier_type: "wallet_id"
+
+    # NEW — source-side role: where debited hold proceeds land at THIS
+    # institution before being moved onward.
+    settlement_account:
+      BWP:
+        identifier: "REPLACE_WITH_REAL_SETTLEMENT_WALLET_ID"
+        identifier_type: "wallet_id"
+
   # ----------------------------------------------------------
   # CENTRALSWITCH - National payment switch rail (not an
   # institution — a routing target). No hold_model or
@@ -285,6 +375,7 @@ participants:
       source: false               # not a debitable participant itself
       deposit: false
       cashout: false
+      # NO identity_holding — SWITCH doesn't hold funds
 
     routing:
       priority: 1
@@ -306,6 +397,12 @@ participants:
     asset_types:
       - CARD
       - VOUCHER
+
+    capabilities:
+      source: false               # orchestrator doesn't hold funds
+      deposit: false
+      cashout: false
+      # NO identity_holding — orchestrator coordinates, doesn't hold
 
     switch_participant_ids:
       CENTRALSWITCH: "cbcdd2a7-b3a3-4420-b034-a7ac03082ee1"
