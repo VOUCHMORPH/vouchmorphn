@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 header('Content-Type: application/json');
 
-require_once __DIR__ . '/../../../../src/Application/Utils/SessionManager.php';
+require_once __DIR__ . '/../../../../src/Application/Utils/SessionManager.php'; 
 use Application\Utils\SessionManager;
 
 SessionManager::start();
