@@ -32,6 +32,8 @@ ZURUBANK:
     destination_deposit:
       process_deposit: "/api/v1/deposit/direct.php"
       verify_account: "/api/v1/verify_asset.php"
+    internal:                              # NEW SECTION
+      sweep: "/api/v1/internal/sweep.php"  # NEW ENDPOINT — internal transfer between own accounts
     common:
       transferWithProof: "/api/v1/transfer.php"
       reverse: "/api/v1/hold.php"
@@ -75,6 +77,8 @@ ABSA:
     destination_deposit:
       process_deposit: "/absa_participant.php?action=process_deposit"
       verify_account: "/absa_participant.php?action=verify_account"
+    internal:                              # NEW SECTION
+      sweep: "/absa_participant.php?action=internal_sweep"  # NEW ENDPOINT
     common:
       transferWithProof: "/absa_participant.php?action=process_deposit"
       status: "/absa_participant.php?action=check_status"
@@ -118,6 +122,8 @@ SACCUSSALIS:
     destination_deposit:
       process_deposit: "/api/v1/transaction/credit_funds.php"
       verify_account: "/api/v1/verify_account.php"
+    internal:                              # NEW SECTION
+      sweep: "/api/v1/internal/sweep.php"  # NEW ENDPOINT
     common:
       transferWithProof: "/api/v1/transfer.php"
       reverse: "/api/v1/hold.php"
@@ -167,6 +173,8 @@ CAZACOM:
     destination_deposit:
       process_deposit: "/api/v1/mno/credit"
       verify_account: "/api/v1/mno/verify_wallet"
+    internal:                              # NEW SECTION
+      sweep: "/api/v1/mno/internal/sweep"  # NEW ENDPOINT — internal wallet-to-wallet transfer
     common:
       transferWithProof: "/api/v1/mno/transfer"
       reverse: "/api/v1/mno/reverse"
@@ -208,6 +216,8 @@ MTN:
     destination_deposit:
       process_deposit: "/api/mtn_momo_participant.php?action=process_deposit"
       verify_account: "/api/mtn_momo_participant.php?action=wallet_balance"
+    internal:                              # NEW SECTION
+      sweep: "/api/mtn_momo_participant.php?action=internal_sweep"  # NEW ENDPOINT
     common:
       transferWithProof: "/api/mtn_momo_participant.php?action=process_deposit"
       status: "/api/mtn_momo_participant.php?action=check_status"
