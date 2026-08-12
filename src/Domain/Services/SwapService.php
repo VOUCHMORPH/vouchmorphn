@@ -4614,36 +4614,49 @@ private function getIdentityHoldingAccounts(string $institution, string $currenc
 }
 
 // ============================================================================
-// SWITCH FAST-PATH — skip receiving/holding entirely when every institution
-// involved shares a common switch, since the switch's own settlement already
-// nets/confirms atomically. Mirrors the `settlement.switches` field already
-// read elsewhere (see admin_dashboard.php's Participants view).
-//
-// ⚠️ STUB: the actual switch-execution call below (attemptSwitchConsolidation)
-// assumes a SwitchExecutionStrategy-shaped adapter call that I have not seen
-// in this codebase — only referenced in comments (recordExternalRailExecution's
-// docblock, confirmCashout()'s $mode variable). Confirm the real method
-// signature before enabling this path; until then it should stay behind a
-// feature flag (see USE_SWITCH_FAST_PATH below) defaulting to false.
+// CONFIG: source-side settlement account
 // ============================================================================
 
-private const USE_SWITCH_FAST_PATH = false; // flip once the real switch call is verified
+private function getSourceSettlementAccount(string $institution, string $currency): array
+{
+    $participant = $this->participants[$institution] ?? $this->participants[strtoupper($institution)] ?? null;
+    if ($participant === null) {
+        throw new RuntimeException("Unknown institution: {$institution}");
+    }
 
-/**
- * Returns the switch code common to every given institution, or null if
- * they don't all share one. An empty/missing `settlement.switches` on any
- * institution means "not eligible" — never guess a shared switch.
- */
+    $account = $participant['settlement_account'][$currency] ?? null;
+    if ($account === null || empty($account['identifier'])) {
+        throw new RuntimeException(
+            "{$institution} has no settlement_account configured for currency {$currency}. " .
+            "Add a settlement_account.{$currency} block to participants.yaml — confirm the real " .
+            "account number with the bank before enabling this."
+        );
+    }
+
+    return [
+        'identifier' => $account['identifier'],
+        'identifier_type' => $account['identifier_type'] ?? 'account_number',
+    ];
+}
+
+// ============================================================================
+// SWITCH ELIGIBILITY — per-leg (this source + this destination), fixed to
+// match the REAL participants.yaml schema (switch_participant_ids, a map of
+// switch-name => this institution's own participant ID within that switch —
+// NOT $participant['settlement']['switches'], which doesn't exist in this
+// schema at all).
+// ============================================================================
+
 private function getCommonSwitch(array $institutions): ?string
 {
     $switchSets = [];
     foreach (array_unique($institutions) as $inst) {
         $participant = $this->participants[$inst] ?? null;
-        $switches = $participant['settlement']['switches'] ?? [];
-        if (empty($switches)) {
-            return null; // this institution has no switch at all — can't be a common one
+        $switchIds = $participant['switch_participant_ids'] ?? [];
+        if (empty($switchIds)) {
+            return null; // this institution isn't reachable via any switch at all
         }
-        $switchSets[] = $switches;
+        $switchSets[] = array_keys($switchIds);
     }
 
     if (empty($switchSets)) {
@@ -4661,133 +4674,216 @@ private function getCommonSwitch(array $institutions): ?string
     return $common[0] ?? null;
 }
 
-/**
- * Attempts to settle an identity claim via a shared switch instead of the
- * receiving/holding flow. Returns null if not eligible (caller should fall
- * back to executeIdentityClaimWithSplit's normal path) or if the fast path
- * is disabled via USE_SWITCH_FAST_PATH.
- *
- * ⚠️ NOT WIRED TO A REAL SWITCH ADAPTER YET — see class docblock above.
- */
-private function attemptSwitchConsolidation(
-    array $sourceInstitutions,
-    string $destinationInstitution,
-    array $holds,
-    string $reference
-): ?array {
-    if (!self::USE_SWITCH_FAST_PATH) {
-        return null;
+// ============================================================================
+// STEP A: CLOSE THE HOLD — always direct, never routed through a switch.
+// The switch decision only ever applies to what happens to the proceeds
+// AFTER the hold is closed — never to the hold itself.
+// ============================================================================
+
+private function debitHoldToSourceSettlement(array $identitySwap): void
+{
+    $sourceInstitution = $identitySwap['source_institution'];
+
+    $debitPayload = [
+        'reference' => $identitySwap['swap_reference'] . '_SETTLE',
+        'hold_reference' => $identitySwap['hold_reference'],
+        'amount' => (float)$identitySwap['amount'],
+        'reason' => 'Identity claim finalization',
+        'from_institution' => $sourceInstitution,
+        'source_institution' => $sourceInstitution,
+    ];
+
+    $result = $this->debitSource($debitPayload, $sourceInstitution);
+
+    if (!($result['debited'] ?? false)) {
+        throw new RuntimeException("Failed to debit hold for {$identitySwap['hold_id']}: " . ($result['message'] ?? 'Unknown error'));
     }
 
-    $allInstitutions = array_merge($sourceInstitutions, [$destinationInstitution]);
-    $switchCode = $this->getCommonSwitch($allInstitutions);
-    if ($switchCode === null) {
-        return null;
-    }
-
-    $this->logger->info("Identity claim eligible for switch fast-path", [
-        'reference' => $reference,
-        'switch' => $switchCode,
-        'institutions' => $allInstitutions,
-    ]);
-
-    // TODO: replace with the real switch adapter call once
-    // SwitchExecutionStrategy's actual interface is confirmed. Left
-    // unimplemented deliberately — do not guess a method signature for a
-    // financial settlement call.
-    throw new RuntimeException(
-        "Switch fast-path is not yet wired to a real switch adapter. " .
-        "Set SwapService::USE_SWITCH_FAST_PATH = false (already default) until this is implemented."
-    );
+    $this->updateHoldStatus((int)$identitySwap['hold_id'], 'DEBITED');
 }
 
 // ============================================================================
-// STEP 1: DEBIT SOURCE, DEPOSIT INTO RECEIVING ACCOUNT
+// STEP B: MOVE PROCEEDS ONWARD — switch-aware, decided per source+
+// destination pair.
 // ============================================================================
 
-/**
- * Finalizes ONE hold by debiting its source and depositing the net amount
- * into the destination institution's RECEIVING account (never the merchant
- * account, never the holding account directly). Records the attempt in
- * identity_receiving_deposits so a partial-consolidation failure has a
- * durable trail of what actually landed.
- *
- * This replaces the deposit-to-merchant portion of the old
- * completeIdentitySwapAsDeposit() for the consolidation path. The hold's
- * source-side debit logic (verify, reuse hold, debit) is unchanged — only
- * the destination changes.
- */
-private function depositHoldToReceiving(
+private function settleToDestinationReceiving(
+    string $sourceInstitution,
+    string $destinationInstitution,
+    string $currency,
+    float $amount,
+    string $reference
+): float {
+    $switchCode = $this->getCommonSwitch([$sourceInstitution, $destinationInstitution]);
+
+    if ($switchCode !== null) {
+        return $this->settleViaSwitch($switchCode, $sourceInstitution, $destinationInstitution, $currency, $amount, $reference);
+    }
+
+    return $this->settleDirect($sourceInstitution, $destinationInstitution, $currency, $amount, $reference);
+}
+
+private function settleViaSwitch(
+    string $switchCode,
+    string $sourceInstitution,
+    string $destinationInstitution,
+    string $currency,
+    float $amount,
+    string $reference
+): float {
+    $sourceSettlement = $this->getSourceSettlementAccount($sourceInstitution, $currency);
+    $destAccounts = $this->getIdentityHoldingAccounts($destinationInstitution, $currency);
+
+    $this->logger->info("Settling identity claim leg via switch", [
+        'switch' => $switchCode, 'source' => $sourceInstitution, 'destination' => $destinationInstitution,
+        'amount' => $amount, 'reference' => $reference,
+    ]);
+
+    $switchAdapter = $this->adapterFactory->getAdapter($switchCode);
+
+    $originSwitchId = $this->participants[$sourceInstitution]['switch_participant_ids'][$switchCode] ?? null;
+    $destSwitchId = $this->participants[$destinationInstitution]['switch_participant_ids'][$switchCode] ?? null;
+    $vouchmorphSwitchId = $this->participants['VOUCHMORPH']['switch_participant_ids'][$switchCode] ?? null;
+
+    if (!$originSwitchId || !$destSwitchId) {
+        throw new RuntimeException("Switch participant IDs missing for {$sourceInstitution}/{$destinationInstitution} on rail {$switchCode} despite getCommonSwitch() reporting a match.");
+    }
+
+    try {
+        $result = $switchAdapter->submitTransfer([
+            'method' => 'PUSH',
+            'requester_participant_id' => $vouchmorphSwitchId,
+            'origin_participant_id' => $originSwitchId,
+            'destination_participant_id' => $destSwitchId,
+            // Pulling from the SETTLEMENT account, never the customer's
+            // account — the hold was already closed by
+            // debitHoldToSourceSettlement() before this method runs.
+            'origin_account_number' => $sourceSettlement['identifier'],
+            'destination_account_number' => $destAccounts['receiving_identifier'],
+            'amount' => $amount,
+            'currency' => $currency,
+            'idempotency_key' => $reference,
+        ]);
+    } catch (\Domain\Services\Routing\Exceptions\SwitchUnavailableException $e) {
+        // Genuine network/timeout failure — fall back to direct. A real
+        // rejection (bad participant, insufficient funds, AML hold) is
+        // NOT this exception type and propagates as a hard failure.
+        $this->logger->warning("Switch unavailable for identity settlement, falling back to direct", [
+            'reference' => $reference, 'error' => $e->getMessage(),
+        ]);
+        return $this->settleDirect($sourceInstitution, $destinationInstitution, $currency, $amount, $reference);
+    }
+
+    if (!($result['status'] ?? null)) {
+        throw new RuntimeException("Switch settlement failed for {$reference}");
+    }
+
+    return $amount; // switch settlement is atomic — full amount or throws
+}
+
+private function settleDirect(
+    string $sourceInstitution,
+    string $destinationInstitution,
+    string $currency,
+    float $amount,
+    string $reference
+): float {
+    $sourceSettlement = $this->getSourceSettlementAccount($sourceInstitution, $currency);
+    $destAccounts = $this->getIdentityHoldingAccounts($destinationInstitution, $currency);
+
+    $payload = [
+        'reference' => $reference,
+        'amount' => $amount,
+        'currency' => $currency,
+        'destination_identifier' => $destAccounts['receiving_identifier'],
+        'destination_identifier_type' => $destAccounts['receiving_identifier_type'],
+        'destination_asset_type' => 'ACCOUNT',
+        'to_institution' => $destinationInstitution,
+        'destination_institution' => $destinationInstitution,
+        'from_institution' => $sourceInstitution,
+        'source_institution' => $sourceInstitution,
+        'source_identifier' => $sourceSettlement['identifier'],
+        'source_type' => 'INSTITUTION_SETTLEMENT_ACCOUNT',
+        'action' => 'PROCESS_DEPOSIT_WITH_PROOF',
+        'account_number' => $destAccounts['receiving_identifier'],
+        'destination_account' => $destAccounts['receiving_identifier'],
+    ];
+
+    $adapter = $this->adapterFactory->getAdapter($destinationInstitution);
+    $result = $adapter->credit($payload, [
+        'destination_institution' => $destinationInstitution,
+        'source_type' => 'INSTITUTION_SETTLEMENT_ACCOUNT',
+    ]);
+
+    if (!($result['credited'] ?? false)) {
+        throw new RuntimeException("Direct settlement to receiving account failed: " . ($result['message'] ?? 'Unknown error'));
+    }
+
+    return $amount;
+}
+
+// ============================================================================
+// STEP A+B TOGETHER, per hold — this is what executeIdentityClaimWithSplit()
+// calls in its consolidation loop.
+// ============================================================================
+
+private function finalizeHoldToReceiving(
     array $identitySwap,
     string $destinationInstitution,
     string $consolidationReference
 ): array {
-    $sourcePayload = json_decode($identitySwap['source_payload'], true);
     $sourceInstitution = $identitySwap['source_institution'];
     $currency = $identitySwap['currency'] ?? 'BWP';
+    $amount = (float)$identitySwap['amount'];
 
-    $accounts = $this->getIdentityHoldingAccounts($destinationInstitution, $currency);
-
+    $sourcePayload = json_decode($identitySwap['source_payload'], true);
     $sourcePayload['from_institution'] = $sourceInstitution;
     $sourcePayload['source_institution'] = $sourceInstitution;
-    $sourcePayload['amount'] = (float)$identitySwap['amount'];
+    $sourcePayload['amount'] = $amount;
     $sourcePayload['currency'] = $currency;
     $sourcePayload['asset_type'] = $identitySwap['source_asset_type'] ?? 'ACCOUNT';
 
-    // Re-verify funds are still available before moving anything — same
-    // discipline as finalizeIdentityHoldNoPin() already applies.
     $verificationResult = $this->verifyAssetSigned($sourcePayload, $sourceInstitution);
     if (!($verificationResult['verified'] ?? false)) {
         throw new RuntimeException("Source funds no longer available for hold {$identitySwap['hold_id']}. Claim cancelled for this hold.");
     }
 
     $this->currentHoldReference = $identitySwap['hold_reference'];
-    $this->currentHoldId = $identitySwap['hold_id'];
-
-    $depositPayload = [
-        'swap_type' => 'DEPOSIT',
-        'reference' => $identitySwap['swap_reference'] . '_RECV',
-        'from_institution' => $sourceInstitution,
-        'source_institution' => $sourceInstitution,
-        'source_identifier' => $identitySwap['source_identifier'],
-        'asset_type' => $identitySwap['source_asset_type'] ?? 'ACCOUNT',
-        'amount' => (float)$identitySwap['amount'],
-        'currency' => $currency,
-        'to_institution' => $destinationInstitution,
-        'destination_institution' => $destinationInstitution,
-        'destination_identifier' => $accounts['receiving_identifier'],
-        'destination_identifier_type' => $accounts['receiving_identifier_type'],
-        'destination_asset_type' => 'ACCOUNT',
-        '_skip_hold' => true, // reusing the hold already placed at claim-initiation time
-        '_identity_consolidation' => true,
-        '_consolidation_reference' => $consolidationReference,
-    ];
+    $this->currentHoldId = (int)$identitySwap['hold_id'];
 
     $recvId = $this->recordReceivingDepositAttempt(
-        $consolidationReference,
-        (int)$identitySwap['hold_id'],
-        $destinationInstitution,
-        $currency,
-        $accounts['receiving_identifier'],
-        (float)$identitySwap['amount']
+        $consolidationReference, (int)$identitySwap['hold_id'], $destinationInstitution,
+        $currency, 'pending', $amount
     );
 
     try {
-        $result = $this->executeSignedDeposit($depositPayload);
+        $this->debitHoldToSourceSettlement($identitySwap);
 
-        $netAmount = $result['amount'] ?? $identitySwap['amount'];
-        $this->updateReceivingDepositStatus($recvId, 'landed', $result['deposit_reference'] ?? null);
+        $reference = $identitySwap['swap_reference'] . '_SETTLE';
+        $netLanded = $this->settleToDestinationReceiving(
+            $sourceInstitution, $destinationInstitution, $currency, $amount, $reference
+        );
 
-        $this->updateIdentityHoldStatus($identitySwap['hold_id'], 'completed', [
+        $this->updateReceivingDepositStatus($recvId, 'landed', $reference);
+        $this->updateIdentityHoldStatus((int)$identitySwap['hold_id'], 'completed', [
             'final_destination_type' => 'HOLDING_CONSOLIDATED',
             'consolidation_reference' => $consolidationReference,
         ]);
-        $this->updateHoldStatus($identitySwap['hold_id'], 'DEBITED');
 
-        return ['success' => true, 'net_amount' => (float)$netAmount, 'hold_id' => $identitySwap['hold_id']];
+        return ['success' => true, 'net_amount' => $netLanded, 'hold_id' => $identitySwap['hold_id']];
 
     } catch (\Throwable $e) {
         $this->updateReceivingDepositStatus($recvId, 'failed', null);
+        if ($this->currentHoldId && strpos($e->getMessage(), 'Failed to debit') === false) {
+            // Hold was debited but settlement onward failed — money is
+            // gone from the source but hasn't landed anywhere confirmed.
+            // Flag for manual reconciliation rather than losing track of it.
+            $this->recordManualReconciliationRequired(
+                $identitySwap['swap_reference'], $identitySwap['hold_reference'], $sourceInstitution,
+                $destinationInstitution, $amount, $currency,
+                "Hold debited but settlement to receiving account failed: " . $e->getMessage()
+            );
+        }
         throw $e;
     }
 }
@@ -6293,23 +6389,14 @@ public function executeIdentityClaimWithSplit(
         throw new RuntimeException("destination_type must be 'DEPOSIT' or 'CASHOUT'");
     }
 
-    // Capability gate — fail loudly up front if this institution isn't
-    // onboarded, rather than partway through moving money.
+    // Capability gate — fail loudly up front.
     $this->getIdentityHoldingAccounts($destinationInstitution, $currency);
 
     $consolidationReference = 'CONSOL_' . time() . '_' . bin2hex(random_bytes(4));
-    $sourceInstitutions = array_column($holds, 'source_institution');
 
     // ------------------------------------------------------------
-    // STEP 1: switch fast-path (disabled for now — see method docblock).
-    // ------------------------------------------------------------
-    $switchResult = $this->attemptSwitchConsolidation($sourceInstitutions, $destinationInstitution, $holds, $consolidationReference);
-    if ($switchResult !== null) {
-        return $switchResult;
-    }
-
-    // ------------------------------------------------------------
-    // STEP 2: debit each hold's source, land it in RECEIVING.
+    // Debit + settle each hold (switch-vs-direct decided per leg
+    // inside finalizeHoldToReceiving() -> settleToDestinationReceiving()).
     // ------------------------------------------------------------
     $landedHoldIds = [];
     $failedHolds = [];
@@ -6317,11 +6404,11 @@ public function executeIdentityClaimWithSplit(
 
     foreach ($holds as $hold) {
         try {
-            $depositResult = $this->depositHoldToReceiving($hold, $destinationInstitution, $consolidationReference);
+            $depositResult = $this->finalizeHoldToReceiving($hold, $destinationInstitution, $consolidationReference);
             $totalLanded += $depositResult['net_amount'];
             $landedHoldIds[] = (int)$hold['hold_id'];
         } catch (\Throwable $e) {
-            error_log("[SwapService] executeIdentityClaimWithSplit: hold {$hold['hold_id']} failed to reach receiving: " . $e->getMessage());
+            error_log("[SwapService] executeIdentityClaimWithSplit: hold {$hold['hold_id']} failed: " . $e->getMessage());
             $failedHolds[] = [
                 'hold_id' => $hold['hold_id'],
                 'swap_reference' => $hold['swap_reference'],
