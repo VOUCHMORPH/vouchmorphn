@@ -128,7 +128,7 @@ $attentionActive = $attentionActive ?? false;
 
         <div class="sidebar-footer">
             <?php foreach ($navUtility as $item): if (empty($item['show'])) continue; ?>
-            <a href="<?php echo safeHtml($item['href']); ?>" class="nav-link" title="<?php echo safeHtml($item['label']); ?>">
+            <a href="<?php echo safeHtml($item['href']); ?>" class="nav-link<?php echo !empty($item['active']) ? ' active' : ''; ?>" title="<?php echo safeHtml($item['label']); ?>">
                 <?php echo svgIcon($item['icon']); ?>
                 <span class="nav-label"><?php echo safeHtml($item['label']); ?></span>
             </a>
