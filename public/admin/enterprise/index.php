@@ -845,6 +845,18 @@ if ($isReadOnly) {
                 </div>
             </div>
 
+            <?php if ($roleInfoPanel): ?>
+            <div class="info-panel" style="border-left-color: <?php echo $roleInfoPanel['accent']; ?>;">
+                <div class="label"><?php echo safeHtml($roleInfoPanel['label']); ?></div>
+                <div class="desc">
+                    <?php echo safeHtml($roleInfoPanel['desc']); ?>
+                    <?php if (!empty($roleInfoPanel['cta_href'])): ?>
+                    <a href="<?php echo safeHtml($roleInfoPanel['cta_href']); ?>" class="btn btn-primary btn-sm" style="margin-left:var(--space-3);"><?php echo safeHtml($roleInfoPanel['cta_label']); ?></a>
+                    <?php endif; ?>
+                </div>
+            </div>
+            <?php endif; ?>
+
             <!-- ============================================================ -->
             <!-- STAT CARDS — now on the shared 12-col grid in shell.css, so
                  these edges line up with the panel-grid below them. -->
@@ -877,7 +889,7 @@ if ($isReadOnly) {
             <!-- NEEDS YOUR ATTENTION / RECENT ACTIVITY -->
             <!-- ============================================================ -->
             <div class="panel-grid" id="attention">
-                <div class="panel">
+                <div class="panel col-12">
                     <div class="panel-head">
                         <span class="title"><?php echo svgIcon('warning'); ?> Needs Your Attention</span>
                         <?php if ($criticalActionCount > 0): ?>
@@ -899,14 +911,13 @@ if ($isReadOnly) {
                         </div>
                         <?php endforeach; endif; ?>
                     </div>
-                    <div class="panel-foot"><a href="batches/index.php?status=all">View All Batches <?php echo svgIcon('arrow'); ?></a></div>
-                </div>
 
-                <div class="panel">
-                    <div class="panel-head">
-                        <span class="title"><?php echo svgIcon('clock'); ?> Recent Activity</span>
-                    </div>
-                    <div class="panel-body">
+                    <!-- Recent Activity — demoted from its own peer-weight box to a
+                         disclosure inside this panel. It's reference material, not
+                         something requiring action, so it shouldn't compete visually
+                         with the list above it. -->
+                    <details class="disclosure" style="margin: 0; padding: var(--space-3) var(--space-4); border-top: 1px solid var(--ink-900);">
+                        <summary><?php echo svgIcon('clock'); ?> Recent Activity</summary>
                         <?php if (empty($recentActivity)): ?>
                         <div class="empty-row">No recorded activity yet.</div>
                         <?php else: ?>
@@ -925,8 +936,9 @@ if ($isReadOnly) {
                             </table>
                         </div>
                         <?php endif; ?>
-                    </div>
-                    <div class="panel-foot"><span class="disabled" title="A full audit-log page doesn't exist yet — this is the 8 most recent events only">Full log view not built yet</span></div>
+                    </details>
+
+                    <div class="panel-foot"><a href="batches/index.php?status=all">View All Batches <?php echo svgIcon('arrow'); ?></a></div>
                 </div>
             </div>
 
@@ -940,20 +952,6 @@ if ($isReadOnly) {
                 nav items. The stat cards above and the attention panel
                 below are the real, non-duplicated entry points now.
             -->
-
-            <!-- Secondary metrics -->
-            <div class="stat-grid">
-                <?php if (($metrics['pending_batches'] ?? 0) > 0): ?>
-                <div class="stat-card accent-amber"><div class="stat-label">Pending Batches</div><div class="stat-value"><?php echo number_format($metrics['pending_batches']); ?></div><div class="stat-sub">Waiting for approval</div></div>
-                <?php endif; ?>
-                <?php if (($metrics['approved_batches'] ?? 0) > 0): ?>
-                <div class="stat-card"><div class="stat-label">Approved</div><div class="stat-value"><?php echo number_format($metrics['approved_batches']); ?></div><div class="stat-sub">Ready for disbursement</div></div>
-                <?php endif; ?>
-                <?php if (($metrics['executed_batches'] ?? 0) > 0): ?>
-                <div class="stat-card accent-green"><div class="stat-label">Completed</div><div class="stat-value"><?php echo number_format($metrics['executed_batches']); ?></div><div class="stat-sub">Successfully executed</div></div>
-                <?php endif; ?>
-                <div class="stat-card"><div class="stat-label">Beneficiaries</div><div class="stat-value"><?php echo number_format($metrics['total_beneficiaries'] ?? 0); ?></div><div class="stat-sub">Active recipients</div></div>
-            </div>
 
             <!-- Recent Batches — top 5 only, capped to an internal scroll
                  area so this section's height is predictable regardless of
@@ -1042,24 +1040,6 @@ if ($isReadOnly) {
                     </table>
                 </div>
                 <?php endif; ?>
-            </div>
-            <?php endif; ?>
-
-            <!-- ============================================================ -->
-            <!-- ROLE-SPECIFIC INFO PANEL — one slot, computed above near
-                 $actionItems (see $roleInfoPanel), not a stack of separate
-                 if-blocks. Only the single most relevant panel for this
-                 role renders. -->
-            <!-- ============================================================ -->
-            <?php if ($roleInfoPanel): ?>
-            <div class="info-panel" style="border-left-color: <?php echo $roleInfoPanel['accent']; ?>; background: <?php echo $roleInfoPanel['tint']; ?>;">
-                <div class="label"><?php echo safeHtml($roleInfoPanel['label']); ?></div>
-                <div class="desc">
-                    <?php echo safeHtml($roleInfoPanel['desc']); ?>
-                    <?php if (!empty($roleInfoPanel['cta_href'])): ?>
-                    <a href="<?php echo safeHtml($roleInfoPanel['cta_href']); ?>" class="btn btn-primary btn-sm" style="margin-left:var(--space-3);"><?php echo safeHtml($roleInfoPanel['cta_label']); ?></a>
-                    <?php endif; ?>
-                </div>
             </div>
             <?php endif; ?>
         <?php
