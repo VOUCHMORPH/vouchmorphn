@@ -29,7 +29,7 @@ $success = '';
 $batch = null;
 if ($batchId) {
     $stmt = $db->prepare("
-        SELECT * FROM disbursement_batches 
+        SELECT * FROM disbursement_batches
         WHERE id = :id AND organization_id = :org_id
     ");
     $stmt->execute([':id' => $batchId, ':org_id' => $orgId]);
@@ -46,27 +46,27 @@ if (!$batch) {
 function repairBatchTotals(PDO $db, $batchId): void {
     // Check current totals
     $stmt = $db->prepare("
-        SELECT total_destinations, total_amount 
-        FROM disbursement_batches 
+        SELECT total_destinations, total_amount
+        FROM disbursement_batches
         WHERE id = :id
     ");
     $stmt->execute([':id' => $batchId]);
     $batch = $stmt->fetch(PDO::FETCH_ASSOC);
-    
+
     // Count actual destinations
     $stmt = $db->prepare("
         SELECT COUNT(*) AS cnt, COALESCE(SUM(amount), 0) AS total
-        FROM disbursement_destinations 
+        FROM disbursement_destinations
         WHERE batch_id = :id
     ");
     $stmt->execute([':id' => $batchId]);
     $actual = $stmt->fetch(PDO::FETCH_ASSOC);
-    
+
     // If mismatch, fix it
-    if ((int)$batch['total_destinations'] !== (int)$actual['cnt'] || 
+    if ((int)$batch['total_destinations'] !== (int)$actual['cnt'] ||
         (float)$batch['total_amount'] !== (float)$actual['total']) {
         error_log("[add_destinations] Repairing batch {$batchId}: total_destinations {$batch['total_destinations']}->{$actual['cnt']}, total_amount {$batch['total_amount']}->{$actual['total']}");
-        
+
         $stmt = $db->prepare("
             UPDATE disbursement_batches
             SET total_destinations = :cnt, total_amount = :amt,
@@ -88,7 +88,7 @@ repairBatchTotals($db, $batchId);
 
 // Refresh batch data after repair
 $stmt = $db->prepare("
-    SELECT * FROM disbursement_batches 
+    SELECT * FROM disbursement_batches
     WHERE id = :id AND organization_id = :org_id
 ");
 $stmt->execute([':id' => $batchId, ':org_id' => $orgId]);
@@ -124,7 +124,7 @@ $isDraft = (strtolower($batch['status'] ?? 'draft') === 'draft');
 // Get existing destinations
 $destinations = [];
 $stmt = $db->prepare("
-    SELECT * FROM disbursement_destinations 
+    SELECT * FROM disbursement_destinations
     WHERE batch_id = :batch_id
     ORDER BY destination_index
 ");
@@ -135,9 +135,9 @@ $destinations = $stmt->fetchAll(PDO::FETCH_ASSOC);
 $participants = [];
 try {
     $stmt = $db->prepare("
-        SELECT DISTINCT institution FROM source_accounts 
+        SELECT DISTINCT institution FROM source_accounts
         WHERE organization_id = :org_id AND is_active = true
-        UNION 
+        UNION
         SELECT 'CAZACOM' UNION SELECT 'SACCUSSALIS' UNION SELECT 'ZURUBANK' UNION SELECT 'VOUCHMORPH'
     ");
     $stmt->execute([':org_id' => $orgId]);
@@ -412,6 +412,121 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $csrfToken = generateCsrfToken();
+
+function safeHtml($value) {
+    return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
+}
+function getRoleLabel($role) {
+    $labels = [
+        'owner' => 'Owner', 'it_manager_enterprise' => 'IT Manager', 'it_officer_enterprise' => 'IT Officer',
+        'it_support' => 'IT Support', 'department_head' => 'Department Head', 'program_officer' => 'Uploader',
+        'finance_officer' => 'Finance Officer', 'approver' => 'Approver', 'senior_approver' => 'Senior Approver',
+        'supervisor' => 'Supervisor', 'beneficiary_registrar' => 'Beneficiary Registrar', 'auditor' => 'Auditor', 'viewer' => 'Viewer',
+    ];
+    return $labels[$role] ?? ucfirst(str_replace('_', ' ', $role));
+}
+function getStatusClass($status) {
+    $status = strtolower($status);
+    return match($status) {
+        'draft' => 'draft',
+        'pending', 'pending_approval' => 'pending',
+        'approved' => 'approved',
+        'executing' => 'pending',
+        'completed', 'executed' => 'completed',
+        'rejected' => 'rejected',
+        'cancelled' => 'rejected',
+        default => 'draft'
+    };
+}
+function getStatusLabel($status) {
+    $status = strtolower($status);
+    return match($status) {
+        'draft' => '📝 Draft',
+        'pending', 'pending_approval' => '⏳ Pending',
+        'approved' => '✅ Approved',
+        'executing' => '⚙️ Executing',
+        'completed' => '✔️ Completed',
+        'executed' => '🚀 Executed',
+        'rejected' => '❌ Rejected',
+        'cancelled' => '🚫 Cancelled',
+        default => ucfirst($status)
+    };
+}
+// Destination-level statuses (SUCCESS/FAILED/PENDING_IDENTITY_CONFIRMATION/
+// PROCESSING) don't match the batch-level vocabulary getStatusClass()
+// above covers, so they get their own small mapping onto the same 5
+// shell.css tones rather than a second parallel set of status colors.
+function destStatusClass($status) {
+    $status = strtoupper((string)$status);
+    return match($status) {
+        'SUCCESS', 'COMPLETED' => 'completed',
+        'FAILED' => 'rejected',
+        'PENDING_IDENTITY_CONFIRMATION' => 'approved',
+        'PENDING', 'PROCESSING' => 'pending',
+        default => 'draft',
+    };
+}
+
+// ============================================================
+// SHARED SHELL SETUP — same contract as index.php/departments/index.php,
+// so this page's nav is generated by the exact same code, not a
+// hand-copied lookalike.
+// ============================================================
+$fullName = $user['full_name'] ?? $user['username'] ?? 'User';
+$orgName = $user['organization_name'] ?? 'Organization';
+$userRole = $role;
+$basePath = '../';
+$isTopRole = in_array($userRole, ['owner', 'it_manager_enterprise'], true);
+$isDepartmentHead = ($userRole === 'department_head');
+$canCreate = in_array($userRole, ['owner', 'it_manager_enterprise', 'program_officer', 'department_head'], true);
+$canApprove = in_array($userRole, ['owner', 'approver', 'senior_approver', 'it_manager_enterprise'], true);
+$canManageUsers = in_array($userRole, ['owner', 'it_manager_enterprise', 'it_officer_enterprise'], true);
+$canSeeSourceAccountsArea = in_array($userRole, ['owner', 'it_manager_enterprise', 'finance_officer'], true);
+$canTrace = in_array($userRole, ['owner', 'it_manager_enterprise', 'it_officer_enterprise', 'auditor', 'senior_approver', 'approver', 'finance_officer'], true);
+$canManageDepartments = $isTopRole;
+
+// Unlike source_input.php, this page cannot render at all without an
+// existing batch (see the die() above) — so by construction, setup was
+// already completed at least once. No live check needed here.
+$setupReady = true;
+
+$navPendingApprovals = 0;
+$navPendingSourceConfirmations = 0;
+try {
+    if ($canApprove) {
+        $stmt = $db->prepare("SELECT COUNT(*) FROM disbursement_batches WHERE organization_id = :org_id AND status IN ('pending','pending_approval','PENDING','PENDING_APPROVAL')");
+        $stmt->execute([':org_id' => $orgId]);
+        $navPendingApprovals = (int)$stmt->fetchColumn();
+    }
+    if ($canSeeSourceAccountsArea) {
+        $stmt = $db->prepare("SELECT COUNT(*) FROM source_accounts WHERE organization_id = :org_id AND status = 'pending_confirmation' AND deleted_at IS NULL");
+        $stmt->execute([':org_id' => $orgId]);
+        $navPendingSourceConfirmations = (int)$stmt->fetchColumn();
+    }
+} catch (PDOException $e) {
+    error_log("[add_destinations] Nav badge query error: " . $e->getMessage());
+}
+
+$navItems = [
+    ['key' => 'dashboard', 'icon' => 'grid', 'label' => 'Dashboard', 'href' => '../index.php', 'show' => true],
+    ['key' => 'disbursements', 'icon' => 'wallet', 'label' => 'Disbursements', 'href' => '../batches/index.php?status=all', 'show' => true, 'badge' => ($navPendingApprovals > 0 && $canApprove) ? $navPendingApprovals : null],
+    ['key' => 'beneficiaries', 'icon' => 'people', 'label' => 'Beneficiaries', 'href' => '../beneficiaries.php', 'show' => true],
+    ['key' => 'trace', 'icon' => 'search', 'label' => 'Trace Payment', 'href' => '../index.php#trace', 'show' => $canTrace],
+    ['key' => 'departments', 'icon' => 'building', 'label' => 'Departments', 'href' => '../departments/index.php', 'show' => $canManageDepartments || $isDepartmentHead],
+    ['key' => 'sources', 'icon' => 'bank', 'label' => 'Source Accounts', 'href' => '../imports/add_source.php', 'show' => $canSeeSourceAccountsArea, 'badge' => $navPendingSourceConfirmations > 0 ? $navPendingSourceConfirmations : null],
+    ['key' => 'team', 'icon' => 'idcard', 'label' => 'Team', 'href' => '../settings/users.php', 'show' => $canManageUsers],
+    ['key' => 'reports', 'icon' => 'chart', 'label' => 'Reports', 'href' => '../reports.php', 'show' => true],
+];
+$navUtility = [
+    ['key' => 'settings', 'icon' => 'gear', 'label' => 'Settings', 'href' => '../settings.php', 'show' => true],
+    ['key' => 'logout', 'icon' => 'logout', 'label' => 'Log Out', 'href' => '../logout.php', 'show' => true],
+];
+$topbarSearchShow = $canTrace;
+$topbarSearchAction = '../index.php';
+$topbarSearchName = 'trace';
+$topbarSearchPlaceholder = 'Search batch reference, phone, national ID…';
+
+$stageTrackerStage = 2;
 $roleDisplay = strtoupper(UserManagementService::ROLE_CATALOG[$role]['label'] ?? $role);
 ?>
 <!DOCTYPE html>
@@ -419,237 +534,186 @@ $roleDisplay = strtoupper(UserManagementService::ROLE_CATALOG[$role]['label'] ??
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Add Destinations · VouchMorph Enterprise</title>
+    <title>Create Batch · Recipients · VOUCHMORPH Enterprise</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../partials/shell.css">
+    <link rel="stylesheet" href="../partials/stage-tracker.css">
     <style>
-        :root {
-            --paper: #EEF1EF; --panel: #FFFFFF; --ink-900: #0F2138; --ink-700: #1D3557;
-            --ink-500: #4A5A6E; --ink-300: #8A96A3; --line: #D3DAD6; --brass: #8A6D3B;
-            --brass-tint: #F4EFE3; --seal-red: #7A2118; --ledger-green: #24513A;
-            --identity-purple: #6f42c1; --identity-bg: #f8f0fc;
-            --f-body: 'IBM Plex Sans', sans-serif; --f-cond: 'IBM Plex Sans Condensed', sans-serif;
-        }
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: var(--f-body); background: var(--paper); color: var(--ink-900); min-height: 100vh; font-size:14px; }
-        .masthead { background: var(--ink-900); color: white; padding: 14px 32px; display: flex; justify-content: space-between; align-items: center; border-bottom: 3px solid var(--brass); flex-wrap: wrap; gap: 10px; }
-        .masthead h1 { font-family:var(--f-cond); font-size: 18px; font-weight: 700; }
-        .masthead .role-pill { font-size: 10px; font-weight: 700; color: var(--brass); border: 1px solid var(--brass); padding: 2px 10px; text-transform: uppercase; font-family:var(--f-cond); }
-        .stage { max-width: 1200px; margin: 0 auto; padding: 30px 20px; }
-        .card { background: var(--panel); border: 1px solid var(--line); padding: 24px; margin-bottom: 20px; }
-        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 2px solid var(--line); flex-wrap: wrap; gap: 10px; }
-        .card-title { font-size: 16px; font-weight: 700; text-transform: uppercase; font-family:var(--f-cond); }
+        :root { --identity-purple: #6f42c1; --identity-bg: #f8f0fc; }
+        .btn-identity { background: var(--identity-purple); color: #fff; }
+        .btn-identity:hover { background: #5a32a3; opacity: 1; }
         .form-group { margin-bottom: 12px; }
-        .form-group label { display: block; font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--ink-500); margin-bottom: 4px; font-family:var(--f-cond); }
-        .form-group input, .form-group select { width: 100%; padding: 8px 12px; border: 1.5px solid var(--line); font-size: 13px; font-family: inherit; background: #fff; }
-        .form-group input:focus, .form-group select:focus { outline: none; border-color: var(--brass); }
-        .form-group .hint { font-size: 10px; color: var(--ink-300); margin-top: 2px; }
-        .btn { padding: 8px 20px; border: none; font-weight: 600; font-size: 12px; cursor: pointer; transition: all 0.15s; font-family: var(--f-cond); text-transform:uppercase; letter-spacing:.03em; }
-        .btn-primary { background: var(--ink-900); color: white; }
-        .btn-primary:hover { background: var(--brass); }
-        .btn-primary:disabled { opacity:0.5; cursor:not-allowed; }
-        .btn-success { background: var(--ledger-green); color: white; }
-        .btn-success:hover { background: #1a3d2c; }
-        .btn-secondary { background: var(--line); color: var(--ink-700); }
-        .btn-secondary:hover { background: #c0c8c4; }
-        .btn-danger { background: var(--seal-red); color: white; }
-        .btn-danger:hover { background: #5a1812; }
-        .btn-outline { background: transparent; border: 2px solid var(--line); }
-        .btn-outline:hover { border-color: var(--brass); }
-        .btn-identity { background: var(--identity-purple); color: white; }
-        .btn-identity:hover { background: #5a32a3; }
-        .btn-sm { padding: 4px 12px; font-size: 10px; }
-        .error { background: #fbeceb; color: var(--seal-red); padding: 12px 16px; margin-bottom: 16px; border-left: 3px solid var(--seal-red); line-height:1.6; }
-        .success { background: #dcfce7; color: #166534; padding: 12px 16px; margin-bottom: 16px; border-left: 3px solid #10b981; }
-        .locked-notice { background: #fef3c7; color: #92400e; padding: 12px 16px; margin-bottom: 16px; border-left: 3px solid #f59e0b; }
-        .destination-row { background: #f8fafc; border: 1px solid var(--line); padding: 16px; margin-bottom: 12px; position: relative; }
-        .destination-row.identity-row { background: var(--identity-bg); border-color: var(--identity-purple); border-left: 4px solid var(--identity-purple); }
-        .destination-row .remove-btn { position: absolute; top: 8px; right: 8px; background: #fee2e2; color: #991b1b; border: none; border-radius: 50%; width: 28px; height: 28px; cursor: pointer; font-size: 16px; line-height: 1; }
-        .destination-row .identity-badge { position: absolute; top: 8px; right: 44px; background: var(--identity-purple); color: white; padding: 2px 10px; font-size: 9px; font-weight: 600; text-transform: uppercase; }
         .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
         .grid-4 { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 12px; }
-        .summary-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin: 16px 0; }
-        .stat { background: var(--panel); padding: 14px; border: 1px solid var(--line); text-align: center; }
-        .stat-value { font-size: 24px; font-weight: 700; font-family:var(--f-cond); }
-        .stat-label { font-size: 10px; color: var(--ink-500); text-transform: uppercase; font-family:var(--f-cond); }
-        .stat-value.identity-count { color: var(--identity-purple); }
-        .back-link { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-500); text-decoration: none; font-size: 12px; font-weight: 600; margin-bottom: 16px; font-family:var(--f-cond); }
-        .back-link:hover { color: var(--brass); }
-        .step-indicator { display: flex; justify-content: space-between; margin-bottom: 24px; padding: 0 20px; }
-        .step { flex: 1; text-align: center; font-size: 11px; font-weight: 600; color: var(--ink-300); text-transform: uppercase; font-family:var(--f-cond); }
-        .step.active { color: var(--ink-900); }
-        .step.done { color: var(--ledger-green); }
-        .actions-bar { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
-        .workflow-status { padding: 4px 14px; font-size: 11px; font-weight: 600; text-transform: uppercase; display: inline-block; font-family:var(--f-cond); }
-        .status-draft { background: var(--line); color: var(--ink-500); }
-        .status-pending_approval { background: #fef3c7; color: #92400e; }
-        .status-approved { background: #dcfce7; color: #166534; }
-        .status-rejected { background: #fbeceb; color: var(--seal-red); }
+        .destination-row { background: var(--paper); border: 1px solid var(--line); padding: 16px; margin-bottom: 12px; position: relative; }
+        .destination-row.identity-row { background: var(--identity-bg); border-color: var(--identity-purple); border-left: 4px solid var(--identity-purple); }
+        .destination-row .remove-btn { position: absolute; top: 8px; right: 8px; background: #fee2e2; color: #991b1b; border: none; border-radius: 50%; width: 28px; height: 28px; cursor: pointer; font-size: 16px; line-height: 1; }
+        .destination-row .identity-badge { position: absolute; top: 8px; right: 44px; background: var(--identity-purple); color: #fff; padding: 2px 10px; font-size: 9px; font-weight: 600; text-transform: uppercase; }
+        .dest-summary-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin: 16px 0; }
+        .dest-summary-stat { background: var(--panel); padding: 14px; border: 1px solid var(--line); text-align: center; }
+        .dest-summary-value { font-size: 22px; font-weight: 700; font-family: var(--f-cond); }
+        .dest-summary-label { font-size: 10px; color: var(--ink-500); text-transform: uppercase; font-family: var(--f-cond); }
+        .dest-summary-value.identity-count { color: var(--identity-purple); }
         .toggle-group { display: flex; gap: 8px; margin-bottom: 12px; }
-        .toggle-btn { padding: 6px 16px; border: 2px solid var(--line); background: white; cursor: pointer; font-size: 11px; font-weight: 600; transition: all 0.2s; font-family:var(--f-cond); }
+        .toggle-btn { padding: 6px 16px; border: 2px solid var(--line); background: var(--panel); cursor: pointer; font-size: 11px; font-weight: 600; transition: all 0.2s; font-family: var(--f-cond); }
         .toggle-btn.active { border-color: var(--brass); background: var(--brass-tint); }
         .toggle-btn.identity-active { border-color: var(--identity-purple); background: var(--identity-bg); }
         .hidden { display: none !important; }
         .identity-fields { background: var(--identity-bg); padding: 12px; margin-top: 8px; border: 1px dashed var(--identity-purple); }
+        .actions-bar { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
         @media (max-width: 768px) {
-            .grid-3, .grid-4 { grid-template-columns: 1fr; }
-            .masthead { flex-direction: column; text-align: center; }
-            .step-indicator { flex-wrap: wrap; gap: 8px; }
-            .step { flex: 0 0 45%; }
-            .summary-stats { grid-template-columns: 1fr 1fr; }
+            .grid-3, .grid-4, .dest-summary-stats { grid-template-columns: 1fr; }
         }
     </style>
 </head>
 <body>
-    <div class="masthead">
-        <h1>VouchMorph · Multi-Destination Disbursement</h1>
-        <div>
-            <span class="role-pill"><?php echo $roleDisplay; ?></span>
-            <span style="color:var(--ink-300); font-size:12px; margin-left:12px;">
-                Batch: <?php echo safeHtmlAD($batch['batch_reference']); ?>
-            </span>
-            <a href="../logout.php" style="color: rgba(255,255,255,0.4); text-decoration: none; margin-left: 16px; font-size: 12px;">Logout</a>
-        </div>
-    </div>
-
-    <div class="stage">
-        <a href="source_input.php?batch_id=<?php echo (int)$batchId; ?>" class="back-link">← Back to Source Selection</a>
-
-        <div class="step-indicator">
-            <span class="step done">1. Select Source</span>
-            <span class="step active">2. Add Destinations</span>
-            <span class="step">3. Review</span>
-            <span class="step">4. Approve</span>
-            <span class="step">5. Execute</span>
-        </div>
-
-        <div class="card">
-            <div class="card-header">
-                <span class="card-title">📋 Batch Status</span>
-                <span>
-                    <span class="workflow-status status-<?php echo strtolower($batch['status'] ?? 'draft'); ?>">
-                        <?php echo safeHtmlAD($batch['status'] ?? 'DRAFT'); ?>
-                    </span>
-                </span>
+    <?php require __DIR__ . '/../partials/shell-head.php'; ?>
+            <div class="page-header">
+                <div>
+                    <h1>Create Batch</h1>
+                    <div class="sub">Step 2 — add recipients: institution accounts or identity-based individuals.</div>
+                </div>
             </div>
-            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:12px; font-size:13px;">
-                <div><strong>Source:</strong> <?php echo safeHtmlAD($batch['source_institution']); ?></div>
-                <div><strong>Account:</strong> <?php echo safeHtmlAD($batch['source_identifier']); ?></div>
-                <div><strong>Total Amount:</strong> <?php echo number_format($batch['total_amount'] ?? 0, 2); ?> <?php echo safeHtmlAD($batch['currency'] ?? 'BWP'); ?></div>
-                <div><strong>Destinations:</strong> <?php echo $batch['total_destinations'] ?? 0; ?></div>
-                <div><strong>Identity Recipients:</strong> <?php echo $batch['identity_recipients'] ?? 0; ?></div>
-            </div>
-        </div>
 
-        <?php if ($error): ?>
-        <div class="error">⚠️ <?php echo $error; ?></div>
-        <?php endif; ?>
-        <?php if ($success): ?>
-        <div class="success">✅ <?php echo safeHtmlAD($success); ?></div>
-        <?php endif; ?>
-
-        <?php if (!$canEdit): ?>
-        <div class="locked-notice">🔒 You don't have permission to add or clear destinations on this batch.</div>
-        <?php elseif (!$isDraft): ?>
-        <div class="locked-notice">🔒 This batch is <?php echo safeHtmlAD($batch['status']); ?>, not draft — destinations are locked. <a href="review_batch.php?batch_id=<?php echo (int)$batchId; ?>" style="color:#92400e; font-weight:700;">Go to Review →</a></div>
-        <?php endif; ?>
-
-        <?php if ($canEdit && $isDraft): ?>
-        <form method="POST" id="destinationForm">
-            <input type="hidden" name="csrf_token" value="<?php echo safeHtmlAD($csrfToken); ?>">
-            <input type="hidden" name="action" value="add_destination">
-            <input type="hidden" name="destination_data" id="destinationData" value="[]">
+            <?php require __DIR__ . '/../partials/stage-tracker.php'; ?>
 
             <div class="card">
                 <div class="card-header">
-                    <span class="card-title">👥 Add Destinations</span>
-                    <div style="display:flex; gap:8px; flex-wrap:wrap;">
-                        <button type="button" class="btn btn-secondary btn-sm" onclick="addRow('institution')">➕ Add Institution</button>
-                        <button type="button" class="btn btn-identity btn-sm" onclick="addRow('identity')">🆔 Add Identity Recipient</button>
-                        <button type="button" class="btn btn-outline btn-sm" onclick="addMultipleRows(5)">➕ Add 5</button>
-                        <button type="button" class="btn btn-danger btn-sm" onclick="clearRows()">🗑 Clear Form</button>
+                    <span class="card-title">Batch Status</span>
+                    <span style="display:flex; align-items:center; gap:10px;">
+                        <span style="font-size:11px; color:var(--ink-300); font-family:var(--f-cond); text-transform:uppercase; letter-spacing:.04em;"><?php echo safeHtml($roleDisplay); ?></span>
+                        <span class="status status-<?php echo getStatusClass($batch['status'] ?? 'draft'); ?>">
+                            <?php echo getStatusLabel($batch['status'] ?? 'draft'); ?>
+                        </span>
+                    </span>
+                </div>
+                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:12px; font-size:13px;">
+                    <div><strong>Batch:</strong> <?php echo safeHtmlAD($batch['batch_reference']); ?></div>
+                    <div><strong>Source:</strong> <?php echo safeHtmlAD($batch['source_institution']); ?></div>
+                    <div><strong>Account:</strong> <?php echo safeHtmlAD($batch['source_identifier']); ?></div>
+                    <div><strong>Total Amount:</strong> <?php echo number_format($batch['total_amount'] ?? 0, 2); ?> <?php echo safeHtmlAD($batch['currency'] ?? 'BWP'); ?></div>
+                    <div><strong>Destinations:</strong> <?php echo $batch['total_destinations'] ?? 0; ?></div>
+                    <div><strong>Identity Recipients:</strong> <?php echo $batch['identity_recipients'] ?? 0; ?></div>
+                </div>
+            </div>
+
+            <?php if ($error): ?>
+            <div class="info-panel" style="border-left-color: var(--seal-red); background: var(--danger-bg);">
+                <div class="label" style="color:var(--danger);">⚠️ <?php echo $error; ?></div>
+            </div>
+            <?php endif; ?>
+            <?php if ($success): ?>
+            <div class="info-panel" style="border-left-color: var(--ledger-green); background: var(--green-tint);">
+                <div class="label" style="color:var(--ledger-green);">✅ <?php echo safeHtmlAD($success); ?></div>
+            </div>
+            <?php endif; ?>
+
+            <?php if (!$canEdit): ?>
+            <div class="info-panel" style="border-left-color: var(--amber); background: var(--amber-bg);">
+                <div class="label" style="color:var(--amber);">🔒 You don't have permission to add or clear destinations on this batch.</div>
+            </div>
+            <?php elseif (!$isDraft): ?>
+            <div class="info-panel" style="border-left-color: var(--amber); background: var(--amber-bg);">
+                <div class="label" style="color:var(--amber);">🔒 This batch is <?php echo safeHtmlAD($batch['status']); ?>, not draft — destinations are locked.</div>
+                <div class="desc"><a href="review_batch.php?batch_id=<?php echo (int)$batchId; ?>" style="color:var(--brass); font-weight:600;">Go to Review →</a></div>
+            </div>
+            <?php endif; ?>
+
+            <?php if ($canEdit && $isDraft): ?>
+            <form method="POST" id="destinationForm">
+                <input type="hidden" name="csrf_token" value="<?php echo safeHtmlAD($csrfToken); ?>">
+                <input type="hidden" name="action" value="add_destination">
+                <input type="hidden" name="destination_data" id="destinationData" value="[]">
+
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">Add Recipients</span>
+                        <div class="card-actions">
+                            <button type="button" class="btn btn-outline btn-sm" onclick="addRow('institution')"><?php echo svgIcon('building'); ?> Add Institution</button>
+                            <button type="button" class="btn btn-identity btn-sm" onclick="addRow('identity')"><?php echo svgIcon('idcard'); ?> Add Identity Recipient</button>
+                            <button type="button" class="btn btn-outline btn-sm" onclick="addMultipleRows(5)"><?php echo svgIcon('plus'); ?> Add 5</button>
+                            <button type="button" class="btn btn-danger btn-sm" onclick="clearRows()">🗑 Clear Form</button>
+                        </div>
+                    </div>
+
+                    <div id="destinationsContainer"></div>
+
+                    <div class="dest-summary-stats">
+                        <div class="dest-summary-stat"><div class="dest-summary-value" id="destCount">0</div><div class="dest-summary-label">Destinations</div></div>
+                        <div class="dest-summary-stat"><div class="dest-summary-value identity-count" id="identityCount">0</div><div class="dest-summary-label">Identity Recipients</div></div>
+                        <div class="dest-summary-stat"><div class="dest-summary-value" id="destTotal">BWP 0.00</div><div class="dest-summary-label">Total Amount (this form)</div></div>
+                        <div class="dest-summary-stat"><div class="dest-summary-value" id="destValid">0</div><div class="dest-summary-label">Valid Entries</div></div>
+                    </div>
+
+                    <div class="actions-bar">
+                        <button type="button" class="btn btn-outline" onclick="addRow('institution')"><?php echo svgIcon('plus'); ?> Add Another</button>
+                        <button type="button" class="btn btn-identity" onclick="addRow('identity')"><?php echo svgIcon('idcard'); ?> Add Identity Recipient</button>
+                        <button type="submit" class="btn btn-primary" id="submitBtn" disabled>💾 Save Destinations (draft)</button>
+                        <a href="review_batch.php?batch_id=<?php echo (int)$batchId; ?>" class="btn btn-outline">📋 Review &amp; Submit</a>
                     </div>
                 </div>
+            </form>
+            <?php endif; ?>
 
-                <div id="destinationsContainer"></div>
-
-                <div class="summary-stats">
-                    <div class="stat"><div class="stat-value" id="destCount">0</div><div class="stat-label">Destinations</div></div>
-                    <div class="stat"><div class="stat-value identity-count" id="identityCount">0</div><div class="stat-label">Identity Recipients</div></div>
-                    <div class="stat"><div class="stat-value" id="destTotal">BWP 0.00</div><div class="stat-label">Total Amount (this form)</div></div>
-                    <div class="stat"><div class="stat-value" id="destValid">0</div><div class="stat-label">Valid Entries</div></div>
+            <?php if (!empty($destinations)): ?>
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Existing Destinations (<?php echo count($destinations); ?>)</span>
+                    <?php if ($canEdit && $isDraft): ?>
+                    <form method="POST" onsubmit="return confirm('Remove ALL destinations from this batch? This cannot be undone.')">
+                        <input type="hidden" name="csrf_token" value="<?php echo safeHtmlAD($csrfToken); ?>">
+                        <input type="hidden" name="action" value="clear_destinations">
+                        <button type="submit" class="btn btn-danger btn-sm">🗑 Clear All</button>
+                    </form>
+                    <?php endif; ?>
                 </div>
-
-                <div class="actions-bar">
-                    <button type="button" class="btn btn-secondary" onclick="addRow('institution')">➕ Add Another</button>
-                    <button type="button" class="btn btn-identity" onclick="addRow('identity')">🆔 Add Identity Recipient</button>
-                    <button type="submit" class="btn btn-primary" id="submitBtn" disabled>💾 Save Destinations (draft)</button>
-                    <a href="review_batch.php?batch_id=<?php echo (int)$batchId; ?>" class="btn btn-outline">📋 Review &amp; Submit</a>
+                <div class="table-responsive">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>Type</th>
+                                <th>Institution/Identity</th>
+                                <th>Identifier</th>
+                                <th>Amount</th>
+                                <th>Beneficiary</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($destinations as $dest): ?>
+                            <tr <?php echo ($dest['is_identity_recipient'] ?? false) ? 'style="background:var(--identity-bg);"' : ''; ?>>
+                                <td><?php echo $dest['destination_index']; ?></td>
+                                <td>
+                                    <?php if ($dest['is_identity_recipient'] ?? false): ?>
+                                    <span style="background:var(--identity-purple); color:#fff; padding:2px 8px; font-size:10px;">🆔 IDENTITY</span>
+                                    <?php else: ?>
+                                    <span style="background:var(--ledger-green); color:#fff; padding:2px 8px; font-size:10px;">🏛️ INSTITUTION</span>
+                                    <?php endif; ?>
+                                </td>
+                                <td>
+                                    <?php if ($dest['is_identity_recipient'] ?? false): ?>
+                                    <?php echo safeHtmlAD($identityTypes[$dest['identity_type']] ?? $dest['identity_type'] ?? 'Identity'); ?>
+                                    <?php else: ?>
+                                    <?php echo safeHtmlAD($dest['institution']); ?>
+                                    <?php endif; ?>
+                                </td>
+                                <td><?php echo safeHtmlAD(($dest['is_identity_recipient'] ?? false) ? ($dest['identity_value'] ?? $dest['identifier']) : $dest['identifier']); ?></td>
+                                <td><?php echo number_format($dest['amount'], 2); ?></td>
+                                <td><?php echo safeHtmlAD($dest['beneficiary_name'] ?? '-'); ?></td>
+                                <td>
+                                    <span class="status status-<?php echo destStatusClass($dest['status']); ?>">
+                                        <?php echo safeHtmlAD($dest['status']); ?>
+                                    </span>
+                                </td>
+                            </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
                 </div>
             </div>
-        </form>
-        <?php endif; ?>
-
-        <?php if (!empty($destinations)): ?>
-        <div class="card">
-            <div class="card-header">
-                <span class="card-title">📋 Existing Destinations (<?php echo count($destinations); ?>)</span>
-                <?php if ($canEdit && $isDraft): ?>
-                <form method="POST" onsubmit="return confirm('Remove ALL destinations from this batch? This cannot be undone.')">
-                    <input type="hidden" name="csrf_token" value="<?php echo safeHtmlAD($csrfToken); ?>">
-                    <input type="hidden" name="action" value="clear_destinations">
-                    <button type="submit" class="btn btn-danger btn-sm">🗑 Clear All</button>
-                </form>
-                <?php endif; ?>
-            </div>
-            <div class="table-responsive">
-                <table style="width:100%; border-collapse:collapse; font-size:13px;">
-                    <thead>
-                        <tr style="background:var(--ink-900); color:white;">
-                            <th style="padding:10px; text-align:left;">#</th>
-                            <th style="padding:10px; text-align:left;">Type</th>
-                            <th style="padding:10px; text-align:left;">Institution/Identity</th>
-                            <th style="padding:10px; text-align:left;">Identifier</th>
-                            <th style="padding:10px; text-align:left;">Amount</th>
-                            <th style="padding:10px; text-align:left;">Beneficiary</th>
-                            <th style="padding:10px; text-align:left;">Status</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach ($destinations as $dest): ?>
-                        <tr style="border-bottom:1px solid var(--line); <?php echo ($dest['is_identity_recipient'] ?? false) ? 'background:var(--identity-bg);' : ''; ?>">
-                            <td style="padding:10px;"><?php echo $dest['destination_index']; ?></td>
-                            <td style="padding:10px;">
-                                <?php if ($dest['is_identity_recipient'] ?? false): ?>
-                                <span style="background:var(--identity-purple); color:white; padding:2px 8px; font-size:10px;">🆔 IDENTITY</span>
-                                <?php else: ?>
-                                <span style="background:var(--ledger-green); color:white; padding:2px 8px; font-size:10px;">🏛️ INSTITUTION</span>
-                                <?php endif; ?>
-                            </td>
-                            <td style="padding:10px;">
-                                <?php if ($dest['is_identity_recipient'] ?? false): ?>
-                                <?php echo safeHtmlAD($identityTypes[$dest['identity_type']] ?? $dest['identity_type'] ?? 'Identity'); ?>
-                                <?php else: ?>
-                                <?php echo safeHtmlAD($dest['institution']); ?>
-                                <?php endif; ?>
-                            </td>
-                            <td style="padding:10px;">
-                                <?php echo safeHtmlAD(($dest['is_identity_recipient'] ?? false) ? ($dest['identity_value'] ?? $dest['identifier']) : $dest['identifier']); ?>
-                            </td>
-                            <td style="padding:10px;"><?php echo number_format($dest['amount'], 2); ?></td>
-                            <td style="padding:10px;"><?php echo safeHtmlAD($dest['beneficiary_name'] ?? '-'); ?></td>
-                            <td style="padding:10px;">
-                                <span class="workflow-status status-<?php echo strtolower($dest['status']); ?>">
-                                    <?php echo safeHtmlAD($dest['status']); ?>
-                                </span>
-                            </td>
-                        </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-        <?php endif; ?>
-    </div>
+            <?php endif; ?>
 
     <script>
         let rowCount = 0;
@@ -946,5 +1010,10 @@ $roleDisplay = strtoupper(UserManagementService::ROLE_CATALOG[$role]['label'] ??
             });
         }
     </script>
+<?php
+$dbHealthy = DBConnection::isConnected();
+$footerStatusLine = 'LEDGER SYNC: ' . ($dbHealthy ? '<span class="ok">OK</span>' : '<span class="bad">DEGRADED</span>');
+require __DIR__ . '/../partials/shell-foot.php';
+?>
 </body>
 </html>
