@@ -73,7 +73,7 @@ function destinationNotYetAttempted($dest) {
 // ============================================================
 function loadBatch(PDO $db, $batchId, $orgId) {
     $stmt = $db->prepare("
-        SELECT b.*, 
+        SELECT b.*,
                u1.full_name as created_by_name,
                u2.full_name as submitted_by_name,
                u3.full_name as reviewed_by_name,
@@ -93,7 +93,7 @@ function loadBatch(PDO $db, $batchId, $orgId) {
 
 function loadDestinations(PDO $db, $batchId): array {
     $stmt = $db->prepare("
-        SELECT * FROM disbursement_destinations 
+        SELECT * FROM disbursement_destinations
         WHERE batch_id = :batch_id
         ORDER BY destination_index
     ");
@@ -224,7 +224,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             if (!$error) {
                 $stmt = $db->prepare("
-                    UPDATE disbursement_batches 
+                    UPDATE disbursement_batches
                     SET status = 'pending_approval',
                         submitted_by = :user_id,
                         submitted_at = NOW(),
@@ -253,7 +253,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             if (!$error) {
                 $stmt = $db->prepare("
-                    UPDATE disbursement_batches 
+                    UPDATE disbursement_batches
                     SET status = 'approved',
                         approved_by = :user_id,
                         approved_at = NOW(),
@@ -267,7 +267,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif ($action === 'reject') {
             $reason = $_POST['rejection_reason'] ?? 'No reason provided';
             $stmt = $db->prepare("
-                UPDATE disbursement_batches 
+                UPDATE disbursement_batches
                 SET status = 'rejected',
                     rejection_reason = :reason,
                     reviewed_by = :user_id,
@@ -370,59 +370,164 @@ $hasFailedJobs = $queueProgress && (int)($queueProgress['permanently_failed'] ??
 // FINAL SAFETY CHECK: Approvers should NEVER see Execute button
 $showExecuteButton = ($status === 'approved' && $canExecute && !$isApprover);
 $showRetryFailedButton = ($hasFailedJobs && $canExecute && !$isApprover);
+
+// ============================================================
+// NEW, DISPLAY-ONLY completeness check for the recipient manifest table
+// (mockup's "VALID"/"REVIEW" badges). No such field exists server-side —
+// this is purely a client-facing data-completeness hint computed from
+// already-loaded row data. It must NEVER be wired into canSubmit/
+// canApprove/canExecute/showExecuteButton or any POST handler above —
+// a batch with REVIEW-flagged rows stays exactly as submittable/
+// approvable/executable as it is today.
+// ============================================================
+function destinationCompletenessLabel(array $dest): array {
+    $hasName = trim((string)($dest['beneficiary_name'] ?? '')) !== '';
+    $hasAmount = (float)($dest['amount'] ?? 0) > 0;
+    $hasIdentifier = trim((string)($dest['identifier'] ?? '')) !== '';
+    return ($hasName && $hasAmount && $hasIdentifier)
+        ? ['label' => 'VALID', 'tone' => 'completed']
+        : ['label' => 'REVIEW', 'tone' => 'pending'];
+}
+
+function safeHtml($value) {
+    return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
+}
+function getRoleLabel($role) {
+    $labels = [
+        'owner' => 'Owner', 'it_manager_enterprise' => 'IT Manager', 'it_officer_enterprise' => 'IT Officer',
+        'it_support' => 'IT Support', 'department_head' => 'Department Head', 'program_officer' => 'Uploader',
+        'finance_officer' => 'Finance Officer', 'approver' => 'Approver', 'senior_approver' => 'Senior Approver',
+        'supervisor' => 'Supervisor', 'beneficiary_registrar' => 'Beneficiary Registrar', 'auditor' => 'Auditor', 'viewer' => 'Viewer',
+    ];
+    return $labels[$role] ?? ucfirst(str_replace('_', ' ', $role));
+}
+function getStatusClass($status) {
+    $status = strtolower($status);
+    return match($status) {
+        'draft' => 'draft',
+        'pending', 'pending_approval' => 'pending',
+        'approved' => 'approved',
+        'executing' => 'pending',
+        'completed', 'executed' => 'completed',
+        'rejected' => 'rejected',
+        'cancelled' => 'rejected',
+        default => 'draft'
+    };
+}
+function getStatusLabel($status) {
+    $status = strtolower($status);
+    return match($status) {
+        'draft' => '📝 Draft',
+        'pending', 'pending_approval' => '⏳ Pending',
+        'approved' => '✅ Approved',
+        'executing' => '⚙️ Executing',
+        'completed' => '✔️ Completed',
+        'executed' => '🚀 Executed',
+        'rejected' => '❌ Rejected',
+        'cancelled' => '🚫 Cancelled',
+        default => ucfirst($status)
+    };
+}
+// Destination-level statuses (SUCCESS/FAILED/PENDING_IDENTITY_CONFIRMATION/
+// PROCESSING) don't match the batch-level vocabulary above, so they get
+// their own small mapping onto the same 5 shell.css tones.
+function destStatusClass($status) {
+    $status = strtoupper((string)$status);
+    return match($status) {
+        'SUCCESS', 'COMPLETED' => 'completed',
+        'FAILED' => 'rejected',
+        'PENDING_IDENTITY_CONFIRMATION' => 'approved',
+        'PENDING', 'PROCESSING' => 'pending',
+        default => 'draft',
+    };
+}
+
+// ============================================================
+// SHARED SHELL SETUP — same contract as index.php/departments/index.php,
+// so this page's nav is generated by the exact same code, not a
+// hand-copied lookalike.
+//
+// IMPORTANT: this page already has its own $canApprove above (line
+// ~122), deliberately NARROW — it gates whether THIS user can approve
+// THIS batch. The sidebar badge needs the dashboard's BROADER formula
+// (an owner/it_manager_enterprise should still see how many batches
+// org-wide are pending, even though their own $canApprove here is
+// false). Reusing the narrow one would under-count for those roles, so
+// this is a deliberately separate variable, not a rename.
+// ============================================================
+$fullName = $user['full_name'] ?? $user['username'] ?? 'User';
+$orgName = $user['organization_name'] ?? 'Organization';
+$userRole = $role;
+$basePath = '../';
+$isTopRole = in_array($userRole, ['owner', 'it_manager_enterprise'], true);
+$isDepartmentHead = ($userRole === 'department_head');
+$canCreate = in_array($userRole, ['owner', 'it_manager_enterprise', 'program_officer', 'department_head'], true);
+$navCanApprove = in_array($userRole, ['owner', 'approver', 'senior_approver', 'it_manager_enterprise'], true);
+$canManageUsers = in_array($userRole, ['owner', 'it_manager_enterprise', 'it_officer_enterprise'], true);
+$canSeeSourceAccountsArea = in_array($userRole, ['owner', 'it_manager_enterprise', 'finance_officer'], true);
+$canTrace = in_array($userRole, ['owner', 'it_manager_enterprise', 'it_officer_enterprise', 'auditor', 'senior_approver', 'approver', 'finance_officer'], true);
+$canManageDepartments = $isTopRole;
+
+// Unlike source_input.php, this page cannot render at all without an
+// existing batch (see the die() above) — so by construction, setup was
+// already completed at least once. No live check needed here.
+$setupReady = true;
+
+$navPendingApprovals = 0;
+$navPendingSourceConfirmations = 0;
+try {
+    if ($navCanApprove) {
+        $stmt = $db->prepare("SELECT COUNT(*) FROM disbursement_batches WHERE organization_id = :org_id AND status IN ('pending','pending_approval','PENDING','PENDING_APPROVAL')");
+        $stmt->execute([':org_id' => $orgId]);
+        $navPendingApprovals = (int)$stmt->fetchColumn();
+    }
+    if ($canSeeSourceAccountsArea) {
+        $stmt = $db->prepare("SELECT COUNT(*) FROM source_accounts WHERE organization_id = :org_id AND status = 'pending_confirmation' AND deleted_at IS NULL");
+        $stmt->execute([':org_id' => $orgId]);
+        $navPendingSourceConfirmations = (int)$stmt->fetchColumn();
+    }
+} catch (PDOException $e) {
+    error_log("[review_batch] Nav badge query error: " . $e->getMessage());
+}
+
+$navItems = [
+    ['key' => 'dashboard', 'icon' => 'grid', 'label' => 'Dashboard', 'href' => '../index.php', 'show' => true],
+    ['key' => 'disbursements', 'icon' => 'wallet', 'label' => 'Disbursements', 'href' => '../batches/index.php?status=all', 'show' => true, 'badge' => ($navPendingApprovals > 0 && $navCanApprove) ? $navPendingApprovals : null],
+    ['key' => 'beneficiaries', 'icon' => 'people', 'label' => 'Beneficiaries', 'href' => '../beneficiaries.php', 'show' => true],
+    ['key' => 'trace', 'icon' => 'search', 'label' => 'Trace Payment', 'href' => '../index.php#trace', 'show' => $canTrace],
+    ['key' => 'departments', 'icon' => 'building', 'label' => 'Departments', 'href' => '../departments/index.php', 'show' => $canManageDepartments || $isDepartmentHead],
+    ['key' => 'sources', 'icon' => 'bank', 'label' => 'Source Accounts', 'href' => '../imports/add_source.php', 'show' => $canSeeSourceAccountsArea, 'badge' => $navPendingSourceConfirmations > 0 ? $navPendingSourceConfirmations : null],
+    ['key' => 'team', 'icon' => 'idcard', 'label' => 'Team', 'href' => '../settings/users.php', 'show' => $canManageUsers],
+    ['key' => 'reports', 'icon' => 'chart', 'label' => 'Reports', 'href' => '../reports.php', 'show' => true],
+];
+$navUtility = [
+    ['key' => 'settings', 'icon' => 'gear', 'label' => 'Settings', 'href' => '../settings.php', 'show' => true],
+    ['key' => 'logout', 'icon' => 'logout', 'label' => 'Log Out', 'href' => '../logout.php', 'show' => true],
+];
+$topbarSearchShow = $canTrace;
+$topbarSearchAction = '../index.php';
+$topbarSearchName = 'trace';
+$topbarSearchPlaceholder = 'Search batch reference, phone, national ID…';
+
+$stageTrackerStatus = $batch['status'] ?? 'draft';
+
+// Default so the Actions section (which reads this) never hits an
+// undefined-variable warning on a batch with no department/ration info —
+// no ration info means nothing to block on, not a manufactured blocker.
+$thisBatchFits = true;
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VOUCHMORPH · Review Batch</title>
+    <title>Create Batch · Review · VOUCHMORPH Enterprise</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../partials/shell.css">
+    <link rel="stylesheet" href="../partials/stage-tracker.css">
     <style>
-        :root {
-            --paper: #EEF1EF; --panel: #FFFFFF; --ink-900: #0F2138; --ink-700: #1D3557;
-            --ink-500: #4A5A6E; --ink-300: #8A96A3; --line: #D3DAD6; --line-strong: #AEB8B2;
-            --brass: #8A6D3B; --brass-tint: #F4EFE3; --seal-red: #7A2118; --amber: #8A5A0B;
-            --ledger-green: #24513A; --green-tint: #E5EEE7; --blue-tint: #E7EEF4;
-            --danger: #b3261e; --danger-bg: #fbeceb;
-            --f-body: 'IBM Plex Sans', sans-serif; --f-cond: 'IBM Plex Sans Condensed', sans-serif; --f-mono: 'IBM Plex Mono', monospace;
-        }
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: var(--f-body); background: var(--paper); color: var(--ink-900); min-height: 100vh; font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
-        :focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
-        .masthead { background: var(--ink-900); color: #fff; padding: 14px 32px; display: flex; justify-content: space-between; align-items: center; border-bottom: 3px solid var(--brass); flex-wrap: wrap; gap: 10px; }
-        .masthead h1 { font-family: var(--f-cond); font-size: 18px; font-weight: 700; letter-spacing: 0.04em; }
-        .masthead .role-pill { font-size: 10px; font-weight: 700; color: var(--brass); border: 1px solid var(--brass); padding: 2px 10px; text-transform: uppercase; font-family: var(--f-cond); letter-spacing: 0.05em; }
-        .masthead .role-pill.approver { border-color: #f59e0b; color: #f59e0b; }
-        .masthead .role-pill.owner { border-color: var(--ledger-green); color: var(--ledger-green); }
-        .masthead .ref { color: var(--ink-300); font-size: 12px; margin-left: 12px; font-family: var(--f-mono); }
-        .masthead .logout-link { color: rgba(255,255,255,0.4); text-decoration: none; margin-left: 16px; font-size: 11px; font-family: var(--f-cond); text-transform: uppercase; letter-spacing: 0.04em; }
-        .masthead .logout-link:hover { color: var(--brass); }
-        .stage { max-width: 1200px; margin: 0 auto; padding: 28px 20px; }
-        .back-link { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-500); text-decoration: none; font-size: 13px; font-weight: 600; margin-bottom: 20px; font-family: var(--f-cond); letter-spacing: 0.02em; }
-        .back-link:hover { color: var(--brass); }
-        .step-indicator { display: flex; justify-content: space-between; margin-bottom: 28px; padding: 0 8px; }
-        .step { flex: 1; text-align: center; font-size: 11px; font-weight: 600; color: var(--ink-300); text-transform: uppercase; font-family: var(--f-cond); letter-spacing: 0.04em; }
-        .step.active { color: var(--ink-900); }
-        .step.done { color: var(--ledger-green); }
-        .card { background: var(--panel); border: 1px solid var(--line); padding: 24px; margin-bottom: 20px; }
-        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; gap: 10px; }
-        .card-title { font-size: 16px; font-weight: 700; font-family: var(--f-cond); letter-spacing: 0.02em; }
-        .readonly-badge { display: inline-block; padding: 4px 12px; background: #fef3c7; color: var(--amber); font-size: 10px; font-weight: 600; text-transform: uppercase; font-family: var(--f-cond); letter-spacing: 0.04em; border: 1px solid #f59e0b; }
-        .workflow-status { padding: 4px 14px; font-size: 11px; font-weight: 600; text-transform: uppercase; display: inline-block; font-family: var(--f-cond); letter-spacing: 0.04em; }
-        .status-draft { background: var(--line); color: var(--ink-500); }
-        .status-pending_approval { background: #fef3c7; color: var(--amber); }
-        .status-approved { background: var(--blue-tint); color: #1e40af; }
-        .status-executing { background: #fef3c7; color: var(--amber); }
-        .status-rejected { background: var(--danger-bg); color: var(--danger); }
-        .status-completed { background: var(--green-tint); color: var(--ledger-green); }
-        .status-failed { background: var(--danger-bg); color: var(--danger); }
-        .status-partially_completed { background: #fef3c7; color: var(--amber); }
-        .status-pending_identity_confirmation { background: var(--blue-tint); color: #1e40af; }
-        .status-partial_success { background: #fef3c7; color: var(--amber); }
-        .status-success { background: var(--green-tint); color: var(--ledger-green); }
-        .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+        .readonly-badge { display: inline-block; padding: 4px 12px; background: var(--amber-bg); color: var(--amber); font-size: 10px; font-weight: 600; text-transform: uppercase; font-family: var(--f-cond); letter-spacing: 0.04em; border: 1px solid var(--amber); }
         .ration-panel { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
         .ration-panel .ration-title { font-family: var(--f-cond); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-500); margin-bottom: 10px; }
         .ration-bar-track { height: 8px; background: var(--paper); border: 1px solid var(--line); margin-bottom: 10px; }
@@ -439,387 +544,326 @@ $showRetryFailedButton = ($hasFailedJobs && $canExecute && !$isApprover);
         .queue-stats { display: flex; gap: 20px; flex-wrap: wrap; font-size: 13px; color: var(--ink-500); }
         .queue-stats strong { color: var(--ink-900); }
         .queue-stats .danger strong { color: var(--danger); }
-        .table-responsive { overflow-x: auto; }
-        table { width: 100%; border-collapse: collapse; font-size: 13px; }
-        th { background: var(--paper); color: var(--ink-500); padding: 10px 14px; text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; border-bottom: 2px solid var(--line); font-family: var(--f-cond); }
-        td { padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: middle; font-size: 13px; }
-        tr:hover { background: var(--brass-tint); }
         .table-code { font-family: var(--f-mono); font-size: 11px; background: var(--paper); padding: 2px 6px; }
-        .error { background: var(--danger-bg); color: var(--danger); padding: 14px 18px; margin-bottom: 16px; border-left: 3px solid var(--danger); font-size: 14px; line-height: 1.6; }
-        .success { background: var(--green-tint); color: var(--ledger-green); padding: 14px 18px; margin-bottom: 16px; border-left: 3px solid var(--ledger-green); font-size: 14px; line-height: 1.6; }
-        .btn { padding: 8px 22px; border: none; font-weight: 600; font-size: 12px; cursor: pointer; transition: all 0.15s; font-family: var(--f-cond); text-transform: uppercase; letter-spacing: 0.04em; }
-        .btn:hover { opacity: 0.85; }
-        .btn-primary { background: var(--ink-900); color: #fff; }
-        .btn-primary:hover { background: var(--brass); color: var(--ink-900); }
-        .btn-success { background: var(--ledger-green); color: #fff; }
-        .btn-success:hover { background: #1a3d2c; }
-        .btn-danger { background: var(--seal-red); color: #fff; }
-        .btn-danger:hover { background: #5a1812; }
-        .btn-secondary { background: var(--line); color: var(--ink-700); }
-        .btn-secondary:hover { background: var(--line-strong); }
-        .btn-outline { background: transparent; border: 1px solid var(--line); color: var(--ink-500); }
-        .btn-outline:hover { border-color: var(--brass); color: var(--ink-900); background: var(--brass-tint); }
-        .btn-execute { background: var(--seal-red); color: #fff; font-size: 14px; padding: 10px 32px; }
-        .btn-execute:hover { background: #5a1812; }
-        .btn-execute:disabled { opacity: 0.5; cursor: not-allowed; background: var(--ink-300); }
-        .btn-resume { background: var(--amber); color: #fff; font-size: 13px; padding: 9px 26px; }
-        .btn-resume:hover { background: #6e4800; }
-        .btn-retry { background: var(--blue-tint); color: #1e40af; padding: 4px 14px; font-size: 11px; border: none; cursor: pointer; font-family: var(--f-cond); font-weight: 600; }
+        .btn-retry { background: var(--blue-tint); color: #1e40af; padding: 4px 14px; font-size: 11px; border: none; cursor: pointer; font-family: var(--f-cond); font-weight: 600; text-decoration: none; display: inline-block; }
         .btn-retry:hover { background: #bfdbfe; }
-        .btn-approver-locked { background: #fef3c7; color: var(--amber); border: 1px solid #f59e0b; padding: 8px 22px; font-weight: 600; font-size: 12px; cursor: not-allowed; font-family: var(--f-cond); text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.7; }
-        .btn-approver-locked:hover { opacity: 0.7; }
-        .actions-bar { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
+        .btn-approver-locked { background: var(--amber-bg); color: var(--amber); border: 1px solid var(--amber); padding: 8px 22px; font-weight: 600; font-size: 12px; cursor: not-allowed; font-family: var(--f-cond); text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.8; }
         .rejection-form { display: none; margin-top: 12px; padding: 16px; background: var(--danger-bg); }
         .rejection-form.show { display: block; }
-        .rejection-form textarea { width: 100%; padding: 10px; border: 1px solid var(--line); min-height: 80px; font-family: var(--f-body); font-size: 13px; background: var(--panel); }
+        .rejection-form textarea { width: 100%; padding: 10px; border: 1px solid var(--line); min-height: 80px; font-family: var(--f-body); font-size: 13px; background: var(--panel); box-sizing: border-box; }
         .rejection-form textarea:focus { outline: 2px solid var(--brass); outline-offset: 1px; }
         .rejection-form .form-group { margin-bottom: 12px; }
-        .rejection-form .form-group label { display: block; margin-bottom: 6px; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; font-family: var(--f-cond); color: var(--ink-500); }
-        .security-notice { background: #fef3c7; border-left: 4px solid #f59e0b; padding: 12px 16px; margin-top: 12px; font-size: 13px; color: var(--amber); }
-        .security-notice strong { color: var(--amber); }
-        .security-notice .lock-icon { font-size: 18px; margin-right: 8px; }
-        @media (max-width: 768px) {
-            .grid-3 { grid-template-columns: 1fr; }
-            .masthead { flex-direction: column; text-align: center; padding: 12px 16px; }
-            .step-indicator { flex-wrap: wrap; gap: 8px; }
-            .step { flex: 0 0 45%; }
-            .stage { padding: 16px; }
-            .card { padding: 16px; }
-            .actions-bar { flex-direction: column; }
-            .btn { width: 100%; text-align: center; }
-        }
-        @media (max-width: 480px) {
-            .masthead h1 { font-size: 15px; }
-            .step { font-size: 9px; }
-            table { font-size: 12px; }
-            th, td { padding: 6px 8px; }
-        }
-        @media (prefers-color-scheme: dark) {
-            :root { --paper: #1B2733; --panel: #1B2733; --ink-900: #ECEFF2; --ink-700: #D5DCE0; --ink-500: #93A2AC; --ink-300: #6B7A85; --line: #2C3A45; }
-            .masthead { background: #0d1a26; }
-            .card { background: #1B2733; border-color: #2C3A45; }
-            .card-header { border-color: #2C3A45; }
-            th { background: #1B2733; color: #93A2AC; border-color: #2C3A45; }
-            td { border-color: #2C3A45; }
-            tr:hover { background: #22303A; }
-            .btn-primary { background: #2C3A45; color: #ECEFF2; }
-            .btn-primary:hover { background: var(--brass); color: var(--ink-900); }
-            .btn-outline { border-color: #2C3A45; color: #93A2AC; }
-            .btn-outline:hover { border-color: var(--brass); color: #ECEFF2; background: #22303A; }
-            .status-draft { background: #2C3A45; color: #93A2AC; }
-            .table-code { background: #2C3A45; color: #93A2AC; }
-            .rejection-form textarea { background: #1B2733; border-color: #2C3A45; color: #ECEFF2; }
-            .security-notice { background: #1e293b; border-left-color: #f59e0b; color: #fbbf24; }
-            .btn-approver-locked { background: #1e293b; border-color: #f59e0b; color: #fbbf24; }
-        }
+        .actions-bar { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-top: 16px; }
+        @media (max-width: 768px) { .actions-bar { flex-direction: column; align-items: stretch; } }
     </style>
 </head>
 <body>
-    <div class="masthead">
-        <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
-            <h1>VOUCHMORPH · Review Batch</h1>
-            <span class="role-pill <?php echo $role === 'owner' ? 'owner' : ($isApprover ? 'approver' : ''); ?>">
-                <?php echo $roleDisplay; ?>
-            </span>
-            <span class="ref"><?php echo htmlspecialchars($batch['batch_reference']); ?></span>
-        </div>
-        <div>
-            <a href="../logout.php" class="logout-link">Sign Out</a>
-        </div>
-    </div>
-
-    <div class="stage">
-        <a href="add_destinations.php?batch_id=<?php echo $batchId; ?>" class="back-link">← Back to Destinations</a>
-
-        <div class="step-indicator">
-            <span class="step done">1. Select Source</span>
-            <span class="step done">2. Add Destinations</span>
-            <span class="step active">3. Review</span>
-            <span class="step">4. Approve</span>
-            <span class="step">5. Execute</span>
-        </div>
-
-        <?php if ($error): ?>
-        <div class="error">⚠️ <?php echo $error; ?></div>
-        <?php endif; ?>
-
-        <?php if ($success): ?>
-        <div class="success">✅ <?php echo $success; ?></div>
-        <?php endif; ?>
-
-        <?php if ($queueProgress && $queueProgress['total'] > 0): ?>
-        <div class="queue-progress">
-            <div class="qp-title">⚙️ Execution Progress</div>
-            <div class="queue-bar-track">
-                <div class="queue-bar-fill<?php echo $hasFailedJobs ? ' has-failures' : ''; ?>" style="width:<?php echo $queueProgress['percent_done']; ?>%;"></div>
-            </div>
-            <div class="queue-stats">
-                <span>Total: <strong><?php echo (int)$queueProgress['total']; ?></strong></span>
-                <span>✅ Completed: <strong><?php echo (int)$queueProgress['completed']; ?></strong></span>
-                <span>⏳ In flight: <strong><?php echo (int)$queueProgress['in_flight']; ?></strong></span>
-                <?php if ($hasFailedJobs): ?>
-                <span class="danger">❌ Failed: <strong><?php echo (int)$queueProgress['permanently_failed']; ?></strong></span>
-                <?php endif; ?>
-                <span><?php echo $queueProgress['percent_done']; ?>% done</span>
-            </div>
-            <?php if ((int)$queueProgress['in_flight'] > 0): ?>
-            <p style="font-size:12.5px; color:var(--ink-300); margin-top:10px;">
-                Workers are processing this batch in the background — safe to leave this page and check back later.
-                Refresh to see the latest progress.
-            </p>
-            <?php endif; ?>
-        </div>
-        <?php endif; ?>
-
-        <?php if ($isReadOnly && !in_array($role, ['owner', 'approver', 'senior_approver'])): ?>
-        <div class="card" style="border-left: 3px solid #f59e0b; background: #fef3c7;">
-            <div style="display:flex; align-items:center; gap:12px;">
-                <span style="font-size:22px;">🔒</span>
+    <?php require __DIR__ . '/../partials/shell-head.php'; ?>
+            <div class="page-header">
                 <div>
-                    <strong style="color:var(--amber); font-family:var(--f-cond);">Read-Only Mode</strong>
-                    <p style="color:var(--ink-500); font-size:13px; margin-top:2px;">
-                        This batch was created by <?php echo htmlspecialchars($batch['created_by_name'] ?? 'another user'); ?>. 
-                        You can view the details but cannot make changes.
-                    </p>
+                    <h1>Create Batch</h1>
+                    <div class="sub">Steps 3–5 — validate, authorize, and execute <span style="font-family:var(--f-mono);"><?php echo safeHtml($batch['batch_reference']); ?></span>.</div>
+                </div>
+                <div class="page-header-actions">
+                    <span style="font-size:11px; color:var(--ink-300); font-family:var(--f-cond); text-transform:uppercase; letter-spacing:.04em; align-self:center;"><?php echo safeHtml($roleDisplay); ?></span>
                 </div>
             </div>
-        </div>
-        <?php endif; ?>
 
-        <div class="card">
-            <div class="card-header">
-                <span class="card-title">📋 Batch Summary</span>
-                <span>
-                    <span class="workflow-status status-<?php echo $status; ?>"><?php echo htmlspecialchars($status); ?></span>
-                    <?php if ($isReadOnly): ?>
-                    <span class="readonly-badge" style="margin-left:8px;">🔒 Read-Only</span>
+            <?php require __DIR__ . '/../partials/stage-tracker.php'; ?>
+
+            <?php if ($error): ?>
+            <div class="info-panel" style="border-left-color: var(--seal-red); background: var(--danger-bg);">
+                <div class="label" style="color:var(--danger);">⚠️ <?php echo $error; ?></div>
+            </div>
+            <?php endif; ?>
+
+            <?php if ($success): ?>
+            <div class="info-panel" style="border-left-color: var(--ledger-green); background: var(--green-tint);">
+                <div class="label" style="color:var(--ledger-green);">✅ <?php echo $success; ?></div>
+            </div>
+            <?php endif; ?>
+
+            <?php if ($queueProgress && $queueProgress['total'] > 0): ?>
+            <div class="queue-progress">
+                <div class="qp-title">⚙️ Execution Progress</div>
+                <div class="queue-bar-track">
+                    <div class="queue-bar-fill<?php echo $hasFailedJobs ? ' has-failures' : ''; ?>" style="width:<?php echo $queueProgress['percent_done']; ?>%;"></div>
+                </div>
+                <div class="queue-stats">
+                    <span>Total: <strong><?php echo (int)$queueProgress['total']; ?></strong></span>
+                    <span>✅ Completed: <strong><?php echo (int)$queueProgress['completed']; ?></strong></span>
+                    <span>⏳ In flight: <strong><?php echo (int)$queueProgress['in_flight']; ?></strong></span>
+                    <?php if ($hasFailedJobs): ?>
+                    <span class="danger">❌ Failed: <strong><?php echo (int)$queueProgress['permanently_failed']; ?></strong></span>
                     <?php endif; ?>
-                </span>
-            </div>
-            <div class="grid-3">
-                <div><strong>Batch Reference:</strong> <?php echo htmlspecialchars($batch['batch_reference']); ?></div>
-                <div><strong>Batch Name:</strong> <?php echo htmlspecialchars($batch['batch_name']); ?></div>
-                <div><strong>Created:</strong> <?php echo date('Y-m-d H:i', strtotime($batch['created_at'])); ?></div>
-                <div><strong>Source Institution:</strong> <?php echo htmlspecialchars($batch['source_institution']); ?></div>
-                <div><strong>Source Account:</strong> <?php echo htmlspecialchars($batch['source_identifier']); ?></div>
-                <div><strong>Currency:</strong> <?php echo htmlspecialchars($batch['currency'] ?? 'BWP'); ?></div>
-                <div><strong>Total Amount:</strong> <?php echo number_format($batch['total_amount'] ?? 0, 2); ?> <?php echo htmlspecialchars($batch['currency'] ?? 'BWP'); ?></div>
-                <div><strong>Total Destinations:</strong> <?php echo $batch['total_destinations'] ?? 0; ?></div>
-                <div><strong>Created By:</strong> <?php echo htmlspecialchars($batch['created_by_name'] ?? 'N/A'); ?></div>
-                <div><strong>Department:</strong> <?php echo $departmentInfo ? htmlspecialchars($departmentInfo['name']) : '<span style="color:var(--danger);">Not assigned</span>'; ?></div>
-            </div>
-
-            <?php if ($batch['submitted_at']): ?>
-            <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--line);">
-                <strong>Submitted:</strong> <?php echo date('Y-m-d H:i', strtotime($batch['submitted_at'])); ?>
-                by <?php echo htmlspecialchars($batch['submitted_by_name'] ?? 'N/A'); ?>
+                    <span><?php echo $queueProgress['percent_done']; ?>% done</span>
+                </div>
+                <?php if ((int)$queueProgress['in_flight'] > 0): ?>
+                <p style="font-size:12.5px; color:var(--ink-300); margin-top:10px;">
+                    Workers are processing this batch in the background — safe to leave this page and check back later.
+                    <a href="review_batch.php?batch_id=<?php echo $batchId; ?>" style="color:var(--brass); font-weight:600;">Refresh</a> to see the latest progress.
+                </p>
+                <?php endif; ?>
             </div>
             <?php endif; ?>
 
-            <?php if ($batch['approved_at']): ?>
-            <div>
-                <strong>Approved:</strong> <?php echo date('Y-m-d H:i', strtotime($batch['approved_at'])); ?>
-                by <?php echo htmlspecialchars($batch['approved_by_name'] ?? 'N/A'); ?>
+            <?php if ($isReadOnly && !in_array($role, ['owner', 'approver', 'senior_approver'])): ?>
+            <div class="info-panel" style="border-left-color: var(--amber); background: var(--amber-bg);">
+                <div class="label" style="color:var(--amber);">🔒 Read-Only Mode</div>
+                <div class="desc">This batch was created by <?php echo safeHtml($batch['created_by_name'] ?? 'another user'); ?>. You can view the details but cannot make changes.</div>
             </div>
             <?php endif; ?>
 
-            <?php if ($batch['rejection_reason']): ?>
-            <div style="margin-top:14px; padding:14px; background:var(--danger-bg);">
-                <strong style="color:var(--danger);">Rejection Reason:</strong>
-                <span style="color:var(--danger);"><?php echo htmlspecialchars($batch['rejection_reason']); ?></span>
-            </div>
-            <?php endif; ?>
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Batch Summary</span>
+                    <span style="display:flex; align-items:center; gap:8px;">
+                        <span class="status status-<?php echo getStatusClass($status); ?>"><?php echo getStatusLabel($status); ?></span>
+                        <?php if ($isReadOnly): ?>
+                        <span class="readonly-badge">🔒 Read-Only</span>
+                        <?php endif; ?>
+                    </span>
+                </div>
+                <div class="grid-3">
+                    <div><strong>Batch Reference:</strong> <?php echo safeHtml($batch['batch_reference']); ?></div>
+                    <div><strong>Batch Name:</strong> <?php echo safeHtml($batch['batch_name']); ?></div>
+                    <div><strong>Created:</strong> <?php echo date('Y-m-d H:i', strtotime($batch['created_at'])); ?></div>
+                    <div><strong>Source Institution:</strong> <?php echo safeHtml($batch['source_institution']); ?></div>
+                    <div><strong>Source Account:</strong> <?php echo safeHtml($batch['source_identifier']); ?></div>
+                    <div><strong>Currency:</strong> <?php echo safeHtml($batch['currency'] ?? 'BWP'); ?></div>
+                    <div><strong>Total Amount:</strong> <?php echo number_format($batch['total_amount'] ?? 0, 2); ?> <?php echo safeHtml($batch['currency'] ?? 'BWP'); ?></div>
+                    <div><strong>Total Destinations:</strong> <?php echo $batch['total_destinations'] ?? 0; ?></div>
+                    <div><strong>Created By:</strong> <?php echo safeHtml($batch['created_by_name'] ?? 'N/A'); ?></div>
+                    <div><strong>Department:</strong> <?php echo $departmentInfo ? safeHtml($departmentInfo['name']) : '<span style="color:var(--danger);">Not assigned</span>'; ?></div>
+                </div>
 
-            <?php if ($batch['executed_at']): ?>
-            <div>
-                <strong>Last Execution Attempt:</strong> <?php echo date('Y-m-d H:i', strtotime($batch['executed_at'])); ?>
-                by <?php echo htmlspecialchars($batch['executed_by_name'] ?? 'N/A'); ?>
-            </div>
-            <?php endif; ?>
+                <?php if ($batch['submitted_at']): ?>
+                <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--line);">
+                    <strong>Submitted:</strong> <?php echo date('Y-m-d H:i', strtotime($batch['submitted_at'])); ?>
+                    by <?php echo safeHtml($batch['submitted_by_name'] ?? 'N/A'); ?>
+                </div>
+                <?php endif; ?>
 
-            <?php if ($rationInfo): ?>
-            <?php
-                $utilPct = $rationInfo['ceiling'] > 0
-                    ? min(100, round((($rationInfo['disbursed_ytd'] + $rationInfo['reserved_in_flight']) / $rationInfo['ceiling']) * 100, 1))
-                    : 0;
-                $barColor = $rationInfo['available'] < 0 ? 'var(--danger)' : ($utilPct >= 80 ? 'var(--amber)' : 'var(--ledger-green)');
-                $thisBatchFits = (float)($batch['total_amount'] ?? 0) <= $rationInfo['available'] || in_array($status, ['approved', 'completed', 'executing', 'partial_success', 'partially_completed']);
-            ?>
-            <div class="ration-panel">
-                <div class="ration-title">💰 Department Ration<?php echo $departmentInfo ? ' — ' . safeHtmlRb($departmentInfo['name']) : ''; ?></div>
-                <div class="ration-bar-track"><div class="ration-bar-fill" style="width:<?php echo $utilPct; ?>%; background:<?php echo $barColor; ?>;"></div></div>
-                <div class="ration-stats">
-                    <span>Ceiling: <strong><?php echo formatCurrency($rationInfo['ceiling'], $rationInfo['currency']); ?></strong></span>
-                    <span>Disbursed YTD: <strong><?php echo formatCurrency($rationInfo['disbursed_ytd'], $rationInfo['currency']); ?></strong></span>
-                    <span>Reserved (pending/approved batches): <strong><?php echo formatCurrency($rationInfo['reserved_in_flight'], $rationInfo['currency']); ?></strong></span>
-                    <span class="<?php echo $rationInfo['available'] < 0 ? 'danger' : 'ok'; ?>">Available: <strong><?php echo formatCurrency($rationInfo['available'], $rationInfo['currency']); ?></strong></span>
+                <?php if ($batch['approved_at']): ?>
+                <div>
+                    <strong>Approved:</strong> <?php echo date('Y-m-d H:i', strtotime($batch['approved_at'])); ?>
+                    by <?php echo safeHtml($batch['approved_by_name'] ?? 'N/A'); ?>
+                </div>
+                <?php endif; ?>
+
+                <?php if ($batch['rejection_reason']): ?>
+                <div class="info-panel" style="border-left-color: var(--seal-red); background: var(--danger-bg); margin-top:14px;">
+                    <div class="label" style="color:var(--danger);">Rejection Reason</div>
+                    <div class="desc" style="color:var(--danger);"><?php echo safeHtml($batch['rejection_reason']); ?></div>
+                </div>
+                <?php endif; ?>
+
+                <?php if ($batch['executed_at']): ?>
+                <div>
+                    <strong>Last Execution Attempt:</strong> <?php echo date('Y-m-d H:i', strtotime($batch['executed_at'])); ?>
+                    by <?php echo safeHtml($batch['executed_by_name'] ?? 'N/A'); ?>
+                </div>
+                <?php endif; ?>
+
+                <?php if ($rationInfo): ?>
+                <?php
+                    $utilPct = $rationInfo['ceiling'] > 0
+                        ? min(100, round((($rationInfo['disbursed_ytd'] + $rationInfo['reserved_in_flight']) / $rationInfo['ceiling']) * 100, 1))
+                        : 0;
+                    $barColor = $rationInfo['available'] < 0 ? 'var(--danger)' : ($utilPct >= 80 ? 'var(--amber)' : 'var(--ledger-green)');
+                    $thisBatchFits = (float)($batch['total_amount'] ?? 0) <= $rationInfo['available'] || in_array($status, ['approved', 'completed', 'executing', 'partial_success', 'partially_completed']);
+                ?>
+                <div class="ration-panel">
+                    <div class="ration-title">Department Budget Ration<?php echo $departmentInfo ? ' — ' . safeHtml($departmentInfo['name']) : ''; ?></div>
+                    <div class="ration-bar-track"><div class="ration-bar-fill" style="width:<?php echo $utilPct; ?>%; background:<?php echo $barColor; ?>;"></div></div>
+                    <div class="ration-stats">
+                        <span>Ceiling: <strong><?php echo formatCurrency($rationInfo['ceiling'], $rationInfo['currency']); ?></strong></span>
+                        <span>Disbursed YTD: <strong><?php echo formatCurrency($rationInfo['disbursed_ytd'], $rationInfo['currency']); ?></strong></span>
+                        <span>Reserved (pending/approved batches): <strong><?php echo formatCurrency($rationInfo['reserved_in_flight'], $rationInfo['currency']); ?></strong></span>
+                        <span class="<?php echo $rationInfo['available'] < 0 ? 'danger' : 'ok'; ?>">Available: <strong><?php echo formatCurrency($rationInfo['available'], $rationInfo['currency']); ?></strong></span>
+                    </div>
                 </div>
                 <?php if (!$thisBatchFits): ?>
-                <div style="margin-top:10px; font-size:12.5px; color:var(--danger);">
-                    ⚠️ This batch's total (<?php echo formatCurrency($batch['total_amount'] ?? 0, $rationInfo['currency']); ?>) exceeds available ration.
-                    Submitting will be blocked until the department borrows more ration or the batch is reduced.
-                    <a href="../departments/index.php" style="color:var(--brass); font-weight:600;">Go to Departments →</a>
+                <div class="info-panel" style="border-left-color: var(--seal-red); background: var(--danger-bg); margin-top:14px;">
+                    <div class="label" style="color:var(--danger);">⚠️ Budget Ceiling Exceeded</div>
+                    <div class="desc">This batch's total (<span class="highlight"><?php echo formatCurrency($batch['total_amount'] ?? 0, $rationInfo['currency']); ?></span>) exceeds this department's available ration. Submitting or approving is blocked until the department borrows more ration or the batch is reduced.</div>
                 </div>
                 <?php endif; ?>
-            </div>
-            <?php endif; ?>
-        </div>
-
-        <div class="card">
-            <div class="card-header">
-                <span class="card-title">👥 Destinations (<?php echo count($destinations); ?>)</span>
-                <?php if ($hasFailedJobs): ?>
-                <span style="color:var(--danger); font-weight:600; font-family:var(--f-cond);">
-                    ⚠️ <?php echo (int)$queueProgress['permanently_failed']; ?> failed
-                </span>
                 <?php endif; ?>
             </div>
-            <div class="table-responsive">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>#</th><th>Institution</th><th>Identifier</th><th>Amount</th>
-                            <th>Beneficiary</th><th>Delivery</th><th>Status</th>
-                            <th>Transaction Ref</th><th>Error Message</th>
-                            <?php if ($role === 'owner'): ?>
-                            <th>Action</th>
-                            <?php endif; ?>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach ($destinations as $dest): ?>
-                        <tr>
-                            <td><?php echo $dest['destination_index']; ?></td>
-                            <td><?php echo htmlspecialchars($dest['institution']); ?></td>
-                            <td><?php echo htmlspecialchars($dest['identifier']); ?></td>
-                            <td><?php echo number_format($dest['amount'], 2); ?> <?php echo htmlspecialchars($dest['currency'] ?? 'BWP'); ?></td>
-                            <td><?php echo htmlspecialchars($dest['beneficiary_name'] ?? '-'); ?></td>
-                            <td><?php echo htmlspecialchars($dest['delivery_method']); ?></td>
-                            <td>
-                                <?php
-                                $statusClass = strtolower($dest['status'] ?? 'PENDING');
-                                $displayStatus = $dest['status'] ?? 'PENDING';
-                                if (in_array($statusClass, ['completed', 'success'])) {
-                                    $displayStatus = '✅ ' . $displayStatus;
-                                } elseif ($statusClass === 'failed') {
-                                    $displayStatus = '❌ ' . $displayStatus;
-                                } elseif (in_array($statusClass, ['pending', 'processing'])) {
-                                    $displayStatus = '⏳ ' . $displayStatus;
-                                }
-                                ?>
-                                <span class="workflow-status status-<?php echo $statusClass; ?>"><?php echo $displayStatus; ?></span>
-                            </td>
-                            <td>
-                                <?php if (!empty($dest['transaction_reference'])): ?>
-                                    <code class="table-code"><?php echo htmlspecialchars($dest['transaction_reference']); ?></code>
-                                <?php else: ?>—<?php endif; ?>
-                            </td>
-                            <td style="color:var(--danger); font-size:12px; max-width:200px;">
-                                <?php echo htmlspecialchars($dest['error_message'] ?? ''); ?>
-                            </td>
-                            <?php if ($role === 'owner' && strtolower($dest['status'] ?? '') === 'failed'): ?>
-                            <td>
-                                <a href="retry_destination.php?batch_id=<?php echo $batchId; ?>&dest_idx=<?php echo $dest['destination_index']; ?>" class="btn-retry">🔄 Retry</a>
-                            </td>
-                            <?php endif; ?>
-                        </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
-        </div>
 
-        <div class="card">
-            <div class="card-header">
-                <span class="card-title">⚡ Actions</span>
-                <?php if ($isReadOnly): ?>
-                <span class="readonly-badge">🔒 Read-Only</span>
-                <?php endif; ?>
-                <?php if ($isApprover): ?>
-                <span class="readonly-badge" style="background: #fef3c7; border-color: #f59e0b; color: var(--amber);">🔑 Approver Mode</span>
-                <?php endif; ?>
-            </div>
-            <div class="actions-bar">
-                <?php if ($status === 'draft' && $canSubmit && !$isReadOnly): ?>
-                <form method="POST" style="display:inline;">
-                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
-                    <input type="hidden" name="action" value="submit_for_approval">
-                    <button type="submit" class="btn btn-primary" onclick="return confirm('Submit this batch for approval?')">📤 Submit for Approval</button>
-                </form>
-                <?php endif; ?>
-
-                <?php if ($status === 'pending_approval' && $canApprove): ?>
-                <form method="POST" style="display:inline;" onsubmit="return confirm('Approve this batch?')">
-                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
-                    <input type="hidden" name="action" value="approve">
-                    <button type="submit" class="btn btn-success">✅ Approve</button>
-                </form>
-                <button class="btn btn-danger" onclick="toggleRejection()">❌ Reject</button>
-                <div class="rejection-form" id="rejectionForm">
-                    <form method="POST">
-                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
-                        <input type="hidden" name="action" value="reject">
-                        <div class="form-group">
-                            <label>Rejection Reason</label>
-                            <textarea name="rejection_reason" required></textarea>
-                        </div>
-                        <button type="submit" class="btn btn-danger">Submit Rejection</button>
-                        <button type="button" class="btn btn-secondary" onclick="toggleRejection()" style="margin-left:8px;">Cancel</button>
-                    </form>
-                </div>
-                <?php elseif ($status === 'pending_approval' && $isApprover && !$canApprove): ?>
-                <button class="btn-approver-locked" disabled style="cursor:not-allowed;">🔒 OUTSIDE YOUR DEPARTMENT</button>
-                <span style="font-size:12px; color:var(--ink-500); margin-left:4px;"><?php echo safeHtmlRb($executeDisabledReason); ?></span>
-                <?php endif; ?>
-
-                <?php if ($status === 'approved'): ?>
-                    <?php if ($showExecuteButton): ?>
-                    <form method="POST" style="display:inline;" onsubmit="return confirm('⚠️ EXECUTE DISBURSEMENT: This will queue real fund transfers for background processing. Only proceed if you have verified all approvals. Continue?')">
-                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
-                        <input type="hidden" name="action" value="execute">
-                        <button type="submit" class="btn btn-execute">🚀 EXECUTE DISBURSEMENT</button>
-                    </form>
-                    <?php else: ?>
-                    <button class="btn-approver-locked" disabled style="cursor:not-allowed;">🔒 DISBURSEMENT LOCKED</button>
-                    <span style="font-size:12px; color:var(--ink-500); margin-left:4px;">
-                        <?php echo $executeDisabledReason ?: 'Only Owners can execute disbursements'; ?>
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Recipient Manifest (<?php echo count($destinations); ?>)</span>
+                    <?php if ($hasFailedJobs): ?>
+                    <span style="color:var(--danger); font-weight:600; font-family:var(--f-cond);">
+                        ⚠️ <?php echo (int)$queueProgress['permanently_failed']; ?> failed
                     </span>
-                    <?php if ($isApprover): ?>
-                    <div class="security-notice" style="margin-top:8px; width:100%;">
-                        <span class="lock-icon">🔑</span>
-                        <strong>Approver Notice:</strong> You have approved this batch. The disbursement will be executed by an
-                        <strong>Owner</strong> after final review. You do not have permission to disburse funds.
-                    </div>
                     <?php endif; ?>
-                    <?php endif; ?>
-                <?php endif; ?>
-
-                <?php if ($status === 'executing'): ?>
-                <a href="review_batch.php?batch_id=<?php echo $batchId; ?>" class="btn btn-outline">🔄 Refresh Progress</a>
-                <?php endif; ?>
-
-                <?php if ($showRetryFailedButton): ?>
-                <form method="POST" style="display:inline;" onsubmit="return confirm('Requeue every permanently-failed destination in this batch for another attempt? Fix whatever caused the failure (e.g. a bad phone number) before retrying if you can.')">
-                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
-                    <input type="hidden" name="action" value="retry_failed_jobs">
-                    <button type="submit" class="btn btn-resume">🔁 RETRY FAILED DESTINATIONS</button>
-                </form>
-                <?php endif; ?>
-
-                <?php if ($status === 'draft' && $canEdit && !$isReadOnly): ?>
-                <a href="add_destinations.php?batch_id=<?php echo $batchId; ?>" class="btn btn-secondary">✏️ Edit Destinations</a>
-                <?php endif; ?>
-
-                <a href="../batches/index.php" class="btn btn-outline">📋 All Batches</a>
-                <a href="../index.php" class="btn btn-outline">🏠 Dashboard</a>
+                </div>
+                <div class="table-responsive">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>#</th><th>Institution</th><th>Identifier</th><th>Amount</th>
+                                <th>Beneficiary</th><th>Delivery</th><th>Data Check</th><th>Status</th>
+                                <th>Transaction Ref</th><th>Error Message</th>
+                                <?php if ($role === 'owner'): ?>
+                                <th>Action</th>
+                                <?php endif; ?>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($destinations as $dest): ?>
+                            <?php $completeness = destinationCompletenessLabel($dest); ?>
+                            <tr>
+                                <td><?php echo $dest['destination_index']; ?></td>
+                                <td><?php echo safeHtml($dest['institution']); ?></td>
+                                <td><?php echo safeHtml($dest['identifier']); ?></td>
+                                <td><?php echo number_format($dest['amount'], 2); ?> <?php echo safeHtml($dest['currency'] ?? 'BWP'); ?></td>
+                                <td><?php echo safeHtml($dest['beneficiary_name'] ?? '-'); ?></td>
+                                <td><?php echo safeHtml($dest['delivery_method']); ?></td>
+                                <td><span class="status status-<?php echo $completeness['tone']; ?>"><?php echo $completeness['label']; ?></span></td>
+                                <td>
+                                    <?php
+                                    $statusClass = destStatusClass($dest['status'] ?? 'PENDING');
+                                    $displayStatus = $dest['status'] ?? 'PENDING';
+                                    if (in_array(strtoupper($displayStatus), ['COMPLETED', 'SUCCESS'])) {
+                                        $displayStatus = '✅ ' . $displayStatus;
+                                    } elseif (strtoupper($displayStatus) === 'FAILED') {
+                                        $displayStatus = '❌ ' . $displayStatus;
+                                    } elseif (in_array(strtoupper($displayStatus), ['PENDING', 'PROCESSING'])) {
+                                        $displayStatus = '⏳ ' . $displayStatus;
+                                    }
+                                    ?>
+                                    <span class="status status-<?php echo $statusClass; ?>"><?php echo safeHtml($displayStatus); ?></span>
+                                </td>
+                                <td>
+                                    <?php if (!empty($dest['transaction_reference'])): ?>
+                                        <code class="table-code"><?php echo safeHtml($dest['transaction_reference']); ?></code>
+                                    <?php else: ?>—<?php endif; ?>
+                                </td>
+                                <td style="color:var(--danger); font-size:12px; max-width:200px;">
+                                    <?php echo safeHtml($dest['error_message'] ?? ''); ?>
+                                </td>
+                                <?php if ($role === 'owner' && strtolower($dest['status'] ?? '') === 'failed'): ?>
+                                <td>
+                                    <a href="retry_destination.php?batch_id=<?php echo $batchId; ?>&dest_idx=<?php echo $dest['destination_index']; ?>" class="btn-retry">🔄 Retry</a>
+                                </td>
+                                <?php endif; ?>
+                            </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
             </div>
-        </div>
-    </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Actions</span>
+                    <span style="display:flex; gap:8px;">
+                        <?php if ($isReadOnly): ?>
+                        <span class="readonly-badge">🔒 Read-Only</span>
+                        <?php endif; ?>
+                        <?php if ($isApprover): ?>
+                        <span class="readonly-badge">🔑 Approver Mode</span>
+                        <?php endif; ?>
+                    </span>
+                </div>
+                <div class="actions-bar">
+                    <?php if ($status === 'draft' && $canSubmit && !$isReadOnly): ?>
+                        <?php if (!$thisBatchFits): ?>
+                        <a href="../departments/index.php" class="btn btn-warning"><?php echo svgIcon('warning'); ?> Request Budget Increase</a>
+                        <span style="font-size:12px; color:var(--ink-500);">This batch exceeds the department's available ration — submission is blocked until it's resolved.</span>
+                        <?php else: ?>
+                        <form method="POST" style="display:inline;">
+                            <input type="hidden" name="csrf_token" value="<?php echo safeHtml($csrfToken); ?>">
+                            <input type="hidden" name="action" value="submit_for_approval">
+                            <button type="submit" class="btn btn-primary" onclick="return confirm('Submit this batch for approval?')">📤 Submit for Approval</button>
+                        </form>
+                        <?php endif; ?>
+                    <?php endif; ?>
+
+                    <?php if ($status === 'pending_approval' && $canApprove): ?>
+                        <?php if (!$thisBatchFits): ?>
+                        <a href="../departments/index.php" class="btn btn-warning"><?php echo svgIcon('warning'); ?> Request Budget Increase</a>
+                        <span style="font-size:12px; color:var(--ink-500);">This batch no longer fits the department's ration — approval is blocked until it's resolved.</span>
+                        <?php else: ?>
+                        <form method="POST" style="display:inline;" onsubmit="return confirm('Approve this batch?')">
+                            <input type="hidden" name="csrf_token" value="<?php echo safeHtml($csrfToken); ?>">
+                            <input type="hidden" name="action" value="approve">
+                            <button type="submit" class="btn btn-success">✅ Approve</button>
+                        </form>
+                        <button class="btn btn-danger" onclick="toggleRejection()">❌ Reject</button>
+                        <?php endif; ?>
+                        <div class="rejection-form" id="rejectionForm">
+                            <form method="POST">
+                                <input type="hidden" name="csrf_token" value="<?php echo safeHtml($csrfToken); ?>">
+                                <input type="hidden" name="action" value="reject">
+                                <div class="form-group">
+                                    <label>Rejection Reason</label>
+                                    <textarea name="rejection_reason" required></textarea>
+                                </div>
+                                <button type="submit" class="btn btn-danger">Submit Rejection</button>
+                                <button type="button" class="btn btn-outline" onclick="toggleRejection()" style="margin-left:8px;">Cancel</button>
+                            </form>
+                        </div>
+                    <?php elseif ($status === 'pending_approval' && $isApprover && !$canApprove): ?>
+                    <button class="btn-approver-locked" disabled style="cursor:not-allowed;">🔒 OUTSIDE YOUR DEPARTMENT</button>
+                    <span style="font-size:12px; color:var(--ink-500); margin-left:4px;"><?php echo safeHtml($executeDisabledReason); ?></span>
+                    <?php endif; ?>
+
+                    <?php if ($status === 'approved'): ?>
+                        <?php if ($showExecuteButton): ?>
+                        <form method="POST" style="display:inline;" onsubmit="return confirm('⚠️ EXECUTE DISBURSEMENT: This will queue real fund transfers for background processing. Only proceed if you have verified all approvals. Continue?')">
+                            <input type="hidden" name="csrf_token" value="<?php echo safeHtml($csrfToken); ?>">
+                            <input type="hidden" name="action" value="execute">
+                            <button type="submit" class="btn btn-danger">🚀 EXECUTE DISBURSEMENT</button>
+                        </form>
+                        <?php else: ?>
+                        <button class="btn-approver-locked" disabled style="cursor:not-allowed;">🔒 DISBURSEMENT LOCKED</button>
+                        <span style="font-size:12px; color:var(--ink-500); margin-left:4px;">
+                            <?php echo $executeDisabledReason ?: 'Only Owners can execute disbursements'; ?>
+                        </span>
+                        <?php if ($isApprover): ?>
+                        <div class="info-panel" style="border-left-color: var(--amber); background: var(--amber-bg); margin-top:8px; width:100%;">
+                            <div class="label" style="color:var(--amber);">🔑 Approver Notice</div>
+                            <div class="desc">You have approved this batch. The disbursement will be executed by an <strong>Owner</strong> after final review. You do not have permission to disburse funds.</div>
+                        </div>
+                        <?php endif; ?>
+                        <?php endif; ?>
+                    <?php endif; ?>
+
+                    <?php if ($status === 'executing'): ?>
+                    <a href="review_batch.php?batch_id=<?php echo $batchId; ?>" class="btn btn-outline"><?php echo svgIcon('clock'); ?> Refresh Progress</a>
+                    <?php endif; ?>
+
+                    <?php if ($showRetryFailedButton): ?>
+                    <form method="POST" style="display:inline;" onsubmit="return confirm('Requeue every permanently-failed destination in this batch for another attempt? Fix whatever caused the failure (e.g. a bad phone number) before retrying if you can.')">
+                        <input type="hidden" name="csrf_token" value="<?php echo safeHtml($csrfToken); ?>">
+                        <input type="hidden" name="action" value="retry_failed_jobs">
+                        <button type="submit" class="btn btn-warning">🔁 RETRY FAILED DESTINATIONS</button>
+                    </form>
+                    <?php endif; ?>
+
+                    <?php if ($status === 'draft' && $canEdit && !$isReadOnly): ?>
+                    <a href="add_destinations.php?batch_id=<?php echo $batchId; ?>" class="btn btn-outline">✏️ Edit Destinations</a>
+                    <?php endif; ?>
+
+                    <a href="../batches/index.php" class="btn btn-outline">📋 All Batches</a>
+                    <a href="../index.php" class="btn btn-outline">🏠 Dashboard</a>
+                </div>
+            </div>
 
     <script>
         function toggleRejection() {
             document.getElementById('rejectionForm').classList.toggle('show');
         }
     </script>
+<?php
+$dbHealthy = DBConnection::isConnected();
+$footerStatusLine = 'LEDGER SYNC: ' . ($dbHealthy ? '<span class="ok">OK</span>' : '<span class="bad">DEGRADED</span>');
+require __DIR__ . '/../partials/shell-foot.php';
+?>
 </body>
 </html>
