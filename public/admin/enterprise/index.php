@@ -1,12 +1,12 @@
 <?php
 /**
  * enterprise/index.php - VouchMorph Enterprise Client Dashboard
- * 
+ *
  * This is the main dashboard for organizations using VouchMorph.
  * Different roles see different views based on their permissions.
  */
 
-// ============================================================ 
+// ============================================================
 // FIX: Session settings MUST be set BEFORE any output (just in case)
 // ============================================================
 if (session_status() === PHP_SESSION_NONE) {
@@ -290,9 +290,9 @@ function canEditBatch($batchCreatedBy, $currentUserId, $userRole) {
 $orgData = [];
 try {
     $stmt = $pdo->prepare("
-        SELECT id, name, tax_id, registration_number, country_code, 
+        SELECT id, name, tax_id, registration_number, country_code,
                default_currency, status, logo_url, created_at
-        FROM organizations 
+        FROM organizations
         WHERE id = :org_id
     ");
     $stmt->execute([':org_id' => $orgId]);
@@ -300,6 +300,7 @@ try {
 } catch (PDOException $e) {
     error_log("[ENTERPRISE DASHBOARD] Org fetch error: " . $e->getMessage());
 }
+$orgCurrency = $orgData['default_currency'] ?? 'BWP';
 
 // Dashboard metrics
 $metrics = [];
@@ -310,7 +311,7 @@ try {
 
     // Total batches
     $stmt = $pdo->prepare("
-        SELECT COUNT(*) as total FROM disbursement_batches 
+        SELECT COUNT(*) as total FROM disbursement_batches
         WHERE organization_id = :org_id
     ");
     $stmt->execute($params);
@@ -318,8 +319,8 @@ try {
 
     // Batches by status
     $stmt = $pdo->prepare("
-        SELECT status, COUNT(*) as count 
-        FROM disbursement_batches 
+        SELECT status, COUNT(*) as count
+        FROM disbursement_batches
         WHERE organization_id = :org_id
         GROUP BY status
     ");
@@ -341,11 +342,11 @@ try {
     $metrics['approved_batches'] = $batchStatus['approved'] ?? 0;
     $metrics['executed_batches'] = ($batchStatus['executed'] ?? 0) + ($batchStatus['completed'] ?? 0);
     $metrics['rejected_batches'] = $batchStatus['rejected'] ?? 0;
-    
+
     // Total disbursed amount
     $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(total_amount), 0) as total 
-        FROM disbursement_batches 
+        SELECT COALESCE(SUM(total_amount), 0) as total
+        FROM disbursement_batches
         WHERE organization_id = :org_id
         AND status IN ('completed', 'executed', 'COMPLETED', 'EXECUTED')
     ");
@@ -354,8 +355,8 @@ try {
 
     // Total beneficiaries
     $stmt = $pdo->prepare("
-        SELECT COUNT(*) as total 
-        FROM organization_beneficiaries 
+        SELECT COUNT(*) as total
+        FROM organization_beneficiaries
         WHERE organization_id = :org_id AND is_active = true
     ");
     $stmt->execute([':org_id' => $orgId]);
@@ -363,8 +364,8 @@ try {
 
     // Total users
     $stmt = $pdo->prepare("
-        SELECT COUNT(*) as total 
-        FROM organization_users 
+        SELECT COUNT(*) as total
+        FROM organization_users
         WHERE organization_id = :org_id AND is_active = true
     ");
     $stmt->execute([':org_id' => $orgId]);
@@ -376,9 +377,9 @@ try {
         $adfParams = [':org_id' => $orgId];
         $adfScopeSql = departmentScopeSql($userDeptScopeIds, $adfParams, 'adf');
         $stmt = $pdo->prepare("
-            SELECT COUNT(*) as total 
-            FROM disbursement_batches 
-            WHERE organization_id = :org_id 
+            SELECT COUNT(*) as total
+            FROM disbursement_batches
+            WHERE organization_id = :org_id
             AND status = 'approved'
             $adfScopeSql
         ");
@@ -391,9 +392,9 @@ try {
     $papParams = [':org_id' => $orgId];
     $papScopeSql = departmentScopeSql($userDeptScopeIds, $papParams, 'pap');
     $stmt = $pdo->prepare("
-        SELECT COUNT(*) as total 
-        FROM disbursement_batches 
-        WHERE organization_id = :org_id 
+        SELECT COUNT(*) as total
+        FROM disbursement_batches
+        WHERE organization_id = :org_id
         AND status IN ('pending', 'pending_approval', 'PENDING', 'PENDING_APPROVAL')
         $papScopeSql
     ");
@@ -404,9 +405,9 @@ try {
     if ($canConfirmSource) {
         try {
             $stmt = $pdo->prepare("
-                SELECT COUNT(*) as total 
-                FROM source_accounts 
-                WHERE organization_id = :org_id 
+                SELECT COUNT(*) as total
+                FROM source_accounts
+                WHERE organization_id = :org_id
                 AND status = 'pending_confirmation'
                 AND deleted_at IS NULL
             ");
@@ -417,7 +418,7 @@ try {
             $metrics['pending_source_confirmations'] = 0;
         }
     }
-    
+
     // Recent batches with status-based filtering
     $statusFilter = "";
     $statusParams = [':org_id' => $orgId];
@@ -457,20 +458,20 @@ try {
     }
 
     $stmt = $pdo->prepare("
-        SELECT 
+        SELECT
             id, batch_reference, batch_name, source_institution,
             total_amount, total_destinations, status, created_at,
             updated_at, created_by
-        FROM disbursement_batches 
+        FROM disbursement_batches
         WHERE organization_id = :org_id $statusFilter
-        ORDER BY 
-            CASE 
+        ORDER BY
+            CASE
                 WHEN status IN ('pending', 'pending_approval') THEN 1
                 WHEN status = 'approved' THEN 2
                 WHEN status = 'draft' THEN 3
                 ELSE 4
             END,
-            created_at DESC 
+            created_at DESC
         LIMIT 15
     ");
     $stmt->execute($statusParams);
@@ -479,11 +480,119 @@ try {
 } catch (PDOException $e) {
     error_log("[ENTERPRISE DASHBOARD] Metrics error: " . $e->getMessage());
     $metrics = array_fill_keys([
-        'total_batches', 'pending_batches', 'approved_batches', 
+        'total_batches', 'pending_batches', 'approved_batches',
         'executed_batches', 'total_disbursed', 'total_beneficiaries',
         'total_users', 'pending_approvals'
     ], 0);
     $recentBatches = [];
+}
+
+// ============================================================
+// NEW METRICS — dashboard redesign (see design reference doc). Each
+// block is its own try/catch so a failure here never takes down the
+// metrics fetched above; all default to a safe "no data" shape.
+// ============================================================
+
+// Month-to-date disbursed + prior month, for a real (not fabricated)
+// trend comparison on the "Total Disbursed" stat card.
+$mtdDisbursed = 0.0;
+$disbursedDeltaPct = null; // null = "not enough data", not "0%"
+try {
+    $stmt = $pdo->prepare("
+        SELECT
+            COALESCE(SUM(total_amount) FILTER (
+                WHERE created_at >= date_trunc('month', CURRENT_DATE)
+            ), 0) AS mtd,
+            COALESCE(SUM(total_amount) FILTER (
+                WHERE created_at >= date_trunc('month', CURRENT_DATE - INTERVAL '1 month')
+                  AND created_at < date_trunc('month', CURRENT_DATE)
+            ), 0) AS last_month
+        FROM disbursement_batches
+        WHERE organization_id = :org_id
+        AND LOWER(status) IN ('completed', 'executed')
+    ");
+    $stmt->execute([':org_id' => $orgId]);
+    $mtdRow = $stmt->fetch(PDO::FETCH_ASSOC) ?: ['mtd' => 0, 'last_month' => 0];
+    $mtdDisbursed = (float)$mtdRow['mtd'];
+    $lastMonthDisbursed = (float)$mtdRow['last_month'];
+    if ($lastMonthDisbursed > 0) {
+        $disbursedDeltaPct = round((($mtdDisbursed - $lastMonthDisbursed) / $lastMonthDisbursed) * 100, 1);
+    }
+} catch (PDOException $e) {
+    error_log("[ENTERPRISE DASHBOARD] MTD metrics error: " . $e->getMessage());
+}
+
+// Active batches — anything not yet in a terminal state — plus how many
+// of those are specifically mid-execution right now.
+$metrics['active_batches'] = 0;
+$metrics['executing_batches'] = 0;
+try {
+    $stmt = $pdo->prepare("
+        SELECT
+            COUNT(*) FILTER (WHERE LOWER(status) IN ('draft','pending','pending_approval','approved','executing')) AS active,
+            COUNT(*) FILTER (WHERE LOWER(status) = 'executing') AS executing
+        FROM disbursement_batches
+        WHERE organization_id = :org_id
+    ");
+    $stmt->execute([':org_id' => $orgId]);
+    $activeRow = $stmt->fetch(PDO::FETCH_ASSOC) ?: ['active' => 0, 'executing' => 0];
+    $metrics['active_batches'] = (int)$activeRow['active'];
+    $metrics['executing_batches'] = (int)$activeRow['executing'];
+} catch (PDOException $e) {
+    error_log("[ENTERPRISE DASHBOARD] Active batch metrics error: " . $e->getMessage());
+}
+
+// Average time-to-approval over the last 30 days, for approvers/owners —
+// real average of (approved_at - submitted_at) on batches that actually
+// have both timestamps set.
+$avgClearanceHours = null;
+if ($canApprove || $canDisburse) {
+    try {
+        $stmt = $pdo->prepare("
+            SELECT AVG(EXTRACT(EPOCH FROM (approved_at - submitted_at)) / 3600.0) AS avg_hours
+            FROM disbursement_batches
+            WHERE organization_id = :org_id
+              AND approved_at IS NOT NULL AND submitted_at IS NOT NULL
+              AND approved_at >= NOW() - INTERVAL '30 days'
+        ");
+        $stmt->execute([':org_id' => $orgId]);
+        $avgHoursRaw = $stmt->fetchColumn();
+        $avgClearanceHours = ($avgHoursRaw !== null && $avgHoursRaw !== false) ? round((float)$avgHoursRaw, 1) : null;
+    } catch (PDOException $e) {
+        error_log("[ENTERPRISE DASHBOARD] Avg clearance metrics error: " . $e->getMessage());
+    }
+}
+
+// Recent Activity — a real feed from the audit trail, not a mock event
+// log. organization_audit_logs is already written to by the departments,
+// batch-approval, and rejection flows elsewhere in the app.
+$recentActivity = [];
+try {
+    $stmt = $pdo->prepare("
+        SELECT al.action, al.entity_type, al.entity_id, al.created_at, u.full_name AS actor_name
+        FROM organization_audit_logs al
+        LEFT JOIN users u ON al.user_id = u.user_id
+        WHERE al.organization_id = :org_id
+        ORDER BY al.created_at DESC
+        LIMIT 8
+    ");
+    $stmt->execute([':org_id' => $orgId]);
+    $recentActivity = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    error_log("[ENTERPRISE DASHBOARD] Recent activity error: " . $e->getMessage());
+    $recentActivity = [];
+}
+
+function getActivityLabel(string $action): string {
+    $labels = [
+        'APPROVE_BATCH' => 'Batch approved',
+        'REJECT_BATCH' => 'Batch rejected',
+        'DEPARTMENT_EDITED' => 'Department updated',
+        'DEPARTMENT_ACTIVE' => 'Department reactivated',
+        'DEPARTMENT_INACTIVE' => 'Department deactivated',
+        'BUDGET_OVERRUN_RACE_DETECTED' => 'Budget overrun flagged for review',
+    ];
+    return $labels[$action] ?? ucwords(strtolower(str_replace('_', ' ', $action)));
 }
 
 // ============================================================
@@ -610,7 +719,7 @@ if ($canDisburse && ($metrics['approved_for_disbursement'] ?? 0) > 0) {
 if ($canConfirmSource && ($metrics['pending_source_confirmations'] ?? 0) > 0) {
     $actionItems[] = [
         'icon' => '💰', 'label' => 'Source accounts awaiting confirmation',
-        'count' => $metrics['pending_source_confirmations'], 'href' => '/admin/enterprise/imports/add_source.php',
+        'count' => $metrics['pending_source_confirmations'], 'href' => 'imports/add_source.php',
         'cta' => 'Confirm Now', 'tone' => 'amber',
     ];
 }
@@ -620,6 +729,63 @@ if (($metrics['rejected_batches'] ?? 0) > 0 && ($canCreate || $isSupervisor)) {
         'count' => $metrics['rejected_batches'], 'href' => 'batches/index.php?status=rejected',
         'cta' => 'Review', 'tone' => 'danger',
     ];
+}
+$criticalActionCount = count(array_filter($actionItems, fn($item) => $item['tone'] === 'danger'));
+
+// ============================================================
+// SIDEBAR NAV MODEL — one array driving both the expanded and
+// collapsed rendering of the sidebar, so the two states can never
+// drift out of sync with each other (a direct fix for the "nav
+// disagrees with itself between pages" problem this redesign started
+// from — see the design reference doc). Each entry's `show` is the
+// exact same boolean already governing that link in the rest of this
+// file; nothing new is being gated here, only re-skinned.
+// ============================================================
+$navItems = [
+    ['key' => 'dashboard', 'icon' => 'grid', 'label' => 'Dashboard', 'href' => 'index.php', 'show' => true, 'active' => true],
+    ['key' => 'disbursements', 'icon' => 'wallet', 'label' => 'Disbursements', 'href' => 'batches/index.php?status=all', 'show' => true, 'badge' => ($metrics['pending_approvals'] ?? 0) > 0 && $canApprove ? $metrics['pending_approvals'] : null],
+    ['key' => 'beneficiaries', 'icon' => 'people', 'label' => 'Beneficiaries', 'href' => 'beneficiaries.php', 'show' => true],
+    ['key' => 'trace', 'icon' => 'search', 'label' => 'Trace Payment', 'href' => 'index.php#trace', 'show' => $canTrace],
+    ['key' => 'departments', 'icon' => 'building', 'label' => 'Departments', 'href' => 'departments/index.php', 'show' => $canManageDepartments || $isDepartmentHead],
+    ['key' => 'sources', 'icon' => 'bank', 'label' => 'Source Accounts', 'href' => 'imports/add_source.php', 'show' => $canSeeSourceAccountsArea, 'badge' => ($canConfirmSource && ($metrics['pending_source_confirmations'] ?? 0) > 0) ? $metrics['pending_source_confirmations'] : null],
+    ['key' => 'team', 'icon' => 'idcard', 'label' => 'Team', 'href' => 'settings/users.php', 'show' => $canManageUsers],
+    ['key' => 'reports', 'icon' => 'chart', 'label' => 'Reports', 'href' => 'reports.php', 'show' => true],
+];
+$navUtility = [
+    ['key' => 'settings', 'icon' => 'gear', 'label' => 'Settings', 'href' => 'settings.php', 'show' => true],
+    ['key' => 'logout', 'icon' => 'logout', 'label' => 'Log Out', 'href' => 'logout.php', 'show' => true],
+];
+
+/**
+ * Small inline stroke-icon set, 20x20, currentColor — kept as one
+ * function so the sidebar, topbar and card headers all draw from the
+ * same set rather than each hand-rolling their own SVG.
+ */
+function svgIcon(string $name): string {
+    $icons = [
+        'grid' => '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
+        'wallet' => '<rect x="3" y="6" width="18" height="13" rx="1.5"/><path d="M3 10h18"/><circle cx="16.5" cy="14" r="1"/>',
+        'people' => '<circle cx="8.5" cy="8" r="3.2"/><path d="M2.5 19c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5"/><circle cx="17" cy="8.5" r="2.6"/><path d="M15.2 13.6c2.6.3 4.3 2.3 4.3 5.4"/>',
+        'search' => '<circle cx="10.5" cy="10.5" r="6.5"/><path d="M20 20l-4.8-4.8"/>',
+        'building' => '<rect x="4" y="3" width="16" height="18" rx="1"/><path d="M8 8h1M8 12h1M8 16h1M15 8h1M15 12h1M15 16h1M9 21v-4h6v4"/>',
+        'bank' => '<path d="M3 9l9-5 9 5"/><rect x="4" y="9" width="16" height="10" rx="0.5"/><path d="M2 21h20M6 9v10M11 9v10M16 9v10"/>',
+        'idcard' => '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="11" r="2.2"/><path d="M6 17c0-2 1.4-3.2 3-3.2s3 1.2 3 3.2M14 9h5M14 13h5"/>',
+        'chart' => '<path d="M4 20V4M4 20h16"/><rect x="7" y="12" width="3" height="6"/><rect x="12" y="8" width="3" height="10"/><rect x="17" y="14" width="3" height="4"/>',
+        'gear' => '<circle cx="12" cy="12" r="3"/><path d="M12 3v2.2M12 18.8V21M4.9 4.9l1.6 1.6M17.5 17.5l1.6 1.6M3 12h2.2M18.8 12H21M4.9 19.1l1.6-1.6M17.5 6.5l1.6-1.6"/>',
+        'logout' => '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5M21 12H9"/>',
+        'bell' => '<path d="M6 9a6 6 0 1 1 12 0c0 4.5 1.5 6 1.5 6h-15S6 13.5 6 9Z"/><path d="M10 19a2 2 0 0 0 4 0"/>',
+        'help' => '<circle cx="12" cy="12" r="9"/><path d="M9.3 9a2.7 2.7 0 1 1 3.9 2.4c-.9.5-1.2 1-1.2 2"/><path d="M12 17h.01"/>',
+        'moon' => '<path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5Z"/>',
+        'sun' => '<circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M3 12h2M19 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"/>',
+        'chevron' => '<path d="M9 6l6 6-6 6"/>',
+        'plus' => '<path d="M12 5v14M5 12h14"/>',
+        'warning' => '<path d="M12 3l10 18H2Z"/><path d="M12 10v4M12 17h.01"/>',
+        'clock' => '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/>',
+        'arrow' => '<path d="M5 12h14M13 6l6 6-6 6"/>',
+        'lock' => '<rect x="5" y="10" width="14" height="10" rx="1.5"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>',
+    ];
+    $path = $icons[$name] ?? $icons['grid'];
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' . $path . '</svg>';
 }
 ?>
 <!DOCTYPE html>
@@ -631,14 +797,10 @@ if (($metrics['rejected_batches'] ?? 0) > 0 && ($canCreate || $isSupervisor)) {
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        /* ============================================================
-           VOUCHMORPH STANDARD STYLE
-           Sharp corners · Centralized · Brass/Ink-900 · Appropriate font sizes
-           One button-height scale everywhere: --btn-h / --btn-h-sm.
-           ============================================================ */
         :root {
             --paper:        #EEF1EF;
             --panel:        #FFFFFF;
+            --sidebar:      #F4EFE3;
             --ink-900:      #0F2138;
             --ink-700:      #1D3557;
             --ink-500:      #4A5A6E;
@@ -656,6 +818,8 @@ if (($metrics['rejected_batches'] ?? 0) > 0 && ($canCreate || $isSupervisor)) {
             --danger:       #b3261e;
             --danger-bg:    #fbeceb;
 
+            --sidebar-w:    248px;
+            --sidebar-w-collapsed: 72px;
             --max-width:    1400px;
             --btn-h:        36px;
             --btn-h-sm:     28px;
@@ -665,8 +829,21 @@ if (($metrics['rejected_batches'] ?? 0) > 0 && ($canCreate || $isSupervisor)) {
             --f-mono: 'IBM Plex Mono', monospace;
         }
 
-        * { margin: 0; padding: 0; box-sizing: border-box; }
+        @media (prefers-color-scheme: dark) {
+            :root:not([data-theme="light"]) {
+                --paper: #141B22; --panel: #1B2733; --sidebar: #17222B; --ink-900: #ECEFF2; --ink-700: #D5DCE0;
+                --ink-500: #93A2AC; --ink-300: #6B7A85; --line: #2C3A45; --line-strong: #3C4C58;
+                --brass-tint: #2A2418; --green-tint: #16261D; --blue-tint: #17242E; --danger-bg: #2A1615; --amber-bg: #2A2114;
+            }
+        }
+        :root[data-theme="dark"] {
+            --paper: #141B22; --panel: #1B2733; --sidebar: #17222B; --ink-900: #ECEFF2; --ink-700: #D5DCE0;
+            --ink-500: #93A2AC; --ink-300: #6B7A85; --line: #2C3A45; --line-strong: #3C4C58;
+            --brass-tint: #2A2418; --green-tint: #16261D; --blue-tint: #17242E; --danger-bg: #2A1615; --amber-bg: #2A2114;
+        }
 
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html { background: var(--paper); }
         body {
             font-family: var(--f-body);
             background: var(--paper);
@@ -675,1147 +852,657 @@ if (($metrics['rejected_batches'] ?? 0) > 0 && ($canCreate || $isSupervisor)) {
             font-size: 14px;
             line-height: 1.5;
             -webkit-font-smoothing: antialiased;
+            display: flex;
         }
-
         :focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+        svg { width: 19px; height: 19px; flex-shrink: 0; }
+        @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 
         /* ============================================================
-           HEADER
+           SIDEBAR — vertical, persistent, collapsible to icons-only.
+           One component every enterprise page should include identically
+           (see the design reference doc's §"no shared header" finding) —
+           this file is the first to carry it.
            ============================================================ */
-        .header {
-            background: var(--ink-900);
-            color: #fff;
-            border-bottom: 3px solid var(--brass);
-        }
-        .header-inner {
-            max-width: var(--max-width);
-            margin: 0 auto;
-            padding: 16px 32px;
+        .sidebar {
+            width: var(--sidebar-w);
+            flex-shrink: 0;
+            background: var(--sidebar);
+            border-right: 1px solid var(--line);
             display: flex;
+            flex-direction: column;
+            height: 100vh;
+            position: sticky;
+            top: 0;
+            transition: width 0.18s ease;
+        }
+        body.sidebar-collapsed .sidebar { width: var(--sidebar-w-collapsed); }
+
+        .sidebar-head {
+            padding: 20px 18px 16px;
+            display: flex;
+            align-items: flex-start;
             justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 12px;
-        }
-        .header-left {
-            display: flex;
-            align-items: center;
-            gap: 20px;
-            flex-wrap: wrap;
-        }
-        .logo {
-            font-family: var(--f-cond);
-            font-weight: 700;
-            font-size: 18px;
-            letter-spacing: 0.08em;
-            text-transform: uppercase;
-        }
-        .logo span { color: var(--brass); }
-        .org-name {
-            font-size: 13px;
-            color: var(--ink-300);
-            padding-left: 16px;
-            border-left: 1px solid rgba(255,255,255,0.1);
-        }
-        .role-badge {
-            padding: 4px 14px;
-            background: var(--brass);
-            color: var(--ink-900);
-            font-size: 10px;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            font-family: var(--f-cond);
-        }
-        .user-info {
-            display: flex;
-            align-items: center;
-            gap: 16px;
-            flex-wrap: wrap;
-        }
-        .user-details {
-            text-align: right;
-        }
-        .user-name {
-            font-weight: 600;
-            color: var(--brass);
-            font-size: 14px;
-        }
-        .user-role {
-            font-size: 11px;
-            color: var(--ink-300);
-            text-transform: uppercase;
-            font-family: var(--f-cond);
-            letter-spacing: 0.04em;
-        }
-        .logout-btn {
-            height: var(--btn-h-sm);
-            display: inline-flex;
-            align-items: center;
-            padding: 0 16px;
-            border: 2px solid var(--brass);
-            color: var(--brass);
-            text-decoration: none;
-            font-size: 11px;
-            font-weight: 600;
-            text-transform: uppercase;
-            font-family: var(--f-cond);
-            transition: all 0.15s;
-            letter-spacing: 0.04em;
-            box-sizing: border-box;
-        }
-        .logout-btn:hover {
-            background: var(--brass);
-            color: var(--ink-900);
-        }
-
-        /* ============================================================
-           NAVIGATION
-           ============================================================ */
-        .nav {
-            background: var(--panel);
-            border-bottom: 1px solid var(--line);
-        }
-        .nav-inner {
-            max-width: var(--max-width);
-            margin: 0 auto;
-            padding: 0 32px;
-            display: flex;
-            gap: 28px;
-            flex-wrap: wrap;
-            align-items: center;
-            overflow-x: auto;
-        }
-        .nav-item {
-            padding: 14px 0;
-            color: var(--ink-500);
-            text-decoration: none;
-            font-size: 12px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            border-bottom: 2px solid transparent;
-            transition: all 0.15s;
-            white-space: nowrap;
-            font-family: var(--f-cond);
-        }
-        .nav-item:hover { color: var(--ink-900); }
-        .nav-item.active {
-            color: var(--ink-900);
-            border-bottom-color: var(--brass);
-        }
-        .nav-item .badge {
-            background: var(--seal-red);
-            color: #fff;
-            font-size: 9px;
-            padding: 1px 8px;
-            margin-left: 4px;
-            font-family: var(--f-mono);
-        }
-        .nav-item .badge-gold {
-            background: var(--brass);
-            color: #fff;
-            font-size: 9px;
-            padding: 1px 8px;
-            margin-left: 4px;
-            font-family: var(--f-mono);
-        }
-
-        /* ============================================================
-           CONTENT
-           ============================================================ */
-        .content {
-            max-width: var(--max-width);
-            margin: 0 auto;
-            padding: 28px 32px;
-        }
-        .page-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 16px;
-            margin-bottom: 28px;
-        }
-        .page-header h1 {
-            font-family: var(--f-cond);
-            font-size: 24px;
-            font-weight: 700;
-            letter-spacing: 0.02em;
-        }
-        .page-header .sub {
-            color: var(--ink-500);
-            font-size: 14px;
-        }
-        .page-header .timestamp {
-            color: var(--ink-300);
-            font-size: 12px;
-            font-family: var(--f-mono);
-        }
-
-        /* ============================================================
-           ACTION QUEUE — the "everything on my face" panel. Every
-           role-specific pending item, ranked by urgency, before the
-           user has clicked anywhere.
-           ============================================================ */
-        .action-queue {
-            background: var(--ink-900);
-            border: 1px solid var(--ink-900);
-            border-left: 4px solid var(--seal-red);
-            margin-bottom: 24px;
-            padding: 18px 22px;
-        }
-        .action-queue-title {
-            font-family: var(--f-cond);
-            font-size: 12px;
-            font-weight: 700;
-            letter-spacing: 0.08em;
-            text-transform: uppercase;
-            color: var(--brass);
-            margin-bottom: 12px;
-        }
-        .action-row {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 12px;
-            padding: 10px 0;
-            border-top: 1px solid rgba(255,255,255,0.08);
-            flex-wrap: wrap;
-        }
-        .action-row:first-of-type { border-top: none; }
-        .action-row-left {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            color: #fff;
-            font-size: 13.5px;
-        }
-        .action-row .count-pill {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            min-width: 26px;
-            height: 22px;
-            padding: 0 6px;
-            font-family: var(--f-mono);
-            font-weight: 700;
-            font-size: 12px;
-            color: #fff;
-        }
-        .count-pill.amber { background: var(--amber); }
-        .count-pill.green { background: var(--ledger-green); }
-        .count-pill.danger { background: var(--seal-red); }
-        .action-queue-empty {
-            color: rgba(255,255,255,0.6);
-            font-size: 13.5px;
-        }
-
-        /* ============================================================
-           PAYMENT TRACE
-           ============================================================ */
-        .trace-box {
-            display: flex;
-            gap: 10px;
-            align-items: stretch;
-            flex-wrap: wrap;
-        }
-        .trace-box input[type="text"] {
-            height: var(--btn-h);
-            padding: 0 14px;
-            border: 1.5px solid var(--line);
-            font-size: 13.5px;
-            font-family: var(--f-body);
-            background: var(--paper);
-            color: var(--ink-900);
-            min-width: 260px;
-            flex: 1;
-            box-sizing: border-box;
-        }
-        .trace-box input[type="text"]:focus {
-            outline: none;
-            border-color: var(--brass);
-            background: var(--panel);
-        }
-        .trace-result-group { margin-top: 16px; }
-        .trace-result-group h4 {
-            font-family: var(--f-cond);
-            font-size: 12px;
-            font-weight: 700;
-            letter-spacing: 0.06em;
-            text-transform: uppercase;
-            color: var(--ink-500);
-            margin-bottom: 8px;
-        }
-        .trace-timeline {
-            display: flex;
-            gap: 6px;
-            flex-wrap: wrap;
-            margin-top: 6px;
-        }
-        .trace-step {
-            font-family: var(--f-mono);
-            font-size: 11px;
-            padding: 3px 10px;
-            background: var(--paper);
-            color: var(--ink-500);
-            border: 1px solid var(--line);
-        }
-        .trace-step.done { background: var(--green-tint); color: var(--ledger-green); border-color: var(--ledger-green); }
-        .trace-step.now { background: var(--brass-tint); color: var(--brass); border-color: var(--brass); font-weight: 700; }
-
-        /* ============================================================
-           QUICK ACTIONS
-           ============================================================ */
-        .quick-actions {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 12px;
-            margin-bottom: 28px;
-        }
-        .quick-action {
-            background: var(--panel);
-            border: 1px solid var(--line);
-            padding: 18px 20px;
-            text-decoration: none;
-            color: var(--ink-900);
-            transition: all 0.15s;
-            display: flex;
-            align-items: center;
-            gap: 14px;
-        }
-        .quick-action:hover {
-            border-color: var(--brass);
-            background: var(--brass-tint);
-            transform: translateY(-2px);
-        }
-        .quick-action .icon { font-size: 26px; }
-        .quick-action .label {
-            font-size: 14px;
-            font-weight: 600;
-            font-family: var(--f-cond);
-        }
-        .quick-action .desc {
-            font-size: 12px;
-            color: var(--ink-300);
-        }
-
-        /* ============================================================
-           METRICS
-           ============================================================ */
-        .metrics-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-            gap: 12px;
-            margin-bottom: 28px;
-        }
-        .metric-card {
-            background: var(--panel);
-            border: 1px solid var(--line);
-            padding: 18px 20px;
-            transition: border-color 0.15s;
-        }
-        .metric-card:hover {
-            border-color: var(--brass);
-        }
-        .metric-label {
-            font-size: 10px;
-            text-transform: uppercase;
-            color: var(--ink-300);
-            letter-spacing: 0.05em;
-            font-weight: 600;
-            font-family: var(--f-cond);
-        }
-        .metric-value {
-            font-size: 26px;
-            font-weight: 700;
-            color: var(--ink-900);
-            margin-top: 4px;
-            font-family: var(--f-cond);
-        }
-        .metric-value .currency {
-            font-size: 14px;
-            color: var(--ink-300);
-            font-weight: 400;
-        }
-        .metric-sub {
-            font-size: 11px;
-            color: var(--ink-300);
-            margin-top: 2px;
-        }
-
-        /* ============================================================
-           CARDS
-           ============================================================ */
-        .card {
-            background: var(--panel);
-            border: 1px solid var(--line);
-            padding: 20px 24px;
-            margin-bottom: 20px;
-        }
-        .card-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 16px;
-            padding-bottom: 12px;
-            border-bottom: 1px solid var(--line);
-            flex-wrap: wrap;
             gap: 8px;
         }
-        .card-title {
-            font-size: 16px;
-            font-weight: 700;
-            font-family: var(--f-cond);
-            letter-spacing: 0.02em;
+        .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+        .brand-mark {
+            width: 36px; height: 36px; flex-shrink: 0;
+            background: var(--ink-900); color: #fff;
+            display: flex; align-items: center; justify-content: center;
         }
-        .card-badge {
-            padding: 2px 12px;
-            background: var(--ink-900);
-            color: #fff;
-            font-size: 10px;
-            font-weight: 600;
-            font-family: var(--f-cond);
-            letter-spacing: 0.04em;
+        .brand-mark svg { width: 20px; height: 20px; }
+        .brand-text { min-width: 0; overflow: hidden; }
+        .brand-name { font-family: var(--f-cond); font-weight: 700; font-size: 15px; letter-spacing: 0.02em; white-space: nowrap; }
+        .brand-org { font-family: var(--f-cond); font-size: 10.5px; color: var(--ink-500); text-transform: uppercase; letter-spacing: 0.06em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        body.sidebar-collapsed .brand-text { display: none; }
+
+        .collapse-btn {
+            width: 26px; height: 26px; flex-shrink: 0;
+            background: transparent; border: 1px solid var(--line-strong); color: var(--ink-500);
+            display: flex; align-items: center; justify-content: center; cursor: pointer;
         }
-        .card-actions {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-            align-items: center;
+        .collapse-btn svg { width: 14px; height: 14px; transition: transform 0.18s ease; }
+        .collapse-btn:hover { border-color: var(--brass); color: var(--brass); }
+        body.sidebar-collapsed .collapse-btn svg { transform: rotate(180deg); }
+
+        .create-batch-wrap { padding: 0 18px 16px; }
+        .btn-create {
+            width: 100%; height: var(--btn-h);
+            background: var(--brass); color: #fff; border: none;
+            display: flex; align-items: center; justify-content: center; gap: 8px;
+            font-family: var(--f-cond); font-weight: 700; font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.05em;
+            text-decoration: none; cursor: pointer; white-space: nowrap; overflow: hidden;
+        }
+        .btn-create:hover { background: #755a2f; }
+        .btn-create.locked { background: var(--line-strong); color: var(--ink-500); cursor: not-allowed; }
+        body.sidebar-collapsed .btn-create span.label { display: none; }
+        body.sidebar-collapsed .create-batch-wrap { padding: 0 14px 16px; }
+
+        .sidebar-nav { flex: 1; overflow-y: auto; padding: 4px 10px; }
+        .nav-link {
+            display: flex; align-items: center; gap: 12px;
+            height: 40px; padding: 0 10px;
+            color: var(--ink-700); text-decoration: none;
+            font-family: var(--f-cond); font-weight: 600; font-size: 13px; letter-spacing: 0.02em; text-transform: uppercase;
+            white-space: nowrap; overflow: hidden;
+            border-left: 3px solid transparent;
+        }
+        .nav-link:hover { background: rgba(138,109,59,0.1); color: var(--ink-900); }
+        .nav-link.active { background: var(--brass); color: #fff; border-left-color: var(--ink-900); }
+        .nav-link .nav-label { overflow: hidden; text-overflow: ellipsis; flex: 1; }
+        .nav-link .nav-badge {
+            background: var(--seal-red); color: #fff; font-family: var(--f-mono); font-size: 10px;
+            padding: 1px 7px; flex-shrink: 0;
+        }
+        .nav-link.active .nav-badge { background: rgba(255,255,255,0.25); }
+        body.sidebar-collapsed .nav-link .nav-label,
+        body.sidebar-collapsed .nav-link .nav-badge { display: none; }
+        body.sidebar-collapsed .nav-link { justify-content: center; padding: 0; }
+
+        .sidebar-footer { border-top: 1px solid var(--line); padding: 10px; }
+        .sidebar-toggle-row {
+            display: flex; align-items: center; justify-content: space-between; gap: 8px;
+            padding: 10px 12px;
+        }
+        .theme-btn {
+            display: flex; align-items: center; gap: 8px; background: none; border: none; cursor: pointer;
+            color: var(--ink-500); font-family: var(--f-cond); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em;
+        }
+        .theme-btn:hover { color: var(--ink-900); }
+        body.sidebar-collapsed .theme-btn span.label { display: none; }
+        body.sidebar-collapsed .sidebar-toggle-row { justify-content: center; }
+
+        .user-chip { display: flex; align-items: center; gap: 10px; padding: 10px 12px; min-width: 0; }
+        .user-avatar {
+            width: 30px; height: 30px; flex-shrink: 0; background: var(--ink-900); color: var(--brass);
+            display: flex; align-items: center; justify-content: center;
+            font-family: var(--f-cond); font-weight: 700; font-size: 12px;
+        }
+        .user-meta { min-width: 0; overflow: hidden; }
+        .user-meta .name { font-size: 12.5px; font-weight: 600; color: var(--ink-900); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .user-meta .role { font-size: 10.5px; color: var(--ink-300); text-transform: uppercase; font-family: var(--f-cond); letter-spacing: 0.04em; }
+        body.sidebar-collapsed .user-meta { display: none; }
+
+        @media (max-width: 860px) {
+            .sidebar { position: fixed; z-index: 40; }
+            body.sidebar-collapsed .sidebar { width: var(--sidebar-w); transform: translateX(calc(-1 * var(--sidebar-w))); }
+            body:not(.sidebar-collapsed) .sidebar { transform: translateX(0); }
+            body.sidebar-collapsed .brand-text,
+            body.sidebar-collapsed .nav-link .nav-label,
+            body.sidebar-collapsed .nav-link .nav-badge,
+            body.sidebar-collapsed .theme-btn span.label,
+            body.sidebar-collapsed .user-meta { display: block; }
         }
 
         /* ============================================================
-           TABLES
+           MAIN COLUMN
            ============================================================ */
+        .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+        .topbar {
+            background: var(--panel); border-bottom: 1px solid var(--line);
+            padding: 14px 28px; display: flex; align-items: center; gap: 18px;
+        }
+        .topbar-search { flex: 1; max-width: 480px; }
+        .topbar-search form { display: flex; align-items: center; gap: 8px; background: var(--paper); border: 1px solid var(--line); height: 38px; padding: 0 12px; }
+        .topbar-search svg { color: var(--ink-300); width: 17px; height: 17px; }
+        .topbar-search input { flex: 1; border: none; background: none; font-family: var(--f-body); font-size: 13.5px; color: var(--ink-900); }
+        .topbar-search input:focus { outline: none; }
+        .topbar-icons { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+        .icon-btn {
+            width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
+            background: none; border: none; color: var(--ink-500); text-decoration: none; cursor: pointer; position: relative;
+        }
+        .icon-btn:hover { color: var(--ink-900); }
+        .icon-btn .dot { position: absolute; top: 6px; right: 7px; width: 7px; height: 7px; background: var(--seal-red); border-radius: 50%; }
+        .topbar-avatar {
+            width: 34px; height: 34px; background: var(--ink-900); color: var(--brass);
+            display: flex; align-items: center; justify-content: center;
+            font-family: var(--f-cond); font-weight: 700; font-size: 12px; text-decoration: none;
+        }
+
+        .content { max-width: var(--max-width); width: 100%; margin: 0 auto; padding: 28px 32px 60px; }
+
+        .page-header { display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 12px; margin-bottom: 24px; }
+        .page-header h1 { font-family: var(--f-cond); font-size: 26px; font-weight: 700; letter-spacing: 0.01em; text-transform: uppercase; }
+        .page-header .meta-line { font-family: var(--f-mono); font-size: 11.5px; color: var(--ink-300); margin-top: 6px; }
+
+        /* ============================================================
+           STAT CARDS
+           ============================================================ */
+        .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin-bottom: 20px; }
+        .stat-card { background: var(--panel); border: 1px solid var(--line); border-top: 3px solid var(--line-strong); padding: 18px 20px; text-decoration: none; color: inherit; display: block; }
+        .stat-card.accent-amber { border-top-color: var(--amber); }
+        .stat-card.accent-danger { border-top-color: var(--seal-red); }
+        .stat-card.accent-green { border-top-color: var(--ledger-green); }
+        .stat-card:hover { border-color: var(--brass); }
+        .stat-label { font-family: var(--f-cond); font-size: 11.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-500); }
+        .stat-value { font-family: var(--f-cond); font-size: 32px; font-weight: 700; margin-top: 8px; font-variant-numeric: tabular-nums; }
+        .stat-value .cur { font-size: 15px; color: var(--ink-300); font-weight: 400; }
+        .stat-sub { font-size: 12px; color: var(--ink-500); margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); font-family: var(--f-mono); }
+        .stat-sub.up { color: var(--ledger-green); }
+        .stat-sub.down { color: var(--seal-red); }
+
+        /* ============================================================
+           TWO-UP PANELS: NEEDS ATTENTION / RECENT ACTIVITY
+           ============================================================ */
+        .panel-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 14px; margin-bottom: 24px; }
+        @media (max-width: 960px) { .panel-grid { grid-template-columns: 1fr; } }
+        .panel { background: var(--panel); border: 1px solid var(--line); display: flex; flex-direction: column; }
+        .panel-head {
+            background: var(--ink-900); color: #fff; padding: 14px 20px;
+            display: flex; align-items: center; justify-content: space-between; gap: 10px;
+        }
+        .panel-head .title { display: flex; align-items: center; gap: 10px; font-family: var(--f-cond); font-weight: 700; font-size: 14px; letter-spacing: 0.03em; text-transform: uppercase; }
+        .panel-head .title svg { color: var(--brass); }
+        .panel-head .critical-pill { background: var(--seal-red); color: #fff; font-family: var(--f-mono); font-size: 11px; padding: 3px 10px; display: flex; flex-direction: column; align-items: center; line-height: 1.15; }
+        .panel-body { flex: 1; }
+        .task-row { padding: 14px 20px; border-bottom: 1px solid var(--line); display: flex; gap: 12px; align-items: flex-start; }
+        .task-row:last-child { border-bottom: none; }
+        .task-row .dot { width: 8px; height: 8px; margin-top: 6px; flex-shrink: 0; }
+        .dot.amber { background: var(--amber); }
+        .dot.green { background: var(--ledger-green); }
+        .dot.danger { background: var(--seal-red); }
+        .task-row .body { flex: 1; min-width: 0; }
+        .task-row .top-line { display: flex; justify-content: space-between; gap: 10px; }
+        .task-row .label { font-weight: 600; font-size: 13.5px; }
+        .task-row .when { font-family: var(--f-mono); font-size: 10.5px; color: var(--ink-300); white-space: nowrap; }
+        .task-row .cta { margin-top: 8px; }
+        .btn-mini {
+            display: inline-flex; align-items: center; height: 28px; padding: 0 14px;
+            background: var(--brass); color: #fff; border: none; font-family: var(--f-cond);
+            font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; text-decoration: none;
+        }
+        .btn-mini:hover { background: #755a2f; }
+        .empty-row { padding: 26px 20px; text-align: center; color: var(--ink-300); font-size: 13px; }
+        .panel-foot { border-top: 1px solid var(--line); padding: 11px 20px; text-align: center; }
+        .panel-foot a, .panel-foot span.disabled { font-family: var(--f-cond); font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--brass); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; }
+        .panel-foot span.disabled { color: var(--ink-300); cursor: default; }
+
+        .activity-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+        .activity-table th { text-align: left; font-family: var(--f-cond); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-300); padding: 10px 20px; border-bottom: 1px solid var(--line); background: var(--paper); }
+        .activity-table td { padding: 10px 20px; border-bottom: 1px solid var(--line); vertical-align: top; }
+        .activity-table tr:last-child td { border-bottom: none; }
+        .activity-table .ts { font-family: var(--f-mono); font-size: 11px; color: var(--ink-500); white-space: nowrap; font-variant-numeric: tabular-nums; }
+        .activity-table .who { font-family: var(--f-mono); font-size: 11px; color: var(--ink-300); }
+
+        /* ============================================================
+           SHARED: quick actions / metrics / cards / tables / status /
+           buttons — carried over from the previous version of this page.
+           ============================================================ */
+        .quick-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 20px; }
+        .quick-action { background: var(--panel); border: 1px solid var(--line); padding: 18px 20px; text-decoration: none; color: var(--ink-900); transition: all 0.15s; display: flex; align-items: center; gap: 14px; }
+        .quick-action:hover { border-color: var(--brass); background: var(--brass-tint); }
+        .quick-action .icon { font-size: 24px; }
+        .quick-action .label { font-size: 14px; font-weight: 600; font-family: var(--f-cond); }
+        .quick-action .desc { font-size: 12px; color: var(--ink-300); }
+
+        .card { background: var(--panel); border: 1px solid var(--line); padding: 20px 24px; margin-bottom: 20px; }
+        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; gap: 8px; }
+        .card-title { font-size: 16px; font-weight: 700; font-family: var(--f-cond); letter-spacing: 0.02em; }
+        .card-badge { padding: 2px 12px; background: var(--ink-900); color: #fff; font-size: 10px; font-weight: 600; font-family: var(--f-cond); letter-spacing: 0.04em; }
+        .card-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
         .table-responsive { overflow-x: auto; }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 13px;
-        }
-        th {
-            background: var(--paper);
-            color: var(--ink-500);
-            padding: 10px 14px;
-            text-align: left;
-            font-size: 10px;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            font-weight: 600;
-            border-bottom: 2px solid var(--line);
-            font-family: var(--f-cond);
-        }
-        td {
-            padding: 10px 14px;
-            border-bottom: 1px solid var(--line);
-            vertical-align: middle;
-            font-size: 13px;
-        }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th { background: var(--paper); color: var(--ink-500); padding: 10px 14px; text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; border-bottom: 2px solid var(--line); font-family: var(--f-cond); }
+        td { padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: middle; font-size: 13px; }
         tr:hover { background: var(--brass-tint); }
 
-        /* ============================================================
-           STATUS BADGES
-           ============================================================ */
-        .status {
-            display: inline-block;
-            padding: 2px 12px;
-            font-size: 10px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-            font-family: var(--f-cond);
-        }
+        .status { display: inline-block; padding: 2px 12px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; font-family: var(--f-cond); }
         .status-draft { background: var(--paper); color: var(--ink-500); }
         .status-pending { background: var(--amber-bg); color: var(--amber); }
         .status-approved { background: var(--blue-tint); color: #1e40af; }
         .status-completed { background: var(--green-tint); color: var(--ledger-green); }
         .status-rejected { background: var(--danger-bg); color: var(--danger); }
 
-        /* ============================================================
-           BUTTONS — one height scale (--btn-h / --btn-h-sm) shared by
-           every button and button-like link on the page, regardless
-           of color/variant class, so nothing reads as "smaller".
-           ============================================================ */
-        .btn {
-            height: var(--btn-h);
-            padding: 0 18px;
-            font-size: 12px;
-            font-weight: 600;
-            font-family: var(--f-cond);
-            border: 1px solid transparent;
-            cursor: pointer;
-            transition: all 0.15s;
-            text-decoration: none;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            gap: 6px;
-            letter-spacing: 0.04em;
-            text-transform: uppercase;
-            box-sizing: border-box;
-            line-height: 1;
-        }
+        .btn { height: var(--btn-h); padding: 0 18px; font-size: 12px; font-weight: 600; font-family: var(--f-cond); border: 1px solid transparent; cursor: pointer; transition: all 0.15s; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; gap: 6px; letter-spacing: 0.04em; text-transform: uppercase; box-sizing: border-box; line-height: 1; }
         .btn:hover { opacity: 0.85; }
-        .btn-primary {
-            background: var(--ink-900);
-            color: #fff;
-            border-color: var(--ink-900);
-        }
-        .btn-primary:hover {
-            background: var(--brass);
-            border-color: var(--brass);
-            color: var(--ink-900);
-            opacity: 1;
-        }
-        .btn-success {
-            background: var(--ledger-green);
-            color: #fff;
-            border-color: var(--ledger-green);
-        }
-        .btn-success:hover { background: #1a3d2c; opacity: 1; }
-        .btn-warning {
-            background: var(--amber);
-            color: #fff;
-            border-color: var(--amber);
-        }
-        .btn-warning:hover { background: #6e4800; opacity: 1; }
-        .btn-outline {
-            background: transparent;
-            border: 1px solid var(--line);
-            color: var(--ink-500);
-        }
-        .btn-outline:hover {
-            border-color: var(--brass);
-            color: var(--ink-900);
-            background: var(--brass-tint);
-            opacity: 1;
-        }
+        .btn-primary { background: var(--ink-900); color: #fff; border-color: var(--ink-900); }
+        .btn-primary:hover { background: var(--brass); border-color: var(--brass); color: var(--ink-900); opacity: 1; }
+        .btn-success { background: var(--ledger-green); color: #fff; border-color: var(--ledger-green); }
+        .btn-warning { background: var(--amber); color: #fff; border-color: var(--amber); }
+        .btn-outline { background: transparent; border: 1px solid var(--line); color: var(--ink-500); }
+        .btn-outline:hover { border-color: var(--brass); color: var(--ink-900); background: var(--brass-tint); opacity: 1; }
         .btn-sm { height: var(--btn-h-sm); padding: 0 14px; font-size: 11px; }
-        .btn-disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-            pointer-events: none;
-        }
 
-        /* ============================================================
-           EMPTY STATE
-           ============================================================ */
-        .empty-state {
-            text-align: center;
-            padding: 48px 20px;
-            color: var(--ink-300);
-        }
-        .empty-state .icon { font-size: 44px; margin-bottom: 12px; }
-        .empty-state p { font-size: 15px; }
+        .empty-state { text-align: center; padding: 40px 20px; color: var(--ink-300); }
+        .empty-state .icon { font-size: 40px; margin-bottom: 10px; }
 
-        /* ============================================================
-           ROLE INFO PANELS
-           ============================================================ */
-        .info-panel {
-            padding: 16px 20px;
-            margin-bottom: 16px;
-            border-left: 3px solid var(--brass);
-        }
-        .info-panel .label {
-            font-weight: 600;
-            font-size: 14px;
-            font-family: var(--f-cond);
-            letter-spacing: 0.02em;
-        }
-        .info-panel .desc {
-            color: var(--ink-500);
-            font-size: 13px;
-            margin-top: 4px;
-        }
-        .info-panel .desc .highlight {
-            font-weight: 600;
-            color: var(--ink-900);
-        }
+        .info-panel { padding: 16px 20px; margin-bottom: 16px; border-left: 3px solid var(--brass); }
+        .info-panel .label { font-weight: 600; font-size: 14px; font-family: var(--f-cond); letter-spacing: 0.02em; }
+        .info-panel .desc { color: var(--ink-500); font-size: 13px; margin-top: 4px; }
+        .info-panel .desc .highlight { font-weight: 600; color: var(--ink-900); }
 
-        /* ============================================================
-           FOOTER
-           ============================================================ */
-        .footer {
-            background: var(--ink-900);
-            color: var(--ink-300);
-            text-align: center;
-            font-size: 11px;
-            border-top: 2px solid var(--brass);
-            margin-top: 28px;
-            font-family: var(--f-mono);
-        }
-        .footer-inner {
-            max-width: var(--max-width);
-            margin: 0 auto;
-            padding: 16px 32px;
-        }
-        .footer .sub {
-            color: rgba(255,255,255,0.15);
-            font-size: 9px;
-            margin-top: 4px;
-            letter-spacing: 0.06em;
-            text-transform: uppercase;
-        }
+        footer.footer { background: var(--ink-900); color: var(--ink-300); text-align: center; font-size: 11px; padding: 16px 32px; font-family: var(--f-mono); margin-top: 8px; }
 
-        /* ============================================================
-           RESPONSIVE
-           ============================================================ */
         @media (max-width: 768px) {
-            .header-inner { padding: 12px 16px; }
-            .nav-inner { padding: 0 16px; gap: 16px; }
-            .footer-inner { padding: 12px 16px; }
             .content { padding: 16px; }
-            .metrics-grid { grid-template-columns: repeat(2, 1fr); }
+            .topbar { padding: 12px 16px; }
+            .topbar-search { display: none; }
             .quick-actions { grid-template-columns: 1fr; }
-            .table-responsive { font-size: 12px; }
-            th, td { padding: 6px 8px; }
             .page-header h1 { font-size: 20px; }
-            .action-row { flex-direction: column; align-items: flex-start; }
-        }
-        @media (max-width: 480px) {
-            .metrics-grid { grid-template-columns: 1fr; }
-            .header-left { gap: 10px; }
-            .user-info { width: 100%; justify-content: flex-end; }
-        }
-
-        /* ============================================================
-           DARK MODE SUPPORT
-           ============================================================ */
-        @media (prefers-color-scheme: dark) {
-            :root {
-                --paper: #1B2733;
-                --panel: #1B2733;
-                --ink-900: #ECEFF2;
-                --ink-700: #D5DCE0;
-                --ink-500: #93A2AC;
-                --ink-300: #6B7A85;
-                --line: #2C3A45;
-            }
-            .header { background: #0d1a26; }
-            .nav { background: #1B2733; border-color: #2C3A45; }
-            .nav-item { color: #93A2AC; }
-            .nav-item:hover { color: #ECEFF2; }
-            .nav-item.active { color: #ECEFF2; border-bottom-color: var(--brass); }
-            .card { background: #1B2733; border-color: #2C3A45; }
-            .card-header { border-color: #2C3A45; }
-            .card-badge { background: #2C3A45; color: #ECEFF2; }
-            th { background: #1B2733; color: #93A2AC; border-color: #2C3A45; }
-            td { border-color: #2C3A45; }
-            tr:hover { background: #22303A; }
-            .metric-card { background: #1B2733; border-color: #2C3A45; }
-            .metric-value { color: #ECEFF2; }
-            .quick-action { background: #1B2733; border-color: #2C3A45; color: #ECEFF2; }
-            .quick-action:hover { background: #22303A; border-color: var(--brass); }
-            .btn-primary { background: #2C3A45; color: #ECEFF2; }
-            .btn-primary:hover { background: var(--brass); color: var(--ink-900); }
-            .btn-outline { border-color: #2C3A45; color: #93A2AC; }
-            .btn-outline:hover { border-color: var(--brass); color: #ECEFF2; background: #22303A; }
-            .status-draft { background: #2C3A45; color: #93A2AC; }
-            .footer { background: #0d1a26; }
-            .trace-box input[type="text"] { background: #22303A; color: #ECEFF2; }
-            .trace-step { background: #22303A; color: #93A2AC; }
         }
     </style>
 </head>
 <body>
+    <script>
+        // Runs before paint so the sidebar never "flashes" open then
+        // collapses, and the theme never flashes light-then-dark.
+        (function () {
+            if (localStorage.getItem('vm_sidebar_collapsed') === '1') {
+                document.body ? document.body.classList.add('sidebar-collapsed') : null;
+            }
+            var theme = localStorage.getItem('vm_theme');
+            if (theme === 'dark' || theme === 'light') {
+                document.documentElement.setAttribute('data-theme', theme);
+            }
+        })();
+    </script>
+
     <!-- ============================================================ -->
-    <!-- HEADER -->
+    <!-- SIDEBAR -->
     <!-- ============================================================ -->
-    <header class="header">
-        <div class="header-inner">
-            <div class="header-left">
-                <div class="logo">VOUCHMORPH <span>·</span> <?php echo safeHtml($orgName); ?></div>
-                <span class="role-badge"><?php echo safeHtml(getRoleLabel($userRole)); ?></span>
-            </div>
-            <div class="user-info">
-                <div class="user-details">
-                    <div class="user-name"><?php echo safeHtml($fullName); ?></div>
-                    <div class="user-role"><?php echo safeHtml(getRoleLabel($userRole)); ?> · <?php echo safeHtml($orgName); ?></div>
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-head">
+            <div class="brand">
+                <div class="brand-mark"><?php echo svgIcon('bank'); ?></div>
+                <div class="brand-text">
+                    <div class="brand-name">VOUCHMORPH</div>
+                    <div class="brand-org"><?php echo safeHtml($orgName); ?></div>
                 </div>
-                <a href="logout.php" class="logout-btn">Sign Out</a>
             </div>
-        </div>
-    </header>
-
-    <!-- ============================================================ -->
-    <!-- NAVIGATION -->
-    <!-- ============================================================ -->
-    <nav class="nav">
-        <div class="nav-inner">
-        <a href="index.php" class="nav-item active">📊 Dashboard</a>
-        
-        <?php if ($canCreate && $setupReady): ?>
-        <a href="imports/source_input.php" class="nav-item">💰 New Disbursement</a>
-        <?php elseif ($canCreate): ?>
-        <span class="nav-item" style="color: var(--ink-300); cursor: default;" title="Your Owner needs to finish setup (team, department, source account) before batches can be created">💰 New Disbursement 🔒</span>
-        <?php endif; ?>
-        
-        <a href="batches/index.php?status=all" class="nav-item">
-            📋 Batches
-            <?php if ($canApprove && ($metrics['pending_approvals'] ?? 0) > 0): ?>
-            <span class="badge"><?php echo $metrics['pending_approvals']; ?></span>
-            <?php endif; ?>
-            <?php if ($canDisburse && ($metrics['approved_for_disbursement'] ?? 0) > 0): ?>
-            <span class="badge-gold"><?php echo $metrics['approved_for_disbursement']; ?></span>
-            <?php endif; ?>
-        </a>
-        
-        <?php if ($canApprove): ?>
-        <a href="batches/index.php?status=pending_approval" class="nav-item">⏳ Pending Approvals
-            <?php if (($metrics['pending_approvals'] ?? 0) > 0): ?>
-            <span class="badge"><?php echo $metrics['pending_approvals']; ?></span>
-            <?php endif; ?>
-        </a>
-        <?php endif; ?>
-        
-        <?php if ($canDisburse): ?>
-        <a href="batches/index.php?status=approved" class="nav-item">🚀 Disburse Funds
-            <?php if (($metrics['approved_for_disbursement'] ?? 0) > 0): ?>
-            <span class="badge-gold"><?php echo $metrics['approved_for_disbursement']; ?></span>
-            <?php endif; ?>
-        </a>
-        <?php endif; ?>
-        
-        <a href="beneficiaries.php" class="nav-item">👥 Beneficiaries</a>
-        
-        <?php if ($canCreate || $userRole === 'beneficiary_registrar'): ?>
-        <a href="imports/add_destinations.php" class="nav-item">📝 Add Destinations</a>
-        <?php endif; ?>
-        
-        <?php if ($canSeeSourceAccountsArea): ?>
-        <a href="/admin/enterprise/imports/add_source.php" class="nav-item">💰 Source Accounts
-            <?php if ($canConfirmSource && ($metrics['pending_source_confirmations'] ?? 0) > 0): ?>
-            <span class="badge"><?php echo $metrics['pending_source_confirmations']; ?></span>
-            <?php endif; ?>
-        </a>
-        <?php endif; ?>
-
-        <?php if ($canManageDepartments || $isDepartmentHead): ?>
-        <a href="departments/index.php" class="nav-item">🏢 Departments</a>
-        <?php endif; ?>
-
-        <?php if ($canTrace): ?>
-        <a href="#trace" class="nav-item">🔍 Trace Payment</a>
-        <?php endif; ?>
-        
-        <a href="reports.php" class="nav-item">📈 Reports</a>
-        
-        <?php if ($canManageUsers): ?>
-        <a href="/admin/enterprise/settings/users.php" class="nav-item">👤 Manage Users</a>
-        <?php endif; ?>
-        
-        <a href="settings.php" class="nav-item">⚙️ Settings</a>
-        </div>
-    </nav>
-
-    <!-- ============================================================ -->
-    <!-- CONTENT -->
-    <!-- ============================================================ -->
-    <main class="content">
-        <!-- Page Header -->
-        <div class="page-header">
-            <div>
-                <h1>Dashboard</h1>
-                <div class="sub">Welcome back, <?php echo safeHtml($fullName); ?></div>
-            </div>
-            <div class="timestamp"><?php echo date('l, F j, Y · H:i'); ?></div>
+            <button type="button" class="collapse-btn" id="collapseBtn" title="Collapse sidebar" aria-label="Collapse sidebar">
+                <?php echo svgIcon('chevron'); ?>
+            </button>
         </div>
 
-        <!-- ============================================================ -->
-        <!-- ACTION QUEUE — front and center, before anything else.       -->
-        <!-- Everything this user needs to act on today, in one place.    -->
-        <!-- ============================================================ -->
-        <?php if (!empty($actionItems)): ?>
-        <div class="action-queue">
-            <div class="action-queue-title">⚡ Needs Your Attention</div>
-            <?php foreach ($actionItems as $item): ?>
-            <div class="action-row">
-                <div class="action-row-left">
-                    <span class="count-pill <?php echo $item['tone']; ?>"><?php echo (int)$item['count']; ?></span>
-                    <span><?php echo $item['icon']; ?> <?php echo safeHtml($item['label']); ?></span>
-                </div>
-                <a href="<?php echo safeHtml($item['href']); ?>" class="btn btn-primary btn-sm"><?php echo safeHtml($item['cta']); ?></a>
-            </div>
+        <div class="create-batch-wrap">
+            <?php if ($canCreate && $setupReady): ?>
+            <a href="imports/source_input.php" class="btn-create"><?php echo svgIcon('plus'); ?><span class="label">Create Batch</span></a>
+            <?php elseif ($canCreate): ?>
+            <span class="btn-create locked" title="Your Owner needs to finish setup first"><?php echo svgIcon('lock'); ?><span class="label">Create Batch</span></span>
+            <?php endif; ?>
+        </div>
+
+        <nav class="sidebar-nav">
+            <?php foreach ($navItems as $item): if (!$item['show']) continue; ?>
+            <a href="<?php echo safeHtml($item['href']); ?>" class="nav-link<?php echo !empty($item['active']) ? ' active' : ''; ?>" title="<?php echo safeHtml($item['label']); ?>">
+                <?php echo svgIcon($item['icon']); ?>
+                <span class="nav-label"><?php echo safeHtml($item['label']); ?></span>
+                <?php if (!empty($item['badge'])): ?><span class="nav-badge"><?php echo (int)$item['badge']; ?></span><?php endif; ?>
+            </a>
             <?php endforeach; ?>
-        </div>
-        <?php elseif ($canApprove || $canDisburse || $canConfirmSource): ?>
-        <div class="action-queue" style="border-left-color: var(--ledger-green);">
-            <div class="action-queue-title" style="color:#fff;">✅ All Clear</div>
-            <div class="action-queue-empty">Nothing is waiting on you right now.</div>
-        </div>
-        <?php endif; ?>
+        </nav>
 
-        <!-- ============================================================ -->
-        <!-- PAYMENT TRACE — find any payment's full lifecycle instantly. -->
-        <!-- ============================================================ -->
-        <?php if ($canTrace): ?>
-        <div class="card" id="trace">
-            <div class="card-header">
-                <span class="card-title">🔍 Trace a Payment</span>
-                <span style="font-size:12px; color:var(--ink-500);">Batch reference, beneficiary phone, or national ID</span>
+        <div class="sidebar-footer">
+            <?php foreach ($navUtility as $item): if (!$item['show']) continue; ?>
+            <a href="<?php echo safeHtml($item['href']); ?>" class="nav-link" title="<?php echo safeHtml($item['label']); ?>">
+                <?php echo svgIcon($item['icon']); ?>
+                <span class="nav-label"><?php echo safeHtml($item['label']); ?></span>
+            </a>
+            <?php endforeach; ?>
+
+            <div class="sidebar-toggle-row">
+                <button type="button" class="theme-btn" id="themeBtn" title="Toggle dark mode">
+                    <span class="theme-icon" id="themeIcon"><?php echo svgIcon('moon'); ?></span>
+                    <span class="label">Dark Mode</span>
+                </button>
             </div>
-            <form method="get" class="trace-box" action="index.php#trace">
-                <input type="text" name="trace" placeholder="e.g. batch reference, phone number, national ID..." value="<?php echo safeHtml($traceQuery); ?>">
-                <button type="submit" class="btn btn-primary">Trace</button>
-                <?php if ($traceQuery !== ''): ?><a href="index.php#trace" class="btn btn-outline">Clear</a><?php endif; ?>
-            </form>
 
-            <?php if ($traceQuery !== ''): ?>
+            <a href="settings.php" class="user-chip" style="text-decoration:none;" title="<?php echo safeHtml($fullName); ?>">
+                <div class="user-avatar"><?php echo safeHtml(strtoupper(substr($fullName, 0, 1))); ?></div>
+                <div class="user-meta">
+                    <div class="name"><?php echo safeHtml($fullName); ?></div>
+                    <div class="role"><?php echo safeHtml(getRoleLabel($userRole)); ?></div>
+                </div>
+            </a>
+        </div>
+    </aside>
+
+    <!-- ============================================================ -->
+    <!-- MAIN -->
+    <!-- ============================================================ -->
+    <div class="main">
+        <div class="topbar">
+            <?php if ($canTrace): ?>
+            <div class="topbar-search">
+                <form method="get" action="index.php">
+                    <?php echo svgIcon('search'); ?>
+                    <input type="text" name="trace" placeholder="Search batch reference, phone, national ID…" value="<?php echo safeHtml($traceQuery); ?>">
+                </form>
+            </div>
+            <?php endif; ?>
+            <div class="topbar-icons">
+                <a href="#attention" class="icon-btn" title="Needs your attention">
+                    <?php echo svgIcon('bell'); ?>
+                    <?php if (!empty($actionItems)): ?><span class="dot"></span><?php endif; ?>
+                </a>
+                <a href="settings.php" class="topbar-avatar" title="<?php echo safeHtml($fullName); ?>"><?php echo safeHtml(strtoupper(substr($fullName, 0, 1))); ?></a>
+            </div>
+        </div>
+
+        <main class="content">
+            <div class="page-header">
+                <div>
+                    <h1>Operational Dashboard</h1>
+                    <div class="meta-line">SYSTEM_TIME: <?php echo date('H:i:s'); ?> <?php echo date('T'); ?> · Welcome back, <?php echo safeHtml($fullName); ?></div>
+                </div>
+            </div>
+
+            <!-- ============================================================ -->
+            <!-- STAT CARDS -->
+            <!-- ============================================================ -->
+            <div class="stat-grid">
+                <a href="batches/index.php?status=completed" class="stat-card accent-green">
+                    <div class="stat-label">Total Disbursed (MTD)</div>
+                    <div class="stat-value"><span class="cur"><?php echo safeHtml($orgCurrency); ?></span> <?php echo number_format($mtdDisbursed, 2); ?></div>
+                    <?php if ($disbursedDeltaPct !== null): ?>
+                    <div class="stat-sub <?php echo $disbursedDeltaPct >= 0 ? 'up' : 'down'; ?>"><?php echo $disbursedDeltaPct >= 0 ? '↗' : '↘'; ?> <?php echo abs($disbursedDeltaPct); ?>% vs last month</div>
+                    <?php else: ?>
+                    <div class="stat-sub">No prior-month data yet</div>
+                    <?php endif; ?>
+                </a>
+
+                <a href="batches/index.php?status=all" class="stat-card">
+                    <div class="stat-label">Active Batches</div>
+                    <div class="stat-value"><?php echo number_format($metrics['active_batches'] ?? 0); ?></div>
+                    <div class="stat-sub"><?php echo (int)($metrics['executing_batches'] ?? 0); ?> executing right now</div>
+                </a>
+
+                <a href="batches/index.php?status=pending_approval" class="stat-card <?php echo ($metrics['pending_approvals'] ?? 0) > 0 ? 'accent-danger' : ''; ?>">
+                    <div class="stat-label">Pending Approvals</div>
+                    <div class="stat-value"><?php echo number_format($metrics['pending_approvals'] ?? 0); ?></div>
+                    <div class="stat-sub"><?php echo $avgClearanceHours !== null ? 'Avg clearance: ' . $avgClearanceHours . ' hrs (30d)' : 'No approvals cleared in the last 30 days'; ?></div>
+                </a>
+            </div>
+
+            <!-- ============================================================ -->
+            <!-- NEEDS YOUR ATTENTION / RECENT ACTIVITY -->
+            <!-- ============================================================ -->
+            <div class="panel-grid" id="attention">
+                <div class="panel">
+                    <div class="panel-head">
+                        <span class="title"><?php echo svgIcon('warning'); ?> Needs Your Attention</span>
+                        <?php if ($criticalActionCount > 0): ?>
+                        <span class="critical-pill"><?php echo $criticalActionCount; ?><small style="font-size:8px;">CRITICAL</small></span>
+                        <?php endif; ?>
+                    </div>
+                    <div class="panel-body">
+                        <?php if (empty($actionItems)): ?>
+                        <div class="empty-row"><?php echo ($canApprove || $canDisburse || $canConfirmSource) ? '✅ All clear — nothing is waiting on you right now.' : 'Nothing needs your attention right now.'; ?></div>
+                        <?php else: foreach ($actionItems as $item): ?>
+                        <div class="task-row">
+                            <span class="dot <?php echo $item['tone']; ?>"></span>
+                            <div class="body">
+                                <div class="top-line">
+                                    <span class="label"><?php echo $item['icon']; ?> <?php echo safeHtml($item['label']); ?></span>
+                                </div>
+                                <div class="cta"><a href="<?php echo safeHtml($item['href']); ?>" class="btn-mini"><?php echo safeHtml($item['cta']); ?> (<?php echo (int)$item['count']; ?>)</a></div>
+                            </div>
+                        </div>
+                        <?php endforeach; endif; ?>
+                    </div>
+                    <div class="panel-foot"><a href="batches/index.php?status=all">View All Batches <?php echo svgIcon('arrow'); ?></a></div>
+                </div>
+
+                <div class="panel">
+                    <div class="panel-head">
+                        <span class="title"><?php echo svgIcon('clock'); ?> Recent Activity</span>
+                    </div>
+                    <div class="panel-body">
+                        <?php if (empty($recentActivity)): ?>
+                        <div class="empty-row">No recorded activity yet.</div>
+                        <?php else: ?>
+                        <div class="table-responsive">
+                            <table class="activity-table">
+                                <thead><tr><th>Timestamp</th><th>Event</th><th>By</th></tr></thead>
+                                <tbody>
+                                <?php foreach ($recentActivity as $ev): ?>
+                                <tr>
+                                    <td class="ts"><?php echo date('Y-m-d H:i', strtotime($ev['created_at'])); ?></td>
+                                    <td><?php echo safeHtml(getActivityLabel($ev['action'])); ?></td>
+                                    <td class="who"><?php echo $ev['actor_name'] ? safeHtml($ev['actor_name']) : 'System'; ?></td>
+                                </tr>
+                                <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                        <?php endif; ?>
+                    </div>
+                    <div class="panel-foot"><span class="disabled" title="A full audit-log page doesn't exist yet — this is the 8 most recent events only">Full log view not built yet</span></div>
+                </div>
+            </div>
+
+            <!-- Quick Actions - Role Specific -->
+            <div class="quick-actions">
+                <?php if ($canCreate && $setupReady): ?>
+                <a href="imports/source_input.php" class="quick-action"><span class="icon">💰</span><div><div class="label">New Disbursement</div><div class="desc">Create a payment batch</div></div></a>
+                <?php elseif ($canCreate): ?>
+                <div class="quick-action" style="opacity: 0.55; cursor: default;"><span class="icon">🔒</span><div><div class="label">New Disbursement</div><div class="desc">Waiting on Owner setup</div></div></div>
+                <?php endif; ?>
+
+                <?php if ($isApprover): ?>
+                <a href="batches/index.php?status=pending_approval" class="quick-action" style="border-color: var(--amber);"><span class="icon">✅</span><div><div class="label">Review & Approve</div><div class="desc"><?php echo ($metrics['pending_approvals'] ?? 0) . ' batches pending'; ?></div></div></a>
+                <?php endif; ?>
+
+                <?php if ($isSupervisor): ?>
+                <a href="batches/index.php?status=approved" class="quick-action" style="border-color: var(--ledger-green);"><span class="icon">💸</span><div><div class="label">Disburse Funds</div><div class="desc"><?php echo ($metrics['approved_for_disbursement'] ?? 0) . ' batches ready'; ?></div></div></a>
+                <?php endif; ?>
+
+                <?php if ($canCreate || $userRole === 'beneficiary_registrar'): ?>
+                <a href="imports/add_destinations.php" class="quick-action"><span class="icon">👤</span><div><div class="label">Add Beneficiaries</div><div class="desc">Import or add recipients</div></div></a>
+                <?php endif; ?>
+
+                <a href="beneficiaries.php" class="quick-action"><span class="icon">📋</span><div><div class="label">View Beneficiaries</div><div class="desc"><?php echo number_format($metrics['total_beneficiaries'] ?? 0); ?> active records</div></div></a>
+
+                <?php if ($canManageUsers): ?>
+                <a href="settings/users.php" class="quick-action"><span class="icon">👥</span><div><div class="label">Manage Users</div><div class="desc"><?php echo number_format($metrics['total_users'] ?? 0); ?> team members</div></div></a>
+                <?php endif; ?>
+            </div>
+
+            <!-- Secondary metrics -->
+            <div class="stat-grid">
+                <?php if (($metrics['pending_batches'] ?? 0) > 0): ?>
+                <div class="stat-card accent-amber"><div class="stat-label">Pending Batches</div><div class="stat-value"><?php echo number_format($metrics['pending_batches']); ?></div><div class="stat-sub">Waiting for approval</div></div>
+                <?php endif; ?>
+                <?php if (($metrics['approved_batches'] ?? 0) > 0): ?>
+                <div class="stat-card"><div class="stat-label">Approved</div><div class="stat-value"><?php echo number_format($metrics['approved_batches']); ?></div><div class="stat-sub">Ready for disbursement</div></div>
+                <?php endif; ?>
+                <?php if (($metrics['executed_batches'] ?? 0) > 0): ?>
+                <div class="stat-card accent-green"><div class="stat-label">Completed</div><div class="stat-value"><?php echo number_format($metrics['executed_batches']); ?></div><div class="stat-sub">Successfully executed</div></div>
+                <?php endif; ?>
+                <div class="stat-card"><div class="stat-label">Beneficiaries</div><div class="stat-value"><?php echo number_format($metrics['total_beneficiaries'] ?? 0); ?></div><div class="stat-sub">Active recipients</div></div>
+            </div>
+
+            <!-- Recent Batches -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">📋 Recent Batches</span>
+                    <span class="card-badge"><?php echo count($recentBatches); ?> RECENT</span>
+                    <div class="card-actions">
+                        <a href="batches/index.php?status=all" class="btn btn-outline btn-sm">View All</a>
+                        <?php if ($canCreate && $setupReady): ?><a href="imports/source_input.php" class="btn btn-primary btn-sm">➕ New Batch</a><?php endif; ?>
+                    </div>
+                </div>
+                <?php if (empty($recentBatches)): ?>
+                <div class="empty-state">
+                    <div class="icon">📭</div>
+                    <p>No batches found. Create your first disbursement batch to get started.</p>
+                    <?php if ($canCreate && $setupReady): ?><a href="imports/source_input.php" class="btn btn-primary" style="margin-top:14px;">Create First Batch</a>
+                    <?php elseif ($canCreate): ?><p style="font-size:12px; color:var(--ink-300); margin-top:8px;">🔒 Waiting on your Owner to finish setup (team, department, source account).</p><?php endif; ?>
+                </div>
+                <?php else: ?>
+                <div class="table-responsive">
+                    <table>
+                        <thead><tr><th>Reference</th><th>Name</th><th>Source</th><th>Amount</th><th>Destinations</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+                        <tbody>
+                        <?php foreach ($recentBatches as $batch): ?>
+                        <tr>
+                            <td><strong><?php echo safeHtml($batch['batch_reference']); ?></strong></td>
+                            <td><?php echo safeHtml($batch['batch_name'] ?? '—'); ?></td>
+                            <td><?php echo safeHtml($batch['source_institution'] ?? '—'); ?></td>
+                            <td><strong><?php echo formatCurrency($batch['total_amount'] ?? 0, $orgCurrency); ?></strong></td>
+                            <td><?php echo number_format($batch['total_destinations'] ?? 0); ?></td>
+                            <td><span class="status status-<?php echo getStatusClass($batch['status']); ?>"><?php echo getStatusLabel($batch['status']); ?></span></td>
+                            <td><?php echo date('Y-m-d H:i', strtotime($batch['created_at'] ?? 'now')); ?></td>
+                            <td><a href="imports/review_batch.php?batch_id=<?php echo $batch['id']; ?>" class="btn btn-outline btn-sm">View</a></td>
+                        </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+                <?php endif; ?>
+            </div>
+
+            <!-- Payment Trace results (search lives in the topbar; results render here) -->
+            <?php if ($canTrace && $traceQuery !== ''): ?>
+            <div class="card" id="trace">
+                <div class="card-header"><span class="card-title">🔍 Trace Results for "<?php echo safeHtml($traceQuery); ?>"</span></div>
                 <?php if (empty($traceBatches) && empty($traceBeneficiaries)): ?>
                 <div class="empty-state"><div class="icon">🔍</div><p>No matches for "<?php echo safeHtml($traceQuery); ?>".</p></div>
                 <?php endif; ?>
-
                 <?php if (!empty($traceBatches)): ?>
-                <div class="trace-result-group">
-                    <h4>Matching Batches (<?php echo count($traceBatches); ?>)</h4>
-                    <?php foreach ($traceBatches as $b): $st = strtolower($b['status'] ?? ''); ?>
-                    <div class="card" style="border-left:3px solid var(--brass); margin-bottom:10px;">
-                        <div class="card-header" style="margin-bottom:8px; padding-bottom:8px;">
-                            <span class="card-title" style="font-size:14px;"><?php echo safeHtml($b['batch_reference']); ?> — <?php echo safeHtml($b['batch_name'] ?? 'Unnamed'); ?></span>
-                            <span class="status status-<?php echo getStatusClass($b['status']); ?>"><?php echo getStatusLabel($b['status']); ?></span>
-                        </div>
-                        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(140px,1fr)); gap:8px; font-size:13px;">
-                            <div><strong>Source:</strong> <?php echo safeHtml($b['source_institution'] ?? 'N/A'); ?></div>
-                            <div><strong>Amount:</strong> <?php echo formatCurrency($b['total_amount'] ?? 0); ?></div>
-                            <div><strong>Destinations:</strong> <?php echo number_format($b['total_destinations'] ?? 0); ?></div>
-                        </div>
-                        <div class="trace-timeline">
-                            <span class="trace-step done">Created <?php echo date('Y-m-d H:i', strtotime($b['created_at'] ?? 'now')); ?></span>
-                            <?php
-                            $stepsOrder = ['draft', 'pending', 'approved', 'completed'];
-                            $curIdx = array_search($st === 'pending_approval' ? 'pending' : ($st === 'executed' ? 'completed' : $st), $stepsOrder);
-                            foreach (['Draft', 'Pending Approval', 'Approved', 'Disbursed'] as $i => $label):
-                                $cls = $curIdx === false ? '' : ($i < $curIdx ? 'done' : ($i === $curIdx ? 'now' : ''));
-                            ?>
-                            <span class="trace-step <?php echo $cls; ?>"><?php echo safeHtml($label); ?></span>
-                            <?php endforeach; ?>
-                            <span class="trace-step">Updated <?php echo date('Y-m-d H:i', strtotime($b['updated_at'] ?? $b['created_at'] ?? 'now')); ?></span>
-                        </div>
-                        <div style="text-align:right; margin-top:10px;">
-                            <a href="imports/review_batch.php?batch_id=<?php echo $b['id']; ?>" class="btn btn-outline btn-sm">Open Batch</a>
-                        </div>
-                    </div>
-                    <?php endforeach; ?>
-                </div>
-                <?php endif; ?>
-
-                <?php if (!empty($traceBeneficiaries)): ?>
-                <div class="trace-result-group">
-                    <h4>Matching Beneficiary Records (<?php echo count($traceBeneficiaries); ?>)</h4>
-                    <div class="table-responsive">
-                        <table>
-                            <thead><tr><?php foreach (array_keys($traceBeneficiaries[0]) as $col): if (in_array($col, ['organization_id'])) continue; ?><th><?php echo safeHtml($col); ?></th><?php endforeach; ?></tr></thead>
-                            <tbody>
-                            <?php foreach ($traceBeneficiaries as $row): ?>
-                            <tr>
-                                <?php foreach ($row as $col => $val): if ($col === 'organization_id') continue; $s = is_array($val) ? json_encode($val) : (string)$val; ?>
-                                <td><?php echo safeHtml(strlen($s) > 40 ? substr($s, 0, 40) . '…' : $s); ?></td>
-                                <?php endforeach; ?>
-                            </tr>
-                            <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-                <?php endif; ?>
-            <?php else: ?>
-            <p style="color:var(--ink-300); font-size:13px;">Enter any reference to see that payment's full path — created, approved, disbursed — with timestamps, in one view.</p>
-            <?php endif; ?>
-        </div>
-        <?php endif; ?>
-
-        <!-- Quick Actions - Role Specific -->
-        <div class="quick-actions">
-            <?php if ($canCreate && $setupReady): ?>
-            <a href="imports/source_input.php" class="quick-action">
-                <span class="icon">💰</span>
-                <div>
-                    <div class="label">New Disbursement</div>
-                    <div class="desc">Create a payment batch</div>
-                </div>
-            </a>
-            <?php elseif ($canCreate): ?>
-            <div class="quick-action" style="opacity: 0.55; cursor: default;">
-                <span class="icon">🔒</span>
-                <div>
-                    <div class="label">New Disbursement</div>
-                    <div class="desc">Waiting on Owner setup</div>
-                </div>
-            </div>
-            <?php endif; ?>
-            
-            <?php if ($isApprover): ?>
-            <a href="batches/index.php?status=pending_approval" class="quick-action" style="border-color: var(--amber);">
-                <span class="icon">✅</span>
-                <div>
-                    <div class="label">Review & Approve</div>
-                    <div class="desc"><?php echo ($metrics['pending_approvals'] ?? 0) . ' batches pending'; ?></div>
-                </div>
-            </a>
-            <?php endif; ?>
-            
-            <?php if ($isSupervisor): ?>
-            <a href="batches/index.php?status=approved" class="quick-action" style="border-color: var(--ledger-green);">
-                <span class="icon">💸</span>
-                <div>
-                    <div class="label">Disburse Funds</div>
-                    <div class="desc"><?php echo ($metrics['approved_for_disbursement'] ?? 0) . ' batches ready'; ?></div>
-                </div>
-            </a>
-            <?php endif; ?>
-            
-            <?php if ($canCreate || $userRole === 'beneficiary_registrar'): ?>
-            <a href="imports/add_destinations.php" class="quick-action">
-                <span class="icon">👤</span>
-                <div>
-                    <div class="label">Add Beneficiaries</div>
-                    <div class="desc">Import or add recipients</div>
-                </div>
-            </a>
-            <?php endif; ?>
-            
-            <a href="beneficiaries.php" class="quick-action">
-                <span class="icon">📋</span>
-                <div>
-                    <div class="label">View Beneficiaries</div>
-                    <div class="desc"><?php echo number_format($metrics['total_beneficiaries'] ?? 0); ?> active records</div>
-                </div>
-            </a>
-            
-            <?php if ($canManageUsers): ?>
-            <a href="/admin/enterprise/settings/users.php" class="quick-action">
-                <span class="icon">👥</span>
-                <div>
-                    <div class="label">Manage Users</div>
-                    <div class="desc"><?php echo number_format($metrics['total_users'] ?? 0); ?> team members</div>
-                </div>
-            </a>
-            <?php endif; ?>
-        </div>
-
-        <!-- Metrics - Role Specific -->
-        <div class="metrics-grid">
-            <div class="metric-card">
-                <div class="metric-label">Total Disbursed</div>
-                <div class="metric-value">
-                    <?php echo formatCurrency($metrics['total_disbursed'] ?? 0); ?>
-                </div>
-                <div class="metric-sub">Lifetime disbursements</div>
-            </div>
-            
-            <div class="metric-card">
-                <div class="metric-label">Total Batches</div>
-                <div class="metric-value"><?php echo number_format($metrics['total_batches'] ?? 0); ?></div>
-                <div class="metric-sub">All time</div>
-            </div>
-            
-            <?php if (($metrics['pending_batches'] ?? 0) > 0): ?>
-            <div class="metric-card" style="border-color: var(--amber);">
-                <div class="metric-label">Pending Batches</div>
-                <div class="metric-value" style="color: var(--amber);"><?php echo number_format($metrics['pending_batches'] ?? 0); ?></div>
-                <div class="metric-sub">Waiting for approval</div>
-            </div>
-            <?php endif; ?>
-            
-            <?php if (($metrics['approved_batches'] ?? 0) > 0): ?>
-            <div class="metric-card" style="border-color: #1e40af;">
-                <div class="metric-label">Approved</div>
-                <div class="metric-value" style="color: #1e40af;"><?php echo number_format($metrics['approved_batches'] ?? 0); ?></div>
-                <div class="metric-sub">Ready for disbursement</div>
-            </div>
-            <?php endif; ?>
-            
-            <?php if (($metrics['executed_batches'] ?? 0) > 0): ?>
-            <div class="metric-card" style="border-color: var(--ledger-green);">
-                <div class="metric-label">Completed</div>
-                <div class="metric-value" style="color: var(--ledger-green);"><?php echo number_format($metrics['executed_batches'] ?? 0); ?></div>
-                <div class="metric-sub">Successfully executed</div>
-            </div>
-            <?php endif; ?>
-            
-            <?php if ($canApprove && ($metrics['pending_approvals'] ?? 0) > 0): ?>
-            <div class="metric-card" style="border-color: var(--danger); background: var(--danger-bg);">
-                <div class="metric-label">Pending Approvals</div>
-                <div class="metric-value" style="color: var(--danger);"><?php echo number_format($metrics['pending_approvals'] ?? 0); ?></div>
-                <div class="metric-sub">Needs your review</div>
-            </div>
-            <?php endif; ?>
-            
-            <?php if ($canDisburse && ($metrics['approved_for_disbursement'] ?? 0) > 0): ?>
-            <div class="metric-card" style="border-color: var(--brass); background: var(--brass-tint);">
-                <div class="metric-label">Ready for Disbursement</div>
-                <div class="metric-value" style="color: var(--brass);"><?php echo number_format($metrics['approved_for_disbursement'] ?? 0); ?></div>
-                <div class="metric-sub">Approved batches</div>
-            </div>
-            <?php endif; ?>
-            
-            <div class="metric-card">
-                <div class="metric-label">Beneficiaries</div>
-                <div class="metric-value"><?php echo number_format($metrics['total_beneficiaries'] ?? 0); ?></div>
-                <div class="metric-sub">Active recipients</div>
-            </div>
-        </div>
-
-        <!-- Recent Batches -->
-        <div class="card">
-            <div class="card-header">
-                <span class="card-title">📋 Recent Batches</span>
-                <span class="card-badge"><?php echo count($recentBatches); ?> RECENT</span>
-                <div class="card-actions">
-                    <a href="batches/index.php?status=all" class="btn btn-outline btn-sm">View All</a>
-                    <?php if ($canCreate && $setupReady): ?>
-                    <a href="imports/source_input.php" class="btn btn-primary btn-sm">➕ New Batch</a>
-                    <?php endif; ?>
-                </div>
-            </div>
-            <?php if (empty($recentBatches)): ?>
-            <div class="empty-state">
-                <div class="icon">📭</div>
-                <p>No batches found. Create your first disbursement batch to get started.</p>
-                <?php if ($canCreate && $setupReady): ?>
-                <a href="imports/source_input.php" class="btn btn-primary" style="margin-top:14px;">Create First Batch</a>
-                <?php elseif ($canCreate): ?>
-                <p style="font-size:12px; color:var(--ink-300); margin-top:8px;">🔒 Waiting on your Owner to finish setup (team, department, source account).</p>
-                <?php endif; ?>
-            </div>
-            <?php else: ?>
-            <div class="table-responsive">
-                <table>
-                    <thead>
+                <div class="table-responsive" style="margin-bottom:16px;">
+                    <table>
+                        <thead><tr><th>Reference</th><th>Name</th><th>Source</th><th>Amount</th><th>Status</th><th>Created</th><th></th></tr></thead>
+                        <tbody>
+                        <?php foreach ($traceBatches as $b): ?>
                         <tr>
-                            <th>Reference</th>
-                            <th>Name</th>
-                            <th>Source</th>
-                            <th>Amount</th>
-                            <th>Destinations</th>
-                            <th>Status</th>
-                            <th>Created</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach ($recentBatches as $batch): ?>
-                        <tr>
-                            <td>
-                                <strong><?php echo safeHtml($batch['batch_reference']); ?></strong>
-                            </td>
-                            <td><?php echo safeHtml($batch['batch_name'] ?? '—'); ?></td>
-                            <td><?php echo safeHtml($batch['source_institution'] ?? '—'); ?></td>
-                            <td><strong><?php echo formatCurrency($batch['total_amount'] ?? 0); ?></strong></td>
-                            <td><?php echo number_format($batch['total_destinations'] ?? 0); ?></td>
-                            <td>
-                                <span class="status status-<?php echo getStatusClass($batch['status']); ?>">
-                                    <?php echo getStatusLabel($batch['status']); ?>
-                                </span>
-                            </td>
-                            <td><?php echo date('Y-m-d H:i', strtotime($batch['created_at'] ?? 'now')); ?></td>
-                            <td>
-                                <a href="imports/review_batch.php?batch_id=<?php echo $batch['id']; ?>" class="btn btn-outline btn-sm">View</a>
-                            </td>
+                            <td><strong><?php echo safeHtml($b['batch_reference']); ?></strong></td>
+                            <td><?php echo safeHtml($b['batch_name'] ?? 'Unnamed'); ?></td>
+                            <td><?php echo safeHtml($b['source_institution'] ?? 'N/A'); ?></td>
+                            <td><?php echo formatCurrency($b['total_amount'] ?? 0, $orgCurrency); ?></td>
+                            <td><span class="status status-<?php echo getStatusClass($b['status']); ?>"><?php echo getStatusLabel($b['status']); ?></span></td>
+                            <td><?php echo date('Y-m-d H:i', strtotime($b['created_at'] ?? 'now')); ?></td>
+                            <td><a href="imports/review_batch.php?batch_id=<?php echo $b['id']; ?>" class="btn btn-outline btn-sm">Open</a></td>
                         </tr>
                         <?php endforeach; ?>
-                    </tbody>
-                </table>
+                        </tbody>
+                    </table>
+                </div>
+                <?php endif; ?>
+                <?php if (!empty($traceBeneficiaries)): ?>
+                <div class="table-responsive">
+                    <table>
+                        <thead><tr><?php foreach (array_keys($traceBeneficiaries[0]) as $col): if ($col === 'organization_id') continue; ?><th><?php echo safeHtml($col); ?></th><?php endforeach; ?></tr></thead>
+                        <tbody>
+                        <?php foreach ($traceBeneficiaries as $row): ?>
+                        <tr>
+                            <?php foreach ($row as $col => $val): if ($col === 'organization_id') continue; $s = is_array($val) ? json_encode($val) : (string)$val; ?>
+                            <td><?php echo safeHtml(strlen($s) > 40 ? substr($s, 0, 40) . '…' : $s); ?></td>
+                            <?php endforeach; ?>
+                        </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+                <?php endif; ?>
             </div>
             <?php endif; ?>
-        </div>
 
-        <!-- Role-specific info panels -->
-        <?php if ($isReadOnly): ?>
-        <div class="info-panel" style="border-left-color: var(--brass); background: var(--brass-tint);">
-            <div class="label">🔍 Read-Only Access</div>
-            <div class="desc">
-                You have <span class="highlight"><?php echo $userRole === 'auditor' ? 'auditor' : 'read-only'; ?></span> access. 
-                You can view and export data but cannot create or modify any records.
-                <?php if ($userRole === 'auditor'): ?>
-                This is for compliance and audit purposes.
-                <?php endif; ?>
-            </div>
-        </div>
-        <?php endif; ?>
+            <!-- Role-specific info panels -->
+            <?php if ($isReadOnly): ?>
+            <div class="info-panel" style="border-left-color: var(--brass); background: var(--brass-tint);"><div class="label">🔍 Read-Only Access</div><div class="desc">You have <span class="highlight"><?php echo $userRole === 'auditor' ? 'auditor' : 'read-only'; ?></span> access. You can view and export data but cannot create or modify any records.<?php if ($userRole === 'auditor'): ?> This is for compliance and audit purposes.<?php endif; ?></div></div>
+            <?php endif; ?>
 
-        <?php if ($isLoader): ?>
-        <div class="info-panel" style="border-left-color: #3b82f6; background: var(--blue-tint);">
-            <div class="label">📤 Loader Access</div>
-            <div class="desc">
-                You can create and upload new disbursement batches. 
-                Once created, they will be sent for approval.
-                <?php if ($setupReady): ?>
-                <a href="imports/source_input.php" class="btn btn-primary btn-sm" style="margin-left:12px;">Create New Batch</a>
-                <?php else: ?>
-                <span style="margin-left:12px; font-size:12px; color:var(--ink-500);">🔒 Waiting on your Owner to finish setup first.</span>
-                <?php endif; ?>
-            </div>
-        </div>
-        <?php endif; ?>
+            <?php if ($isLoader): ?>
+            <div class="info-panel" style="border-left-color: #3b82f6; background: var(--blue-tint);"><div class="label">📤 Loader Access</div><div class="desc">You can create and upload new disbursement batches. Once created, they will be sent for approval.<?php if ($setupReady): ?> <a href="imports/source_input.php" class="btn btn-primary btn-sm" style="margin-left:12px;">Create New Batch</a><?php else: ?> <span style="margin-left:12px; font-size:12px; color:var(--ink-500);">🔒 Waiting on your Owner to finish setup first.</span><?php endif; ?></div></div>
+            <?php endif; ?>
 
-        <?php if ($isApprover): ?>
-        <div class="info-panel" style="border-left-color: var(--amber); background: var(--amber-bg);">
-            <div class="label">✅ Approver Access</div>
-            <div class="desc">
-                You can review and approve pending disbursement batches.
-                <?php if (($metrics['pending_approvals'] ?? 0) > 0): ?>
-                <span class="highlight"><?php echo $metrics['pending_approvals']; ?> batches awaiting your review.</span>
-                <?php endif; ?>
-                <a href="batches/index.php?status=pending_approval" class="btn btn-warning btn-sm" style="margin-left:12px;">Review Now</a>
-            </div>
-        </div>
-        <?php endif; ?>
+            <?php if ($isApprover): ?>
+            <div class="info-panel" style="border-left-color: var(--amber); background: var(--amber-bg);"><div class="label">✅ Approver Access</div><div class="desc">You can review and approve pending disbursement batches.<?php if (($metrics['pending_approvals'] ?? 0) > 0): ?> <span class="highlight"><?php echo $metrics['pending_approvals']; ?> batches awaiting your review.</span><?php endif; ?> <a href="batches/index.php?status=pending_approval" class="btn btn-warning btn-sm" style="margin-left:12px;">Review Now</a></div></div>
+            <?php endif; ?>
 
-        <?php if ($isSupervisor): ?>
-        <div class="info-panel" style="border-left-color: var(--ledger-green); background: var(--green-tint);">
-            <div class="label">💸 Owner Disbursement Access</div>
-            <div class="desc">
-                You can disburse funds for approved batches. This is the only role that can — it is the
-                final, non-delegable step in the disbursement chain.
-                <?php if (($metrics['approved_for_disbursement'] ?? 0) > 0): ?>
-                <span class="highlight"><?php echo $metrics['approved_for_disbursement']; ?> batches ready for disbursement.</span>
-                <?php endif; ?>
-                <a href="batches/index.php?status=approved" class="btn btn-success btn-sm" style="margin-left:12px;">Disburse Funds</a>
-            </div>
-        </div>
-        <?php endif; ?>
+            <?php if ($isSupervisor): ?>
+            <div class="info-panel" style="border-left-color: var(--ledger-green); background: var(--green-tint);"><div class="label">💸 Owner Disbursement Access</div><div class="desc">You can disburse funds for approved batches. This is the only role that can — it is the final, non-delegable step in the disbursement chain.<?php if (($metrics['approved_for_disbursement'] ?? 0) > 0): ?> <span class="highlight"><?php echo $metrics['approved_for_disbursement']; ?> batches ready for disbursement.</span><?php endif; ?> <a href="batches/index.php?status=approved" class="btn btn-success btn-sm" style="margin-left:12px;">Disburse Funds</a></div></div>
+            <?php endif; ?>
 
-        <?php if ($userRole === 'beneficiary_registrar'): ?>
-        <div class="info-panel" style="border-left-color: var(--ledger-green); background: var(--green-tint);">
-            <div class="label">👤 Beneficiary Registrar</div>
-            <div class="desc">
-                You can add and manage beneficiaries for disbursement batches.
-                <a href="imports/add_destinations.php" class="btn btn-primary btn-sm" style="margin-left:12px;">Add Beneficiaries</a>
-            </div>
-        </div>
-        <?php endif; ?>
+            <?php if ($userRole === 'beneficiary_registrar'): ?>
+            <div class="info-panel" style="border-left-color: var(--ledger-green); background: var(--green-tint);"><div class="label">👤 Beneficiary Registrar</div><div class="desc">You can add and manage beneficiaries for disbursement batches. <a href="imports/add_destinations.php" class="btn btn-primary btn-sm" style="margin-left:12px;">Add Beneficiaries</a></div></div>
+            <?php endif; ?>
 
-        <?php if ($canConfirmSource && ($metrics['pending_source_confirmations'] ?? 0) > 0): ?>
-        <div class="info-panel" style="border-left-color: var(--amber); background: var(--amber-bg);">
-            <div class="label">💰 Source Accounts Awaiting Confirmation</div>
-            <div class="desc">
-                <span class="highlight"><?php echo $metrics['pending_source_confirmations']; ?> source account(s)</span> proposed by Finance are waiting for an Owner or IT Manager to confirm before they can be used in disbursements.
-                <a href="/admin/enterprise/imports/add_source.php" class="btn btn-warning btn-sm" style="margin-left:12px;">Review Now</a>
-            </div>
-        </div>
-        <?php endif; ?>
+            <?php if ($canConfirmSource && ($metrics['pending_source_confirmations'] ?? 0) > 0): ?>
+            <div class="info-panel" style="border-left-color: var(--amber); background: var(--amber-bg);"><div class="label">💰 Source Accounts Awaiting Confirmation</div><div class="desc"><span class="highlight"><?php echo $metrics['pending_source_confirmations']; ?> source account(s)</span> proposed by Finance are waiting for an Owner or IT Manager to confirm before they can be used in disbursements. <a href="imports/add_source.php" class="btn btn-warning btn-sm" style="margin-left:12px;">Review Now</a></div></div>
+            <?php endif; ?>
 
-        <?php if ($userRole === 'finance_officer'): ?>
-        <div class="info-panel" style="border-left-color: var(--brass); background: var(--brass-tint);">
-            <div class="label">💰 Finance Officer Access</div>
-            <div class="desc">
-                You can propose new source accounts for disbursements. An Owner or IT Manager (not you) must confirm each one before it becomes usable.
-                <a href="/admin/enterprise/imports/add_source.php" class="btn btn-primary btn-sm" style="margin-left:12px;">Manage Source Accounts</a>
-            </div>
-        </div>
-        <?php endif; ?>
-    </main>
+            <?php if ($userRole === 'finance_officer'): ?>
+            <div class="info-panel" style="border-left-color: var(--brass); background: var(--brass-tint);"><div class="label">💰 Finance Officer Access</div><div class="desc">You can propose new source accounts for disbursements. An Owner or IT Manager (not you) must confirm each one before it becomes usable. <a href="imports/add_source.php" class="btn btn-primary btn-sm" style="margin-left:12px;">Manage Source Accounts</a></div></div>
+            <?php endif; ?>
+        </main>
 
-    <!-- ============================================================ -->
-    <!-- FOOTER -->
-    <!-- ============================================================ -->
-    <footer class="footer">
-        <div class="footer-inner">
-            <div>VOUCHMORPH · Enterprise Disbursement Platform · <?php echo date('Y'); ?></div>
-            <div class="sub"><?php echo safeHtml($orgName); ?> · Role: <?php echo safeHtml(getRoleLabel($userRole)); ?></div>
-        </div>
-    </footer>
+        <footer class="footer">VOUCHMORPH · Enterprise Disbursement Platform · <?php echo date('Y'); ?> — <?php echo safeHtml($orgName); ?> · Role: <?php echo safeHtml(getRoleLabel($userRole)); ?></footer>
+    </div>
+
+    <script>
+        (function () {
+            var body = document.body;
+            var collapseBtn = document.getElementById('collapseBtn');
+            collapseBtn.addEventListener('click', function () {
+                body.classList.toggle('sidebar-collapsed');
+                localStorage.setItem('vm_sidebar_collapsed', body.classList.contains('sidebar-collapsed') ? '1' : '0');
+            });
+
+            var themeBtn = document.getElementById('themeBtn');
+            var themeIcon = document.getElementById('themeIcon');
+            var sunSvg = <?php echo json_encode(svgIcon('sun')); ?>;
+            var moonSvg = <?php echo json_encode(svgIcon('moon')); ?>;
+            function syncThemeIcon() {
+                var isDark = document.documentElement.getAttribute('data-theme') === 'dark'
+                    || (!document.documentElement.hasAttribute('data-theme') && window.matchMedia('(prefers-color-scheme: dark)').matches);
+                themeIcon.innerHTML = isDark ? sunSvg : moonSvg;
+            }
+            themeBtn.addEventListener('click', function () {
+                var current = document.documentElement.getAttribute('data-theme');
+                var isDark = current === 'dark' || (!current && window.matchMedia('(prefers-color-scheme: dark)').matches);
+                var next = isDark ? 'light' : 'dark';
+                document.documentElement.setAttribute('data-theme', next);
+                localStorage.setItem('vm_theme', next);
+                syncThemeIcon();
+            });
+            syncThemeIcon();
+        })();
+    </script>
 </body>
 </html>
