@@ -818,11 +818,13 @@ function svgIcon(string $name): string {
             --danger:       #b3261e;
             --danger-bg:    #fbeceb;
 
-            --sidebar-w:    248px;
-            --sidebar-w-collapsed: 72px;
+            --sidebar-w:    236px;
+            --sidebar-w-collapsed: 68px;
             --max-width:    1400px;
             --btn-h:        36px;
             --btn-h-sm:     28px;
+            --radius:       6px;
+            --radius-sm:    4px;
 
             --f-body: 'IBM Plex Sans', sans-serif;
             --f-cond: 'IBM Plex Sans Condensed', sans-serif;
@@ -833,13 +835,13 @@ function svgIcon(string $name): string {
             :root:not([data-theme="light"]) {
                 --paper: #141B22; --panel: #1B2733; --sidebar: #17222B; --ink-900: #ECEFF2; --ink-700: #D5DCE0;
                 --ink-500: #93A2AC; --ink-300: #6B7A85; --line: #2C3A45; --line-strong: #3C4C58;
-                --brass-tint: #2A2418; --green-tint: #16261D; --blue-tint: #17242E; --danger-bg: #2A1615; --amber-bg: #2A2114;
+                --brass: #B08D5B; --brass-tint: #2A2418; --green-tint: #16261D; --blue-tint: #17242E; --danger-bg: #2A1615; --amber-bg: #2A2114;
             }
         }
         :root[data-theme="dark"] {
             --paper: #141B22; --panel: #1B2733; --sidebar: #17222B; --ink-900: #ECEFF2; --ink-700: #D5DCE0;
             --ink-500: #93A2AC; --ink-300: #6B7A85; --line: #2C3A45; --line-strong: #3C4C58;
-            --brass-tint: #2A2418; --green-tint: #16261D; --blue-tint: #17242E; --danger-bg: #2A1615; --amber-bg: #2A2114;
+            --brass: #B08D5B; --brass-tint: #2A2418; --green-tint: #16261D; --blue-tint: #17242E; --danger-bg: #2A1615; --amber-bg: #2A2114;
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -858,6 +860,17 @@ function svgIcon(string $name): string {
         svg { width: 19px; height: 19px; flex-shrink: 0; }
         @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 
+        /* One place controlling "a bit more rounded" everywhere, instead
+           of threading border-radius into two dozen individual rules. */
+        .btn, .btn-mini, .btn-create, .card, .panel, .stat-card, .quick-action,
+        .icon-btn, .collapse-btn, .mobile-menu-btn, .topbar-avatar, .user-avatar,
+        .brand-mark, .topbar-search form, .status, .nav-badge, .card-badge,
+        .empty-state, .info-panel, input[type="text"] {
+            border-radius: var(--radius);
+        }
+        .nav-link { border-radius: var(--radius-sm); }
+        .nav-badge, .status, .card-badge { border-radius: 999px; }
+
         /* ============================================================
            SIDEBAR — vertical, persistent, collapsible to icons-only.
            One component every enterprise page should include identically
@@ -874,9 +887,17 @@ function svgIcon(string $name): string {
             height: 100vh;
             position: sticky;
             top: 0;
+            overflow: hidden;
             transition: width 0.18s ease;
         }
         body.sidebar-collapsed .sidebar { width: var(--sidebar-w-collapsed); }
+        .mobile-menu-btn {
+            display: none;
+            width: 36px; height: 36px; align-items: center; justify-content: center;
+            background: none; border: 1px solid var(--line); color: var(--ink-700); cursor: pointer; flex-shrink: 0;
+        }
+        .mobile-menu-btn:hover { border-color: var(--brass); color: var(--brass); }
+        .sidebar-backdrop { display: none; border: none; }
 
         .sidebar-head {
             padding: 20px 18px 16px;
@@ -964,15 +985,43 @@ function svgIcon(string $name): string {
         .user-meta .role { font-size: 10.5px; color: var(--ink-300); text-transform: uppercase; font-family: var(--f-cond); letter-spacing: 0.04em; }
         body.sidebar-collapsed .user-meta { display: none; }
 
+        /* ============================================================
+           MOBILE — below this width the sidebar stops being a flex
+           sibling of .main and becomes a full off-canvas drawer: hidden
+           by default, opened only via the hamburger button, with a
+           dimming backdrop behind it. This replaces an earlier version
+           that made the sidebar `position: fixed` but left it visible
+           by default with nothing narrowing .main underneath it — the
+           sidebar rendered as a full-height panel sitting on top of the
+           page content instead of beside it. The desktop collapse
+           button/state above is untouched and still works above this
+           width; below it, "collapsed vs not" no longer means anything,
+           so those rules are simply inert here.
+           ============================================================ */
         @media (max-width: 860px) {
-            .sidebar { position: fixed; z-index: 40; }
-            body.sidebar-collapsed .sidebar { width: var(--sidebar-w); transform: translateX(calc(-1 * var(--sidebar-w))); }
-            body:not(.sidebar-collapsed) .sidebar { transform: translateX(0); }
-            body.sidebar-collapsed .brand-text,
-            body.sidebar-collapsed .nav-link .nav-label,
-            body.sidebar-collapsed .nav-link .nav-badge,
-            body.sidebar-collapsed .theme-btn span.label,
-            body.sidebar-collapsed .user-meta { display: block; }
+            .sidebar {
+                position: fixed;
+                top: 0; left: 0; bottom: 0;
+                width: var(--sidebar-w) !important;
+                z-index: 50;
+                transform: translateX(-100%);
+            }
+            body.sidebar-mobile-open .sidebar { transform: translateX(0); }
+            body.sidebar-mobile-open .brand-text,
+            body.sidebar-mobile-open .nav-link .nav-label,
+            body.sidebar-mobile-open .nav-link .nav-badge,
+            body.sidebar-mobile-open .theme-btn span.label,
+            body.sidebar-mobile-open .user-meta { display: block; }
+
+            .sidebar-backdrop {
+                display: none;
+                position: fixed; inset: 0; z-index: 45;
+                background: rgba(15, 33, 56, 0.5);
+            }
+            body.sidebar-mobile-open .sidebar-backdrop { display: block; }
+
+            .mobile-menu-btn { display: flex; }
+            .collapse-btn { display: none; }
         }
 
         /* ============================================================
@@ -1068,16 +1117,9 @@ function svgIcon(string $name): string {
         .activity-table .who { font-family: var(--f-mono); font-size: 11px; color: var(--ink-300); }
 
         /* ============================================================
-           SHARED: quick actions / metrics / cards / tables / status /
-           buttons — carried over from the previous version of this page.
+           SHARED: metrics / cards / tables / status / buttons — carried
+           over from the previous version of this page.
            ============================================================ */
-        .quick-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 20px; }
-        .quick-action { background: var(--panel); border: 1px solid var(--line); padding: 18px 20px; text-decoration: none; color: var(--ink-900); transition: all 0.15s; display: flex; align-items: center; gap: 14px; }
-        .quick-action:hover { border-color: var(--brass); background: var(--brass-tint); }
-        .quick-action .icon { font-size: 24px; }
-        .quick-action .label { font-size: 14px; font-weight: 600; font-family: var(--f-cond); }
-        .quick-action .desc { font-size: 12px; color: var(--ink-300); }
-
         .card { background: var(--panel); border: 1px solid var(--line); padding: 20px 24px; margin-bottom: 20px; }
         .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; gap: 8px; }
         .card-title { font-size: 16px; font-weight: 700; font-family: var(--f-cond); letter-spacing: 0.02em; }
@@ -1140,6 +1182,8 @@ function svgIcon(string $name): string {
             }
         })();
     </script>
+
+    <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
     <!-- ============================================================ -->
     <!-- SIDEBAR -->
@@ -1206,6 +1250,7 @@ function svgIcon(string $name): string {
     <!-- ============================================================ -->
     <div class="main">
         <div class="topbar">
+            <button type="button" class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu"><?php echo svgIcon('grid'); ?></button>
             <?php if ($canTrace): ?>
             <div class="topbar-search">
                 <form method="get" action="index.php">
@@ -1315,32 +1360,16 @@ function svgIcon(string $name): string {
                 </div>
             </div>
 
-            <!-- Quick Actions - Role Specific -->
-            <div class="quick-actions">
-                <?php if ($canCreate && $setupReady): ?>
-                <a href="imports/source_input.php" class="quick-action"><span class="icon">💰</span><div><div class="label">New Disbursement</div><div class="desc">Create a payment batch</div></div></a>
-                <?php elseif ($canCreate): ?>
-                <div class="quick-action" style="opacity: 0.55; cursor: default;"><span class="icon">🔒</span><div><div class="label">New Disbursement</div><div class="desc">Waiting on Owner setup</div></div></div>
-                <?php endif; ?>
-
-                <?php if ($isApprover): ?>
-                <a href="batches/index.php?status=pending_approval" class="quick-action" style="border-color: var(--amber);"><span class="icon">✅</span><div><div class="label">Review & Approve</div><div class="desc"><?php echo ($metrics['pending_approvals'] ?? 0) . ' batches pending'; ?></div></div></a>
-                <?php endif; ?>
-
-                <?php if ($isSupervisor): ?>
-                <a href="batches/index.php?status=approved" class="quick-action" style="border-color: var(--ledger-green);"><span class="icon">💸</span><div><div class="label">Disburse Funds</div><div class="desc"><?php echo ($metrics['approved_for_disbursement'] ?? 0) . ' batches ready'; ?></div></div></a>
-                <?php endif; ?>
-
-                <?php if ($canCreate || $userRole === 'beneficiary_registrar'): ?>
-                <a href="imports/add_destinations.php" class="quick-action"><span class="icon">👤</span><div><div class="label">Add Beneficiaries</div><div class="desc">Import or add recipients</div></div></a>
-                <?php endif; ?>
-
-                <a href="beneficiaries.php" class="quick-action"><span class="icon">📋</span><div><div class="label">View Beneficiaries</div><div class="desc"><?php echo number_format($metrics['total_beneficiaries'] ?? 0); ?> active records</div></div></a>
-
-                <?php if ($canManageUsers): ?>
-                <a href="settings/users.php" class="quick-action"><span class="icon">👥</span><div><div class="label">Manage Users</div><div class="desc"><?php echo number_format($metrics['total_users'] ?? 0); ?> team members</div></div></a>
-                <?php endif; ?>
-            </div>
+            <!--
+                No Quick Actions grid here on purpose: every tile it used
+                to have duplicated something already one click away —
+                "New Disbursement" duplicated the sidebar's Create Batch
+                button, "Disburse Funds"/"Review & Approve" duplicated
+                the Needs Your Attention panel's own per-item CTAs, and
+                "View Beneficiaries"/"Manage Users" duplicated sidebar
+                nav items. The stat cards above and the attention panel
+                below are the real, non-duplicated entry points now.
+            -->
 
             <!-- Secondary metrics -->
             <div class="stat-grid">
@@ -1356,29 +1385,27 @@ function svgIcon(string $name): string {
                 <div class="stat-card"><div class="stat-label">Beneficiaries</div><div class="stat-value"><?php echo number_format($metrics['total_beneficiaries'] ?? 0); ?></div><div class="stat-sub">Active recipients</div></div>
             </div>
 
-            <!-- Recent Batches -->
+            <!-- Recent Batches — top 5 only; "View More" goes to the full,
+                 filterable list. The header used to also carry its own
+                 "View All" and "New Batch" buttons, both duplicating a
+                 sidebar/attention-panel action already on this page. -->
+            <?php $recentBatchesShown = array_slice($recentBatches, 0, 5); ?>
             <div class="card">
                 <div class="card-header">
                     <span class="card-title">📋 Recent Batches</span>
-                    <span class="card-badge"><?php echo count($recentBatches); ?> RECENT</span>
-                    <div class="card-actions">
-                        <a href="batches/index.php?status=all" class="btn btn-outline btn-sm">View All</a>
-                        <?php if ($canCreate && $setupReady): ?><a href="imports/source_input.php" class="btn btn-primary btn-sm">➕ New Batch</a><?php endif; ?>
-                    </div>
                 </div>
-                <?php if (empty($recentBatches)): ?>
+                <?php if (empty($recentBatchesShown)): ?>
                 <div class="empty-state">
                     <div class="icon">📭</div>
                     <p>No batches found. Create your first disbursement batch to get started.</p>
-                    <?php if ($canCreate && $setupReady): ?><a href="imports/source_input.php" class="btn btn-primary" style="margin-top:14px;">Create First Batch</a>
-                    <?php elseif ($canCreate): ?><p style="font-size:12px; color:var(--ink-300); margin-top:8px;">🔒 Waiting on your Owner to finish setup (team, department, source account).</p><?php endif; ?>
+                    <?php if ($canCreate && !$setupReady): ?><p style="font-size:12px; color:var(--ink-300); margin-top:8px;">🔒 Waiting on your Owner to finish setup (team, department, source account).</p><?php endif; ?>
                 </div>
                 <?php else: ?>
                 <div class="table-responsive">
                     <table>
                         <thead><tr><th>Reference</th><th>Name</th><th>Source</th><th>Amount</th><th>Destinations</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
                         <tbody>
-                        <?php foreach ($recentBatches as $batch): ?>
+                        <?php foreach ($recentBatchesShown as $batch): ?>
                         <tr>
                             <td><strong><?php echo safeHtml($batch['batch_reference']); ?></strong></td>
                             <td><?php echo safeHtml($batch['batch_name'] ?? '—'); ?></td>
@@ -1394,6 +1421,7 @@ function svgIcon(string $name): string {
                     </table>
                 </div>
                 <?php endif; ?>
+                <div class="panel-foot" style="margin: 16px -24px -20px;"><a href="batches/index.php?status=all">View More <?php echo svgIcon('arrow'); ?></a></div>
             </div>
 
             <!-- Payment Trace results (search lives in the topbar; results render here) -->
@@ -1448,15 +1476,15 @@ function svgIcon(string $name): string {
             <?php endif; ?>
 
             <?php if ($isLoader): ?>
-            <div class="info-panel" style="border-left-color: #3b82f6; background: var(--blue-tint);"><div class="label">📤 Loader Access</div><div class="desc">You can create and upload new disbursement batches. Once created, they will be sent for approval.<?php if ($setupReady): ?> <a href="imports/source_input.php" class="btn btn-primary btn-sm" style="margin-left:12px;">Create New Batch</a><?php else: ?> <span style="margin-left:12px; font-size:12px; color:var(--ink-500);">🔒 Waiting on your Owner to finish setup first.</span><?php endif; ?></div></div>
+            <div class="info-panel" style="border-left-color: #3b82f6; background: var(--blue-tint);"><div class="label">📤 Loader Access</div><div class="desc">You can create and upload new disbursement batches (use Create Batch in the sidebar). Once created, they will be sent for approval.<?php if (!$setupReady): ?> <span style="margin-left:6px; color:var(--ink-500);">🔒 Waiting on your Owner to finish setup first.</span><?php endif; ?></div></div>
             <?php endif; ?>
 
             <?php if ($isApprover): ?>
-            <div class="info-panel" style="border-left-color: var(--amber); background: var(--amber-bg);"><div class="label">✅ Approver Access</div><div class="desc">You can review and approve pending disbursement batches.<?php if (($metrics['pending_approvals'] ?? 0) > 0): ?> <span class="highlight"><?php echo $metrics['pending_approvals']; ?> batches awaiting your review.</span><?php endif; ?> <a href="batches/index.php?status=pending_approval" class="btn btn-warning btn-sm" style="margin-left:12px;">Review Now</a></div></div>
+            <div class="info-panel" style="border-left-color: var(--amber); background: var(--amber-bg);"><div class="label">✅ Approver Access</div><div class="desc">You can review and approve pending disbursement batches.<?php if (($metrics['pending_approvals'] ?? 0) > 0): ?> <span class="highlight"><?php echo $metrics['pending_approvals']; ?> batches awaiting your review</span> — see Needs Your Attention above.<?php endif; ?></div></div>
             <?php endif; ?>
 
             <?php if ($isSupervisor): ?>
-            <div class="info-panel" style="border-left-color: var(--ledger-green); background: var(--green-tint);"><div class="label">💸 Owner Disbursement Access</div><div class="desc">You can disburse funds for approved batches. This is the only role that can — it is the final, non-delegable step in the disbursement chain.<?php if (($metrics['approved_for_disbursement'] ?? 0) > 0): ?> <span class="highlight"><?php echo $metrics['approved_for_disbursement']; ?> batches ready for disbursement.</span><?php endif; ?> <a href="batches/index.php?status=approved" class="btn btn-success btn-sm" style="margin-left:12px;">Disburse Funds</a></div></div>
+            <div class="info-panel" style="border-left-color: var(--ledger-green); background: var(--green-tint);"><div class="label">💸 Owner Disbursement Access</div><div class="desc">You can disburse funds for approved batches. This is the only role that can — it is the final, non-delegable step in the disbursement chain.<?php if (($metrics['approved_for_disbursement'] ?? 0) > 0): ?> <span class="highlight"><?php echo $metrics['approved_for_disbursement']; ?> batches ready for disbursement</span> — see Needs Your Attention above.<?php endif; ?></div></div>
             <?php endif; ?>
 
             <?php if ($userRole === 'beneficiary_registrar'): ?>
@@ -1464,11 +1492,11 @@ function svgIcon(string $name): string {
             <?php endif; ?>
 
             <?php if ($canConfirmSource && ($metrics['pending_source_confirmations'] ?? 0) > 0): ?>
-            <div class="info-panel" style="border-left-color: var(--amber); background: var(--amber-bg);"><div class="label">💰 Source Accounts Awaiting Confirmation</div><div class="desc"><span class="highlight"><?php echo $metrics['pending_source_confirmations']; ?> source account(s)</span> proposed by Finance are waiting for an Owner or IT Manager to confirm before they can be used in disbursements. <a href="imports/add_source.php" class="btn btn-warning btn-sm" style="margin-left:12px;">Review Now</a></div></div>
+            <div class="info-panel" style="border-left-color: var(--amber); background: var(--amber-bg);"><div class="label">💰 Source Accounts Awaiting Confirmation</div><div class="desc"><span class="highlight"><?php echo $metrics['pending_source_confirmations']; ?> source account(s)</span> proposed by Finance are waiting for an Owner or IT Manager to confirm before they can be used in disbursements — see Needs Your Attention above, or Source Accounts in the sidebar.</div></div>
             <?php endif; ?>
 
             <?php if ($userRole === 'finance_officer'): ?>
-            <div class="info-panel" style="border-left-color: var(--brass); background: var(--brass-tint);"><div class="label">💰 Finance Officer Access</div><div class="desc">You can propose new source accounts for disbursements. An Owner or IT Manager (not you) must confirm each one before it becomes usable. <a href="imports/add_source.php" class="btn btn-primary btn-sm" style="margin-left:12px;">Manage Source Accounts</a></div></div>
+            <div class="info-panel" style="border-left-color: var(--brass); background: var(--brass-tint);"><div class="label">💰 Finance Officer Access</div><div class="desc">You can propose new source accounts for disbursements (Source Accounts in the sidebar). An Owner or IT Manager (not you) must confirm each one before it becomes usable.</div></div>
             <?php endif; ?>
         </main>
 
@@ -1482,6 +1510,19 @@ function svgIcon(string $name): string {
             collapseBtn.addEventListener('click', function () {
                 body.classList.toggle('sidebar-collapsed');
                 localStorage.setItem('vm_sidebar_collapsed', body.classList.contains('sidebar-collapsed') ? '1' : '0');
+            });
+
+            // Mobile drawer: separate from the desktop collapsed/expanded
+            // state above — below the 860px breakpoint the sidebar is an
+            // off-canvas panel, closed by default, opened by the
+            // hamburger button or closed by tapping the backdrop.
+            var mobileMenuBtn = document.getElementById('mobileMenuBtn');
+            var sidebarBackdrop = document.getElementById('sidebarBackdrop');
+            function closeMobileMenu() { body.classList.remove('sidebar-mobile-open'); }
+            mobileMenuBtn.addEventListener('click', function () { body.classList.toggle('sidebar-mobile-open'); });
+            sidebarBackdrop.addEventListener('click', closeMobileMenu);
+            document.querySelectorAll('.sidebar .nav-link, .sidebar .btn-create').forEach(function (el) {
+                el.addEventListener('click', closeMobileMenu);
             });
 
             var themeBtn = document.getElementById('themeBtn');
