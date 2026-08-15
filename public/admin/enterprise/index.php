@@ -78,32 +78,34 @@ function renderSetupWizard(string $orgName, string $fullName, array $setupStatus
     <style>
         :root {
             --paper: #EEF1EF; --panel: #FFFFFF; --ink-900: #0F2138; --ink-700: #1D3557;
-            --ink-500: #4A5A6E; --ink-300: #8A96A3; --line: #D3DAD6; --line-strong: #AEB8B2;
-            --brass: #8A6D3B; --brass-tint: #F4EFE3; --ledger-green: #24513A; --green-tint: #E5EEE7;
+            --ink-500: #4A5A6E; --ink-300: #8A96A3; --line: #000000; --line-strong: #000000;
+            --brass: #0F2138; --brass-tint: #E4E8ED; --ledger-green: #24513A; --green-tint: #E5EEE7;
             --f-body: 'IBM Plex Sans', sans-serif; --f-cond: 'IBM Plex Sans Condensed', sans-serif; --f-mono: 'IBM Plex Mono', monospace;
+            --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 24px; --space-6: 32px; --space-7: 48px;
+            --h-control: 36px; --radius: 0; --border-w: 2px;
         }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: var(--f-body); background: var(--paper); color: var(--ink-900); min-height: 100vh; font-size: 14px; line-height: 1.5; }
-        .header { background: var(--ink-900); color: #fff; border-bottom: 3px solid var(--brass); padding: 16px 32px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
+        .header { background: var(--ink-900); color: #fff; border-bottom: 3px solid var(--brass); padding: var(--space-4) var(--space-6); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: var(--space-3); }
         .logo { font-family: var(--f-cond); font-weight: 700; font-size: 18px; letter-spacing: 0.08em; text-transform: uppercase; }
         .logo span { color: var(--brass); }
-        .header-right { font-size: 12px; color: var(--ink-300); display: flex; align-items: center; gap: 16px; }
+        .header-right { font-size: 12px; color: var(--ink-300); display: flex; align-items: center; gap: var(--space-4); }
         .header-right a { color: var(--brass); text-decoration: none; }
-        .wrap { max-width: 760px; margin: 0 auto; padding: 48px 24px; }
-        .eyebrow { font-family: var(--f-cond); font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--brass); margin-bottom: 8px; }
-        h1 { font-family: var(--f-cond); font-size: 28px; font-weight: 700; margin-bottom: 8px; }
-        .sub { color: var(--ink-500); font-size: 14.5px; margin-bottom: 28px; max-width: 560px; }
-        .progress-track { height: 8px; background: var(--line); margin-bottom: 6px; }
+        .wrap { max-width: 760px; margin: 0 auto; padding: var(--space-7) var(--space-5); }
+        .eyebrow { font-family: var(--f-cond); font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--brass); margin-bottom: var(--space-2); }
+        h1 { font-family: var(--f-cond); font-size: 28px; font-weight: 700; margin-bottom: var(--space-2); }
+        .sub { color: var(--ink-500); font-size: 14.5px; margin-bottom: var(--space-6); max-width: 560px; }
+        .progress-track { height: var(--space-2); background: var(--line); margin-bottom: 6px; }
         .progress-fill { height: 100%; background: var(--brass); transition: width 0.3s; }
-        .progress-label { font-size: 11.5px; color: var(--ink-500); font-family: var(--f-mono); margin-bottom: 32px; }
+        .progress-label { font-size: 11.5px; color: var(--ink-500); font-family: var(--f-mono); margin-bottom: var(--space-6); }
         .step {
-            background: var(--panel); border: 1.5px solid var(--line); padding: 22px 24px; margin-bottom: 14px;
-            display: flex; gap: 18px; align-items: flex-start;
+            background: var(--panel); border: var(--border-w) solid var(--line); padding: var(--space-5); margin-bottom: var(--space-4);
+            display: flex; gap: var(--space-4); align-items: flex-start;
         }
         .step.current { border-color: var(--brass); background: var(--brass-tint); }
         .step.done { border-color: var(--ledger-green); background: var(--green-tint); }
         .step-num {
-            width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0;
+            width: 34px; height: 34px; flex-shrink: 0;
             display: flex; align-items: center; justify-content: center;
             font-family: var(--f-cond); font-weight: 700; font-size: 15px;
             background: var(--ink-900); color: #fff;
@@ -111,21 +113,24 @@ function renderSetupWizard(string $orgName, string $fullName, array $setupStatus
         .step.current .step-num { background: var(--brass); }
         .step.done .step-num { background: var(--ledger-green); }
         .step-body { flex: 1; }
-        .step-label { font-family: var(--f-cond); font-size: 16px; font-weight: 700; margin-bottom: 4px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-        .step-desc { color: var(--ink-500); font-size: 13px; margin-bottom: 12px; }
+        .step-label { font-family: var(--f-cond); font-size: 16px; font-weight: 700; margin-bottom: var(--space-1); display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+        .step-desc { color: var(--ink-500); font-size: 13px; margin-bottom: var(--space-3); }
         .step-count { font-family: var(--f-mono); font-size: 11px; color: var(--ink-300); }
         .btn {
-            display: inline-flex; align-items: center; height: 34px; padding: 0 18px;
+            display: inline-flex; align-items: center; height: var(--h-control); padding: 0 var(--space-4);
             font-size: 12px; font-weight: 600; font-family: var(--f-cond); text-transform: uppercase;
-            letter-spacing: 0.04em; text-decoration: none; border: 1px solid var(--ink-900);
+            letter-spacing: 0.04em; text-decoration: none; border: var(--border-w) solid var(--ink-900);
             background: var(--ink-900); color: #fff; transition: all 0.15s;
         }
-        .btn:hover { background: var(--brass); border-color: var(--brass); color: var(--ink-900); }
+        .btn:hover { background: var(--brass); border-color: var(--brass); color: #fff; }
         .btn-done { background: var(--ledger-green); border-color: var(--ledger-green); color: #fff; cursor: default; }
-        .btn-outline { background: transparent; border: 1px solid var(--line-strong); color: var(--ink-700); }
+        .btn-outline { background: transparent; border: var(--border-w) solid var(--line-strong); color: var(--ink-700); }
         .btn-outline:hover { border-color: var(--brass); color: var(--brass); }
-        .badge-done { font-size: 10px; font-weight: 700; text-transform: uppercase; background: var(--ledger-green); color: #fff; padding: 2px 10px; font-family: var(--f-cond); }
-        .footnote { margin-top: 32px; padding: 16px 20px; border-left: 3px solid var(--brass); background: var(--brass-tint); font-size: 13px; color: var(--ink-700); }
+        .badge-done { font-size: 10px; font-weight: 700; text-transform: uppercase; background: var(--ledger-green); color: #fff; padding: 2px var(--space-3); font-family: var(--f-cond); }
+        .footnote { margin-top: var(--space-6); padding: var(--space-4) var(--space-5); border-left: 3px solid var(--brass); background: var(--brass-tint); font-size: 13px; color: var(--ink-700); }
+        .wizard-nav { display: flex; gap: var(--space-4); padding: var(--space-3) var(--space-6); background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+        .wizard-nav a { color: var(--ink-700); text-decoration: none; font-size: 12.5px; font-weight: 600; }
+        .wizard-nav a:hover { color: var(--brass); }
     </style>
 </head>
 <body>
@@ -137,10 +142,10 @@ function renderSetupWizard(string $orgName, string $fullName, array $setupStatus
         </div>
     </div>
     <div class="wizard-nav">
-        <a href="departments/index.php">🏢 Departments</a>
-        <a href="/admin/enterprise/settings/users.php">👤 Manage Team</a>
-        <a href="/admin/enterprise/imports/add_source.php">💰 Source Accounts</a>
-        <a href="settings.php">⚙️ Settings</a>
+        <a href="departments/index.php">Departments</a>
+        <a href="/admin/enterprise/settings/users.php">Manage Team</a>
+        <a href="/admin/enterprise/imports/add_source.php">Source Accounts</a>
+        <a href="settings.php">Settings</a>
     </div>
     <div class="wrap">
         <div class="eyebrow">Getting Started</div>
@@ -163,7 +168,7 @@ function renderSetupWizard(string $orgName, string $fullName, array $setupStatus
                 <div class="step-desc"><?php echo safeHtmlSetup($step['description']); ?></div>
                <?php if ($step['done']): ?>
                     <div class="step-count"><?php echo (int)$step['count']; ?> on record</div>
-                    <a href="<?php echo safeHtmlSetup($step['action_href']); ?>" class="btn btn-outline" style="margin-top:8px;">
+                    <a href="<?php echo safeHtmlSetup($step['action_href']); ?>" class="btn btn-outline" style="margin-top:var(--space-2);">
                         Manage <?php echo safeHtmlSetup($step['label']); ?> →
                     </a>
                 <?php else: ?>
@@ -174,7 +179,7 @@ function renderSetupWizard(string $orgName, string $fullName, array $setupStatus
         <?php endforeach; ?>
 
         <div class="footnote">
-            💡 A department without a budget set isn't incomplete — it's a deliberate choice ("no vote"), meaning it's limited only by the real balance of whatever source account it draws from, checked at the moment funds actually move. Set one if you want a hard local cap; leave it blank if you don't.
+            A department without a budget set isn't incomplete — it's a deliberate choice ("no vote"), meaning it's limited only by the real balance of whatever source account it draws from, checked at the moment funds actually move. Set one if you want a hard local cap; leave it blank if you don't.
         </div>
     </div>
 </body>
@@ -667,14 +672,14 @@ function getStatusClass($status) {
 function getStatusLabel($status) {
     $status = strtolower($status);
     return match($status) {
-        'draft' => '📝 Draft',
-        'pending', 'pending_approval' => '⏳ Pending',
-        'approved' => '✅ Approved',
-        'executing' => '⚙️ Executing',
-        'completed' => '✔️ Completed',
-        'executed' => '🚀 Executed',
-        'rejected' => '❌ Rejected',
-        'cancelled' => '🚫 Cancelled',
+        'draft' => 'Draft',
+        'pending', 'pending_approval' => 'Pending',
+        'approved' => 'Approved',
+        'executing' => 'Executing',
+        'completed' => 'Completed',
+        'executed' => 'Executed',
+        'rejected' => 'Rejected',
+        'cancelled' => 'Cancelled',
         default => ucfirst($status)
     };
 }
@@ -704,28 +709,28 @@ function getRoleLabel($role) {
 $actionItems = [];
 if ($canApprove && ($metrics['pending_approvals'] ?? 0) > 0) {
     $actionItems[] = [
-        'icon' => '⏳', 'label' => 'Batches awaiting your approval',
+        'label' => 'Batches awaiting your approval',
         'count' => $metrics['pending_approvals'], 'href' => 'batches/index.php?status=pending_approval',
         'cta' => 'Review Now', 'tone' => 'amber',
     ];
 }
 if ($canDisburse && ($metrics['approved_for_disbursement'] ?? 0) > 0) {
     $actionItems[] = [
-        'icon' => '💸', 'label' => 'Approved batches ready to disburse',
+        'label' => 'Approved batches ready to disburse',
         'count' => $metrics['approved_for_disbursement'], 'href' => 'batches/index.php?status=approved',
         'cta' => 'Disburse Now', 'tone' => 'green',
     ];
 }
 if ($canConfirmSource && ($metrics['pending_source_confirmations'] ?? 0) > 0) {
     $actionItems[] = [
-        'icon' => '💰', 'label' => 'Source accounts awaiting confirmation',
+        'label' => 'Source accounts awaiting confirmation',
         'count' => $metrics['pending_source_confirmations'], 'href' => 'imports/add_source.php',
         'cta' => 'Confirm Now', 'tone' => 'amber',
     ];
 }
 if (($metrics['rejected_batches'] ?? 0) > 0 && ($canCreate || $isSupervisor)) {
     $actionItems[] = [
-        'icon' => '❌', 'label' => 'Rejected batches that may need correction',
+        'label' => 'Rejected batches that may need correction',
         'count' => $metrics['rejected_batches'], 'href' => 'batches/index.php?status=rejected',
         'cta' => 'Review', 'tone' => 'danger',
     ];
@@ -764,6 +769,62 @@ $topbarSearchPlaceholder = 'Search batch reference, phone, national ID…';
 $topbarSearchValue = $traceQuery;
 $attentionHref = '#attention';
 $attentionActive = !empty($actionItems);
+
+// ============================================================
+// FIX: role-specific info panel — ONE slot, not a stack. Previously
+// every eligible info-panel rendered independently (a role that
+// matched several conditions — e.g. an Approver who is also mid-setup
+// — could see 2-3 stacked, each adding its own margin/padding block to
+// the page). Priority order below picks the single most relevant one.
+// Colors now reference existing shell.css tokens throughout — the old
+// Loader panel hardcoded #3b82f6, which was never a real token and
+// didn't participate in the mono/dark-mode palette.
+// ============================================================
+$roleInfoPanel = null;
+if ($isReadOnly) {
+    $roleInfoPanel = [
+        'label' => 'Read-Only Access',
+        'desc'  => 'You have ' . ($userRole === 'auditor' ? 'auditor' : 'read-only') . ' access. You can view and export data but cannot create or modify any records.' . ($userRole === 'auditor' ? ' This is for compliance and audit purposes.' : ''),
+        'accent' => 'var(--brass)', 'tint' => 'var(--brass-tint)',
+    ];
+} elseif ($isLoader) {
+    $roleInfoPanel = [
+        'label' => 'Loader Access',
+        'desc'  => 'You can create and upload new disbursement batches (use Create Batch in the sidebar). Once created, they will be sent for approval.' . (!$setupReady ? ' Waiting on your Owner to finish setup first.' : ''),
+        'accent' => 'var(--ink-500)', 'tint' => 'var(--blue-tint)',
+    ];
+} elseif ($isApprover) {
+    $roleInfoPanel = [
+        'label' => 'Approver Access',
+        'desc'  => 'You can review and approve pending disbursement batches.' . (($metrics['pending_approvals'] ?? 0) > 0 ? ' ' . $metrics['pending_approvals'] . ' batches awaiting your review — see Needs Your Attention above.' : ''),
+        'accent' => 'var(--amber)', 'tint' => 'var(--amber-bg)',
+    ];
+} elseif ($isSupervisor) {
+    $roleInfoPanel = [
+        'label' => 'Owner Disbursement Access',
+        'desc'  => 'You can disburse funds for approved batches. This is the only role that can — it is the final, non-delegable step in the disbursement chain.' . (($metrics['approved_for_disbursement'] ?? 0) > 0 ? ' ' . $metrics['approved_for_disbursement'] . ' batches ready for disbursement — see Needs Your Attention above.' : ''),
+        'accent' => 'var(--ledger-green)', 'tint' => 'var(--green-tint)',
+    ];
+} elseif ($userRole === 'beneficiary_registrar') {
+    $roleInfoPanel = [
+        'label' => 'Beneficiary Registrar',
+        'desc'  => 'You can add and manage beneficiaries for disbursement batches.',
+        'accent' => 'var(--ledger-green)', 'tint' => 'var(--green-tint)',
+        'cta_href' => 'imports/add_destinations.php', 'cta_label' => 'Add Beneficiaries',
+    ];
+} elseif ($canConfirmSource && ($metrics['pending_source_confirmations'] ?? 0) > 0) {
+    $roleInfoPanel = [
+        'label' => 'Source Accounts Awaiting Confirmation',
+        'desc'  => $metrics['pending_source_confirmations'] . ' source account(s) proposed by Finance are waiting for an Owner or IT Manager to confirm before they can be used in disbursements — see Needs Your Attention above, or Source Accounts in the sidebar.',
+        'accent' => 'var(--amber)', 'tint' => 'var(--amber-bg)',
+    ];
+} elseif ($userRole === 'finance_officer') {
+    $roleInfoPanel = [
+        'label' => 'Finance Officer Access',
+        'desc'  => 'You can propose new source accounts for disbursements (Source Accounts in the sidebar). An Owner or IT Manager (not you) must confirm each one before it becomes usable.',
+        'accent' => 'var(--brass)', 'tint' => 'var(--brass-tint)',
+    ];
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -785,7 +846,8 @@ $attentionActive = !empty($actionItems);
             </div>
 
             <!-- ============================================================ -->
-            <!-- STAT CARDS -->
+            <!-- STAT CARDS — now on the shared 12-col grid in shell.css, so
+                 these edges line up with the panel-grid below them. -->
             <!-- ============================================================ -->
             <div class="stat-grid">
                 <a href="batches/index.php?status=completed" class="stat-card accent-green">
@@ -819,18 +881,18 @@ $attentionActive = !empty($actionItems);
                     <div class="panel-head">
                         <span class="title"><?php echo svgIcon('warning'); ?> Needs Your Attention</span>
                         <?php if ($criticalActionCount > 0): ?>
-                        <span class="critical-pill"><?php echo $criticalActionCount; ?><small style="font-size:8px;">CRITICAL</small></span>
+                        <span class="critical-pill"><?php echo $criticalActionCount; ?> <span class="critical-pill-label">CRITICAL</span></span>
                         <?php endif; ?>
                     </div>
                     <div class="panel-body">
                         <?php if (empty($actionItems)): ?>
-                        <div class="empty-row"><?php echo ($canApprove || $canDisburse || $canConfirmSource) ? '✅ All clear — nothing is waiting on you right now.' : 'Nothing needs your attention right now.'; ?></div>
+                        <div class="empty-row"><?php echo ($canApprove || $canDisburse || $canConfirmSource) ? 'All clear — nothing is waiting on you right now.' : 'Nothing needs your attention right now.'; ?></div>
                         <?php else: foreach ($actionItems as $item): ?>
                         <div class="task-row">
                             <span class="dot <?php echo $item['tone']; ?>"></span>
                             <div class="body">
                                 <div class="top-line">
-                                    <span class="label"><?php echo $item['icon']; ?> <?php echo safeHtml($item['label']); ?></span>
+                                    <span class="label"><?php echo safeHtml($item['label']); ?></span>
                                 </div>
                                 <div class="cta"><a href="<?php echo safeHtml($item['href']); ?>" class="btn-mini"><?php echo safeHtml($item['cta']); ?> (<?php echo (int)$item['count']; ?>)</a></div>
                             </div>
@@ -893,23 +955,24 @@ $attentionActive = !empty($actionItems);
                 <div class="stat-card"><div class="stat-label">Beneficiaries</div><div class="stat-value"><?php echo number_format($metrics['total_beneficiaries'] ?? 0); ?></div><div class="stat-sub">Active recipients</div></div>
             </div>
 
-            <!-- Recent Batches — top 5 only; "View More" goes to the full,
-                 filterable list. The header used to also carry its own
-                 "View All" and "New Batch" buttons, both duplicating a
-                 sidebar/attention-panel action already on this page. -->
+            <!-- Recent Batches — top 5 only, capped to an internal scroll
+                 area so this section's height is predictable regardless of
+                 row count; "View More" goes to the full, filterable list.
+                 The header used to also carry its own "View All" and "New
+                 Batch" buttons, both duplicating a sidebar/attention-panel
+                 action already on this page. -->
             <?php $recentBatchesShown = array_slice($recentBatches, 0, 5); ?>
             <div class="card">
                 <div class="card-header">
-                    <span class="card-title">📋 Recent Batches</span>
+                    <span class="card-title">Recent Batches</span>
                 </div>
                 <?php if (empty($recentBatchesShown)): ?>
                 <div class="empty-state">
-                    <div class="icon">📭</div>
                     <p>No batches found. Create your first disbursement batch to get started.</p>
-                    <?php if ($canCreate && !$setupReady): ?><p style="font-size:12px; color:var(--ink-300); margin-top:8px;">🔒 Waiting on your Owner to finish setup (team, department, source account).</p><?php endif; ?>
+                    <?php if ($canCreate && !$setupReady): ?><p style="font-size:12px; color:var(--ink-300); margin-top:var(--space-2);">Waiting on your Owner to finish setup (team, department, source account).</p><?php endif; ?>
                 </div>
                 <?php else: ?>
-                <div class="table-responsive">
+                <div class="table-responsive" style="max-height: 320px; overflow-y: auto;">
                     <table>
                         <thead><tr><th>Reference</th><th>Name</th><th>Source</th><th>Amount</th><th>Destinations</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
                         <tbody>
@@ -929,18 +992,22 @@ $attentionActive = !empty($actionItems);
                     </table>
                 </div>
                 <?php endif; ?>
-                <div class="panel-foot" style="margin: 16px -24px -20px;"><a href="batches/index.php?status=all">View More <?php echo svgIcon('arrow'); ?></a></div>
+                <!-- FIX: was "margin: 16px -24px -20px" — a hardcoded hack tuned
+                     to the OLD .card padding of 20px/24px (asymmetric). .card
+                     padding is now var(--space-5) = 24px on ALL sides, so the
+                     cancelling margin must be -24px on every side too. -->
+                <div class="panel-foot" style="margin: var(--space-4) calc(var(--space-5) * -1) calc(var(--space-5) * -1);"><a href="batches/index.php?status=all">View More <?php echo svgIcon('arrow'); ?></a></div>
             </div>
 
             <!-- Payment Trace results (search lives in the topbar; results render here) -->
             <?php if ($canTrace && $traceQuery !== ''): ?>
             <div class="card" id="trace">
-                <div class="card-header"><span class="card-title">🔍 Trace Results for "<?php echo safeHtml($traceQuery); ?>"</span></div>
+                <div class="card-header"><span class="card-title">Trace Results for "<?php echo safeHtml($traceQuery); ?>"</span></div>
                 <?php if (empty($traceBatches) && empty($traceBeneficiaries)): ?>
-                <div class="empty-state"><div class="icon">🔍</div><p>No matches for "<?php echo safeHtml($traceQuery); ?>".</p></div>
+                <div class="empty-state"><p>No matches for "<?php echo safeHtml($traceQuery); ?>".</p></div>
                 <?php endif; ?>
                 <?php if (!empty($traceBatches)): ?>
-                <div class="table-responsive" style="margin-bottom:16px;">
+                <div class="table-responsive" style="margin-bottom:var(--space-4);">
                     <table>
                         <thead><tr><th>Reference</th><th>Name</th><th>Source</th><th>Amount</th><th>Status</th><th>Created</th><th></th></tr></thead>
                         <tbody>
@@ -978,33 +1045,22 @@ $attentionActive = !empty($actionItems);
             </div>
             <?php endif; ?>
 
-            <!-- Role-specific info panels -->
-            <?php if ($isReadOnly): ?>
-            <div class="info-panel" style="border-left-color: var(--brass); background: var(--brass-tint);"><div class="label">🔍 Read-Only Access</div><div class="desc">You have <span class="highlight"><?php echo $userRole === 'auditor' ? 'auditor' : 'read-only'; ?></span> access. You can view and export data but cannot create or modify any records.<?php if ($userRole === 'auditor'): ?> This is for compliance and audit purposes.<?php endif; ?></div></div>
-            <?php endif; ?>
-
-            <?php if ($isLoader): ?>
-            <div class="info-panel" style="border-left-color: #3b82f6; background: var(--blue-tint);"><div class="label">📤 Loader Access</div><div class="desc">You can create and upload new disbursement batches (use Create Batch in the sidebar). Once created, they will be sent for approval.<?php if (!$setupReady): ?> <span style="margin-left:6px; color:var(--ink-500);">🔒 Waiting on your Owner to finish setup first.</span><?php endif; ?></div></div>
-            <?php endif; ?>
-
-            <?php if ($isApprover): ?>
-            <div class="info-panel" style="border-left-color: var(--amber); background: var(--amber-bg);"><div class="label">✅ Approver Access</div><div class="desc">You can review and approve pending disbursement batches.<?php if (($metrics['pending_approvals'] ?? 0) > 0): ?> <span class="highlight"><?php echo $metrics['pending_approvals']; ?> batches awaiting your review</span> — see Needs Your Attention above.<?php endif; ?></div></div>
-            <?php endif; ?>
-
-            <?php if ($isSupervisor): ?>
-            <div class="info-panel" style="border-left-color: var(--ledger-green); background: var(--green-tint);"><div class="label">💸 Owner Disbursement Access</div><div class="desc">You can disburse funds for approved batches. This is the only role that can — it is the final, non-delegable step in the disbursement chain.<?php if (($metrics['approved_for_disbursement'] ?? 0) > 0): ?> <span class="highlight"><?php echo $metrics['approved_for_disbursement']; ?> batches ready for disbursement</span> — see Needs Your Attention above.<?php endif; ?></div></div>
-            <?php endif; ?>
-
-            <?php if ($userRole === 'beneficiary_registrar'): ?>
-            <div class="info-panel" style="border-left-color: var(--ledger-green); background: var(--green-tint);"><div class="label">👤 Beneficiary Registrar</div><div class="desc">You can add and manage beneficiaries for disbursement batches. <a href="imports/add_destinations.php" class="btn btn-primary btn-sm" style="margin-left:12px;">Add Beneficiaries</a></div></div>
-            <?php endif; ?>
-
-            <?php if ($canConfirmSource && ($metrics['pending_source_confirmations'] ?? 0) > 0): ?>
-            <div class="info-panel" style="border-left-color: var(--amber); background: var(--amber-bg);"><div class="label">💰 Source Accounts Awaiting Confirmation</div><div class="desc"><span class="highlight"><?php echo $metrics['pending_source_confirmations']; ?> source account(s)</span> proposed by Finance are waiting for an Owner or IT Manager to confirm before they can be used in disbursements — see Needs Your Attention above, or Source Accounts in the sidebar.</div></div>
-            <?php endif; ?>
-
-            <?php if ($userRole === 'finance_officer'): ?>
-            <div class="info-panel" style="border-left-color: var(--brass); background: var(--brass-tint);"><div class="label">💰 Finance Officer Access</div><div class="desc">You can propose new source accounts for disbursements (Source Accounts in the sidebar). An Owner or IT Manager (not you) must confirm each one before it becomes usable.</div></div>
+            <!-- ============================================================ -->
+            <!-- ROLE-SPECIFIC INFO PANEL — one slot, computed above near
+                 $actionItems (see $roleInfoPanel), not a stack of separate
+                 if-blocks. Only the single most relevant panel for this
+                 role renders. -->
+            <!-- ============================================================ -->
+            <?php if ($roleInfoPanel): ?>
+            <div class="info-panel" style="border-left-color: <?php echo $roleInfoPanel['accent']; ?>; background: <?php echo $roleInfoPanel['tint']; ?>;">
+                <div class="label"><?php echo safeHtml($roleInfoPanel['label']); ?></div>
+                <div class="desc">
+                    <?php echo safeHtml($roleInfoPanel['desc']); ?>
+                    <?php if (!empty($roleInfoPanel['cta_href'])): ?>
+                    <a href="<?php echo safeHtml($roleInfoPanel['cta_href']); ?>" class="btn btn-primary btn-sm" style="margin-left:var(--space-3);"><?php echo safeHtml($roleInfoPanel['cta_label']); ?></a>
+                    <?php endif; ?>
+                </div>
+            </div>
             <?php endif; ?>
         <?php
         $footerStatusLine = '';
