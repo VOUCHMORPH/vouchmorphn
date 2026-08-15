@@ -15,7 +15,6 @@ if (!defined('APP_ROOT')) {
     define('APP_ROOT', rtrim(realpath(__DIR__ . '/../../'), '/') ?: '/var/www/html');
 }
 
-<?php
 // FIX 4: Load Composer autoloader with error suppression
 @include_once APP_ROOT . '/vendor/autoload.php';
 
