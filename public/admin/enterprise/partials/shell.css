@@ -23,25 +23,25 @@
    ============================================================ */
 
 :root {
-    --paper:        #EEF1EF;
+    --paper:        #FFFFFF;
     --panel:        #FFFFFF;
-    --sidebar:      #F4EFE3;
-    --ink-900:      #0F2138;
-    --ink-700:      #1D3557;
-    --ink-500:      #4A5A6E;
-    --ink-300:      #8A96A3;
+    --sidebar:      #FFFFFF;
+    --ink-900:      #000000;
+    --ink-700:      #1A1A1A;
+    --ink-500:      #4D4D4D;
+    --ink-300:      #808080;
     --line:         #000000;
     --line-strong:  #000000;
-    --brass:        #0F2138;
-    --brass-tint:   #E4E8ED;
-    --seal-red:     #7A2118;
-    --amber:        #8A5A0B;
-    --amber-bg:     #FEF3C7;
-    --ledger-green: #24513A;
-    --green-tint:   #E5EEE7;
-    --blue-tint:    #E7EEF4;
-    --danger:       #b3261e;
-    --danger-bg:    #fbeceb;
+    --brass:        #000000;
+    --brass-tint:   #F2F2F2;
+    --seal-red:     #000000;
+    --amber:        #000000;
+    --amber-bg:     #F2F2F2;
+    --ledger-green: #000000;
+    --green-tint:   #F2F2F2;
+    --blue-tint:    #F2F2F2;
+    --danger:       #000000;
+    --danger-bg:    #F2F2F2;
 
     --sidebar-w:    236px;
     --sidebar-w-collapsed: 68px;
@@ -224,7 +224,7 @@ body.sidebar-collapsed .user-meta { display: none; }
    MAIN COLUMN / TOPBAR
    ============================================================ */
 .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.topbar { background: var(--panel); border-bottom: 1px solid var(--line); padding: var(--space-4) var(--space-5); display: flex; align-items: center; gap: var(--space-4); }
+.topbar { background: var(--panel); border-bottom: 1px solid var(--line); padding: var(--space-4) var(--space-6); display: flex; align-items: center; gap: var(--space-4); }
 .topbar-search { flex: 1; max-width: 480px; }
 .topbar-search form { display: flex; align-items: center; gap: var(--space-2); background: var(--paper); border: var(--border-w) solid var(--ink-900); height: var(--h-control); padding: 0 var(--space-3); }
 .topbar-search svg { color: var(--ink-300); width: 17px; height: 17px; }
@@ -343,12 +343,12 @@ th { background: var(--paper); color: var(--ink-500); padding: var(--space-3) va
 td { padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--line); vertical-align: middle; font-size: 13px; }
 tr:hover { background: var(--brass-tint); }
 
-.status { display: inline-block; padding: var(--space-1) var(--space-3); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; font-family: var(--f-cond); }
-.status-draft { background: var(--paper); color: var(--ink-500); }
-.status-pending { background: var(--amber-bg); color: var(--amber); }
-.status-approved { background: var(--blue-tint); color: #1e40af; }
-.status-completed { background: var(--green-tint); color: var(--ledger-green); }
-.status-rejected { background: var(--danger-bg); color: var(--danger); }
+.status { display: inline-block; padding: var(--space-1) var(--space-3); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; font-family: var(--f-cond); border: 1px solid var(--ink-900); }
+.status-draft { background: #fff; color: var(--ink-500); border-color: var(--line); }
+.status-pending { background: #fff; color: var(--ink-900); border-style: dashed; }
+.status-approved { background: #fff; color: var(--ink-900); }
+.status-completed { background: var(--ink-900); color: #fff; }
+.status-rejected { background: #fff; color: var(--ink-900); text-decoration: line-through; }
 
 .btn { height: var(--h-control); padding: 0 var(--space-4); font-size: 12px; font-weight: 600; font-family: var(--f-cond); border: var(--border-w) solid transparent; cursor: pointer; transition: all 0.15s; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2); letter-spacing: 0.04em; text-transform: uppercase; box-sizing: border-box; line-height: 1; }
 .btn:hover { opacity: 0.85; }
@@ -365,10 +365,10 @@ tr:hover { background: var(--brass-tint); }
 .empty-state { text-align: center; padding: var(--space-7) var(--space-4); color: var(--ink-300); }
 .empty-state .icon { font-size: 40px; margin-bottom: var(--space-2); }
 
-.info-panel { padding: var(--space-4); margin-bottom: var(--space-4); border-left: 3px solid var(--brass); }
-.info-panel .label { font-weight: 600; font-size: 14px; font-family: var(--f-cond); letter-spacing: 0.02em; }
-.info-panel .desc { color: var(--ink-500); font-size: 13px; margin-top: var(--space-1); }
-.info-panel .desc .highlight { font-weight: 600; color: var(--ink-900); }
+.info-panel { padding: var(--space-3) var(--space-4); margin-bottom: var(--space-4); border: 1px solid var(--ink-900); border-left-width: 4px; display: flex; align-items: baseline; gap: var(--space-3); flex-wrap: wrap; }
+.info-panel .label { font-weight: 700; font-size: 12px; font-family: var(--f-cond); letter-spacing: 0.03em; text-transform: uppercase; flex-shrink: 0; }
+.info-panel .desc { color: var(--ink-700); font-size: 13px; margin-top: 0; }
+.info-panel .desc .highlight { font-weight: 700; color: var(--ink-900); }
 
 /* ------------------------------------------------------------
    FORM FIELDS — thick-frame style: a solid ink-900 border directly
@@ -387,7 +387,7 @@ tr:hover { background: var(--brass-tint); }
 .form-group input:focus, .form-group select:focus, .form-group textarea:focus { outline: none; border-color: var(--brass); }
 .hint { font-size: 11px; color: var(--ink-300); margin-top: var(--space-1); line-height: 1.4; }
 details.disclosure { margin-top: var(--space-4); padding-top: var(--space-4); border-top: 1px dashed var(--line); }
-details.disclosure summary { cursor: pointer; font-weight: 600; font-size: 13px; color: var(--brass); list-style: none; }
+details.disclosure summary { cursor: pointer; font-weight: 700; font-size: 12px; font-family: var(--f-cond); text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-900); list-style: none; display: flex; align-items: center; gap: var(--space-2); }
 details.disclosure summary::-webkit-details-marker { display: none; }
 details.disclosure[open] summary { margin-bottom: var(--space-4); }
 
