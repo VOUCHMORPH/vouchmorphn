@@ -30,8 +30,8 @@
     --ink-700:      #1D3557;
     --ink-500:      #4A5A6E;
     --ink-300:      #8A96A3;
-    --line:         #D3DAD6;
-    --line-strong:  #AEB8B2;
+    --line:         #000000;
+    --line-strong:  #000000;
     --brass:        #0F2138;
     --brass-tint:   #E4E8ED;
     --seal-red:     #7A2118;
@@ -116,11 +116,11 @@ svg { width: 19px; height: 19px; flex-shrink: 0; }
 .icon-btn, .collapse-btn, .mobile-menu-btn, .brand-mark,
 .topbar-search form, .status, .nav-badge, .card-badge,
 .empty-state, .info-panel, input[type="text"], select, textarea {
-    border-radius: 0;
+    border-radius: var(--radius);
 }
-/* No exceptions — every element is square-edged, including avatars and indicators. */
+/* No exceptions — avatars are now square initials tiles, not circles. */
 .topbar-avatar, .user-avatar { border-radius: 0; }
-.nav-link { border-radius: 0; }
+.nav-link { border-radius: var(--radius-sm); }
 .nav-badge, .status, .card-badge { border-radius: 0; } /* was 999px pill — now sharp, matches the rest */
 
 /* ============================================================
@@ -233,7 +233,7 @@ body.sidebar-collapsed .user-meta { display: none; }
 .topbar-icons { display: flex; align-items: center; gap: var(--space-1); margin-left: auto; }
 .icon-btn { width: var(--h-control); height: var(--h-control); display: flex; align-items: center; justify-content: center; background: none; border: none; color: var(--ink-500); text-decoration: none; cursor: pointer; position: relative; }
 .icon-btn:hover { color: var(--ink-900); }
-.icon-btn .dot { position: absolute; top: 6px; right: 7px; width: 7px; height: 7px; background: var(--seal-red); border-radius: 0; }
+.icon-btn .dot { position: absolute; top: 6px; right: 7px; width: 7px; height: 7px; background: var(--seal-red); border-radius: 50%; }
 .topbar-avatar { width: 34px; height: 34px; background: var(--ink-900); color: var(--brass); display: flex; align-items: center; justify-content: center; font-family: var(--f-cond); font-weight: 700; font-size: 12px; text-decoration: none; }
 
 .content { max-width: var(--max-width); width: 100%; margin: 0 auto; padding: var(--space-5) var(--space-6) var(--space-7); }
@@ -244,9 +244,28 @@ body.sidebar-collapsed .user-meta { display: none; }
 .page-header-actions { display: flex; gap: var(--space-2); flex-wrap: wrap; }
 
 /* ============================================================
+   PAGE GRID — one 12-column grid every section below plugs into,
+   so stat cards, panels, and cards all share the same column lines
+   instead of each computing independent widths (the actual cause
+   of "boxes don't line up" — .stat-grid and .panel-grid used to be
+   two unrelated grids stacked on top of each other).
+   ============================================================ */
+.page-grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: var(--space-4); margin-bottom: var(--space-5); align-items: start; }
+.col-3  { grid-column: span 3; }
+.col-4  { grid-column: span 4; }
+.col-5  { grid-column: span 5; }
+.col-6  { grid-column: span 6; }
+.col-7  { grid-column: span 7; }
+.col-8  { grid-column: span 8; }
+.col-12 { grid-column: span 12; }
+@media (max-width: 960px) { .page-grid [class^="col-"] { grid-column: span 12; } }
+
+/* ============================================================
    STAT CARDS
    ============================================================ */
-.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: var(--space-4); margin-bottom: var(--space-5); }
+.stat-grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: var(--space-4); margin-bottom: var(--space-5); }
+.stat-grid > * { grid-column: span 4; }
+@media (max-width: 700px) { .stat-grid > * { grid-column: span 12; } }
 .stat-card { background: var(--panel); border: var(--border-w) solid var(--line); border-top: 3px solid var(--line-strong); padding: var(--space-4); text-decoration: none; color: inherit; display: block; }
 .stat-card.accent-amber { border-top-color: var(--amber); }
 .stat-card.accent-danger { border-top-color: var(--seal-red); }
@@ -264,13 +283,16 @@ body.sidebar-collapsed .user-meta { display: none; }
 /* ============================================================
    TWO-UP PANELS (attention/activity, allocations/approvals, etc.)
    ============================================================ */
-.panel-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: var(--space-4); margin-bottom: var(--space-5); align-items: start; }
-@media (max-width: 960px) { .panel-grid { grid-template-columns: 1fr; } }
+.panel-grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: var(--space-4); margin-bottom: var(--space-5); align-items: start; }
+.panel-grid > *:first-child { grid-column: span 7; }
+.panel-grid > *:last-child { grid-column: span 5; }
+@media (max-width: 960px) { .panel-grid > * { grid-column: span 12; } }
 .panel { background: var(--panel); border: var(--border-w) solid var(--line); display: flex; flex-direction: column; }
 .panel-head { background: var(--ink-900); color: #fff; padding: var(--space-4); display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
 .panel-head .title { display: flex; align-items: center; gap: var(--space-3); font-family: var(--f-cond); font-weight: 700; font-size: 14px; letter-spacing: 0.03em; text-transform: uppercase; }
 .panel-head .title svg { color: var(--brass); }
-.panel-head .critical-pill { background: var(--seal-red); color: #fff; font-family: var(--f-mono); font-size: 11px; padding: var(--space-1) var(--space-3); display: flex; flex-direction: column; align-items: center; line-height: 1.15; }
+.panel-head .critical-pill { background: var(--seal-red); color: #fff; font-family: var(--f-mono); font-size: 11px; padding: var(--space-1) var(--space-3); display: flex; align-items: center; gap: var(--space-1); line-height: 1; }
+.panel-head .critical-pill-label { font-size: 9px; }
 .panel-body { flex: 1; }
 .task-row { padding: var(--space-4); border-bottom: 1px solid var(--line); display: flex; gap: var(--space-3); align-items: flex-start; }
 .task-row:last-child { border-bottom: none; }
