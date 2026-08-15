@@ -155,22 +155,35 @@ $attentionActive = $attentionActive ?? false;
     <!-- MAIN -->
     <!-- ============================================================ -->
     <div class="main">
+        <!-- FIX: shell.css already defines .topbar-inner (max-width:
+             var(--max-width); margin:0 auto — the SAME rule .content
+             below uses) but this markup never actually wrapped the
+             topbar's contents in that div. Without a real element
+             carrying that class, the CSS rule had nothing to apply to,
+             so the search box kept using the OLD full-bleed spacing no
+             matter what the stylesheet said. This wrapper is the actual
+             fix — .topbar-inner and .content now share one centered box,
+             so their left edges are mathematically the same line at any
+             viewport width, not just ones where the padding happens to
+             coincide. -->
         <div class="topbar">
-            <button type="button" class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu"><?php echo svgIcon('grid'); ?></button>
-            <?php if ($topbarSearchShow): ?>
-            <div class="topbar-search">
-                <form method="get" action="<?php echo safeHtml($topbarSearchAction); ?>">
-                    <?php echo svgIcon('search'); ?>
-                    <input type="text" name="<?php echo safeHtml($topbarSearchName); ?>" placeholder="<?php echo safeHtml($topbarSearchPlaceholder); ?>" value="<?php echo safeHtml($topbarSearchValue); ?>">
-                </form>
-            </div>
-            <?php endif; ?>
-            <div class="topbar-icons">
-                <a href="<?php echo safeHtml($attentionHref); ?>" class="icon-btn" title="Needs your attention">
-                    <?php echo svgIcon('bell'); ?>
-                    <?php if ($attentionActive): ?><span class="dot"></span><?php endif; ?>
-                </a>
-                <a href="<?php echo safeHtml($basePath . 'settings.php'); ?>" class="topbar-avatar" title="<?php echo safeHtml($fullName); ?>"><?php echo safeHtml(strtoupper(substr($fullName, 0, 1))); ?></a>
+            <div class="topbar-inner">
+                <button type="button" class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu"><?php echo svgIcon('grid'); ?></button>
+                <?php if ($topbarSearchShow): ?>
+                <div class="topbar-search">
+                    <form method="get" action="<?php echo safeHtml($topbarSearchAction); ?>">
+                        <?php echo svgIcon('search'); ?>
+                        <input type="text" name="<?php echo safeHtml($topbarSearchName); ?>" placeholder="<?php echo safeHtml($topbarSearchPlaceholder); ?>" value="<?php echo safeHtml($topbarSearchValue); ?>">
+                    </form>
+                </div>
+                <?php endif; ?>
+                <div class="topbar-icons">
+                    <a href="<?php echo safeHtml($attentionHref); ?>" class="icon-btn" title="Needs your attention">
+                        <?php echo svgIcon('bell'); ?>
+                        <?php if ($attentionActive): ?><span class="dot"></span><?php endif; ?>
+                    </a>
+                    <a href="<?php echo safeHtml($basePath . 'settings.php'); ?>" class="topbar-avatar" title="<?php echo safeHtml($fullName); ?>"><?php echo safeHtml(strtoupper(substr($fullName, 0, 1))); ?></a>
+                </div>
             </div>
         </div>
 
