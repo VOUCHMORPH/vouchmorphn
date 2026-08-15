@@ -93,7 +93,7 @@ function loadSourceAccounts(PDO $db, int $orgId): array {
         LEFT JOIN users u1 ON s.proposed_by = u1.user_id
         LEFT JOIN users u2 ON s.confirmed_by = u2.user_id
         WHERE s.organization_id = :org_id AND s.deleted_at IS NULL
-        ORDER BY 
+        ORDER BY
             CASE WHEN s.status = 'pending_confirmation' THEN 1
                  WHEN s.status = 'active' THEN 2
                  ELSE 3 END,
@@ -167,9 +167,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } else {
                 try {
                     $stmt = $db->prepare("
-                        SELECT id FROM source_accounts 
-                        WHERE organization_id = :org_id 
-                        AND institution = :institution 
+                        SELECT id FROM source_accounts
+                        WHERE organization_id = :org_id
+                        AND institution = :institution
                         AND source_identifier = :identifier
                         AND deleted_at IS NULL
                     ");
@@ -275,7 +275,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $error = "No source account specified.";
         } else {
             $stmt = $db->prepare("
-                SELECT * FROM source_accounts 
+                SELECT * FROM source_accounts
                 WHERE id = :id AND organization_id = :org_id AND deleted_at IS NULL
             ");
             $stmt->execute([':id' => $sourceId, ':org_id' => $orgId]);
@@ -290,7 +290,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 error_log("[SECURITY] User $userId attempted to self-confirm source account $sourceId");
             } else {
                 $stmt = $db->prepare("
-                    UPDATE source_accounts 
+                    UPDATE source_accounts
                     SET is_active = true,
                         status = 'active',
                         confirmed_by = :user_id,
@@ -321,7 +321,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $error = "A rejection reason is required.";
         } else {
             $stmt = $db->prepare("
-                UPDATE source_accounts 
+                UPDATE source_accounts
                 SET status = 'rejected',
                     rejection_reason = :reason,
                     confirmed_by = :user_id,
@@ -344,7 +344,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $error = "You do not have permission to deactivate source accounts.";
         } elseif ($sourceId) {
             $stmt = $db->prepare("
-                UPDATE source_accounts 
+                UPDATE source_accounts
                 SET is_active = false, status = 'deactivated', deleted_at = NOW(), updated_at = NOW()
                 WHERE id = :id AND organization_id = :org_id
             ");
@@ -363,7 +363,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $error = "You do not have permission to refresh tokens.";
         } elseif ($sourceId) {
             $stmt = $db->prepare("
-                SELECT * FROM source_accounts 
+                SELECT * FROM source_accounts
                 WHERE id = :id AND organization_id = :org_id AND deleted_at IS NULL
             ");
             $stmt->execute([':id' => $sourceId, ':org_id' => $orgId]);
@@ -389,7 +389,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // on that mode for anything beyond practice.
                 // ============================================================
                 $stmt = $db->prepare("
-                    UPDATE source_accounts 
+                    UPDATE source_accounts
                     SET token_expires_at = NOW() + INTERVAL '1 hour',
                         updated_at = NOW()
                     WHERE id = :id
@@ -409,442 +409,356 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 $csrfToken = generateCsrfToken();
 $roleDisplay = strtoupper($role);
-$orgName = htmlspecialchars($user['organization_name'] ?? 'ORGANIZATIONAL');
 
 function sourceStatusBadge($status) {
     return match($status) {
-        'active' => '<span class="status-badge status-active">Active</span>',
-        'pending_confirmation' => '<span class="status-badge status-pending">⏳ Pending Confirmation</span>',
-        'rejected' => '<span class="status-badge status-inactive">Rejected</span>',
-        'deactivated' => '<span class="status-badge status-inactive">Deactivated</span>',
-        default => '<span class="status-badge status-inactive">' . htmlspecialchars($status) . '</span>'
+        'active' => '<span class="status status-approved">Active</span>',
+        'pending_confirmation' => '<span class="status status-pending">⏳ Pending Confirmation</span>',
+        'rejected' => '<span class="status status-rejected">Rejected</span>',
+        'deactivated' => '<span class="status status-draft">Deactivated</span>',
+        default => '<span class="status status-draft">' . safeHtml($status) . '</span>'
     };
 }
+
+// ============================================================
+// SHARED SHELL SETUP — same contract as index.php/departments/index.php/
+// source_input.php, so this page's nav is generated by the exact same
+// code, not a hand-copied lookalike. Nothing below this point changes
+// any query, permission check, or status-transition rule above it.
+// ============================================================
+function safeHtml($value) {
+    return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
+}
+function getRoleLabel($role) {
+    $labels = [
+        'owner' => 'Owner', 'it_manager_enterprise' => 'IT Manager', 'it_officer_enterprise' => 'IT Officer',
+        'it_support' => 'IT Support', 'department_head' => 'Department Head', 'program_officer' => 'Uploader',
+        'finance_officer' => 'Finance Officer', 'approver' => 'Approver', 'senior_approver' => 'Senior Approver',
+        'supervisor' => 'Supervisor', 'beneficiary_registrar' => 'Beneficiary Registrar', 'auditor' => 'Auditor', 'viewer' => 'Viewer',
+    ];
+    return $labels[$role] ?? ucfirst(str_replace('_', ' ', $role));
+}
+
+$fullName = $user['full_name'] ?? $user['username'] ?? 'User';
+$orgName = $user['organization_name'] ?? 'Organization'; // RAW — do not htmlspecialchars() this; shell-head.php escapes it itself
+$userRole = $role;
+$basePath = '../';
+$isTopRole = in_array($userRole, ['owner', 'it_manager_enterprise'], true);
+$isDepartmentHead = ($userRole === 'department_head');
+$canCreate = in_array($userRole, ['owner', 'it_manager_enterprise', 'program_officer', 'department_head'], true);
+$canApprove = in_array($userRole, ['owner', 'approver', 'senior_approver', 'it_manager_enterprise'], true);
+$canManageUsers = in_array($userRole, ['owner', 'it_manager_enterprise', 'it_officer_enterprise'], true);
+$canSeeSourceAccountsArea = in_array($userRole, ['owner', 'it_manager_enterprise', 'finance_officer'], true);
+$canTrace = in_array($userRole, ['owner', 'it_manager_enterprise', 'it_officer_enterprise', 'auditor', 'senior_approver', 'approver', 'finance_officer'], true);
+$canManageDepartments = $isTopRole;
+$setupReady = true; // this page is unreachable pre-setup (owner would still be on the wizard)
+
+// Same live badge numbers the dashboard/Departments/Create-Batch pages
+// show, so a count on "Disbursements" or "Source Accounts" never
+// disagrees depending on which page you're on.
+$navPendingApprovals = 0;
+$navPendingSourceConfirmations = 0;
+try {
+    if ($canApprove) {
+        $stmt = $db->prepare("SELECT COUNT(*) FROM disbursement_batches WHERE organization_id = :org_id AND status IN ('pending','pending_approval','PENDING','PENDING_APPROVAL')");
+        $stmt->execute([':org_id' => $orgId]);
+        $navPendingApprovals = (int)$stmt->fetchColumn();
+    }
+    if ($canSeeSourceAccountsArea) {
+        $stmt = $db->prepare("SELECT COUNT(*) FROM source_accounts WHERE organization_id = :org_id AND status = 'pending_confirmation' AND deleted_at IS NULL");
+        $stmt->execute([':org_id' => $orgId]);
+        $navPendingSourceConfirmations = (int)$stmt->fetchColumn();
+    }
+} catch (PDOException $e) {
+    error_log("[add_source] Nav badge query error: " . $e->getMessage());
+}
+
+$navItems = [
+    ['key' => 'dashboard', 'icon' => 'grid', 'label' => 'Dashboard', 'href' => '../index.php', 'show' => true],
+    ['key' => 'disbursements', 'icon' => 'wallet', 'label' => 'Disbursements', 'href' => '../batches/index.php?status=all', 'show' => true, 'badge' => ($navPendingApprovals > 0 && $canApprove) ? $navPendingApprovals : null],
+    ['key' => 'beneficiaries', 'icon' => 'people', 'label' => 'Beneficiaries', 'href' => '../beneficiaries.php', 'show' => true],
+    ['key' => 'trace', 'icon' => 'search', 'label' => 'Trace Payment', 'href' => '../index.php#trace', 'show' => $canTrace],
+    ['key' => 'departments', 'icon' => 'building', 'label' => 'Departments', 'href' => '../departments/index.php', 'show' => $canManageDepartments || $isDepartmentHead],
+    ['key' => 'sources', 'icon' => 'bank', 'label' => 'Source Accounts', 'href' => 'add_source.php', 'show' => $canSeeSourceAccountsArea, 'badge' => $navPendingSourceConfirmations > 0 ? $navPendingSourceConfirmations : null, 'active' => true],
+    ['key' => 'team', 'icon' => 'idcard', 'label' => 'Team', 'href' => '../settings/users.php', 'show' => $canManageUsers],
+    ['key' => 'reports', 'icon' => 'chart', 'label' => 'Reports', 'href' => '../reports.php', 'show' => true],
+];
+$navUtility = [
+    ['key' => 'settings', 'icon' => 'gear', 'label' => 'Settings', 'href' => '../settings.php', 'show' => true],
+    ['key' => 'logout', 'icon' => 'logout', 'label' => 'Log Out', 'href' => '../logout.php', 'show' => true],
+];
+$topbarSearchShow = $canTrace;
+$topbarSearchAction = '../index.php';
+$topbarSearchName = 'trace';
+$topbarSearchPlaceholder = 'Search batch reference, phone, national ID…';
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Source Accounts · VouchMorph Enterprise</title>
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <title>VOUCHMORPH · Source Accounts · <?php echo safeHtml($orgName); ?></title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../partials/shell.css">
     <style>
-        :root {
-            --paper: #EEF1EF;
-            --panel: #FFFFFF;
-            --ink-900: #0F2138;
-            --ink-700: #1D3557;
-            --ink-500: #4A5A6E;
-            --ink-300: #8A96A3;
-            --line: #D3DAD6;
-            --line-strong: #AEB8B2;
-            --brass: #8A6D3B;
-            --brass-tint: #F4EFE3;
-            --seal-red: #7A2118;
-            --ledger-green: #24513A;
-            --amber: #8A5A0B;
-        }
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: 'IBM Plex Sans', sans-serif;
-            background: var(--paper);
-            color: var(--ink-900);
-            min-height: 100vh;
-        }
-        .masthead {
-            background: var(--ink-900);
-            color: white;
-            padding: 14px 32px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-bottom: 3px solid var(--brass);
-            flex-wrap: wrap;
-            gap: 10px;
-        }
-        .masthead h1 { font-size: 18px; font-weight: 700; }
-        .masthead .role-pill {
-            font-size: 10px;
-            font-weight: 700;
-            color: var(--brass);
-            border: 1px solid var(--brass);
-            padding: 2px 10px;
-            text-transform: uppercase;
-        }
-        .stage { max-width: 900px; margin: 0 auto; padding: 30px 20px; }
-        .card {
-            background: var(--panel);
-            border: 1px solid var(--line);
-            border-radius: 12px;
-            padding: 24px;
-            margin-bottom: 20px;
-        }
-        .card-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 16px;
-            padding-bottom: 12px;
-            border-bottom: 2px solid var(--line);
-            flex-wrap: wrap;
-            gap: 10px;
-        }
-        .card-title { font-size: 16px; font-weight: 700; text-transform: uppercase; }
-        .form-group { margin-bottom: 16px; }
-        .form-group label {
-            display: block;
-            font-size: 11px;
-            font-weight: 600;
-            text-transform: uppercase;
-            color: var(--ink-500);
-            margin-bottom: 4px;
-        }
-        .form-group input, .form-group select {
-            width: 100%;
-            padding: 10px 14px;
-            border: 1.5px solid var(--line);
-            border-radius: 8px;
-            font-size: 13px;
-            font-family: inherit;
-            background: #fff;
-        }
-        .form-group input:focus, .form-group select:focus {
-            outline: none;
-            border-color: var(--brass);
-        }
-        .form-group .help {
-            font-size: 11px;
-            color: var(--ink-300);
-            margin-top: 4px;
-        }
-        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-        .btn {
-            padding: 10px 24px;
-            border: none;
-            border-radius: 30px;
-            font-weight: 600;
-            font-size: 13px;
-            cursor: pointer;
-            transition: all 0.15s;
-            font-family: inherit;
-        }
-        .btn-primary { background: var(--ink-900); color: white; }
-        .btn-primary:hover { background: var(--brass); }
-        .btn-success { background: var(--ledger-green); color: white; }
-        .btn-success:hover { background: #1a3d2c; }
-        .btn-secondary { background: var(--line); color: var(--ink-700); }
-        .btn-secondary:hover { background: var(--line-strong); }
-        .btn-danger { background: var(--seal-red); color: white; }
-        .btn-danger:hover { background: #5a1812; }
-        .btn-sm { padding: 6px 14px; font-size: 11px; }
-        .error {
-            background: #fbeceb;
-            color: var(--seal-red);
-            padding: 12px 16px;
-            border-radius: 8px;
-            margin-bottom: 16px;
-            border-left: 3px solid var(--seal-red);
-        }
-        .success {
-            background: #dcfce7;
-            color: #166534;
-            padding: 12px 16px;
-            border-radius: 8px;
-            margin-bottom: 16px;
-            border-left: 3px solid #10b981;
-        }
-        .back-link {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            color: var(--ink-500);
-            text-decoration: none;
-            font-size: 12px;
-            font-weight: 600;
-            margin-bottom: 16px;
-        }
-        .back-link:hover { color: var(--brass); }
-        .source-list table { width: 100%; border-collapse: collapse; font-size: 13px; }
-        .source-list th { background: var(--ink-900); color: white; padding: 10px; text-align: left; }
-        .source-list td { padding: 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
-        .source-list tr:hover { background: var(--brass-tint); }
-        .status-badge { padding: 4px 12px; border-radius: 12px; font-size: 11px; font-weight: 600; display: inline-block; }
-        .status-active { background: #dcfce7; color: #166534; }
-        .status-inactive { background: #fbeceb; color: var(--seal-red); }
-        .status-pending { background: #fef3c7; color: var(--amber); }
-        .hooked-badge {
-            padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600;
-            background: #dbeafe; color: #1e40af;
-        }
+        .hooked-badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; font-family: var(--f-cond); background: var(--blue-tint); color: #1e40af; }
         .meta-line { font-size: 11px; color: var(--ink-300); margin-top: 4px; }
-        .actions-bar { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
-        .permission-banner {
-            padding: 12px 16px; border-left: 3px solid var(--brass);
-            background: var(--brass-tint); font-size: 13px; margin-bottom: 16px;
-        }
-        .rejection-inline { display:flex; gap:6px; align-items:center; margin-top:6px; }
-        .rejection-inline input {
-            padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; flex: 1;
-        }
-        @media (max-width: 768px) {
-            .grid-2 { grid-template-columns: 1fr; }
-            .masthead { flex-direction: column; text-align: center; }
-        }
+        .rejection-inline { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+        .rejection-inline input { padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; flex: 1; }
     </style>
 </head>
 <body>
-    <div class="masthead">
-        <h1>VouchMorph · Source Accounts</h1>
-        <div>
-            <span class="role-pill"><?php echo $roleDisplay; ?></span>
-            <span style="color:var(--ink-300); font-size:12px; margin-left:12px;">
-                <?php echo htmlspecialchars($orgName); ?>
-            </span>
-            <a href="../logout.php" style="color: rgba(255,255,255,0.4); text-decoration: none; margin-left: 16px; font-size: 12px;">Logout</a>
-        </div>
-    </div>
-
-    <div class="stage">
-        <a href="source_input.php" class="back-link">← Back to Source Selection</a>
-
-        <div class="permission-banner">
-            <?php if ($canPropose && !$canConfirm): ?>
-                💰 <strong>Finance Officer access:</strong> You can propose new source accounts. An Owner or IT Manager must confirm before they become active.
-            <?php elseif ($canConfirm && !$canPropose): ?>
-                🔑 <strong><?php echo $role === 'owner' ? 'Owner' : 'IT Manager'; ?> access:</strong> You can confirm, reject, or deactivate source accounts proposed by Finance.
-            <?php else: ?>
-                🔑 <strong>Owner access:</strong> You can propose, confirm, reject, or deactivate source accounts. For proper separation of duties, consider having a Finance Officer propose and a different Owner/IT Manager confirm.
-            <?php endif; ?>
-        </div>
-
-        <?php if ($error): ?>
-        <div class="error">⚠️ <?php echo htmlspecialchars($error); ?></div>
-        <?php endif; ?>
-        <?php if ($success): ?>
-        <div class="success">✅ <?php echo htmlspecialchars($success); ?></div>
-        <?php endif; ?>
-
-        <!-- Propose Source Form - Finance Officer / Owner only -->
-        <?php if ($canPropose): ?>
-        <div class="card">
-            <div class="card-header">
-                <span class="card-title">💰 Propose Source Account</span>
-                <span style="font-size:11px; color:var(--ink-300);">Requires confirmation before use</span>
+    <?php require __DIR__ . '/../partials/shell-head.php'; ?>
+            <div class="page-header">
+                <div>
+                    <h1>Source Accounts</h1>
+                    <div class="sub">Propose, confirm, reject, and deactivate the bank and institution accounts disbursement batches draw funds from.</div>
+                </div>
+                <div class="page-header-actions">
+                    <a href="source_input.php" class="btn btn-outline">← Back to Source Selection</a>
+                </div>
             </div>
 
-            <form method="POST">
-                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
-                <input type="hidden" name="action" value="add_source">
+            <div class="info-panel">
+                <?php if ($canPropose && !$canConfirm): ?>
+                <div class="desc">💰 <strong>Finance Officer access:</strong> You can propose new source accounts. An Owner or IT Manager must confirm before they become active.</div>
+                <?php elseif ($canConfirm && !$canPropose): ?>
+                <div class="desc">🔑 <strong><?php echo $role === 'owner' ? 'Owner' : 'IT Manager'; ?> access:</strong> You can confirm, reject, or deactivate source accounts proposed by Finance.</div>
+                <?php else: ?>
+                <div class="desc">🔑 <strong>Owner access:</strong> You can propose, confirm, reject, or deactivate source accounts. For proper separation of duties, consider having a Finance Officer propose and a different Owner/IT Manager confirm.</div>
+                <?php endif; ?>
+            </div>
 
-                <div class="grid-2">
-                    <div class="form-group">
-                        <label>Institution *</label>
-                        <select name="institution" required>
-                            <option value="">Select institution</option>
-                            <?php foreach ($participants as $p): ?>
-                            <option value="<?php echo htmlspecialchars($p); ?>"><?php echo htmlspecialchars($p); ?></option>
+            <?php if ($error): ?>
+            <div class="info-panel" style="border-left-color:var(--seal-red); background:var(--danger-bg);">
+                <div class="desc">⚠️ <?php echo safeHtml($error); ?></div>
+            </div>
+            <?php endif; ?>
+            <?php if ($success): ?>
+            <div class="info-panel" style="border-left-color:var(--ledger-green); background:var(--green-tint);">
+                <div class="desc">✅ <?php echo safeHtml($success); ?></div>
+            </div>
+            <?php endif; ?>
+
+            <!-- Propose Source Form - Finance Officer / Owner only -->
+            <?php if ($canPropose): ?>
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">💰 Propose Source Account</span>
+                    <span style="font-size:11px; color:var(--ink-300);">Requires confirmation before use</span>
+                </div>
+
+                <form method="POST">
+                    <input type="hidden" name="csrf_token" value="<?php echo safeHtml($csrfToken); ?>">
+                    <input type="hidden" name="action" value="add_source">
+
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label>Institution *</label>
+                            <select name="institution" required>
+                                <option value="">Select institution</option>
+                                <?php foreach ($participants as $p): ?>
+                                <option value="<?php echo safeHtml($p); ?>"><?php echo safeHtml($p); ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                            <div class="hint">The financial institution hosting the source account</div>
+                        </div>
+
+                        <div class="form-group">
+                            <label>Asset Type</label>
+                            <select name="asset_type">
+                                <option value="ACCOUNT">Bank Account</option>
+                                <option value="WALLET">Wallet</option>
+                                <option value="BANK-WALLET">Bank Wallet</option>
+                                <option value="CARD">Payment Card</option>
+                                <option value="VOUCHER">Voucher</option>
+                            </select>
+                            <div class="hint">Type of asset to use as source</div>
+                        </div>
+
+                        <div class="form-group">
+                            <label>Source Identifier *</label>
+                            <input type="text" name="source_identifier" required
+                                   placeholder="e.g., 10000001, +26770000000">
+                            <div class="hint">Account number, phone number, or wallet ID</div>
+                        </div>
+
+                        <div class="form-group">
+                            <label>Identifier Type</label>
+                            <select name="identifier_type">
+                                <option value="account_number">Account Number</option>
+                                <option value="phone">Phone Number</option>
+                                <option value="email">Email</option>
+                                <option value="national_id">National ID</option>
+                                <option value="wallet_id">Wallet ID</option>
+                            </select>
+                            <div class="hint">Type of identifier used</div>
+                        </div>
+
+                        <div class="form-group">
+                            <label>Account Name</label>
+                            <input type="text" name="account_name" placeholder="e.g., Saccussalis Main Account">
+                            <div class="hint">Display name for the source account</div>
+                        </div>
+
+                        <div class="form-group">
+                            <label>Currency</label>
+                            <select name="currency">
+                                <option value="BWP">BWP - Botswana Pula</option>
+                                <option value="ZAR">ZAR - South African Rand</option>
+                                <option value="USD">USD - US Dollar</option>
+                                <option value="EUR">EUR - Euro</option>
+                            </select>
+                            <div class="hint">Currency of the source account</div>
+                        </div>
+
+                        <div class="form-group">
+                            <label>Balance</label>
+                            <input type="number" name="balance" step="0.01" min="0"
+                                   placeholder="0.00" value="0">
+                            <div class="hint">Reference value only — not a live balance from the institution. See note on Refresh Token below.</div>
+                        </div>
+
+                        <div class="form-group">
+                            <label style="display: flex; align-items: center; gap: 8px; text-transform: none; font-weight: 400;">
+                                <input type="checkbox" name="is_hooked" value="1">
+                                🔗 Hooked Source (OAuth/Token based)
+                            </label>
+                            <div class="hint">Check if this source uses OAuth or token-based authentication</div>
+                        </div>
+                    </div>
+
+                    <div class="form-grid" id="tokenFields" style="display: none;">
+                        <div class="form-group">
+                            <label>Access Token</label>
+                            <input type="text" name="access_token" placeholder="eyJhbGciOiJIUzI1NiIs...">
+                            <div class="hint">Stored encrypted at rest (if server key is configured)</div>
+                        </div>
+                        <div class="form-group">
+                            <label>Refresh Token</label>
+                            <input type="text" name="refresh_token" placeholder="Refresh token (if hooked)">
+                            <div class="hint">Stored encrypted at rest (if server key is configured)</div>
+                        </div>
+                        <div class="form-group">
+                            <label>Token Expiry</label>
+                            <input type="datetime-local" name="token_expiry">
+                            <div class="hint">When the token expires</div>
+                        </div>
+                    </div>
+
+                    <div class="card-actions">
+                        <button type="submit" class="btn btn-primary">➕ Propose Source Account</button>
+                        <a href="source_input.php" class="btn btn-outline">← Back to Selection</a>
+                    </div>
+                </form>
+            </div>
+            <?php else: ?>
+            <div class="info-panel" style="border-left-color:var(--amber); background:var(--amber-bg);">
+                <div class="label" style="color:var(--amber);">🔒 View-Only for Proposals</div>
+                <div class="desc">Only Finance Officers (or the Owner) can propose new source accounts. You can review and confirm below.</div>
+            </div>
+            <?php endif; ?>
+
+            <!-- Source List -->
+            <div class="card source-list">
+                <div class="card-header">
+                    <span class="card-title">📋 Source Accounts</span>
+                </div>
+                <?php if (empty($sources)): ?>
+                <div class="empty-state">
+                    <div class="icon">📭</div>
+                    <p>No source accounts configured yet.</p>
+                </div>
+                <?php else: ?>
+                <div class="table-responsive">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Institution</th>
+                                <th>Identifier</th>
+                                <th>Balance</th>
+                                <th>Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($sources as $source): ?>
+                            <tr>
+                                <td>
+                                    <strong><?php echo safeHtml($source['institution']); ?></strong>
+                                    <?php if ($source['is_hooked']): ?>
+                                    <span class="hooked-badge">🔗 Hooked</span>
+                                    <?php endif; ?>
+                                    <div class="meta-line">
+                                        Proposed by <?php echo safeHtml($source['proposed_by_name'] ?? 'Unknown'); ?>
+                                        <?php if ($source['confirmed_by_name']): ?>
+                                        · Confirmed by <?php echo safeHtml($source['confirmed_by_name']); ?>
+                                        <?php endif; ?>
+                                    </div>
+                                </td>
+                                <td><?php echo safeHtml($source['source_identifier']); ?></td>
+                                <td>
+                                    <?php echo number_format($source['balance'] ?? 0, 2); ?>
+                                    <?php echo safeHtml($source['currency'] ?? 'BWP'); ?>
+                                </td>
+                                <td>
+                                    <?php echo sourceStatusBadge($source['status'] ?? ($source['is_active'] ? 'active' : 'deactivated')); ?>
+                                    <?php if ($source['status'] === 'rejected' && !empty($source['rejection_reason'])): ?>
+                                    <div class="meta-line" style="color:var(--seal-red);">
+                                        Reason: <?php echo safeHtml($source['rejection_reason']); ?>
+                                    </div>
+                                    <?php endif; ?>
+                                </td>
+                                <td>
+                                    <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                                        <?php if ($source['status'] === 'pending_confirmation' && $canConfirm): ?>
+                                            <?php if ($source['proposed_by'] == $userId): ?>
+                                            <span style="font-size:11px; color:var(--ink-300);">Awaiting a different confirmer</span>
+                                            <?php else: ?>
+                                            <form method="POST" style="display:inline;">
+                                                <input type="hidden" name="csrf_token" value="<?php echo safeHtml($csrfToken); ?>">
+                                                <input type="hidden" name="action" value="confirm_source">
+                                                <input type="hidden" name="source_id" value="<?php echo $source['id']; ?>">
+                                                <button type="submit" class="btn btn-success btn-sm" onclick="return confirm('Confirm this source account for use in disbursements?')">✅ Confirm</button>
+                                            </form>
+                                            <button type="button" class="btn btn-danger btn-sm" onclick="document.getElementById('reject-<?php echo $source['id']; ?>').style.display='flex'">❌ Reject</button>
+                                            <?php endif; ?>
+                                        <?php elseif ($source['status'] === 'active' && $canConfirm): ?>
+                                            <form method="POST" style="display:inline;">
+                                                <input type="hidden" name="csrf_token" value="<?php echo safeHtml($csrfToken); ?>">
+                                                <input type="hidden" name="action" value="delete_source">
+                                                <input type="hidden" name="source_id" value="<?php echo $source['id']; ?>">
+                                                <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Deactivate this source account?')">Deactivate</button>
+                                            </form>
+                                            <?php if ($source['is_hooked']): ?>
+                                            <form method="POST" style="display:inline;">
+                                                <input type="hidden" name="csrf_token" value="<?php echo safeHtml($csrfToken); ?>">
+                                                <input type="hidden" name="action" value="refresh_token">
+                                                <input type="hidden" name="source_id" value="<?php echo $source['id']; ?>">
+                                                <button type="submit" class="btn btn-outline btn-sm">🔄 Refresh Token</button>
+                                            </form>
+                                            <?php endif; ?>
+                                        <?php endif; ?>
+                                    </div>
+
+                                    <?php if ($source['status'] === 'pending_confirmation' && $canConfirm && $source['proposed_by'] != $userId): ?>
+                                    <form method="POST" id="reject-<?php echo $source['id']; ?>" class="rejection-inline" style="display:none;">
+                                        <input type="hidden" name="csrf_token" value="<?php echo safeHtml($csrfToken); ?>">
+                                        <input type="hidden" name="action" value="reject_source">
+                                        <input type="hidden" name="source_id" value="<?php echo $source['id']; ?>">
+                                        <input type="text" name="rejection_reason" placeholder="Reason for rejection" required>
+                                        <button type="submit" class="btn btn-danger btn-sm">Submit</button>
+                                    </form>
+                                    <?php endif; ?>
+                                </td>
+                            </tr>
                             <?php endforeach; ?>
-                        </select>
-                        <div class="help">The financial institution hosting the source account</div>
-                    </div>
-
-                    <div class="form-group">
-                        <label>Asset Type</label>
-                        <select name="asset_type">
-                            <option value="ACCOUNT">Bank Account</option>
-                            <option value="WALLET">Wallet</option>
-                            <option value="BANK-WALLET">Bank Wallet</option>
-                            <option value="CARD">Payment Card</option>
-                            <option value="VOUCHER">Voucher</option>
-                        </select>
-                        <div class="help">Type of asset to use as source</div>
-                    </div>
-
-                    <div class="form-group">
-                        <label>Source Identifier *</label>
-                        <input type="text" name="source_identifier" required 
-                               placeholder="e.g., 10000001, +26770000000">
-                        <div class="help">Account number, phone number, or wallet ID</div>
-                    </div>
-
-                    <div class="form-group">
-                        <label>Identifier Type</label>
-                        <select name="identifier_type">
-                            <option value="account_number">Account Number</option>
-                            <option value="phone">Phone Number</option>
-                            <option value="email">Email</option>
-                            <option value="national_id">National ID</option>
-                            <option value="wallet_id">Wallet ID</option>
-                        </select>
-                        <div class="help">Type of identifier used</div>
-                    </div>
-
-                    <div class="form-group">
-                        <label>Account Name</label>
-                        <input type="text" name="account_name" placeholder="e.g., Saccussalis Main Account">
-                        <div class="help">Display name for the source account</div>
-                    </div>
-
-                    <div class="form-group">
-                        <label>Currency</label>
-                        <select name="currency">
-                            <option value="BWP">BWP - Botswana Pula</option>
-                            <option value="ZAR">ZAR - South African Rand</option>
-                            <option value="USD">USD - US Dollar</option>
-                            <option value="EUR">EUR - Euro</option>
-                        </select>
-                        <div class="help">Currency of the source account</div>
-                    </div>
-
-                    <div class="form-group">
-                        <label>Balance</label>
-                        <input type="number" name="balance" step="0.01" min="0" 
-                               placeholder="0.00" value="0">
-                        <div class="help">Reference value only — not a live balance from the institution. See note on Refresh Token below.</div>
-                    </div>
-
-                    <div class="form-group">
-                        <label style="display: flex; align-items: center; gap: 8px; text-transform: none; font-weight: 400;">
-                            <input type="checkbox" name="is_hooked" value="1">
-                            🔗 Hooked Source (OAuth/Token based)
-                        </label>
-                        <div class="help">Check if this source uses OAuth or token-based authentication</div>
-                    </div>
+                        </tbody>
+                    </table>
                 </div>
-
-                <div class="grid-2" id="tokenFields" style="display: none;">
-                    <div class="form-group">
-                        <label>Access Token</label>
-                        <input type="text" name="access_token" placeholder="eyJhbGciOiJIUzI1NiIs...">
-                        <div class="help">Stored encrypted at rest (if server key is configured)</div>
-                    </div>
-                    <div class="form-group">
-                        <label>Refresh Token</label>
-                        <input type="text" name="refresh_token" placeholder="Refresh token (if hooked)">
-                        <div class="help">Stored encrypted at rest (if server key is configured)</div>
-                    </div>
-                    <div class="form-group">
-                        <label>Token Expiry</label>
-                        <input type="datetime-local" name="token_expiry">
-                        <div class="help">When the token expires</div>
-                    </div>
-                </div>
-
-                <div class="actions-bar">
-                    <button type="submit" class="btn btn-primary">➕ Propose Source Account</button>
-                    <a href="source_input.php" class="btn btn-secondary">← Back to Selection</a>
-                </div>
-            </form>
-        </div>
-        <?php else: ?>
-        <div class="card" style="border-left: 3px solid var(--amber); background: #fef3c7;">
-            <strong style="color:var(--amber);">🔒 View-Only for Proposals</strong>
-            <p style="font-size:13px; color:var(--ink-500); margin-top:4px;">
-                Only Finance Officers (or the Owner) can propose new source accounts. You can review and confirm below.
-            </p>
-        </div>
-        <?php endif; ?>
-
-        <!-- Source List -->
-        <div class="card source-list">
-            <div class="card-header">
-                <span class="card-title">📋 Source Accounts</span>
+                <?php endif; ?>
             </div>
-            <?php if (empty($sources)): ?>
-            <div style="padding: 30px; text-align: center; color: var(--ink-300);">
-                <p style="font-size: 20px; margin-bottom: 8px;">📭</p>
-                <p>No source accounts configured yet.</p>
-            </div>
-            <?php else: ?>
-            <div class="table-responsive">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Institution</th>
-                            <th>Identifier</th>
-                            <th>Balance</th>
-                            <th>Status</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach ($sources as $source): ?>
-                        <tr>
-                            <td>
-                                <strong><?php echo htmlspecialchars($source['institution']); ?></strong>
-                                <?php if ($source['is_hooked']): ?>
-                                <span class="hooked-badge">🔗 Hooked</span>
-                                <?php endif; ?>
-                                <div class="meta-line">
-                                    Proposed by <?php echo htmlspecialchars($source['proposed_by_name'] ?? 'Unknown'); ?>
-                                    <?php if ($source['confirmed_by_name']): ?>
-                                    · Confirmed by <?php echo htmlspecialchars($source['confirmed_by_name']); ?>
-                                    <?php endif; ?>
-                                </div>
-                            </td>
-                            <td><?php echo htmlspecialchars($source['source_identifier']); ?></td>
-                            <td>
-                                <?php echo number_format($source['balance'] ?? 0, 2); ?> 
-                                <?php echo htmlspecialchars($source['currency'] ?? 'BWP'); ?>
-                            </td>
-                            <td>
-                                <?php echo sourceStatusBadge($source['status'] ?? ($source['is_active'] ? 'active' : 'deactivated')); ?>
-                                <?php if ($source['status'] === 'rejected' && !empty($source['rejection_reason'])): ?>
-                                <div class="meta-line" style="color:var(--seal-red);">
-                                    Reason: <?php echo htmlspecialchars($source['rejection_reason']); ?>
-                                </div>
-                                <?php endif; ?>
-                            </td>
-                            <td>
-                                <div style="display:flex; gap:6px; flex-wrap:wrap;">
-                                    <?php if ($source['status'] === 'pending_confirmation' && $canConfirm): ?>
-                                        <?php if ($source['proposed_by'] == $userId): ?>
-                                        <span style="font-size:11px; color:var(--ink-300);">Awaiting a different confirmer</span>
-                                        <?php else: ?>
-                                        <form method="POST" style="display:inline;">
-                                            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
-                                            <input type="hidden" name="action" value="confirm_source">
-                                            <input type="hidden" name="source_id" value="<?php echo $source['id']; ?>">
-                                            <button type="submit" class="btn btn-success btn-sm" onclick="return confirm('Confirm this source account for use in disbursements?')">✅ Confirm</button>
-                                        </form>
-                                        <button type="button" class="btn btn-danger btn-sm" onclick="document.getElementById('reject-<?php echo $source['id']; ?>').style.display='flex'">❌ Reject</button>
-                                        <?php endif; ?>
-                                    <?php elseif ($source['status'] === 'active' && $canConfirm): ?>
-                                        <form method="POST" style="display:inline;">
-                                            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
-                                            <input type="hidden" name="action" value="delete_source">
-                                            <input type="hidden" name="source_id" value="<?php echo $source['id']; ?>">
-                                            <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Deactivate this source account?')">Deactivate</button>
-                                        </form>
-                                        <?php if ($source['is_hooked']): ?>
-                                        <form method="POST" style="display:inline;">
-                                            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
-                                            <input type="hidden" name="action" value="refresh_token">
-                                            <input type="hidden" name="source_id" value="<?php echo $source['id']; ?>">
-                                            <button type="submit" class="btn btn-secondary btn-sm">🔄 Refresh Token</button>
-                                        </form>
-                                        <?php endif; ?>
-                                    <?php endif; ?>
-                                </div>
-
-                                <?php if ($source['status'] === 'pending_confirmation' && $canConfirm && $source['proposed_by'] != $userId): ?>
-                                <form method="POST" id="reject-<?php echo $source['id']; ?>" class="rejection-inline" style="display:none;">
-                                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
-                                    <input type="hidden" name="action" value="reject_source">
-                                    <input type="hidden" name="source_id" value="<?php echo $source['id']; ?>">
-                                    <input type="text" name="rejection_reason" placeholder="Reason for rejection" required>
-                                    <button type="submit" class="btn btn-danger btn-sm">Submit</button>
-                                </form>
-                                <?php endif; ?>
-                            </td>
-                        </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
-            <?php endif; ?>
-        </div>
-    </div>
 
     <script>
         document.querySelector('input[name="is_hooked"]')?.addEventListener('change', function() {
@@ -860,5 +774,10 @@ function sourceStatusBadge($status) {
             }
         });
     </script>
+<?php
+$dbHealthy = DBConnection::isConnected();
+$footerStatusLine = 'LEDGER SYNC: ' . ($dbHealthy ? '<span class="ok">OK</span>' : '<span class="bad">DEGRADED</span>');
+require __DIR__ . '/../partials/shell-foot.php';
+?>
 </body>
 </html>
