@@ -1,0 +1,74 @@
+/* ============================================================
+   STAGE TRACKER — shared only by the Create Batch workflow pages
+   (imports/source_input.php, imports/add_destinations.php,
+   imports/review_batch.php). Kept out of shell.css since no other
+   page uses it — see partials/stage-tracker.php for the markup and
+   the batch-status → stage mapping this is styling.
+   ============================================================ */
+
+.stage-tracker {
+    display: flex;
+    align-items: flex-start;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    padding: 20px 24px;
+    margin-bottom: 20px;
+}
+
+.stage-tracker-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+    width: 128px;
+    text-align: center;
+}
+
+.stage-tracker-marker {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px solid var(--line-strong);
+    background: var(--paper);
+    color: var(--ink-300);
+    flex-shrink: 0;
+}
+.stage-tracker-marker svg { width: 15px; height: 15px; }
+.stage-tracker-num { font-family: var(--f-cond); font-weight: 700; font-size: 13px; }
+
+.stage-tracker-label {
+    font-family: var(--f-cond);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--ink-300);
+}
+
+.stage-tracker-item.is-complete .stage-tracker-marker { border-color: var(--ledger-green); background: var(--ledger-green); color: #fff; }
+.stage-tracker-item.is-complete .stage-tracker-label { color: var(--ledger-green); }
+
+.stage-tracker-item.is-active .stage-tracker-marker { border-color: var(--brass); background: var(--brass); color: #fff; }
+.stage-tracker-item.is-active .stage-tracker-label { color: var(--ink-900); }
+
+.stage-tracker-item.is-error .stage-tracker-marker { border-color: var(--seal-red); background: var(--seal-red); color: #fff; }
+.stage-tracker-item.is-error .stage-tracker-label { color: var(--seal-red); }
+
+.stage-tracker-connector {
+    flex: 1 1 auto;
+    height: 2px;
+    background: var(--line);
+    margin-top: 15px;
+    min-width: 16px;
+}
+.stage-tracker-connector.is-filled { background: var(--ledger-green); }
+
+@media (max-width: 720px) {
+    .stage-tracker { overflow-x: auto; padding: 16px; }
+    .stage-tracker-item { width: 84px; }
+    .stage-tracker-label { font-size: 9.5px; }
+}
