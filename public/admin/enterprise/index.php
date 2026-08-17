@@ -747,7 +747,7 @@ $criticalActionCount = count(array_filter($actionItems, fn($item) => $item['tone
 // file; nothing new is being gated here, only re-skinned.
 // ============================================================
 $navItems = [
-    ['key' => 'dashboard', 'icon' => 'grid', 'label' => 'Dashboard', 'href' => 'index.php', 'show' => true, 'active' => true],
+    ['key' => 'dashboard', 'icon' => 'grid', 'label' => 'Dashboard', 'href' => 'index.php', 'show' => true],
     ['key' => 'disbursements', 'icon' => 'wallet', 'label' => 'Disbursements', 'href' => 'batches/index.php?status=all', 'show' => true, 'badge' => ($metrics['pending_approvals'] ?? 0) > 0 && $canApprove ? $metrics['pending_approvals'] : null],
     ['key' => 'beneficiaries', 'icon' => 'people', 'label' => 'Beneficiaries', 'href' => 'beneficiaries.php', 'show' => true],
     ['key' => 'trace', 'icon' => 'search', 'label' => 'Trace Payment', 'href' => 'index.php#trace', 'show' => $canTrace],
@@ -762,6 +762,7 @@ $navUtility = [
 ];
 
 $basePath = '';
+$currentNavKey = 'dashboard';
 $topbarSearchShow = $canTrace;
 $topbarSearchAction = 'index.php';
 $topbarSearchName = 'trace';
