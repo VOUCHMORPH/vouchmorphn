@@ -13,15 +13,29 @@
  */
 ?>
         </main>
-
+        <!-- FIX: the footer used to render a full "Y-m-d H:i:s TZ"
+             timestamp plus org name plus role — ~96 characters — inside
+             a tall dark bar with plenty of room. That footer is now a
+             compact 22px VS Code-style status strip, and nobody checked
+             whether the content still fit it. It does on desktop, but
+             wraps on mobile with nowhere to go (fixed height, no
+             overflow rule). Two changes: seconds/timezone moved into a
+             title tooltip instead of always-visible text (H:i instead
+             of H:i:s + T), and the role segment is wrapped in its own
+             span so shell.css can hide it below 600px, keeping the org
+             name and time visible as the two things worth keeping on a
+             phone screen. -->
         <footer class="footer">
             <div class="footer-status">
                 <span><?php echo $footerStatusLine ?? ''; ?></span>
-                <span>VOUCHMORPH · <?php echo safeHtml($orgName); ?> · Role: <?php echo safeHtml(getRoleLabel($userRole)); ?> · <?php echo date('Y-m-d H:i:s'); ?> <?php echo date('T'); ?></span>
+                <span class="footer-meta" title="<?php echo safeHtml(date('Y-m-d H:i:s') . ' ' . date('T')); ?>">
+                    VOUCHMORPH · <?php echo safeHtml($orgName); ?> ·
+                    <span class="footer-meta-role">Role: <?php echo safeHtml(getRoleLabel($userRole)); ?> ·</span>
+                    <?php echo date('H:i'); ?> <?php echo date('T'); ?>
+                </span>
             </div>
         </footer>
     </div>
-
     <script>
         (function () {
             var body = document.body;
@@ -30,7 +44,6 @@
                 body.classList.toggle('sidebar-collapsed');
                 localStorage.setItem('vm_sidebar_collapsed', body.classList.contains('sidebar-collapsed') ? '1' : '0');
             });
-
             // Mobile drawer: separate from the desktop collapsed/expanded
             // state above — below the 860px breakpoint the sidebar is an
             // off-canvas panel, closed by default, opened by the
@@ -43,7 +56,6 @@
             document.querySelectorAll('.sidebar .nav-link, .sidebar .btn-create').forEach(function (el) {
                 el.addEventListener('click', closeMobileMenu);
             });
-
             var themeBtn = document.getElementById('themeBtn');
             var themeIcon = document.getElementById('themeIcon');
             var sunSvg = <?php echo json_encode(svgIcon('sun')); ?>;
@@ -64,4 +76,3 @@
             syncThemeIcon();
         })();
     </script>
-
