@@ -327,6 +327,13 @@ if ($currentSection === 'auth' && preg_match('/^    ([a-z_]+): (.+)$/', $line, $
         return '';
     }
 
+    protected function isMutualTlsAuth(): bool
+    {
+        return strtoupper($this->yamlAuth['type'] ?? '') === 'MUTUAL_TLS';
+    }
+ 
+
+ 
     protected function getApiKey(): ?string
     {
         if ($this->yamlAuth && isset($this->yamlAuth['secret_source']['name'])) {
@@ -1335,47 +1342,61 @@ return [
     ];
 }
     public function getBalance(array $payload): array
-    {
-        error_log("=== GENERIC BANK CLIENT: getBalance ===");
-        
-        $payload = $this->addSourceIdentifier($payload);
-        
-        if (isset($payload['pin']) && !empty($payload['pin'])) {
-            $payload['wallet_pin'] = $payload['pin'];
-            error_log("[GenericBankClient] PIN found for balance check");
-        } elseif (isset($payload['wallet_pin']) && !empty($payload['wallet_pin'])) {
-            $payload['pin'] = $payload['wallet_pin'];
-            error_log("[GenericBankClient] wallet_pin found for balance check");
-        }
-        
-        $accessToken = $payload['access_token'] ?? null;
-        $result = $this->send('get_balance', $payload, $accessToken);
-        
-        if ($result['success'] && isset($result['data'])) {
-            $data = $result['data'];
-            
-            if (isset($data['data']) && is_array($data['data'])) {
-                $result['data'] = $data['data'];
-                $balance = $result['data']['balance'] ?? $result['data']['available_balance'] ?? 0;
-                error_log("[GenericBankClient] Balance from nested data: {$balance}");
-            } elseif (isset($data['balance'])) {
-                $balance = $data['balance'];
-                error_log("[GenericBankClient] Balance from top-level data: {$balance}");
-            } elseif (isset($data['available_balance'])) {
-                $balance = $data['available_balance'];
-                error_log("[GenericBankClient] Balance from available_balance: {$balance}");
-            }
-            
-            if (!isset($result['data']['balance']) && isset($balance)) {
-                $result['data']['balance'] = $balance;
-            }
-            if (!isset($result['data']['available_balance']) && isset($balance)) {
-                $result['data']['available_balance'] = $balance;
-            }
-        }
-        
-        return $result;
+{
+    error_log("=== GENERIC BANK CLIENT: getBalance ===");
+    
+    $payload = $this->addSourceIdentifier($payload);
+    
+    // FIX: getBalance() was the one action in this class that never
+    // signed its payload for ANY institution -- confirmed live via
+    // "Payload has certificate: NO" on every single balance check
+    // across every institution, all session. For institutions that
+    // require MUTUAL_TLS (currently: ZURUBANK only), this left the
+    // balance endpoint reachable with no cryptographic credential
+    // at all, while placeHold()/debitFunds() on the same
+    // institution correctly require a valid signature. Signing
+    // here closes that gap without touching any other action or
+    // any other institution's behavior.
+    if ($this->isMutualTlsAuth()) {
+        $payload = $this->createSignedPayload($payload, 'VOUCHMORPH');
     }
+    
+    if (isset($payload['pin']) && !empty($payload['pin'])) {
+        $payload['wallet_pin'] = $payload['pin'];
+        error_log("[GenericBankClient] PIN found for balance check");
+    } elseif (isset($payload['wallet_pin']) && !empty($payload['wallet_pin'])) {
+        $payload['pin'] = $payload['wallet_pin'];
+        error_log("[GenericBankClient] wallet_pin found for balance check");
+    }
+    
+    $accessToken = $payload['access_token'] ?? null;
+    $result = $this->send('get_balance', $payload, $accessToken);
+    
+    if ($result['success'] && isset($result['data'])) {
+        $data = $result['data'];
+        
+        if (isset($data['data']) && is_array($data['data'])) {
+            $result['data'] = $data['data'];
+            $balance = $result['data']['balance'] ?? $result['data']['available_balance'] ?? 0;
+            error_log("[GenericBankClient] Balance from nested data: {$balance}");
+        } elseif (isset($data['balance'])) {
+            $balance = $data['balance'];
+            error_log("[GenericBankClient] Balance from top-level data: {$balance}");
+        } elseif (isset($data['available_balance'])) {
+            $balance = $data['available_balance'];
+            error_log("[GenericBankClient] Balance from available_balance: {$balance}");
+        }
+        
+        if (!isset($result['data']['balance']) && isset($balance)) {
+            $result['data']['balance'] = $balance;
+        }
+        if (!isset($result['data']['available_balance']) && isset($balance)) {
+            $result['data']['available_balance'] = $balance;
+        }
+    }
+    
+    return $result;
+}
 
     // ============================================================================
     // DESTINATION METHODS - STANDARDIZED
@@ -2084,32 +2105,40 @@ return [
     }
 
     protected function buildHeaders(array $payload, ?string $accessToken = null): array
-    {
-        $headers = ['Content-Type: application/json'];
-        $headers[] = 'Accept: application/json';
-        $headers[] = 'Accept-Encoding: gzip, deflate';
-        
-        if ($this->detectedFormat) {
-            $headers[] = 'X-Detected-Format: ' . $this->detectedFormat;
-        }
-        
-        if ($accessToken) {
-            $headers[] = 'Authorization: Bearer ' . $accessToken;
-        }
-        
-        if (isset($payload['reference'])) {
-            $headers[] = 'X-Correlation-ID: ' . $payload['reference'];
-        }
-        
+{
+    $headers = ['Content-Type: application/json'];
+    $headers[] = 'Accept: application/json';
+    $headers[] = 'Accept-Encoding: gzip, deflate';
+    
+    if ($this->detectedFormat) {
+        $headers[] = 'X-Detected-Format: ' . $this->detectedFormat;
+    }
+    
+    if ($accessToken) {
+        $headers[] = 'Authorization: Bearer ' . $accessToken;
+    }
+    
+    if (isset($payload['reference'])) {
+        $headers[] = 'X-Correlation-ID: ' . $payload['reference'];
+    }
+    
+    // MUTUAL_TLS institutions authenticate via the signed
+    // certificate embedded in the request body (see getBalance()
+    // and createSignedPayload() elsewhere in this class) -- sending
+    // an API-key header alongside that is unnecessary and, if
+    // getApiKey()'s fallback chain happens to resolve to some
+    // unrelated env var, actively misleading in logs/audits.
+    if (!$this->isMutualTlsAuth()) {
         $apiKey = $this->getApiKey();
         if ($apiKey) {
             $authConfig = $this->config['auth'] ?? [];
             $headerName = $authConfig['header_name'] ?? 'X-API-Key';
             $headers[] = $headerName . ': ' . $apiKey;
         }
-        
-        return $headers;
     }
+    
+    return $headers;
+}
 
     private function generateReference(): string
     {
