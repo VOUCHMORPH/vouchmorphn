@@ -240,7 +240,15 @@ MTN:
 
 # ------------------------------------------------------------
 FNBB_ACQUIRER:
-  base_url: "https://api.fnbbotswana.co.bw/acquiring/v1"
+  base_url: "https://zurubank-production.up.railway.app/Backend/api"
+  # TEMPORARY stand-in — real FNBB block below, commented, ready to
+  # restore once sandbox access comes through:
+  #
+  # base_url: "https://api.fnbbotswana.co.bw/acquiring/v1"
+  # auth:
+  #   type: API_KEY
+  #   header_name: "X-API-Key"
+  #   secret_source: { type: env_var, name: "FNBB_ACQUIRER_API_KEY" }
 
   auth:
     type: API_KEY
@@ -251,14 +259,13 @@ FNBB_ACQUIRER:
 
   endpoints:
     source:
-      verify_asset: "/preauth"
-      place_hold: "/authorize"
-      debit_funds: "/capture"
-      release_hold: "/void"
+      verify_asset: "/preauth.php"
+      place_hold: "/authorize.php"
+      debit_funds: "/capture.php"
+      release_hold: "/void.php"
       get_balance: "/n-a"
-
     destination_deposit:
-      process_deposit: "/card-load"
+      process_deposit: "/card-load.php"
 
   retry_policy:
     max_retries: 3
