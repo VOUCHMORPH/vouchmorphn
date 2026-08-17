@@ -159,19 +159,19 @@ CAZACOM:
     secret_source: { type: env_var, name: "UPSTREAM_CAZACOM_KEY" }
   endpoints:
     source:
-      verify_asset: "/api/v1/mno/verify_wallet"
-      place_hold: "/api/v1/mno/hold"
-      debit_funds: "/api/v1/mno/debit"
-      release_hold: "/api/v1/mno/release_hold"
-      get_balance: "/api/v1/mno/balance"
+      verify_asset: "/api/v1/mno/verify_wallet.php"
+      place_hold: "/api/v1/mno/hold.php"
+      debit_funds: "/api/v1/mno/debit.php"
+      release_hold: "/api/v1/mno/release_hold.php"
+      get_balance: "/api/v1/mno/balance.php"
       get_transactions: "/api/v1/mno/transactions"
     destination_cashout:
       generate_token: "/api/v1/mno/generate_code"
       verify_token: "/api/v1/mno/verify_code"
-      confirm_cashout: "/api/v1/mno/confirm_cashout"
+      confirm_cashout: "/api/v1/mno/confirm_cashout.php"
     destination_deposit:
-      process_deposit: "/api/v1/mno/credit"
-      verify_account: "/api/v1/mno/verify_wallet"
+      process_deposit: "/api/v1/mno/credit.php"
+      verify_account: "/api/v1/mno/verify_wallet.php"
     internal:
       sweep: "/api/v1/mno/internal/sweep"
     common:
