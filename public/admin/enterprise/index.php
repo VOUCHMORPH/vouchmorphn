@@ -1,7 +1,7 @@
 <?php
 /**
  * enterprise/index.php - VouchMorph Enterprise Client Dashboard
- * Professional 2-column grid layout with perfect alignment
+ * Professional 2-column grid layout - ALL functionality preserved
  */
 
 // ============================================================
@@ -668,9 +668,9 @@ if ($isReadOnly) {
         </div>
     </div>
 
-    <!-- TWO-COLUMN LAYOUT: RECENT BATCHES + RECENT ACTIVITY -->
+    <!-- TWO-COLUMN LAYOUT: LEFT = Attention + Batches, RIGHT = Activity -->
     <div class="panel-grid" id="attention">
-        <!-- LEFT COLUMN: Needs Your Attention + Recent Batches -->
+        <!-- LEFT COLUMN (7 columns) -->
         <div class="col-7">
             <!-- Needs Your Attention -->
             <div class="panel" style="margin-bottom:var(--space-4);">
@@ -698,6 +698,9 @@ if ($isReadOnly) {
                     </div>
                     <?php endforeach; endif; ?>
                 </div>
+                <div class="panel-foot">
+                    <a href="batches/index.php?status=all">View All Batches <?php echo svgIcon('arrow'); ?></a>
+                </div>
             </div>
 
             <!-- Recent Batches -->
@@ -707,7 +710,7 @@ if ($isReadOnly) {
                     <span class="card-title">Recent Batches</span>
                     <?php if ($canCreate && $setupReady): ?>
                     <div class="card-actions">
-                        <a href="imports/source_input.php" class="btn btn-sm btn-primary">New</a>
+                        <a href="imports/source_input.php" class="btn btn-sm btn-primary">New Batch</a>
                         <a href="batches/index.php?status=all" class="btn btn-sm btn-outline">View All</a>
                     </div>
                     <?php endif; ?>
@@ -716,7 +719,7 @@ if ($isReadOnly) {
                 <div class="empty-state">
                     <p>No batches found. Create your first batch to get started.</p>
                     <?php if ($canCreate && !$setupReady): ?>
-                    <p style="font-size:12px;color:var(--ink-300);margin-top:var(--space-2);">Waiting on setup.</p>
+                    <p style="font-size:12px;color:var(--ink-300);margin-top:var(--space-2);">Waiting on setup (team, department, source account).</p>
                     <?php endif; ?>
                 </div>
                 <?php else: ?>
@@ -726,8 +729,11 @@ if ($isReadOnly) {
                             <tr>
                                 <th>Reference</th>
                                 <th>Name</th>
+                                <th>Source</th>
                                 <th>Amount</th>
+                                <th>Dest.</th>
                                 <th>Status</th>
+                                <th>Created</th>
                                 <th>Action</th>
                             </tr>
                         </thead>
@@ -736,19 +742,25 @@ if ($isReadOnly) {
                         <tr>
                             <td><strong><?php echo safeHtml($batch['batch_reference']); ?></strong></td>
                             <td><?php echo safeHtml($batch['batch_name'] ?? '—'); ?></td>
+                            <td><?php echo safeHtml($batch['source_institution'] ?? '—'); ?></td>
                             <td><?php echo formatCurrency($batch['total_amount'] ?? 0, $orgCurrency); ?></td>
+                            <td><?php echo number_format($batch['total_destinations'] ?? 0); ?></td>
                             <td><span class="status status-<?php echo getStatusClass($batch['status']); ?>"><?php echo getStatusLabel($batch['status']); ?></span></td>
+                            <td><?php echo date('Y-m-d H:i', strtotime($batch['created_at'] ?? 'now')); ?></td>
                             <td><a href="imports/review_batch.php?batch_id=<?php echo $batch['id']; ?>" class="btn btn-sm btn-outline">Open</a></td>
                         </tr>
                         <?php endforeach; ?>
                         </tbody>
                     </table>
                 </div>
+                <div class="panel-foot" style="margin:var(--space-4) calc(var(--card-padding) * -1) calc(var(--card-padding) * -1);">
+                    <a href="batches/index.php?status=all">View More <?php echo svgIcon('arrow'); ?></a>
+                </div>
                 <?php endif; ?>
             </div>
         </div>
 
-        <!-- RIGHT COLUMN: Recent Activity -->
+        <!-- RIGHT COLUMN (5 columns) - Recent Activity -->
         <div class="col-5">
             <div class="panel" style="height:100%;">
                 <div class="panel-head">
