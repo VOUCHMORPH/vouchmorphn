@@ -1677,10 +1677,17 @@ class CardService
         $currency = $sources[0]['currency'] ?? 'BWP';
 
         foreach ($sources as $source) {
-            $balance = $swapService->getSourceAvailableBalance($source);
-            if ($balance <= 0) {
-                throw new RuntimeException("Source {$source['institution']} has no available balance to hook");
-            }
+            $balanceInfo = $swapService->getSourceAvailableBalanceDetailed($source);
+$balance = $balanceInfo['balance'];
+
+if ($balance <= 0) {
+    $message = $balanceInfo['is_synthetic']
+        ? "Source {$source['institution']} has no configured authorization ceiling — "
+          . "check card_acquirer.max_single_auth_amount in participants.yaml. This is a "
+          . "config gap for a card acquirer, not evidence the customer lacks funds."
+        : "Source {$source['institution']} has no available balance to hook";
+    throw new RuntimeException($message);
+}
 
             // The source owner authorizes a specific amount at hook time
             // — this is a deliberate cap, never a silent "hold everything"
