@@ -44,6 +44,7 @@ ATM:
   category: ATM
   delivery_modes:
     - cashout
+    - deposit
   hold_required: true
   hold_expiry_seconds: 300
   reversal_window_seconds: 1800
@@ -232,6 +233,62 @@ CARD:
       max: 2034
       placeholder: "YYYY"
       help_text: "Expiry year"
+
+# ------------------------------------------------------------
+# VISA_MASTERCARD_CARD - Visa/Mastercard card (card network source)
+# ------------------------------------------------------------
+VISA_MASTERCARD_CARD:
+  category: CARD_NETWORK_SOURCE
+  delivery_modes:
+    - cashout
+    - deposit
+  hold_required: true
+  hold_expiry_seconds: 604800
+  reversal_window_seconds: 15552000
+  partial_debit_allowed: true
+
+  ui:
+    icon: "💳"
+    display_name: "Visa/Mastercard"
+    color: "#1A1F71"
+    description: "Visa or Mastercard card (any issuing bank) — distinct from VouchMorph's own vaulted CARD type"
+
+  fields:
+    - name: card_token
+      label: "Card"
+      type: text
+      required: true
+      vault_field: token
+      help_text: "Produced by the acquirer's tokenization step — raw PAN never stored. This same field name (card_token) is what SwapService's extractDestinationIdentifier()/processDepositWithProof() patches now consistently populate for CARD sources AND destinations."
+
+    - name: cvv
+      label: "CVV"
+      type: password
+      required: true
+      vault_field: cvv
+      min_length: 3
+      max_length: 4
+      help_text: "Used ONCE at authorization time. Never stored — see CardAcquirerBankClient::stripCvvAfterUse()."
+
+    - name: expiry_month
+      label: "Expiry Month"
+      type: number
+      required: true
+      min: 1
+      max: 12
+
+    - name: expiry_year
+      label: "Expiry Year"
+      type: number
+      required: true
+      min: 2024
+      max: 2040
+
+    - name: last4
+      label: "Last 4 Digits"
+      type: text
+      required: false
+      help_text: "Display only"
 
 # ------------------------------------------------------------
 # POSTAL-ORDER - Postal money order
