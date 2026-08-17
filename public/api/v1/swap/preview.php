@@ -12,6 +12,15 @@ declare(strict_types=1);
  *  - No more silent '?? "BWP"' currency fallback — if the country
  *    config doesn't specify a currency, that's an error, not a
  *    quiet default that masks a config problem.
+ *  - USER_SPECIFIED contribution strategy now keys per-source amounts
+ *    by institution+identifier instead of institution alone. Keying
+ *    by institution alone silently collapsed multiple sources at the
+ *    same institution to a single value — confirmed live: two
+ *    distinct ABSA sources with amounts 30 and 20 both resolved to
+ *    the same (second, overwriting) value on lookup, producing a
+ *    reported total of 40 instead of the requested 50. See matching
+ *    fix in ContributionCalculator::calculateUserSpecifiedFlexible(),
+ *    which must use the same composite key on the reading side.
  */
 require_once __DIR__ . '/../../../../vendor/autoload.php';
 require_once __DIR__ . '/../../../../src/bootstrap.php';
@@ -257,8 +266,21 @@ try {
             $userSpecified = null;
             if ($strategy === 'USER_SPECIFIED') {
                 $userSpecified = [];
+                // FIX: previously keyed by institution alone
+                // ($userSpecified[$source['institution']] = amount),
+                // which silently collapsed multiple sources at the same
+                // institution to a single value — confirmed live: two
+                // distinct ABSA sources with amounts 30 and 20 both
+                // resolved to the SAME (second, overwriting) value on
+                // lookup, producing a reported total of 40 instead of
+                // the requested 50. Keyed by institution+identifier
+                // instead, which is unique per source even when
+                // institution repeats. ContributionCalculator's
+                // calculateUserSpecifiedFlexible() uses the same
+                // composite key on the reading side — see fix there.
                 foreach ($sources as $idx => $source) {
-                    $userSpecified[$source['institution']] = (float)($source['amount'] ?? 0);
+                    $compositeKey = ($source['institution'] ?? '') . '|' . ($source['identifier'] ?? '');
+                    $userSpecified[$compositeKey] = (float)($source['amount'] ?? 0);
                 }
             }
 
