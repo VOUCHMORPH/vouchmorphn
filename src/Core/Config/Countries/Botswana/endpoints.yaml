@@ -156,8 +156,7 @@ CAZACOM:
   auth:
     type: API_KEY
     header_name: "X-API-KEY"
-    secret_source: { type: env_var, name: "CAZACOM_VOUCHMORPH_API_KEY" }
-
+    secret_source: { type: env_var, name: "UPSTREAM_CAZACOM_KEY" }
   endpoints:
     source:
       verify_asset: "/api/v1/mno/verify_wallet"
