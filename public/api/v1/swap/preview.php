@@ -21,6 +21,17 @@ declare(strict_types=1);
  *    reported total of 40 instead of the requested 50. See matching
  *    fix in ContributionCalculator::calculateUserSpecifiedFlexible(),
  *    which must use the same composite key on the reading side.
+ *  - NEW: single-source swaps (no 'sources' array — the DEPOSIT /
+ *    CASHOUT / IDENTITY / MULTI_DESTINATION shape) now actually check
+ *    the source's balance before returning a preview. Previously the
+ *    ONLY place this file ever called GenericBankClient::getBalance()
+ *    was inside the `if ($isMultiSource)` block — a single-source
+ *    swap skips that block entirely and went straight to fee
+ *    calculation, so a source with a real balance of 0.00 returned
+ *    success:true with no rejection at all. Confirmed live with a
+ *    dedicated zero-balance test account. This mirrors the same
+ *    balance-fetch pattern already used for multi-source, and throws
+ *    the same style of exception on insufficiency.
  */
 require_once __DIR__ . '/../../../../vendor/autoload.php';
 require_once __DIR__ . '/../../../../src/bootstrap.php';
@@ -43,16 +54,6 @@ ini_set('display_errors', 0);
 ini_set('log_errors', 1);
 error_reporting(E_ALL);
 
-/**
- * Validates the provided key against the single configured
- * VOUCHMORPH_API_KEY using a constant-time comparison.
- *
- * Previously this compared against *every* environment variable
- * whose name matched /KEY|API|TOKEN|SECRET/i OR whose value was
- * >= 32 characters — which meant DB passwords, session secrets,
- * JWT signing keys, etc. were all silently accepted as valid API
- * keys. That is not acceptable in a regulated environment.
- */
 function isValidApiKey(?string $providedKey): bool {
     $validKey = getenv('VOUCHMORPH_API_KEY') ?: '';
 
@@ -129,10 +130,6 @@ try {
         throw new Exception('Country configuration not found', 500);
     }
 
-    // PATCHED: previously '?? "BWP"' — if a country's config is
-    // missing a currency, that's a data problem in that country's
-    // config file and should surface as an error, not silently
-    // charge/display everything in Botswana Pula.
     if (empty($countryConfig['currency'])) {
         error_log("[PREVIEW] CRITICAL: Resolved country config has no 'currency' field: " . json_encode($countryConfig));
         throw new Exception('Country configuration is missing a currency field', 500);
@@ -140,18 +137,12 @@ try {
     $currency = $countryConfig['currency'];
     $participants = $countryConfig['participants'] ?? [];
 
-    // ============================================================
-    // DATABASE CONNECTION
-    // ============================================================
     $db = DBConnection::getConnection();
     if (!$db) {
         throw new Exception("Database connection failed");
     }
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
-    // ============================================================
-    // DETECT MULTI-SOURCE
-    // ============================================================
     $isMultiSource = isset($input['sources']) && is_array($input['sources']) && count($input['sources']) > 1;
     $swapType = $input['swap_type'] ?? 'CASHOUT';
     $amount = (float)($input['amount'] ?? 0);
@@ -161,13 +152,14 @@ try {
     $destinationCurrency = $input['destination_currency'] ?? $sourceCurrency;
     $strategy = $input['contribution_strategy'] ?? 'RATIO';
 
-    // ============================================================
-    // MULTI-SOURCE: GET BALANCES & CALCULATE CONTRIBUTIONS
-    // ============================================================
     $sourceContributions = [];
     $sourceBalances = [];
     $totalAvailableBalance = 0;
     $multiSourceBreakdown = null;
+
+    // Populated by the single-source branch below when it runs, so the
+    // same has_sufficient_balance data can be exposed on the response.
+    $singleSourceBalanceCheck = null;
 
     if ($isMultiSource) {
         error_log("[PREVIEW] Multi-Source detected: " . count($input['sources']) . " sources");
@@ -175,7 +167,6 @@ try {
         $sources = $input['sources'];
         $totalRequested = $amount;
 
-        // Step 1: Get balances for each source
         foreach ($sources as $idx => $source) {
             $inst = $source['institution'] ?? '';
             $identifier = $source['identifier'] ?? '';
@@ -190,7 +181,6 @@ try {
                 throw new Exception("Source " . ($idx + 1) . " missing identifier");
             }
 
-            // Get participant config
             $participant = null;
             foreach ($participants as $code => $p) {
                 if (strtoupper($code) === strtoupper($inst)) {
@@ -203,7 +193,6 @@ try {
                 throw new Exception("Participant not found: {$inst}");
             }
 
-            // Get balance from source institution
             $balance = 0;
             $balanceError = null;
 
@@ -247,11 +236,9 @@ try {
             $totalAvailableBalance += $balance;
         }
 
-        // Step 2: Calculate contributions using ContributionCalculator
         $calculator = new ContributionCalculator();
 
         try {
-            // Build sources array for calculator
             $calculatorSources = [];
             foreach ($sourceBalances as $sb) {
                 $calculatorSources[] = [
@@ -262,22 +249,9 @@ try {
                 ];
             }
 
-            // Calculate contributions
             $userSpecified = null;
             if ($strategy === 'USER_SPECIFIED') {
                 $userSpecified = [];
-                // FIX: previously keyed by institution alone
-                // ($userSpecified[$source['institution']] = amount),
-                // which silently collapsed multiple sources at the same
-                // institution to a single value — confirmed live: two
-                // distinct ABSA sources with amounts 30 and 20 both
-                // resolved to the SAME (second, overwriting) value on
-                // lookup, producing a reported total of 40 instead of
-                // the requested 50. Keyed by institution+identifier
-                // instead, which is unique per source even when
-                // institution repeats. ContributionCalculator's
-                // calculateUserSpecifiedFlexible() uses the same
-                // composite key on the reading side — see fix there.
                 foreach ($sources as $idx => $source) {
                     $compositeKey = ($source['institution'] ?? '') . '|' . ($source['identifier'] ?? '');
                     $userSpecified[$compositeKey] = (float)($source['amount'] ?? 0);
@@ -291,7 +265,6 @@ try {
                 $userSpecified
             );
 
-            // Build contribution breakdown
             $sourceContributions = [];
             foreach ($contributions as $idx => $contribution) {
                 $source = $contribution['source'];
@@ -312,7 +285,6 @@ try {
                 ];
             }
 
-            // Verify total matches
             $totalContributions = array_sum(array_column($sourceContributions, 'contribution_amount'));
 
             if (abs($totalContributions - $totalRequested) > 0.01) {
@@ -326,7 +298,6 @@ try {
                 }
             }
 
-            // Build multi-source breakdown
             $multiSourceBreakdown = [
                 'strategy' => $strategy,
                 'total_requested' => $totalRequested,
@@ -342,7 +313,6 @@ try {
                 ]
             ];
 
-            // Update amount to total contributions for fee calculation
             $amount = $totalContributions;
 
             error_log("[PREVIEW] Multi-Source contributions calculated: " . json_encode($sourceContributions));
@@ -351,11 +321,95 @@ try {
             error_log("[PREVIEW] Contribution calculation error: " . $e->getMessage());
             throw new Exception("Contribution calculation failed: " . $e->getMessage());
         }
+    } elseif ($sourceInst && !empty($input['source_identifier'])) {
+        // ============================================================
+        // SINGLE-SOURCE: GET BALANCE & VALIDATE SUFFICIENCY
+        //
+        // NEW - this branch did not exist before. A single-source swap
+        // (DEPOSIT / CASHOUT / IDENTITY / MULTI_DESTINATION - anything
+        // without a 'sources' array) previously skipped straight to fee
+        // calculation with zero balance verification of any kind,
+        // because the only getBalance() call in this whole file lived
+        // inside the `if ($isMultiSource)` block above. A source with
+        // a real balance of 0.00 would return success:true regardless.
+        //
+        // Mirrors the multi-source balance-fetch call exactly (same
+        // GenericBankClient usage, same payload shape) and throws the
+        // same style of "insufficient balance" exception on failure,
+        // so callers get a consistent error shape regardless of
+        // whether the swap is single- or multi-source.
+        // ============================================================
+        $singleSourceAssetType = $input['asset_type'] ?? 'ACCOUNT';
+        $singleSourceIdentifier = $input['source_identifier'];
+
+        $participant = null;
+        foreach ($participants as $code => $p) {
+            if (strtoupper($code) === strtoupper($sourceInst)) {
+                $participant = $p;
+                break;
+            }
+        }
+
+        if (!$participant) {
+            throw new Exception("Participant not found: {$sourceInst}");
+        }
+
+        $balance = 0;
+        $balanceError = null;
+
+        try {
+            $bankClient = new GenericBankClient($participant);
+
+            $balancePayload = [
+                'action' => 'GET_BALANCE',
+                'asset_type' => $singleSourceAssetType,
+                'source_identifier' => $singleSourceIdentifier,
+                'currency' => $sourceCurrency,
+                'reference' => 'BALANCE_CHECK_' . time()
+            ];
+
+            $balanceResult = $bankClient->getBalance($balancePayload);
+
+            if ($balanceResult['success'] ?? false) {
+                $balance = (float)($balanceResult['data']['balance'] ?? 0);
+                error_log("[PREVIEW] Single-source {$sourceInst} balance: {$balance} {$sourceCurrency}");
+            } else {
+                $balanceError = $balanceResult['message'] ?? 'Unknown error';
+                error_log("[PREVIEW] Failed to get single-source balance for {$sourceInst}: {$balanceError}");
+            }
+        } catch (Exception $e) {
+            $balanceError = $e->getMessage();
+            error_log("[PREVIEW] Single-source balance check exception for {$sourceInst}: " . $e->getMessage());
+        }
+
+        $singleSourceBalanceCheck = [
+            'institution' => $sourceInst,
+            'identifier' => $singleSourceIdentifier,
+            'asset_type' => $singleSourceAssetType,
+            'available_balance' => $balance,
+            'requested_amount' => $amount,
+            'balance_checked' => $balanceError === null,
+            'has_sufficient_balance' => $balance >= $amount,
+            'balance_error' => $balanceError
+        ];
+
+        // A balance-fetch failure (network/auth error) is treated the
+        // same as balance=0 here - same convention the multi-source
+        // path already uses - so an unreachable source fails closed
+        // rather than silently passing through.
+        if ($balance < $amount - 0.01) {
+            throw new Exception(
+                sprintf(
+                    "Insufficient balance for %s (%.2f) for requested amount (%.2f)%s",
+                    $sourceInst,
+                    $balance,
+                    $amount,
+                    $balanceError ? ": {$balanceError}" : ''
+                )
+            );
+        }
     }
 
-    // ============================================================
-    // FEE CALCULATION
-    // ============================================================
     $feePayload = [
         'amount' => $amount,
         'currency' => $sourceCurrency,
@@ -401,9 +455,6 @@ try {
     $generateCodeFee = $destinationSplit['generate_code_fee'] ?? 0;
     $cashoutCompletionFee = $destinationSplit['cashout_completion_fee'] ?? 0;
 
-    // ============================================================
-    // BUILD PREVIEW RESPONSE
-    // ============================================================
     $preview = [
         'success' => true,
         'preview' => [
@@ -435,19 +486,18 @@ try {
         ]
     ];
 
-    // ============================================================
-    // ADD MULTI-SOURCE DETAILS TO PREVIEW
-    // ============================================================
+    if ($singleSourceBalanceCheck) {
+        $preview['preview']['balance_check'] = $singleSourceBalanceCheck;
+    }
+
     if ($isMultiSource && $multiSourceBreakdown) {
         $preview['preview']['multi_source'] = $multiSourceBreakdown;
 
-        // Add per-source fee breakdown
         $perSourceFees = [];
         $totalPerSourceFees = 0;
 
         foreach ($sourceContributions as $idx => $contrib) {
             $sourceAmount = $contrib['contribution_amount'];
-            // Calculate fee proportionally for this source
             $sourceFee = ($amount > 0) ? ($sourceAmount / $amount) * $totalFee : 0;
             $totalPerSourceFees += $sourceFee;
 
@@ -466,7 +516,6 @@ try {
         $preview['preview']['multi_source']['per_source_fees'] = $perSourceFees;
         $preview['preview']['multi_source']['total_per_source_fees'] = round($totalPerSourceFees, 2);
 
-        // Add contribution strategy description
         $strategyDescriptions = [
             'RATIO' => 'Contributions are proportional to each source\'s available balance',
             'DRAIN_SMALLEST' => 'Smallest balances are drained first, then next smallest',
@@ -474,7 +523,6 @@ try {
         ];
         $preview['preview']['multi_source']['strategy_description'] = $strategyDescriptions[$strategy] ?? 'Ratio-based distribution';
 
-        // Add balance check results
         $balanceCheckResults = [];
         foreach ($sourceBalances as $sb) {
             $balanceCheckResults[] = [
@@ -489,7 +537,6 @@ try {
         }
         $preview['preview']['multi_source']['balance_checks'] = $balanceCheckResults;
 
-        // Update summary with multi-source info
         $preview['preview']['summary']['multi_source'] = [
             'source_count' => count($sourceContributions),
             'total_contributions_formatted' => number_format($multiSourceBreakdown['total_contributions'], 2) . ' ' . $sourceCurrency,
@@ -514,9 +561,6 @@ try {
     error_log("[PREVIEW] Error: " . $e->getMessage());
 }
 
-/**
- * Helper to get strategy description
- */
 function getStrategyDescription(string $strategy): string {
     $descriptions = [
         'RATIO' => 'Contributions are proportional to each source\'s available balance',
