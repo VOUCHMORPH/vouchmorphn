@@ -361,6 +361,37 @@ participants:
         identifier_type: "wallet_id"
 
   # ----------------------------------------------------------
+  # FNBB_ACQUIRER - FNBB Card Acquiring (Visa/Mastercard)
+  # ----------------------------------------------------------
+  FNBB_ACQUIRER:
+    provider_code: FNBB_ACQUIRER
+    name: "FNBB Card Acquiring (Visa/Mastercard)"
+    country_code: Botswana
+
+    capabilities:
+      source: true
+      destination: false
+      card_source: true
+
+    card_acquirer:
+      source_enabled: true
+      pre_auth_check: false
+      pre_auth_amount: 1.00
+      max_single_auth_amount: 5000.00
+      authorization_window_seconds: 604800
+      destination_enabled: false
+      max_single_load_amount: 5000.00
+
+    auth:
+      header_name: "X-API-Key"
+      secret_source:
+        type: env_var
+        name: "FNBB_ACQUIRER_API_KEY"
+
+    settlement_confirmation:
+      mode: POLL
+
+  # ----------------------------------------------------------
   # CENTRALSWITCH - National payment switch rail (not an
   # institution — a routing target). No hold_model or
   # settlement_confirmation: the switch settles atomically in
