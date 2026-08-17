@@ -379,6 +379,21 @@ class ContributionCalculator
     
     /**
      * USER_SPECIFIED strategy - User specified exact amounts
+     *
+     * FIX: Previously looked up amounts by institution alone
+     * ($userSpecified[$institution]), which silently collapsed
+     * multiple sources at the same institution to a single value —
+     * confirmed live with two distinct ABSA sources (amounts 30 and
+     * 20), where both resolved to the same overwritten value on
+     * lookup, producing a reported total of 40 instead of 50.
+     *
+     * Now looks up by institution+identifier first (unique per
+     * source even when institution repeats), falling back to
+     * institution-only for backward compatibility with any other
+     * caller (CardService, CardContributionSessionService,
+     * MultiSourceSwapExecutor) that may still build $userSpecified
+     * keyed by institution alone for single-source-per-institution
+     * cases, where the ambiguity this fixes doesn't arise.
      */
     private function calculateUserSpecifiedFlexible(
         float $targetAmount,
@@ -394,7 +409,17 @@ class ContributionCalculator
         
         foreach ($flexibleSources as $index => $source) {
             $institution = $source['source']['institution'] ?? '';
-            $specifiedAmount = $userSpecified[$institution] ?? 0;
+            $identifier = $source['source']['identifier'] ?? $source['source']['source_identifier'] ?? '';
+            $compositeKey = $institution . '|' . $identifier;
+
+            if (array_key_exists($compositeKey, $userSpecified)) {
+                $specifiedAmount = $userSpecified[$compositeKey];
+            } else {
+                // Backward-compat fallback for callers not yet using
+                // composite keys (safe as long as that institution
+                // doesn't appear more than once in this source set).
+                $specifiedAmount = $userSpecified[$institution] ?? 0;
+            }
             
             $actualAmount = min($specifiedAmount, $source['available_balance']);
             $contributions[] = [
