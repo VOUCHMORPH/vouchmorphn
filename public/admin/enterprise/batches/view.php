@@ -701,6 +701,7 @@ $topbarSearchPlaceholder = 'Search batch reference, phone, national ID…';
                     <?php endif; ?>
 
                     <a href="index.php" class="btn btn-outline">📋 All Batches</a>
+                    <a href="export.php?id=<?php echo $batchId; ?>" class="btn btn-outline" target="_blank">📄 Export Details (PDF)</a>
                 </div>
             </div>
 
