@@ -23,31 +23,41 @@
    ============================================================ */
 
 :root {
+    /* ------------------------------------------------------------
+       VS CODE STYLE PASS — thin hairline borders, compact controls,
+       VS Code's own blue (#0E639C buttons / #007ACC status bar),
+       subtle 2px radius, and softer near-black/near-white ink (VS
+       Code never uses pure #000/#FFF for text — #1E1E1E / #CCCCCC).
+       This intentionally REVERSES the earlier "thick 2px pure-black
+       border" pass — VS Code's whole identity is quiet, thin chrome,
+       so stark black 2px borders would fight that look directly.
+       ------------------------------------------------------------ */
     --paper:        #FFFFFF;
     --panel:        #FFFFFF;
-    --sidebar:      #1C2128;
-    --sidebar-ink:       #F2F4F6;
-    --sidebar-ink-muted: #9AA5B1;
-    --sidebar-line:      #333B44;
-    --ink-900:      #1C2128;
-    --ink-700:      #333B44;
-    --ink-500:      #5B6572;
-    --ink-300:      #8B95A1;
-    --line:         #1C2128;
-    --line-strong:  #1C2128;
-    --brass:        #0EA5E9;
-    --brass-tint:   #E0F2FE;
-    --seal-red:     #1C2128;
-    --amber:        #1C2128;
-    --amber-bg:     #F2F2F2;
-    --ledger-green: #1C2128;
-    --green-tint:   #F2F2F2;
-    --blue-tint:    #F2F2F2;
-    --danger:       #1C2128;
-    --danger-bg:    #F2F2F2;
+    --sidebar:      #252526;
+    --sidebar-ink:       #CCCCCC;
+    --sidebar-ink-muted: #969696;
+    --sidebar-line:      #454545;
+    --ink-900:      #1E1E1E;
+    --ink-700:      #3C3C3C;
+    --ink-500:      #616161;
+    --ink-300:      #767676;
+    --line:         #E7E7E7;
+    --line-strong:  #D4D4D4;
+    --brass:        #0E639C;
+    --brass-tint:   #E7F3FB;
+    --seal-red:     #1E1E1E;
+    --amber:        #1E1E1E;
+    --amber-bg:     #F3F3F3;
+    --ledger-green: #1E1E1E;
+    --green-tint:   #F3F3F3;
+    --blue-tint:    #F3F3F3;
+    --danger:       #1E1E1E;
+    --danger-bg:    #F3F3F3;
+    --statusbar:    #007ACC;
 
-    --sidebar-w:    236px;
-    --sidebar-w-collapsed: 68px;
+    --sidebar-w:    220px;
+    --sidebar-w-collapsed: 56px;
     --max-width:    1400px;
 
     /* ------------------------------------------------------------
@@ -64,22 +74,20 @@
     --space-6: 32px;
     --space-7: 48px;
 
-    /* One control height everywhere: nav links, buttons, search bar,
-       form inputs. Was 36px/38px/40px mixed across the file. */
-    --h-control:    36px;
-    --h-control-sm: 28px;
+    /* Compact, VS Code-scale controls — was 36px/28px. */
+    --h-control:    28px;
+    --h-control-sm: 22px;
     --btn-h:        var(--h-control);
     --btn-h-sm:     var(--h-control-sm);
 
-    /* SHARP EDGES: both radii are 0. Kept as named vars (rather than
-       hardcoding 0 everywhere) so a future direction change is a
-       one-line edit, not a file-wide find/replace. */
-    --radius:       0;
-    --radius-sm:    0;
+    /* Subtle 2px radius — VS Code isn't fully sharp, it's just quiet.
+       Was 0 in the previous pass. */
+    --radius:       2px;
+    --radius-sm:    2px;
 
-    /* Border weight unified: cards, panels, inputs, stat cards all use
-       this instead of a mix of 1px/1.5px/2px hairlines. */
-    --border-w:     2px;
+    /* Thin hairline border — was 2px. This is the single biggest lever
+       in making the whole shell read as "VS Code" vs "ledger/stamp." */
+    --border-w:     1px;
 
     --f-body: 'IBM Plex Sans', sans-serif;
     --f-cond: 'IBM Plex Sans Condensed', sans-serif;
@@ -88,19 +96,26 @@
 
 @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
-        --paper: #14181D; --panel: #14181D; --sidebar: #0B0E11;
-        --sidebar-ink: #F2F4F6; --sidebar-ink-muted: #9AA5B1; --sidebar-line: #262B31;
-        --ink-900: #F2F4F6; --ink-700: #D5DADE; --ink-500: #9AA5B1; --ink-300: #6B7580;
-        --line: #F2F4F6; --line-strong: #F2F4F6;
-        --brass: #38BDF8; --brass-tint: #0C2A3A; --green-tint: #1E1E1E; --blue-tint: #1E1E1E; --danger-bg: #1E1E1E; --amber-bg: #1E1E1E;
+        /* VS Code Dark+ theme colors exactly: #1E1E1E editor, #252526
+           side bar (slightly LIGHTER than the editor, not darker — this
+           is authentic VS Code, the sidebar sits a shade above the
+           content in dark mode, unlike the near-black sidebar in the
+           previous pass). */
+        --paper: #1E1E1E; --panel: #1E1E1E; --sidebar: #252526;
+        --sidebar-ink: #CCCCCC; --sidebar-ink-muted: #969696; --sidebar-line: #454545;
+        --ink-900: #CCCCCC; --ink-700: #B3B3B3; --ink-500: #969696; --ink-300: #6B6B6B;
+        --line: #454545; --line-strong: #5A5A5A;
+        --brass: #1F8AD2; --brass-tint: #14304A; --green-tint: #2D2D2D; --blue-tint: #2D2D2D; --danger-bg: #2D2D2D; --amber-bg: #2D2D2D;
+        --statusbar: #007ACC;
     }
 }
 :root[data-theme="dark"] {
-    --paper: #14181D; --panel: #14181D; --sidebar: #0B0E11;
-    --sidebar-ink: #F2F4F6; --sidebar-ink-muted: #9AA5B1; --sidebar-line: #262B31;
-    --ink-900: #F2F4F6; --ink-700: #D5DADE; --ink-500: #9AA5B1; --ink-300: #6B7580;
-    --line: #F2F4F6; --line-strong: #F2F4F6;
-    --brass: #38BDF8; --brass-tint: #0C2A3A; --green-tint: #1E1E1E; --blue-tint: #1E1E1E; --danger-bg: #1E1E1E; --amber-bg: #1E1E1E;
+    --paper: #1E1E1E; --panel: #1E1E1E; --sidebar: #252526;
+    --sidebar-ink: #CCCCCC; --sidebar-ink-muted: #969696; --sidebar-line: #454545;
+    --ink-900: #CCCCCC; --ink-700: #B3B3B3; --ink-500: #969696; --ink-300: #6B6B6B;
+    --line: #454545; --line-strong: #5A5A5A;
+    --brass: #1F8AD2; --brass-tint: #14304A; --green-tint: #2D2D2D; --blue-tint: #2D2D2D; --danger-bg: #2D2D2D; --amber-bg: #2D2D2D;
+    --statusbar: #007ACC;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -110,7 +125,7 @@ body {
     background: var(--paper);
     color: var(--ink-900);
     min-height: 100vh;
-    font-size: 14px;
+    font-size: 13px;
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
     display: flex;
@@ -177,7 +192,7 @@ body.sidebar-collapsed .collapse-btn svg { transform: rotate(180deg); }
     font-family: var(--f-cond); font-weight: 700; font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.05em;
     text-decoration: none; cursor: pointer; white-space: nowrap; overflow: hidden;
 }
-.btn-create:hover { background: #755a2f; border-color: #755a2f; }
+.btn-create:hover { background: #1177BB; border-color: #1177BB; }
 .btn-create.locked { background: var(--sidebar-line); border-color: var(--sidebar-line); color: var(--sidebar-ink-muted); cursor: not-allowed; }
 body.sidebar-collapsed .btn-create span.label { display: none; }
 body.sidebar-collapsed .create-batch-wrap { padding: 0 var(--space-3) var(--space-4); }
@@ -318,11 +333,11 @@ body.sidebar-collapsed .user-meta { display: none; }
 .task-row .when { font-family: var(--f-mono); font-size: 10.5px; color: var(--ink-300); white-space: nowrap; }
 .task-row .cta { margin-top: var(--space-2); display: flex; gap: var(--space-2); }
 .btn-mini { display: inline-flex; align-items: center; height: var(--h-control-sm); padding: 0 var(--space-4); background: var(--brass); color: #fff; border: none; font-family: var(--f-cond); font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; text-decoration: none; cursor: pointer; }
-.btn-mini:hover { background: #755a2f; }
+.btn-mini:hover { background: #1177BB; }
 .btn-mini.outline { background: transparent; border: var(--border-w) solid var(--line-strong); color: var(--ink-700); }
 .btn-mini.outline:hover { border-color: var(--brass); color: var(--brass); background: none; }
 .btn-mini.danger { background: var(--seal-red); }
-.btn-mini.danger:hover { background: #5a1812; }
+.btn-mini.danger:hover { background: #3C3C3C; }
 .btn-mini:disabled, .btn-mini.locked-btn { background: var(--line-strong); color: var(--ink-500); cursor: not-allowed; }
 .empty-row { padding: var(--space-6) var(--space-4); text-align: center; color: var(--ink-300); font-size: 13px; }
 .panel-foot { border-top: var(--border-w) solid var(--line); padding: var(--space-3) var(--space-4); text-align: center; }
