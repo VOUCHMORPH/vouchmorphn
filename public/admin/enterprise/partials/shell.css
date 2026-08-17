@@ -3,7 +3,7 @@
    Strict Layout Engine, Spacing Scale, & Grid Alignments
    ============================================================ */
 
-:root {
+:root { 
     --paper:               #FFFFFF;
     --panel:               #FFFFFF;
     --sidebar:             #252526;
