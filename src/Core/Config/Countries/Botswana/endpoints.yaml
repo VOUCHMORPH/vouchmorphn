@@ -13,7 +13,7 @@ ZURUBANK:
   adapter_class: "GenericFinancialInstitutionAdapter"
 
   auth:
-    type: API_KEY
+    type: MUTUAL_TLS
     header_name: "X-API-KEY"
     secret_source: { type: env_var, name: "ZURUBANK_VOUCHMORPH_API_KEY" }
 
