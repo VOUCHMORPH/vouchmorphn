@@ -13,6 +13,13 @@
  *     (guarded) so most pages don't need their own copy at all
  *   - set: $fullName, $orgName, $userRole, $navItems, $navUtility,
  *     $canCreate, $setupReady
+ *   - set: $currentNavKey (string) — the 'key' of whichever entry in
+ *     $navItems or $navUtility represents THIS page (e.g. 'dashboard',
+ *     'disbursements', 'settings'). This is what actually highlights
+ *     the right nav item — do NOT hardcode 'active' => true/false in
+ *     $navItems itself; that was a real bug (every page copy risked
+ *     forgetting to update it, so multiple pages could show "Dashboard"
+ *     highlighted simultaneously). One string, set once per page.
  *   - optionally set: $topbarSearchShow (bool, default true),
  *     $topbarSearchAction, $topbarSearchName, $topbarSearchPlaceholder,
  *     $topbarSearchValue, $attentionHref (default '#attention'),
@@ -54,6 +61,8 @@ if (!function_exists('svgIcon')) {
             'download' => '<path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 19h16"/>',
             'filter' => '<path d="M4 5h16M7 12h10M10 19h4"/>',
             'check' => '<path d="M4 12l5 5L20 6"/>',
+            'menu' => '<path d="M4 7h16M4 12h16M4 17h16"/>',
+            'mark' => '<path d="M12 2l9 5v10l-9 5-9-5V7z"/><path d="M12 8v8M8.5 10l3.5 2 3.5-2"/>',
         ];
         $path = $icons[$name] ?? $icons['grid'];
         return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' . $path . '</svg>';
@@ -96,13 +105,13 @@ $attentionActive = $attentionActive ?? false;
     <!-- ============================================================ -->
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-head">
-            <div class="brand">
-                <div class="brand-mark"><?php echo svgIcon('bank'); ?></div>
+            <a href="<?php echo safeHtml($basePath . 'index.php'); ?>" class="brand" title="VouchMorph home">
+                <div class="brand-mark"><?php echo svgIcon('mark'); ?></div>
                 <div class="brand-text">
                     <div class="brand-name">VOUCHMORPH</div>
                     <div class="brand-org"><?php echo safeHtml($orgName); ?></div>
                 </div>
-            </div>
+            </a>
             <button type="button" class="collapse-btn" id="collapseBtn" title="Collapse sidebar" aria-label="Collapse sidebar">
                 <?php echo svgIcon('chevron'); ?>
             </button>
@@ -117,8 +126,19 @@ $attentionActive = $attentionActive ?? false;
         </div>
 
         <nav class="sidebar-nav">
-            <?php foreach ($navItems as $item): if (empty($item['show'])) continue; ?>
-            <a href="<?php echo safeHtml($item['href']); ?>" class="nav-link<?php echo !empty($item['active']) ? ' active' : ''; ?>" title="<?php echo safeHtml($item['label']); ?>">
+            <?php foreach ($navItems as $item): if (empty($item['show'])) continue;
+                // FIX: active state is now computed from $currentNavKey (set once,
+                // by the including page, to its own key) rather than trusted from
+                // a hardcoded 'active' => true/false baked into each page's copy of
+                // $navItems. A hardcoded flag is exactly the kind of thing that gets
+                // forgotten when a page is copy-pasted to create a new one — this
+                // page would then permanently show "Dashboard" highlighted no
+                // matter which page you're actually on. Falls back to the item's
+                // own 'active' key only if $currentNavKey was never set, so older
+                // pages that haven't adopted this yet don't silently break.
+                $isActive = isset($currentNavKey) ? ($item['key'] === $currentNavKey) : !empty($item['active']);
+            ?>
+            <a href="<?php echo safeHtml($item['href']); ?>" class="nav-link<?php echo $isActive ? ' active' : ''; ?>" title="<?php echo safeHtml($item['label']); ?>"<?php echo $isActive ? ' aria-current="page"' : ''; ?>>
                 <?php echo svgIcon($item['icon']); ?>
                 <span class="nav-label"><?php echo safeHtml($item['label']); ?></span>
                 <?php if (!empty($item['badge'])): ?><span class="nav-badge"><?php echo (int)$item['badge']; ?></span><?php endif; ?>
@@ -127,8 +147,10 @@ $attentionActive = $attentionActive ?? false;
         </nav>
 
         <div class="sidebar-footer">
-            <?php foreach ($navUtility as $item): if (empty($item['show'])) continue; ?>
-            <a href="<?php echo safeHtml($item['href']); ?>" class="nav-link<?php echo !empty($item['active']) ? ' active' : ''; ?>" title="<?php echo safeHtml($item['label']); ?>">
+            <?php foreach ($navUtility as $item): if (empty($item['show'])) continue;
+                $isActive = isset($currentNavKey) ? ($item['key'] === $currentNavKey) : !empty($item['active']);
+            ?>
+            <a href="<?php echo safeHtml($item['href']); ?>" class="nav-link<?php echo $isActive ? ' active' : ''; ?>" title="<?php echo safeHtml($item['label']); ?>"<?php echo $isActive ? ' aria-current="page"' : ''; ?>>
                 <?php echo svgIcon($item['icon']); ?>
                 <span class="nav-label"><?php echo safeHtml($item['label']); ?></span>
             </a>
@@ -168,7 +190,7 @@ $attentionActive = $attentionActive ?? false;
              coincide. -->
         <div class="topbar">
             <div class="topbar-inner">
-                <button type="button" class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu"><?php echo svgIcon('grid'); ?></button>
+                <button type="button" class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu"><?php echo svgIcon('menu'); ?></button>
                 <?php if ($topbarSearchShow): ?>
                 <div class="topbar-search">
                     <form method="get" action="<?php echo safeHtml($topbarSearchAction); ?>">
