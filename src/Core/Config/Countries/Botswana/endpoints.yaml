@@ -61,7 +61,7 @@ ABSA:
   auth:
     type: API_KEY
     header_name: "X-API-KEY"
-    secret_source: { type: env_var, name: "ABSA_VOUCHMORPH_API_KEY" }
+    secret_source: { type: env_var, name: "ZURUBANK_API_KEY" }
 
   endpoints:
     source:
