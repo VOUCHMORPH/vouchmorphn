@@ -171,7 +171,8 @@ body.sidebar-collapsed .sidebar { width: var(--sidebar-w-collapsed); }
 .sidebar-backdrop { display: none; border: none; }
 
 .sidebar-head { padding: var(--space-5) var(--space-4) var(--space-4); display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-2); }
-.brand { display: flex; align-items: center; gap: var(--space-3); min-width: 0; }
+.brand { display: flex; align-items: center; gap: var(--space-3); min-width: 0; text-decoration: none; }
+.brand:hover .brand-name { color: var(--brass); }
 .brand-mark { width: var(--h-control); height: var(--h-control); flex-shrink: 0; background: var(--sidebar-ink); color: var(--sidebar); display: flex; align-items: center; justify-content: center; }
 .brand-mark svg { width: 20px; height: 20px; }
 .brand-text { min-width: 0; overflow: hidden; }
@@ -414,10 +415,10 @@ details.disclosure summary { cursor: pointer; font-weight: 700; font-size: 12px;
 details.disclosure summary::-webkit-details-marker { display: none; }
 details.disclosure[open] summary { margin-bottom: var(--space-4); }
 
-footer.footer { background: var(--ink-900); color: var(--ink-300); text-align: center; font-size: 11px; padding: var(--space-4) var(--space-6); font-family: var(--f-mono); margin-top: var(--space-2); }
-.footer-status { max-width: var(--max-width); margin: 0 auto; display: flex; justify-content: space-between; flex-wrap: wrap; gap: var(--space-2); }
-.footer-status .ok { color: #8fd4a8; }
-.footer-status .bad { color: #f0a8a3; }
+footer.footer { background: var(--statusbar); color: #fff; text-align: center; font-size: 11px; padding: 3px var(--space-6); font-family: var(--f-body); margin-top: 0; height: 22px; display: flex; align-items: center; }
+.footer-status { max-width: var(--max-width); margin: 0 auto; display: flex; justify-content: space-between; flex-wrap: wrap; gap: var(--space-2); width: 100%; }
+.footer-status .ok { color: #B8E6C9; }
+.footer-status .bad { color: #F5B8B0; }
 
 @media (max-width: 768px) {
     .content { padding: var(--space-4); }
