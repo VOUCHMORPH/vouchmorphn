@@ -32,8 +32,8 @@ ZURUBANK:
     destination_deposit:
       process_deposit: "/api/v1/deposit/direct.php"
       verify_account: "/api/v1/verify_asset.php"
-    internal:                              # NEW SECTION
-      sweep: "/api/v1/internal/sweep.php"  # NEW ENDPOINT — internal transfer between own accounts
+    internal:
+      sweep: "/api/v1/internal/sweep.php"
     common:
       transferWithProof: "/api/v1/transfer.php"
       reverse: "/api/v1/hold.php"
@@ -77,8 +77,8 @@ ABSA:
     destination_deposit:
       process_deposit: "/absa_participant.php?action=process_deposit"
       verify_account: "/absa_participant.php?action=verify_account"
-    internal:                              # NEW SECTION
-      sweep: "/absa_participant.php?action=internal_sweep"  # NEW ENDPOINT
+    internal:
+      sweep: "/absa_participant.php?action=internal_sweep"
     common:
       transferWithProof: "/absa_participant.php?action=process_deposit"
       status: "/absa_participant.php?action=check_status"
@@ -122,8 +122,8 @@ SACCUSSALIS:
     destination_deposit:
       process_deposit: "/api/v1/transaction/credit_funds.php"
       verify_account: "/api/v1/verify_account.php"
-    internal:                              # NEW SECTION
-      sweep: "/api/v1/internal/sweep.php"  # NEW ENDPOINT
+    internal:
+      sweep: "/api/v1/internal/sweep.php"
     common:
       transferWithProof: "/api/v1/transfer.php"
       reverse: "/api/v1/hold.php"
@@ -173,8 +173,8 @@ CAZACOM:
     destination_deposit:
       process_deposit: "/api/v1/mno/credit"
       verify_account: "/api/v1/mno/verify_wallet"
-    internal:                              # NEW SECTION
-      sweep: "/api/v1/mno/internal/sweep"  # NEW ENDPOINT — internal wallet-to-wallet transfer
+    internal:
+      sweep: "/api/v1/mno/internal/sweep"
     common:
       transferWithProof: "/api/v1/mno/transfer"
       reverse: "/api/v1/mno/reverse"
@@ -216,8 +216,8 @@ MTN:
     destination_deposit:
       process_deposit: "/api/mtn_momo_participant.php?action=process_deposit"
       verify_account: "/api/mtn_momo_participant.php?action=wallet_balance"
-    internal:                              # NEW SECTION
-      sweep: "/api/mtn_momo_participant.php?action=internal_sweep"  # NEW ENDPOINT
+    internal:
+      sweep: "/api/mtn_momo_participant.php?action=internal_sweep"
     common:
       transferWithProof: "/api/mtn_momo_participant.php?action=process_deposit"
       status: "/api/mtn_momo_participant.php?action=check_status"
@@ -233,6 +233,33 @@ MTN:
     signature_header: "X-Api-Signature"
     timestamp_header: "X-Api-Timestamp"
     trace_id_prefix: "MTN"
+
+  retry_policy:
+    max_retries: 3
+    retry_delay_ms: 1000
+    retry_on: [timeout, 5xx, network_error]
+
+# ------------------------------------------------------------
+FNBB_ACQUIRER:
+  base_url: "https://api.fnbbotswana.co.bw/acquiring/v1"
+
+  auth:
+    type: API_KEY
+    header_name: "X-API-Key"
+    secret_source:
+      type: env_var
+      name: "FNBB_ACQUIRER_API_KEY"
+
+  endpoints:
+    source:
+      verify_asset: "/preauth"
+      place_hold: "/authorize"
+      debit_funds: "/capture"
+      release_hold: "/void"
+      get_balance: "/n-a"
+
+    destination_deposit:
+      process_deposit: "/card-load"
 
   retry_policy:
     max_retries: 3
@@ -271,7 +298,7 @@ CENTRALSWITCH:
   retry_policy:
     max_retries: 2
     retry_delay_ms: 500
-    retry_on: [timeout, network_error]   # never on 4xx/5xx — those are authoritative rejections
+    retry_on: [timeout, network_error]
 
 # ------------------------------------------------------------
 VOUCHMORPH:
