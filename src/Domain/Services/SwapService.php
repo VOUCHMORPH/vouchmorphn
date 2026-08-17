@@ -328,19 +328,25 @@ private function extractBeneficiaryPartyData(array $payload): array
     }
 
     public function extractDestinationAssetType(array $payload): string
-    {
-        $assetType = strtoupper($payload['destination_asset_type'] ?? 
-                                  $payload['asset_type'] ?? 
-                                  $payload['destination_type'] ?? 
-                                  'WALLET');
-        
-        if (!in_array($assetType, ['ACCOUNT', 'WALLET'])) {
-            error_log("[SwapService] WARNING: Invalid destination_asset_type '{$assetType}', defaulting to WALLET");
-            $assetType = 'WALLET';
-        }
-        
-        return $assetType;
+{
+    $assetType = strtoupper($payload['destination_asset_type'] ?? 
+                              $payload['asset_type'] ?? 
+                              $payload['destination_type'] ?? 
+                              'WALLET');
+    
+    // CARD added deliberately — this is a VISA_MASTERCARD_CARD destination
+    // (card LOAD via CardAcquirerBankClient::processDepositWithProof()),
+    // not VouchMorph's own vaulted CARD system (that's a completely
+    // separate flow through CardService, never through this method).
+    $validTypes = ['ACCOUNT', 'WALLET', 'CARD'];
+    
+    if (!in_array($assetType, $validTypes)) {
+        error_log("[SwapService] WARNING: Invalid destination_asset_type '{$assetType}', defaulting to WALLET");
+        $assetType = 'WALLET';
     }
+    
+    return $assetType;
+}
 
     private function extractSourceIdentifier(array $payload): array
     {
@@ -405,38 +411,43 @@ private function extractBeneficiaryPartyData(array $payload): array
     
     // Set the appropriate identifier type based on asset type
     if ($assetType === 'WALLET') {
-        // For wallets, the identifier is always a phone number
-        $destinationIdentifierType = $payload['destination_identifier_type'] ?? 
-                                     $payload['identifier_type'] ?? 
-                                     'phone';  // ← Default to 'phone' for wallets
-    } elseif ($assetType === 'ACCOUNT') {
-        // For accounts, the identifier is an account number
-        $destinationIdentifierType = $payload['destination_identifier_type'] ?? 
-                                     $payload['identifier_type'] ?? 
-                                     'account_number';  // ← Default to 'account_number' for accounts
-    } else {
-        // For other asset types (CARD, VOUCHER, etc.)
-        $destinationIdentifierType = $payload['destination_identifier_type'] ?? 
-                                     $payload['identifier_type'] ?? 
-                                     'account';  // ← Fallback default
-    }
-    
-    $destinationIdentifier = $payload['destination_identifier'] ?? 
-                             $payload['destination_account'] ?? 
-                             $payload['destination_phone'] ?? 
-                             $payload['destination_national_id'] ?? 
-                             $payload['destination_email'] ?? 
-                             $payload['beneficiary_account'] ?? 
-                             $payload['beneficiary_phone'] ?? 
-                             $payload['beneficiary_identifier'] ?? 
-                             $payload['client_phone'] ?? 
-                             $payload['account_number'] ?? 
-                             $payload['phone'] ?? 
-                             $payload['email'] ?? 
-                             $payload['national_id'] ?? 
-                             $payload['destination']['identifier'] ?? 
-                             null;
-    
+    $destinationIdentifierType = $payload['destination_identifier_type'] ?? 
+                                 $payload['identifier_type'] ?? 
+                                 'phone';
+} elseif ($assetType === 'ACCOUNT') {
+    $destinationIdentifierType = $payload['destination_identifier_type'] ?? 
+                                 $payload['identifier_type'] ?? 
+                                 'account_number';
+} elseif ($assetType === 'CARD') {
+    $destinationIdentifierType = $payload['destination_identifier_type'] ?? 
+                                 $payload['identifier_type'] ?? 
+                                 'card_token';
+} else {
+    $destinationIdentifierType = $payload['destination_identifier_type'] ?? 
+                                 $payload['identifier_type'] ?? 
+                                 'account';
+}
+
+$destinationIdentifier = $payload['destination_identifier'] ?? 
+                         $payload['destination_card_token'] ??      // NEW — checked before
+                                                                     // the generic fallbacks so
+                                                                     // a card token doesn't get
+                                                                     // mistaken for anything else
+                         $payload['destination_account'] ?? 
+                         $payload['destination_phone'] ?? 
+                         $payload['destination_national_id'] ?? 
+                         $payload['destination_email'] ?? 
+                         $payload['beneficiary_account'] ?? 
+                         $payload['beneficiary_phone'] ?? 
+                         $payload['beneficiary_identifier'] ?? 
+                         $payload['client_phone'] ?? 
+                         $payload['account_number'] ?? 
+                         $payload['phone'] ?? 
+                         $payload['email'] ?? 
+                         $payload['national_id'] ?? 
+                         $payload['destination']['identifier'] ?? 
+                         null;
+ 
     if (!empty($destinationIdentifier)) {
         return [
             'identifier' => $destinationIdentifier,
@@ -8451,18 +8462,21 @@ private function recordSettlementPending(
             'user_id' => $payload['user_id'] ?? 0,
         ];
 
-        if ($destId['has_value']) {
-            $creditPayload['destination_identifier'] = $destId['identifier'];
-            $creditPayload['destination_identifier_type'] = $destId['type'];
+      if ($destId['has_value']) {
+    $creditPayload['destination_identifier'] = $destId['identifier'];
+    $creditPayload['destination_identifier_type'] = $destId['type'];
 
-            if ($destinationAssetType === 'ACCOUNT') {
-                $creditPayload['account_number'] = $destId['identifier'];
-                $creditPayload['destination_account'] = $destId['identifier'];
-            } else {
-                $creditPayload['phone'] = $destId['identifier'];
-                $creditPayload['wallet_phone'] = $destId['identifier'];
-            }
-        }
+    if ($destinationAssetType === 'ACCOUNT') {
+        $creditPayload['account_number'] = $destId['identifier'];
+        $creditPayload['destination_account'] = $destId['identifier'];
+    } elseif ($destinationAssetType === 'CARD') {
+        $creditPayload['card_token'] = $destId['identifier'];
+        $creditPayload['destination_card_token'] = $destId['identifier'];
+    } else {
+        $creditPayload['phone'] = $destId['identifier'];
+        $creditPayload['wallet_phone'] = $destId['identifier'];
+    }
+}
 
         $adapter = $this->adapterFactory->getAdapter($institution);
         $result = $adapter->credit($creditPayload, [
@@ -8665,22 +8679,29 @@ private function generateCashoutToken(array $payload, string $institution, float
         }
         
         if ($destId['has_value']) {
-            $depositPayload['destination_identifier'] = $destId['identifier'];
-            $depositPayload['destination_identifier_type'] = $destId['type'];
-            
-            if ($destinationAssetType === 'ACCOUNT') {
-                $depositPayload['account_number'] = $destId['identifier'];
-                $depositPayload['destination_account'] = $destId['identifier'];
-                error_log("[SwapService] Destination is ACCOUNT: {$destId['identifier']}");
-            } else {
-                $depositPayload['phone'] = $destId['identifier'];
-                $depositPayload['wallet_phone'] = $destId['identifier'];
-                $depositPayload['beneficiary_phone'] = $destId['identifier'];
-                error_log("[SwapService] Destination is WALLET: {$destId['identifier']}");
-            }
-        } else {
-            error_log("[SwapService] WARNING: No destination identifier found!");
-        }
+    $depositPayload['destination_identifier'] = $destId['identifier'];
+    $depositPayload['destination_identifier_type'] = $destId['type'];
+    
+    if ($destinationAssetType === 'ACCOUNT') {
+        $depositPayload['account_number'] = $destId['identifier'];
+        $depositPayload['destination_account'] = $destId['identifier'];
+        error_log("[SwapService] Destination is ACCOUNT: {$destId['identifier']}");
+    } elseif ($destinationAssetType === 'CARD') {
+        // Maps onto CardAcquirerBankClient::processDepositWithProof()'s
+        // expected field — that method checks card_token OR
+        // destination_identifier, this sets both for safety.
+        $depositPayload['card_token'] = $destId['identifier'];
+        $depositPayload['destination_card_token'] = $destId['identifier'];
+        error_log("[SwapService] Destination is CARD: {$destId['identifier']}");
+    } else {
+        $depositPayload['phone'] = $destId['identifier'];
+        $depositPayload['wallet_phone'] = $destId['identifier'];
+        $depositPayload['beneficiary_phone'] = $destId['identifier'];
+        error_log("[SwapService] Destination is WALLET: {$destId['identifier']}");
+    }
+} else {
+    error_log("[SwapService] WARNING: No destination identifier found!");
+}
         
         if ($this->currentHoldReference) {
             $depositPayload['hold_reference'] = $this->currentHoldReference;
@@ -10453,6 +10474,46 @@ public function getFeeService(): FeeService
         return $this->validateCashoutAmount($amount, $currency);
     }
 
+/**
+ * Same as getSourceAvailableBalance(), but also reports whether the
+ * returned figure is a REAL queried balance or a synthetic ceiling
+ * (card sources — see CardAcquirerBankClient::getBalance(), which has
+ * no real balance to query). Use this instead of the float-only version
+ * anywhere the distinction matters — e.g. CardService::hookSourcesToCard()'s
+ * "no available balance" guard, where a synthetic 0 means "missing
+ * max_single_auth_amount config," not "customer has no money."
+ */
+public function getSourceAvailableBalanceDetailed(array $source): array
+{
+    try {
+        $adapter = $this->adapterFactory->getAdapter($source['institution']);
+
+        $payload = [
+            'action' => 'GET_BALANCE',
+            'asset_type' => $source['asset_type'] ?? 'ACCOUNT',
+            'source_identifier' => $source['identifier'],
+            'requested_amount' => $source['authorized_amount'] ?? $source['amount'] ?? 0,
+        ];
+
+        $result = $adapter->getBalance($payload, [
+            'source' => $source,
+            'institution' => $source['institution']
+        ]);
+
+        $data = $result['data'] ?? [];
+        return [
+            'balance' => (float)($result['balance'] ?? $data['balance'] ?? 0),
+            'is_synthetic' => (bool)($data['is_synthetic'] ?? false),
+        ];
+    } catch (Exception $e) {
+        $this->logger->warning("Failed to get balance for source", [
+            'source' => $source['institution'],
+            'error' => $e->getMessage()
+        ]);
+        return ['balance' => 0, 'is_synthetic' => false];
+    }
+}
+ 
     public function getSourceAvailableBalance(array $source): float
     {
         try {
