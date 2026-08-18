@@ -1946,8 +1946,23 @@ return [
                 $bodySuccessFlag = (bool)$decodedResponse['debited'];
             } elseif ($action === 'release_hold' && array_key_exists('released', $decodedResponse)) {
                 $bodySuccessFlag = (bool)$decodedResponse['released'];
-            } elseif (in_array($action, ['process_deposit', 'processDepositWithProof'], true) && array_key_exists('credited', $decodedResponse)) {
-                $bodySuccessFlag = (bool)$decodedResponse['credited'];
+            } elseif (in_array($action, ['process_deposit', 'processDepositWithProof'], true)
+                    && (array_key_exists('credited', $decodedResponse) || array_key_exists('processed', $decodedResponse))) {
+                // FIX: ZuruBank's deposit.php (Backend/api/v1/.../deposit.php)
+                // signals success via a 'processed' boolean, not 'credited' or
+                // 'success' or a 'status' string equal to "SUCCESS" — none of
+                // which it ever sends. Before the fail-closed default was
+                // introduced, this was silently masked (unrecognized response
+                // + HTTP 2xx defaulted to success anyway). After fail-closed,
+                // ZuruBank's genuinely successful deposits started being
+                // reported as failures, with ZuruBank's own success message
+                // ("Deposit processed successfully") surfacing as the failure
+                // reason — confirmed live across three different source
+                // institutions (SACCUSSALIS, ABSA, MTN) all depositing INTO
+                // ZuruBank. 'credited' is checked first for every other
+                // institution's normal shape; 'processed' is the fallback
+                // specifically for ZuruBank's deposit endpoint.
+                $bodySuccessFlag = (bool)($decodedResponse['credited'] ?? $decodedResponse['processed']);
             } elseif (array_key_exists('status', $decodedResponse)) {
                 $bodySuccessFlag = strtoupper((string)$decodedResponse['status']) === 'SUCCESS';
             }
