@@ -372,6 +372,8 @@ try {
     dump('EXCEPTION', get_class($e) . ': ' . $e->getMessage() . "\n" . $e->getTraceAsString());
 }
 
+$cardClient = new CardAcquirerBankClient($participantConfig);
+
 // ============================================================
 // STAGE 5b: Factory resolution check — does the REAL loader +
 // factory actually wire up CardAcquirerBankClient for FNBB_ACQUIRER
