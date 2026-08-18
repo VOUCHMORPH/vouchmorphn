@@ -87,15 +87,13 @@ class CardAcquirerBankClient extends GenericBankClient
         ];
     }
 
-    public function placeHold(array $payload): array
+   public function placeHold(array $payload): array
     {
         if (!$this->isSourceEnabled()) {
             return $this->disabledCapabilityResponse('source (acquiring)', 'hold_placed');
         }
-
         $maxSingleAuth = (float)($this->config['card_acquirer']['max_single_auth_amount'] ?? 0);
         $requestedAmount = (float)($payload['amount'] ?? 0);
-
         if ($maxSingleAuth > 0 && $requestedAmount > $maxSingleAuth) {
             return [
                 'success' => false,
@@ -104,7 +102,6 @@ class CardAcquirerBankClient extends GenericBankClient
                 'status_code' => 0,
             ];
         }
-
         if (!isset($payload['reference'])) {
             $payload['reference'] = 'AUTH_' . uniqid();
         }
@@ -113,21 +110,31 @@ class CardAcquirerBankClient extends GenericBankClient
         }
         $payload['action'] = 'AUTHORIZE';
 
-        $signedPayload = $this->createSignedPayload($this->stripCvvAfterUse($payload), 'VOUCHMORPH');
-
-        foreach (self::CVV_FIELDS as $cvvField) {
-            if (isset($payload[$cvvField])) {
-                $signedPayload[$cvvField] = $payload[$cvvField];
-                break;
-            }
-        }
+        // ============================================================
+        // FIX: CVV was being stripped BEFORE signing, then spliced back
+        // into the payload AFTER signing (via the loop that used to sit
+        // here). That meant the bytes actually transmitted to FNBB never
+        // matched the bytes that were hashed - the acquirer's response
+        // verification recomputes the hash from every field it received,
+        // sees a payload with a cvv field the signature never covered,
+        // and rejects it as a signature mismatch. Confirmed live: every
+        // /Authorize.php call returned HTTP 401 "Authentication failed"
+        // regardless of the actual PAN/decline status, because the
+        // request never got past signature verification.
+        //
+        // The fix is to sign the payload AS SENT, cvv included, so what
+        // was hashed and what was transmitted are identical. If CVV must
+        // stay out of application logs for PCI reasons, redact it only
+        // at the log call site (see createSignedPayload()'s own
+        // error_log() calls, or scrub $payload before logging here) -
+        // never strip it from what's actually signed and sent.
+        // ============================================================
+        $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
 
         $result = $this->send('place_hold', $signedPayload, $payload['access_token'] ?? null);
         $data = $result['data'] ?? [];
-
         $authRef = $data['authorization_reference'] ?? $data['auth_reference'] ?? $data['hold_reference'] ?? null;
         $authCode = $data['authorization_code'] ?? $data['auth_code'] ?? null;
-
         if (!$result['success'] || empty($authRef)) {
             error_log("[CardAcquirerBankClient] Authorization declined or returned no reference: "
                 . ($data['message'] ?? 'no message') . " / decline_code=" . ($data['decline_code'] ?? 'n/a'));
@@ -140,10 +147,8 @@ class CardAcquirerBankClient extends GenericBankClient
                 'raw_response' => $result['raw_response'] ?? null,
             ];
         }
-
         $responseForVerification = $data;
         unset($responseForVerification['signature'], $responseForVerification['certificate']);
-
         return [
             'success' => true,
             'hold_placed' => true,
@@ -160,7 +165,7 @@ class CardAcquirerBankClient extends GenericBankClient
             'timestamp' => $data['timestamp'] ?? time(),
         ];
     }
-
+    
     public function debitFunds(array $payload): array
     {
         if (!$this->isSourceEnabled()) {
