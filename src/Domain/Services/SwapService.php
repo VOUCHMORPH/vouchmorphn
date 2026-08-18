@@ -8132,7 +8132,7 @@ private function loadAtmNotesStrict(array $countryConfig, string $countryFallbac
 
         $holdPayload = [
             'action' => 'PLACE_HOLD',
-            'reference' => $this->currentSwapRef,
+            'reference' => $payload['reference'] ?? $this->currentSwapRef,   
             'asset_type' => $assetType,
             'amount' => $payload['amount'] ?? 0,
             'currency' => $payload['currency'] ?? $this->config['currency'] ?? 'BWP',
