@@ -1591,6 +1591,25 @@ return [
             $verifyPayload['requester'] = 'VOUCHMORPH';
         }
         
+        // ============================================================
+        // FIX: destination identifier was only ever sent as
+        // 'account_identifier' - the field SwapService::verifyAccount()
+        // populates. Institutions whose 'verify_account' endpoint is
+        // aliased onto a phone-keyed lookup (e.g. MTN's wallet_balance
+        // action, which reads msisdn/source_identifier/phone/wallet_phone/
+        // account_number - never account_identifier) received an empty
+        // lookup value regardless of the real destination, and always
+        // failed with "Wallet not found". Mirrors the same fallback
+        // population addSourceIdentifier() already does for source-side
+        // calls; this is the destination-side equivalent, applied only
+        // to fields not already explicitly set on the incoming payload.
+        // ============================================================
+        foreach (['phone', 'wallet_phone', 'msisdn', 'account_number'] as $fallbackField) {
+            if (!isset($verifyPayload[$fallbackField])) {
+                $verifyPayload[$fallbackField] = $destinationIdentifier;
+            }
+        }
+        
         if (isset($payload['destination_asset_type']) && !isset($verifyPayload['destination_asset_type'])) {
             $verifyPayload['destination_asset_type'] = $payload['destination_asset_type'];
         }
