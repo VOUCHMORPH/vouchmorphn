@@ -2659,21 +2659,41 @@ public function executeMultiDestinationSwap(array $payload): array
                     $this->updateHoldStatus($destHoldId, 'DEBIT_FAILED');
                     
                 } else {
-                    // Normal rollback - release the hold
+                    // ============================================================
+                    // FIX: Normal rollback - release the hold with proper asset_type
+                    // and source_identifier fields (matching SwapService::releaseHold())
+                    // ============================================================
                     try {
                         error_log("[SwapService] Releasing hold for failed destination: {$destHoldRef}");
                         
+                        // Get source asset type and identifier
+                        $sourceAssetType = $payload['asset_type'] ?? 'ACCOUNT';
+                        $sourceIdentifierValue = $this->extractSourceIdentifier($payload);
+                        
                         $adapter = $this->adapterFactory->getAdapter($sourceInstitution);
-                        $adapter->releaseHold([
+                        $releaseResult = $adapter->releaseHold([
                             'hold_reference' => $destHoldRef,
                             'action' => 'RELEASE_HOLD',
-                            'reason' => 'Destination failed - ' . $e->getMessage()
+                            'reason' => 'Destination failed - ' . $e->getMessage(),
+                            // FIX: Added required fields that SwapService::releaseHold() already includes
+                            'asset_type' => $sourceAssetType,
+                            'source_identifier' => $sourceIdentifierValue['identifier'] ?? null,
+                            'source_identifier_type' => $sourceIdentifierValue['type'] ?? null
                         ], []);
+                        
+                        error_log("[SwapService] Release result: " . json_encode($releaseResult));
                         
                         $this->updateHoldStatus($destHoldId, 'RELEASED');
                         
                     } catch (Exception $releaseError) {
                         error_log("[SwapService] Failed to release hold: " . $releaseError->getMessage());
+                        // Log the failed release attempt for monitoring
+                        $this->logger->error("HOLD RELEASE FAILED IN ROLLBACK", [
+                            'hold_reference' => $destHoldRef,
+                            'hold_id' => $destHoldId,
+                            'source_institution' => $sourceInstitution,
+                            'error' => $releaseError->getMessage()
+                        ]);
                     }
                 }
             }
@@ -2938,21 +2958,41 @@ public function executeMultiDestinationSwap(array $payload): array
                     $this->updateHoldStatus($destHoldId, 'DEBIT_FAILED');
                     
                 } else {
-                    // Normal rollback - release the hold
+                    // ============================================================
+                    // FIX: Normal rollback - release the hold with proper asset_type
+                    // and source_identifier fields (matching SwapService::releaseHold())
+                    // ============================================================
                     try {
                         error_log("[SwapService] Releasing hold for failed identity: {$destHoldRef}");
                         
+                        // Get source asset type and identifier
+                        $sourceAssetType = $payload['asset_type'] ?? 'ACCOUNT';
+                        $sourceIdentifierValue = $this->extractSourceIdentifier($payload);
+                        
                         $adapter = $this->adapterFactory->getAdapter($sourceInstitution);
-                        $adapter->releaseHold([
+                        $releaseResult = $adapter->releaseHold([
                             'hold_reference' => $destHoldRef,
                             'action' => 'RELEASE_HOLD',
-                            'reason' => 'Identity destination failed - ' . $e->getMessage()
+                            'reason' => 'Identity destination failed - ' . $e->getMessage(),
+                            // FIX: Added required fields that SwapService::releaseHold() already includes
+                            'asset_type' => $sourceAssetType,
+                            'source_identifier' => $sourceIdentifierValue['identifier'] ?? null,
+                            'source_identifier_type' => $sourceIdentifierValue['type'] ?? null
                         ], []);
+                        
+                        error_log("[SwapService] Release result: " . json_encode($releaseResult));
                         
                         $this->updateHoldStatus($destHoldId, 'RELEASED');
                         
                     } catch (Exception $releaseError) {
                         error_log("[SwapService] Failed to release hold: " . $releaseError->getMessage());
+                        // Log the failed release attempt for monitoring
+                        $this->logger->error("HOLD RELEASE FAILED IN ROLLBACK", [
+                            'hold_reference' => $destHoldRef,
+                            'hold_id' => $destHoldId,
+                            'source_institution' => $sourceInstitution,
+                            'error' => $releaseError->getMessage()
+                        ]);
                     }
                 }
             }
