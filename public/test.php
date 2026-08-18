@@ -279,32 +279,97 @@ try {
 }
 
 // ============================================================
-// STAGE 5 — Same good pan, but through your ACTUAL client class,
-// to confirm whether your app code sends the same payload shape
-// proven to work (or fail) in Stage 2.
+// STAGE 5 (CORRECTED): call the REAL entry point.
+//
+// CardAcquirerBankClient does NOT override verifyAsset() — it only
+// overrides verifyAssetSigned(). A call to ->verifyAsset() falls
+// through to GenericBankClient::verifyAsset(), which sends the
+// payload completely unsigned. That's why every previous Stage 5
+// reproduced Stage 3's "deliberately broken, unsigned" control
+// byte-for-byte: it WAS unsigned, just not on purpose. This says
+// nothing about whether verifyAssetSigned() — the method the real
+// app actually calls via GenericInstitutionAdapter::verifyAsset() —
+// works. Testing that requires calling verifyAssetSigned() directly.
+//
+// This stage also answers the OTHER open question: after the
+// participants.yaml indentation fix, does FNBB_ACQUIRER actually
+// resolve to CardAcquirerBankClient, or is it still silently falling
+// back to plain GenericBankClient? get_class() tells us directly,
+// independent of whether the call itself succeeds.
 // ============================================================
-section('STAGE 5: CardAcquirerBankClient::verifyAsset() / placeHold() — through real client code');
+section('STAGE 5 (CORRECTED): CardAcquirerBankClient::verifyAssetSigned() — the REAL entry point');
+
+dump('Resolved bank client class', get_class($cardClient));
+if (get_class($cardClient) !== CardAcquirerBankClient::class) {
+    dump('WARNING', 'This is NOT CardAcquirerBankClient. If this diagnostic instantiates '
+        . '$cardClient directly (as v1/v2 did, via `new CardAcquirerBankClient($participantConfig)`), '
+        . 'this check is meaningless — it will always say CardAcquirerBankClient regardless of what '
+        . 'production actually resolves. To test the REAL resolution, this must go through '
+        . 'InstitutionAdapterFactory::getAdapter(\'FNBB_ACQUIRER\') using the REAL parsed participants.yaml, '
+        . 'not a hardcoded $participantConfig array. See the factory-resolution check below.');
+}
+
+$signedPayload = $basePayload;
+$signedPayload['reference'] = 'DIAG_SIGNED_' . time() . '_' . substr(md5((string)mt_rand()), 0, 6);
+
 try {
-    $cardClient = new CardAcquirerBankClient($participantConfig);
-    $payload5 = [
-        'reference' => 'DIAG_AUTH_CLIENT_' . time(),
-        'user_id' => 1,
-        'from_institution' => 'FNBB_ACQUIRER',
-        'source_institution' => 'FNBB_ACQUIRER',
-        'asset_type' => 'VISA_MASTERCARD_CARD',
-        'source_identifier' => $goodPan,
-        'card_token' => $goodPan,
-        'cvv' => '123',
-        'amount' => 25,
-        'currency' => 'BWP',
-    ];
-    if (method_exists($cardClient, 'verifyAsset')) {
-        $result5 = $cardClient->verifyAsset($payload5);
-        dump('verifyAsset() result', $result5);
+    $signedResult = $cardClient->verifyAssetSigned($signedPayload);
+    dump('verifyAssetSigned() result', $signedResult);
+    dump('raw_response (untruncated)', $signedResult['raw_response'] ?? '(none — see note below if pre_auth_check is false)');
+    if (($signedResult['message'] ?? '') === 'Card token present — deferring real check to authorization') {
+        dump('NOTE', 'No network call was made — this means pre_auth_check resolved to false for this '
+            . 'client instance. If you expected a real /Preauth.php call here, confirm card_acquirer.pre_auth_check '
+            . 'in the config this client instance actually received.');
+    }
+} catch (\Throwable $e) {
+    dump('EXCEPTION', get_class($e) . ': ' . $e->getMessage() . "\n" . $e->getTraceAsString());
+}
+
+// ============================================================
+// STAGE 5b: Factory resolution check — does the REAL loader +
+// factory actually wire up CardAcquirerBankClient for FNBB_ACQUIRER
+// now, after the participants.yaml indentation fix? This is the only
+// way to confirm the fix landed, as opposed to inspecting a
+// hardcoded diagnostic config that was never affected by the bug
+// in the first place.
+// ============================================================
+section('STAGE 5b: Real InstitutionAdapterFactory resolution for FNBB_ACQUIRER');
+
+try {
+    $countryConfig = \Core\Config\LoadCountry::getConfig();
+    $realParticipants = $countryConfig['participants'] ?? [];
+
+    if (!isset($realParticipants['FNBB_ACQUIRER'])) {
+        dump('FATAL', 'FNBB_ACQUIRER not present at all in the REAL parsed participants config. '
+            . 'This means the loader either failed to parse the file entirely, or fell back to the '
+            . 'flat manual parser and something upstream of this filtered it out. Check for '
+            . '"[LoadCountry] Failed to parse YAML participants file" in the logs.');
     } else {
-        dump('NOTE', 'verifyAsset() not found on CardAcquirerBankClient — trying placeHold() instead.');
-        $result5 = $cardClient->placeHold($payload5);
-        dump('placeHold() result', $result5);
+        dump('Real parsed FNBB_ACQUIRER config', $realParticipants['FNBB_ACQUIRER']);
+
+        $hasBankClientClass = isset($realParticipants['FNBB_ACQUIRER']['bank_client_class']);
+        $hasCardAcquirerBlock = isset($realParticipants['FNBB_ACQUIRER']['card_acquirer']);
+        dump('bank_client_class present?', $hasBankClientClass ? 'YES: ' . $realParticipants['FNBB_ACQUIRER']['bank_client_class'] : 'NO — indentation fix did not take effect, or has not been deployed yet');
+        dump('card_acquirer block present?', $hasCardAcquirerBlock ? 'YES' : 'NO — nested config lost, consistent with a fallback to the flat manual parser');
+
+        $realFactory = new \Infrastructure\Adapters\InstitutionAdapterFactory($realParticipants, null);
+        $realAdapter = $realFactory->getAdapter('FNBB_ACQUIRER');
+
+        $reflection = new \ReflectionClass($realAdapter);
+        $bankClientProp = $reflection->getProperty('bankClient');
+        $bankClientProp->setAccessible(true);
+        $realBankClient = $bankClientProp->getValue($realAdapter);
+
+        dump('Adapter class', get_class($realAdapter));
+        dump('ACTUAL resolved bank client class (via real factory + real config)', get_class($realBankClient));
+
+        if (get_class($realBankClient) === \Infrastructure\Banks\CardAcquirerBankClient::class) {
+            dump('RESULT', 'FIX CONFIRMED — FNBB_ACQUIRER now resolves to CardAcquirerBankClient in the real code path.');
+        } else {
+            dump('RESULT', 'FIX NOT YET EFFECTIVE — FNBB_ACQUIRER is still resolving to ' . get_class($realBankClient)
+                . '. Confirm the corrected participants.yaml has actually been deployed (not just committed), '
+                . 'and that the running container picked up the new file.');
+        }
     }
 } catch (\Throwable $e) {
     dump('EXCEPTION', get_class($e) . ': ' . $e->getMessage() . "\n" . $e->getTraceAsString());
