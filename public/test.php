@@ -91,14 +91,14 @@ $participantConfig = [
 
     'endpoints' => [
         'source' => [
-            'verify_asset' => '/preauth.php',
-            'place_hold' => '/authorize.php',
-            'debit_funds' => '/capture.php',
-            'release_hold' => '/void.php',
+            'verify_asset' => '/Preauth.php',
+            'place_hold' => '/Authorize.php',
+            'debit_funds' => '/Capture.php',
+            'release_hold' => '/Void.php',
             'get_balance' => '/n-a',
         ],
         'destination_deposit' => [
-            'process_deposit' => '/card-load.php',
+            'process_deposit' => '/Cardload.php',
         ],
     ],
 
@@ -194,7 +194,7 @@ if (!class_exists(CardAcquirerBankClient::class)) {
 // the network regardless of pre_auth_check, since AUTHORIZE always
 // calls FNBB's mock)
 // ============================================================
-section('STAGE 3: CardAcquirerBankClient::placeHold() — hits /authorize.php for real');
+section('STAGE 3: CardAcquirerBankClient::placeHold() — hits /Authorize.php for real');
 
 if (class_exists(CardAcquirerBankClient::class)) {
     try {
@@ -217,7 +217,7 @@ if (class_exists(CardAcquirerBankClient::class)) {
 // internally, so we can see EXACTLY what goes over the wire and
 // EXACTLY what comes back, with zero abstraction in between.
 // ============================================================
-section('STAGE 4: Raw direct cURL to /preauth.php (bypasses all client classes)');
+section('STAGE 4: Raw direct cURL to /Preauth.php (bypasses all client classes)');
 
 try {
     $certManager = \Infrastructure\Crypto\CertificateManagerFactory::get('VOUCHMORPH');
@@ -234,7 +234,7 @@ try {
     $signed = $certManager->createSignedRequest($rawPayload, 'VOUCHMORPH');
     dump('Signed payload being sent', $signed);
 
-    $url = 'https://zurubank-production.up.railway.app/Backend/api/preauth.php';
+    $url = 'https://zurubank-production.up.railway.app/Backend/api/Preauth.php';
     $ch = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_POST => true,
@@ -265,7 +265,7 @@ try {
 // STAGE 5 — Same raw cURL, but to the DECLINED pan, to confirm the
 // decline path is reachable at all once auth is settled.
 // ============================================================
-section('STAGE 5: Raw direct cURL to /authorize.php with the DECLINED test PAN');
+section('STAGE 5: Raw direct cURL to /Authorize.php with the DECLINED test PAN');
 
 try {
     $certManager = \Infrastructure\Crypto\CertificateManagerFactory::get('VOUCHMORPH');
@@ -279,7 +279,7 @@ try {
     ]);
     $signedDeclined = $certManager->createSignedRequest($declinedPayload, 'VOUCHMORPH');
 
-    $url = 'https://zurubank-production.up.railway.app/Backend/api/authorize.php';
+    $url = 'https://zurubank-production.up.railway.app/Backend/api/Authorize.php';
     $ch = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_POST => true,
