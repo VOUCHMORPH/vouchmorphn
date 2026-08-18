@@ -270,7 +270,7 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
                 'hold_reference' => $holdReference,
                 'hold_id' => $data['hold_id'] ?? null,
                 'status' => $data['status'] ?? 'ACTIVE',
-                'original_payload' => $data['payload'] ?? $result['original_payload'] ?? $holdPayload,
+                'original_payload' => $data['original_payload'] ?? $result['original_payload'] ?? $holdPayload,
                 'signature' => $signature,
                 'certificate' => $certificate,
                 'timestamp' => $data['timestamp'] ?? $result['timestamp'] ?? time(),
