@@ -1,10 +1,14 @@
 <?php
 // Target path in repo: src/Infrastructure/Banks/CardAcquirerBankClient.php
-// REPLACES the v1 version — adds card-LOAD (destination) support as a
-// separate, independently-gated capability from card-SOURCE (acquiring).
+// REPLACES the v2 version. This is a formatting-only cleanup on top of v2's
+// fixes (consistent 4-space indentation throughout; a couple of method
+// declarations had drifted to 3-space indentation from earlier edits). No
+// logic changes beyond what v2 already had. Adds card-LOAD (destination)
+// support as a separate, independently-gated capability from card-SOURCE
+// (acquiring).
 
 declare(strict_types=1);
- 
+
 namespace Infrastructure\Banks;
 
 /**
@@ -15,7 +19,8 @@ namespace Infrastructure\Banks;
  * must not be assumed to both exist just because one does:
  *
  *   SOURCE (acquiring): pulling funds FROM a Visa/Mastercard card.
- *     verifyAssetSigned() / placeHold() / debitFunds() / releaseHold()
+ *     verifyAssetSigned() / placeHoldSigned() / placeHold() / debitFunds() /
+ *     releaseHold()
  *     = pre-auth(optional) / authorize / capture / void
  *     Gated by: card_acquirer.source_enabled (default true if this class
  *     is wired at all, since acquiring is the lighter, more commonly
@@ -25,14 +30,14 @@ namespace Infrastructure\Banks;
  *     processDepositWithProof()
  *     = a card-load / push-to-card call (Visa Direct / Mastercard Send
  *     style, or FNBB's own load product if they have one)
- *     Gated by: card_acquirer.destination_enabled (default FALSE — this
+ *     Gated by: card_acquirer.destination_enabled (default FALSE - this
  *     is a materially harder product to get from an acquirer and must
  *     never be silently assumed available just because source-side
  *     acquiring is configured)
  *
  * If destination_enabled is false (the default) and something tries to
  * deposit onto a card through this client, it fails LOUDLY with a message
- * telling the caller exactly what commercial capability is missing —
+ * telling the caller exactly what commercial capability is missing -
  * never silently downgrades to some other behavior.
  */
 class CardAcquirerBankClient extends GenericBankClient
@@ -40,12 +45,10 @@ class CardAcquirerBankClient extends GenericBankClient
     private const CVV_FIELDS = ['cvv', 'card_cvv', 'security_code'];
 
     // ========================================================================
-    // SOURCE SIDE — unchanged from v1 (verifyAssetSigned / placeHold /
-    // debitFunds / releaseHold / getBalance). Included here in full so this
-    // file is a complete drop-in replacement, not a partial patch.
+    // SOURCE SIDE
     // ========================================================================
 
-   public function verifyAssetSigned(array $payload): array
+    public function verifyAssetSigned(array $payload): array
     {
         if (!$this->isSourceEnabled()) {
             return $this->disabledCapabilityResponse('source (acquiring)', 'verified');
@@ -60,7 +63,7 @@ class CardAcquirerBankClient extends GenericBankClient
                 'verified' => $hasToken,
                 'data' => [
                     'message' => $hasToken
-                        ? 'Card token present — deferring real check to authorization'
+                        ? 'Card token present - deferring real check to authorization'
                         : 'No card token supplied',
                     'verified' => $hasToken,
                 ],
@@ -72,21 +75,21 @@ class CardAcquirerBankClient extends GenericBankClient
 
         // ============================================================
         // FIX: stripCvvAfterUse() used to run BEFORE signing here, and
-        // CVV was never restored — same bug already fixed in
+        // CVV was never restored - same bug already fixed in
         // placeHold() (see the FIX comment there). The acquirer's mock
-        // apparently requires CVV in the signed+sent payload for
-        // PRE_AUTH_CHECK, same as it does for AUTHORIZE. Confirmed
-        // live: every /Preauth.php call returned "Asset verification
-        // failed: Authentication failed" regardless of PAN — both the
-        // approved and the declined test PAN produced the byte-
-        // identical error, meaning neither ever reached PAN-specific
-        // evaluation; the request was being rejected before that point.
+        // requires CVV in the signed+sent payload for PRE_AUTH_CHECK,
+        // same as it does for AUTHORIZE. Confirmed live: every
+        // /Preauth.php call returned "Asset verification failed:
+        // Authentication failed" regardless of PAN - both the approved
+        // and the declined test PAN produced the byte-identical error,
+        // meaning neither ever reached PAN-specific evaluation; the
+        // request was being rejected before that point.
         //
         // Fix is the same as placeHold(): sign the payload AS SENT,
         // cvv included, so what's hashed and what's transmitted match.
         // If CVV must stay out of application logs for PCI reasons,
         // redact it only at the log call site (see
-        // createSignedPayload()'s own error_log() calls) — never strip
+        // createSignedPayload()'s own error_log() calls) - never strip
         // it from what's actually signed and sent.
         // ============================================================
         $preAuthPayload = $payload;
@@ -106,11 +109,13 @@ class CardAcquirerBankClient extends GenericBankClient
             'raw_response' => $result['raw_response'] ?? null,
         ];
     }
-   public function placeHold(array $payload): array
+
+    public function placeHold(array $payload): array
     {
         if (!$this->isSourceEnabled()) {
             return $this->disabledCapabilityResponse('source (acquiring)', 'hold_placed');
         }
+
         $maxSingleAuth = (float)($this->config['card_acquirer']['max_single_auth_amount'] ?? 0);
         $requestedAmount = (float)($payload['amount'] ?? 0);
         if ($maxSingleAuth > 0 && $requestedAmount > $maxSingleAuth) {
@@ -121,6 +126,7 @@ class CardAcquirerBankClient extends GenericBankClient
                 'status_code' => 0,
             ];
         }
+
         if (!isset($payload['reference'])) {
             $payload['reference'] = 'AUTH_' . uniqid();
         }
@@ -131,15 +137,15 @@ class CardAcquirerBankClient extends GenericBankClient
 
         // ============================================================
         // FIX: CVV was being stripped BEFORE signing, then spliced back
-        // into the payload AFTER signing (via the loop that used to sit
-        // here). That meant the bytes actually transmitted to FNBB never
-        // matched the bytes that were hashed - the acquirer's response
-        // verification recomputes the hash from every field it received,
-        // sees a payload with a cvv field the signature never covered,
-        // and rejects it as a signature mismatch. Confirmed live: every
-        // /Authorize.php call returned HTTP 401 "Authentication failed"
-        // regardless of the actual PAN/decline status, because the
-        // request never got past signature verification.
+        // into the payload AFTER signing. That meant the bytes actually
+        // transmitted to FNBB never matched the bytes that were hashed -
+        // the acquirer's response verification recomputes the hash from
+        // every field it received, sees a payload with a cvv field the
+        // signature never covered, and rejects it as a signature
+        // mismatch. Confirmed live: every /Authorize.php call returned
+        // HTTP 401 "Authentication failed" regardless of the actual
+        // PAN/decline status, because the request never got past
+        // signature verification.
         //
         // The fix is to sign the payload AS SENT, cvv included, so what
         // was hashed and what was transmitted are identical. If CVV must
@@ -158,7 +164,7 @@ class CardAcquirerBankClient extends GenericBankClient
         // {"success":true,"message":"Authorized","data":{
         //   "authorization_reference":"...","authorization_code":"...",
         //   "status":"ACTIVE",...}}
-        // -- rather than returning them flattened at the top of "data".
+        // - rather than returning them flattened at the top of "data".
         // Without unwrapping, $authRef below always resolved to null even
         // on a genuine approval (confirmed live: HTTP 200, "status":
         // "ACTIVE", a real authorization_code present, no decline_code
@@ -172,6 +178,7 @@ class CardAcquirerBankClient extends GenericBankClient
         $data = $this->unwrapNestedData($result['data'] ?? []);
         $authRef = $data['authorization_reference'] ?? $data['auth_reference'] ?? $data['hold_reference'] ?? null;
         $authCode = $data['authorization_code'] ?? $data['auth_code'] ?? null;
+
         if (!$result['success'] || empty($authRef)) {
             error_log("[CardAcquirerBankClient] Authorization declined or returned no reference: "
                 . ($data['message'] ?? 'no message') . " / decline_code=" . ($data['decline_code'] ?? 'n/a'));
@@ -184,8 +191,10 @@ class CardAcquirerBankClient extends GenericBankClient
                 'raw_response' => $result['raw_response'] ?? null,
             ];
         }
+
         $responseForVerification = $data;
         unset($responseForVerification['signature'], $responseForVerification['certificate']);
+
         return [
             'success' => true,
             'hold_placed' => true,
@@ -202,17 +211,17 @@ class CardAcquirerBankClient extends GenericBankClient
             'timestamp' => $data['timestamp'] ?? time(),
         ];
     }
-    
+
     // ========================================================================
     // FIX: override placeHoldSigned() to prevent double-signing.
     //
     // GenericInstitutionAdapter::placeHold() calls
-    // $this->bankClient->placeHoldSigned(...) — not placeHold() directly.
+    // $this->bankClient->placeHoldSigned(...) - not placeHold() directly.
     // CardAcquirerBankClient never overrode placeHoldSigned(), so it
     // inherited GenericBankClient's version, which signs the payload ONCE
     // and then calls $this->placeHold($signedPayload). Because $this is a
     // CardAcquirerBankClient instance, that call dispatches to THIS
-    // class's placeHold() override (above) — which signs the payload a
+    // class's placeHold() override above - which signs the payload a
     // SECOND time. Same double-signing bug already fixed for
     // generateToken()/generateTokenWithProof() elsewhere in
     // GenericBankClient; CardAcquirerBankClient just never got the
@@ -221,21 +230,20 @@ class CardAcquirerBankClient extends GenericBankClient
     // Worse than an ordinary double-sign here specifically: the first
     // signature (computed inside the inherited placeHoldSigned()) covers
     // the payload BEFORE action=AUTHORIZE, expiry, and reference are even
-    // set — those fields only get added inside placeHold() itself, after
+    // set - those fields only get added inside placeHold() itself, after
     // that first signature was already thrown away and recomputed.
     // Confirmed live: every FNBB_ACQUIRER hold through SwapService (which
     // always goes through placeHoldSigned()) failed with "Hold failed:
     // Authentication failed", while calling placeHold() directly in
     // isolated diagnostics (bypassing placeHoldSigned() entirely) worked
-    // correctly every time — the double-sign only exists on the real,
+    // correctly every time - the double-sign only exists on the real,
     // production entry point.
     //
     // placeHold() above is already fully self-contained: it sets its own
-    // action/expiry/reference and signs exactly once, CVV included (see
-    // the FIX comment in placeHold() itself). The fix is to stop
-    // pre-signing here — don't call createSignedPayload() at all, just
-    // forward straight to placeHold() and let it be the single source of
-    // truth for what gets signed and sent.
+    // action/expiry/reference and signs exactly once, CVV included. The
+    // fix is to stop pre-signing here - don't call createSignedPayload()
+    // at all, just forward straight to placeHold() and let it be the
+    // single source of truth for what gets signed and sent.
     // ========================================================================
     public function placeHoldSigned(array $payload): array
     {
@@ -254,7 +262,7 @@ class CardAcquirerBankClient extends GenericBankClient
             return [
                 'success' => false,
                 'debited' => false,
-                'message' => 'authorization_reference (hold_reference) is required to capture — no raw card charge path exists.',
+                'message' => 'authorization_reference (hold_reference) is required to capture - no raw card charge path exists.',
                 'data' => [],
             ];
         }
@@ -272,6 +280,7 @@ class CardAcquirerBankClient extends GenericBankClient
         // FIX: same nested-data shape as placeHold() (see comment there) -
         // apply the same unwrap so transaction_reference isn't missed if
         // Capture.php follows the same convention as Preauth.php/Authorize.php.
+        // Confirmed live via diagnostic (Stage 9): Capture.php DOES nest.
         $data = $this->unwrapNestedData($result['data'] ?? []);
         $txRef = $data['transaction_reference'] ?? $data['capture_reference'] ?? null;
 
@@ -317,8 +326,10 @@ class CardAcquirerBankClient extends GenericBankClient
         ], 'VOUCHMORPH');
 
         $result = $this->send('release_hold', $voidPayload);
+
         // FIX: same nested-data shape as placeHold() (see comment there) -
-        // apply the same unwrap in case Void.php follows the same convention.
+        // apply the same unwrap. Confirmed live via diagnostic (Stage 11):
+        // Void.php DOES nest.
         $data = $this->unwrapNestedData($result['data'] ?? []);
 
         return [
@@ -351,23 +362,23 @@ class CardAcquirerBankClient extends GenericBankClient
                 'available_balance' => $syntheticCeiling,
                 'currency' => $payload['currency'] ?? 'BWP',
                 'is_synthetic' => true,
-                'message' => 'Synthetic value — card sources have no queryable real balance.',
+                'message' => 'Synthetic value - card sources have no queryable real balance.',
             ],
             'status_code' => 200,
         ];
     }
 
     // ========================================================================
-    // DESTINATION SIDE — NEW IN v2. Pushing funds ONTO a card.
+    // DESTINATION SIDE. Pushing funds ONTO a card.
     //
-    // This is called via GenericInstitutionAdapter::credit() ->
+    // Called via GenericInstitutionAdapter::credit() ->
     // $this->bankClient->processDepositWithProof($creditPayload), the exact
     // same entry point every other institution's card-load-equivalent
     // (processDeposit) uses. Overriding it here is what makes CARD a real
     // destination asset type instead of just accepted-then-mishandled.
     //
     // GATED SEPARATELY FROM SOURCE ABOVE. Do not assume this works just
-    // because acquiring (source) is configured — confirm with FNBB (or
+    // because acquiring (source) is configured - confirm with FNBB (or
     // whichever participant) specifically whether they offer a card-load /
     // push-to-card product before setting destination_enabled: true.
     // ========================================================================
@@ -376,14 +387,14 @@ class CardAcquirerBankClient extends GenericBankClient
         if (!$this->isDestinationEnabled()) {
             error_log("[CardAcquirerBankClient] processDepositWithProof: card LOAD is not enabled for "
                 . ($this->config['provider_code'] ?? 'unknown')
-                . " — this participant may support pulling FROM cards (acquiring) without supporting "
+                . " - this participant may support pulling FROM cards (acquiring) without supporting "
                 . "pushing TO cards (load/Visa Direct/Mastercard Send). Confirm with the acquirer whether "
                 . "they offer a card-load product before setting card_acquirer.destination_enabled: true "
                 . "in participants.yaml.");
             return [
                 'success' => false,
                 'credited' => false,
-                'message' => "This card acquirer is not configured for card LOAD (destination) — only card "
+                'message' => "This card acquirer is not configured for card LOAD (destination) - only card "
                     . "SOURCE (acquiring) is enabled. Pushing funds to a card requires a separate commercial "
                     . "capability (e.g. Visa Direct / Mastercard Send) that must be confirmed and enabled "
                     . "explicitly.",
@@ -447,7 +458,7 @@ class CardAcquirerBankClient extends GenericBankClient
             'credited' => true,
             'transaction_reference' => $txRef,
             'status' => $data['status'] ?? 'COMPLETED',
-            'new_balance' => $data['new_balance'] ?? null,  // may legitimately be null — see note
+            'new_balance' => $data['new_balance'] ?? null,  // may legitimately be null - see note
             'data' => $data,
             'message' => $data['message'] ?? 'Card loaded successfully',
             'status_code' => $result['status_code'] ?? 0,
@@ -462,14 +473,14 @@ class CardAcquirerBankClient extends GenericBankClient
     private function isSourceEnabled(): bool
     {
         // Default true: if this client is wired up at all, source (acquiring)
-        // is the assumed baseline product — the lighter, more commonly
+        // is the assumed baseline product - the lighter, more commonly
         // available one. Explicit false still overrides.
         return (bool)($this->config['card_acquirer']['source_enabled'] ?? true);
     }
 
     private function isDestinationEnabled(): bool
     {
-        // Default FALSE, deliberately — never assume push-to-card capability
+        // Default FALSE, deliberately - never assume push-to-card capability
         // exists just because acquiring does. Must be turned on explicitly
         // once confirmed with the acquirer.
         return (bool)($this->config['card_acquirer']['destination_enabled'] ?? false);
@@ -487,7 +498,7 @@ class CardAcquirerBankClient extends GenericBankClient
     }
 
     // ========================================================================
-    // HELPERS — unchanged from v1
+    // HELPERS
     // ========================================================================
 
     private function authorizationWindowSeconds(): int
@@ -496,7 +507,7 @@ class CardAcquirerBankClient extends GenericBankClient
         if ($configured !== null) {
             return (int)$configured;
         }
-        error_log("[CardAcquirerBankClient] WARNING: authorization_window_seconds not configured — "
+        error_log("[CardAcquirerBankClient] WARNING: authorization_window_seconds not configured - "
             . "falling back to a 7-day industry-norm placeholder. Confirm the real value with the acquirer.");
         return 7 * 24 * 60 * 60;
     }
@@ -510,20 +521,21 @@ class CardAcquirerBankClient extends GenericBankClient
     }
 
     // ========================================================================
-    // NEW: shared unwrap helper
+    // Shared unwrap helper.
     //
     // GenericBankClient::send() decodes the bank's entire response body
     // into 'data' as-is. For most participants that body is already flat
     // ({"success":true,"authorization_reference":"..."}), but FNBB (via
-    // ZuruBank's mock, at least for Preauth.php/Authorize.php) nests the
-    // real fields one level deeper: {"success":true,"message":"...",
-    // "data":{"authorization_reference":"...", ...}}. Every method in this
-    // class reads fields directly off the top of $result['data'], so
-    // without unwrapping, those reads silently return null on an
-    // otherwise-successful response. This merges the inner object up
-    // (inner values win on key collision) so both shapes work identically.
-    // Safe to call even when the response is already flat - if there's no
-    // nested 'data' array, this is a no-op.
+    // ZuruBank's mock) nests the real fields one level deeper:
+    // {"success":true,"message":"...","data":{"authorization_reference":
+    // "...", ...}}. Every method in this class reads fields directly off
+    // the top of $result['data'], so without unwrapping, those reads
+    // silently return null on an otherwise-successful response. This
+    // merges the inner object up (inner values win on key collision) so
+    // both shapes work identically. Safe to call even when the response
+    // is already flat - if there's no nested 'data' array, this is a
+    // no-op. Confirmed live against Preauth.php, Authorize.php,
+    // Capture.php, and Void.php - all four nest this way.
     // ========================================================================
     private function unwrapNestedData(array $data): array
     {
