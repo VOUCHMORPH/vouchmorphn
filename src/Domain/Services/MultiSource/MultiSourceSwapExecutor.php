@@ -300,7 +300,7 @@ class MultiSourceSwapExecutor
                 'asset_type' => $contribution['asset_type'] ?? 'ACCOUNT',
                 'source_identifier' => $source['identifier'] ?? null,
                 'hold_reason' => 'MULTI_SOURCE_POOL_' . $pool['id'],
-                'reference' => $contribution['_sub_reference'] ?? $pool['reference'],
+                'reference' => $contribution['_sub_reference'],
                 'from_institution' => $institution,
                 'source_institution' => $institution,
             ];
