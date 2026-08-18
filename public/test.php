@@ -1,4 +1,4 @@
-<?php
+<?php 
 /**
  * FNBB AUTH DIAGNOSTIC — run directly on the vouchmorphn server console:
  *   php diagnose_fnbb_auth.php
