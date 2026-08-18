@@ -81,6 +81,59 @@ class PoolCoordinator
         $this->stateMachine = new PoolStateMachine();
     }
 
+    /**
+     * FIX: Threads SwapService's savepoint pattern into PoolCoordinator.
+     * 
+     * In PostgreSQL, once ANY statement inside a transaction throws a
+     * PDOException, the entire transaction is aborted (25P02) until a
+     * ROLLBACK or ROLLBACK TO SAVEPOINT. PoolCoordinator had several
+     * plain try/catch blocks that swallowed exceptions but left the
+     * transaction poisoned, causing subsequent writes (including real
+     * hold creation that succeeded at external institutions) to fail
+     * with "current transaction is aborted".
+     * 
+     * This method wraps any non-critical DB write in a savepoint so
+     * that a failed insert/update only rolls back that one operation,
+     * not the entire pool transaction.
+     */
+    private function runInSavepoint(callable $callback, string $savepointName = null): mixed
+    {
+        if ($savepointName === null) {
+            $savepointName = 'sp_' . substr(md5(microtime(true) . mt_rand()), 0, 8);
+        }
+        
+        $inTransaction = $this->db->inTransaction();
+        $savepointCreated = false;
+        
+        try {
+            if ($inTransaction) {
+                $this->db->exec("SAVEPOINT {$savepointName}");
+                $savepointCreated = true;
+                $this->logger->debug("Created savepoint: {$savepointName}");
+            }
+            
+            $result = $callback();
+            
+            if ($savepointCreated) {
+                $this->db->exec("RELEASE SAVEPOINT {$savepointName}");
+                $this->logger->debug("Released savepoint: {$savepointName}");
+            }
+            
+            return $result;
+            
+        } catch (Exception $e) {
+            if ($savepointCreated) {
+                try {
+                    $this->db->exec("ROLLBACK TO SAVEPOINT {$savepointName}");
+                    $this->logger->warning("Rolled back to savepoint: {$savepointName} - " . $e->getMessage());
+                } catch (Exception $rollbackError) {
+                    $this->logger->error("Failed to rollback savepoint: {$savepointName} - " . $rollbackError->getMessage());
+                }
+            }
+            throw $e;
+        }
+    }
+
     public function execute(array $payload): array
     {
         $this->logger->info('PoolCoordinator executing multi-source swap', [
@@ -556,7 +609,11 @@ class PoolCoordinator
                 $currency
             );
             
-            $saved = $this->contributionRepository->save($model);
+            // FIX: Wrap save in savepoint to prevent transaction poisoning
+            $saved = $this->runInSavepoint(function() use ($model) {
+                return $this->contributionRepository->save($model);
+            }, 'sp_persist_contribution_' . $index);
+            
             $contribution['_contribution_id'] = $saved->getId();
             $contribution['_sub_reference'] = $pool['reference'] . '-' . str_pad((string)($index + 1), 2, '0', STR_PAD_LEFT);
             $contribution['source_identifier'] = $identifier;
@@ -683,18 +740,14 @@ class PoolCoordinator
                 'payload' => $result['original_payload'] ?? $verifyPayload ?? null,
             ];
             
+            // FIX: Wrap updateStatus in savepoint to prevent transaction poisoning
             if (isset($contribution['_contribution_id'])) {
-                try {
+                $this->runInSavepoint(function() use ($contribution) {
                     $this->contributionRepository->updateStatus(
                         $contribution['_contribution_id'],
                         ContributionStatus::VERIFIED
                     );
-                } catch (Exception $e) {
-                    $this->logger->warning('Failed to update contribution verification status', [
-                        'contribution_id' => $contribution['_contribution_id'],
-                        'error' => $e->getMessage()
-                    ]);
-                }
+                }, 'sp_verify_status_' . $index);
             }
         }
         
@@ -798,8 +851,9 @@ class PoolCoordinator
                 'source_payload' => $contribution
             ];
             
+            // FIX: Wrap DB updates in savepoint to prevent transaction poisoning
             if (isset($contribution['_contribution_id']) && !empty($holdData['hold_reference'])) {
-                try {
+                $this->runInSavepoint(function() use ($contribution, $holdData) {
                     $this->contributionRepository->updateHoldReference(
                         $contribution['_contribution_id'],
                         $holdData['hold_reference']
@@ -808,12 +862,7 @@ class PoolCoordinator
                         $contribution['_contribution_id'],
                         ContributionStatus::HELD
                     );
-                } catch (Exception $e) {
-                    $this->logger->warning('Failed to update contribution hold status', [
-                        'contribution_id' => $contribution['_contribution_id'],
-                        'error' => $e->getMessage()
-                    ]);
-                }
+                }, 'sp_hold_update_' . $index);
             }
             
             $holds[] = $holdData;
@@ -851,10 +900,12 @@ class PoolCoordinator
                 $contribution = $held['source_payload'] ?? null;
                 if ($contribution && isset($contribution['_contribution_id'])) {
                     try {
-                        $this->contributionRepository->updateStatus(
-                            $contribution['_contribution_id'],
-                            ContributionStatus::FAILED
-                        );
+                        $this->runInSavepoint(function() use ($contribution) {
+                            $this->contributionRepository->updateStatus(
+                                $contribution['_contribution_id'],
+                                ContributionStatus::FAILED
+                            );
+                        }, 'sp_rollback_status_' . ($contribution['_contribution_id'] ?? 'unknown'));
                     } catch (Exception $e) {
                         $this->logger->warning('Failed to update contribution rollback status', [
                             'contribution_id' => $contribution['_contribution_id'],
@@ -1105,7 +1156,8 @@ class PoolCoordinator
             
             $matchingContribution = $hold['source_payload'] ?? null;
             if ($matchingContribution && isset($matchingContribution['_contribution_id']) && !empty($result['transaction_reference'])) {
-                try {
+                // FIX: Wrap DB updates in savepoint to prevent transaction poisoning
+                $this->runInSavepoint(function() use ($matchingContribution, $result) {
                     $this->contributionRepository->updateDebitReference(
                         $matchingContribution['_contribution_id'],
                         $result['transaction_reference']
@@ -1114,12 +1166,7 @@ class PoolCoordinator
                         $matchingContribution['_contribution_id'],
                         ContributionStatus::DEBITED
                     );
-                } catch (Exception $e) {
-                    $this->logger->warning('Failed to update contribution debit status', [
-                        'contribution_id' => $matchingContribution['_contribution_id'],
-                        'error' => $e->getMessage()
-                    ]);
-                }
+                }, 'sp_debit_update_' . ($matchingContribution['_contribution_id'] ?? 'unknown'));
             }
         }
         
@@ -1431,7 +1478,8 @@ class PoolCoordinator
                 $holdRef = $rawContributions[$index]['_hold_reference'];
 
                 if (isset($contribution['_contribution_id'])) {
-                    try {
+                    // FIX: Wrap DB updates in savepoint to prevent transaction poisoning
+                    $this->runInSavepoint(function() use ($contribution, $holdRef) {
                         $this->contributionRepository->updateHoldReference(
                             $contribution['_contribution_id'],
                             $holdRef
@@ -1440,12 +1488,7 @@ class PoolCoordinator
                             $contribution['_contribution_id'],
                             ContributionStatus::HELD
                         );
-                    } catch (Exception $e) {
-                        $this->logger->warning('Failed to update pre-held contribution status', [
-                            'contribution_id' => $contribution['_contribution_id'],
-                            'error' => $e->getMessage()
-                        ]);
-                    }
+                    }, 'sp_card_hook_hold_' . $index);
                 }
 
                 $holds[] = [
