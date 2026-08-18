@@ -1,328 +1,295 @@
 <?php
 /**
- * test_complete_aggregated_flow.php
- * 
- * Complete end-to-end test of the aggregated claim flow:
- * 1. Check pending holds for identity
- * 2. Finalize ALL holds into agent account
- * 3. Give client cash (300 BWP)
- * 4. Re-swap remainder to client's identity
- * 5. Verify everything worked
+ * FNBB DIAGNOSTIC — run this directly on the vouchmorphn server console:
+ *   php diagnose_fnbb.php
+ *
+ * Bypasses SwapService / PoolCoordinator / InstitutionAdapterFactory
+ * entirely. Talks straight to GenericBankClient and CardAcquirerBankClient
+ * with a manually-constructed FNBB_ACQUIRER config (merged from the real
+ * participants.yaml + endpoints.yaml blocks pasted earlier), and prints
+ * FULL, UNTRUNCATED request/response detail at every stage.
+ *
+ * ============================================================
+ * BEFORE RUNNING — fix these two things for your actual environment:
+ * ============================================================
+ * 1. AUTOLOAD_PATH below — point it at whatever this app already uses
+ *    to autoload classes (composer's vendor/autoload.php, or a custom
+ *    bootstrap file). Needed so GenericBankClient/CardAcquirerBankClient/
+ *    CertificateManagerFactory resolve correctly.
+ *
+ * 2. If GenericBankClient's constructor expects config shaped differently
+ *    than the flat array below (e.g. it wants YAML-parsed nested keys
+ *    exactly as loadYamlEndpoints() produces internally), adjust
+ *    $participantConfig to match. This script does NOT re-parse
+ *    endpoints.yaml — it hardcodes the FNBB block's real values directly,
+ *    to eliminate "did the YAML parse correctly" as a variable entirely.
+ * ============================================================
  */
 
-require_once __DIR__ . '/../vendor/autoload.php';
+declare(strict_types=1);
 
-use Core\Database\DBConnection;
-use Core\Config\LoadCountry;
-use Domain\Services\SwapService;
+$AUTOLOAD_PATH = __DIR__ . '/vendor/autoload.php'; // <-- ADJUST IF NEEDED
 
-// ============================================================
-// CONFIGURATION
-// ============================================================
-$identityType = 'national_id';
-$identityValue = 'ID123456789';
-$testPin = '763761';  // Latest PIN from SMS
-$destinationAccountId = 7;  // Agent's destination account (ZuruBank 10000001)
-$agentUserId = 12;  // Agent's user ID
-$cashNowAmount = 300.00;  // Client wants 300 BWP in cash
-
-// ============================================================
-// BOOTSTRAP
-// ============================================================
-$db = DBConnection::getConnection();
-$config = LoadCountry::getConfig();
-$swapService = new SwapService($db, $config, 'Botswana');
-
-echo "\n" . str_repeat('=', 80) . "\n";
-echo "  COMPLETE AGGREGATED FLOW TEST\n";
-echo "  Identity: {$identityValue}\n";
-echo "  PIN: {$testPin}\n";
-echo "  Cash to client: {$cashNowAmount} BWP\n";
-echo str_repeat('=', 80) . "\n";
-
-// ============================================================
-// STEP 1: GET ALL PENDING HOLDS
-// ============================================================
-echo "\n📊 STEP 1: CHECKING PENDING HOLDS\n";
-echo str_repeat('-', 40) . "\n";
-
-$stmt = $db->prepare("
-    SELECT hold_id, swap_reference, amount, currency, status, 
-           identity_type, identity_value, created_at, hold_expires_at,
-           otp_pin_hash, otp_pin_sent_to, authorized_at
-    FROM identity_swap_holds 
-    WHERE identity_type = :type 
-      AND identity_value = :value 
-      AND status = 'pending'
-      AND hold_expires_at > NOW()
-    ORDER BY created_at ASC
-");
-$stmt->execute([':type' => $identityType, ':value' => $identityValue]);
-$pendingHolds = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-$totalGross = 0;
-$holdCount = count($pendingHolds);
-
-echo "Found {$holdCount} pending hold(s) for identity:\n";
-foreach ($pendingHolds as $hold) {
-    $totalGross += (float)$hold['amount'];
-    $hasPin = !empty($hold['otp_pin_hash']) ? 'YES' : 'NO';
-    $authStatus = !empty($hold['authorized_at']) ? "AUTHORIZED at {$hold['authorized_at']}" : 'NOT AUTHORIZED';
-    echo "  - Hold {$hold['hold_id']}: {$hold['amount']} BWP, has PIN: {$hasPin}, {$authStatus}\n";
-}
-echo "Total gross amount: {$totalGross} BWP\n";
-
-if (empty($pendingHolds)) {
-    echo "❌ No pending holds found. Exiting.\n";
+if (file_exists($AUTOLOAD_PATH)) {
+    require_once $AUTOLOAD_PATH;
+} else {
+    fwrite(STDERR, "!! Autoload not found at {$AUTOLOAD_PATH} — edit \$AUTOLOAD_PATH at the top of this script.\n");
     exit(1);
 }
 
-// ============================================================
-// STEP 2: VERIFY THE PIN WORKS
-// ============================================================
-echo "\n🔐 STEP 2: VERIFYING PIN\n";
-echo str_repeat('-', 40) . "\n";
+use Infrastructure\Banks\GenericBankClient;
+use Infrastructure\Banks\CardAcquirerBankClient;
 
-$pinMatches = false;
-$matchedHold = null;
+function section(string $title): void
+{
+    echo "\n" . str_repeat("=", 70) . "\n{$title}\n" . str_repeat("=", 70) . "\n";
+}
 
-foreach ($pendingHolds as $hold) {
-    if (!empty($hold['otp_pin_hash']) && password_verify($testPin, $hold['otp_pin_hash'])) {
-        $pinMatches = true;
-        $matchedHold = $hold;
-        break;
+function dump(string $label, $value): void
+{
+    echo "--- {$label} ---\n";
+    if (is_string($value)) {
+        echo $value . "\n";
+    } else {
+        echo json_encode($value, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
     }
 }
 
-if ($pinMatches && $matchedHold) {
-    echo "✅ PIN '{$testPin}' matches hold {$matchedHold['hold_id']}!\n";
-} else {
-    echo "❌ PIN '{$testPin}' does NOT match any hold.\n";
-    echo "   Please check the correct PIN from SMS logs.\n";
-    exit(1);
-}
+// ============================================================
+// Hardcoded FNBB_ACQUIRER config — merged directly from the real
+// participants.yaml + endpoints.yaml blocks. No YAML parsing involved.
+// ============================================================
+$participantConfig = [
+    'provider_code' => 'FNBB_ACQUIRER',
+    'name' => 'FNBB Card Acquiring (Visa/Mastercard)',
+    'country_code' => 'Botswana',
+
+    'base_url' => 'https://zurubank-production.up.railway.app/Backend/api',
+    'timeout_ms' => 5000,
+
+    'auth' => [
+        'type' => 'API_KEY',
+        'header_name' => 'X-API-Key',
+        'secret_source' => [
+            'type' => 'env_var',
+            'name' => 'FNBB_ACQUIRER_API_KEY',
+        ],
+    ],
+
+    'endpoints' => [
+        'source' => [
+            'verify_asset' => '/preauth.php',
+            'place_hold' => '/authorize.php',
+            'debit_funds' => '/capture.php',
+            'release_hold' => '/void.php',
+            'get_balance' => '/n-a',
+        ],
+        'destination_deposit' => [
+            'process_deposit' => '/card-load.php',
+        ],
+    ],
+
+    'card_acquirer' => [
+        'source_enabled' => true,
+        'pre_auth_check' => false,
+        'pre_auth_amount' => 1.00,
+        'max_single_auth_amount' => 5000.00,
+        'authorization_window_seconds' => 604800,
+        'destination_enabled' => false,
+        'max_single_load_amount' => 5000.00,
+    ],
+
+    'retry_policy' => [
+        'max_retries' => 3,
+        'retry_delay_ms' => 1000,
+        'retry_on' => ['timeout', '5xx', 'network_error'],
+    ],
+];
 
 // ============================================================
-// STEP 3: FINALIZE ALL HOLDS
+// Test payload — mirrors test.php's card_fnbb_acquirer_to_account
+// case exactly.
 // ============================================================
-echo "\n🚀 STEP 3: FINALIZING ALL HOLDS\n";
-echo str_repeat('-', 40) . "\n";
+$basePayload = [
+    'reference' => 'DIAG_FNBB_' . time() . '_' . substr(md5((string)mt_rand()), 0, 6),
+    'user_id' => 1,
+    'from_institution' => 'FNBB_ACQUIRER',
+    'source_institution' => 'FNBB_ACQUIRER',
+    'asset_type' => 'VISA_MASTERCARD_CARD',
+    'source_identifier' => '4111111111111111',
+    'card_token' => '4111111111111111',
+    'cvv' => '123',
+    'amount' => 50,
+    'currency' => 'BWP',
+    'to_institution' => 'ZURUBANK',
+    'destination_institution' => 'ZURUBANK',
+    'destination_asset_type' => 'ACCOUNT',
+    'destination_identifier' => '10000001',
+    'destination_identifier_type' => 'account_number',
+];
 
-echo "Total gross: {$totalGross} BWP\n";
-echo "Cash to client: {$cashNowAmount} BWP\n";
-$estimatedFees = count($pendingHolds) * 6;
-echo "Estimated fees: ~{$estimatedFees} BWP\n";
-echo "Estimated net: ~" . ($totalGross - $estimatedFees) . " BWP\n";
-echo "Estimated remainder: ~" . ($totalGross - $estimatedFees - $cashNowAmount) . " BWP\n";
+// ============================================================
+// STAGE 0 — Confirm FNBB_ACQUIRER_API_KEY presence (should be
+// irrelevant per our analysis, since the mock only checks
+// certificate/signature — but confirm this assumption stands)
+// ============================================================
+section('STAGE 0: Environment check');
+$fnbbApiKey = getenv('FNBB_ACQUIRER_API_KEY');
+dump('FNBB_ACQUIRER_API_KEY set?', $fnbbApiKey ? 'YES (length ' . strlen($fnbbApiKey) . ')' : 'NO / empty');
+dump('VOUCHMORPH_PRIVATE_KEY_CONTENT set?', getenv('VOUCHMORPH_PRIVATE_KEY_CONTENT') ? 'YES' : 'NO');
+dump('VOUCHMORPH_CERT_CONTENT set?', getenv('VOUCHMORPH_CERT_CONTENT') ? 'YES' : 'NO');
+dump('VOUCHMORPH_CA_CERT / VOUCHMORPH_CA_CERT_CONTENT set?',
+    (getenv('VOUCHMORPH_CA_CERT') || getenv('VOUCHMORPH_CA_CERT_CONTENT')) ? 'YES' : 'NO');
+
+// ============================================================
+// STAGE 1 — Plain GenericBankClient (what the factory used BEFORE
+// the bank_client_class fix, and what it STILL uses if that fix
+// hasn't deployed or the class-check silently fails)
+// ============================================================
+section('STAGE 1: GenericBankClient::verifyAssetSigned() — RAW, no card-specific logic');
 
 try {
-    $startTime = microtime(true);
-    
-    $result = $swapService->finalizeAggregatedIdentityClaim(
-        $identityType,
-        $identityValue,
-        $testPin,
-        'agent',
-        $agentUserId,
-        $destinationAccountId,
-        $cashNowAmount,
-        $agentUserId
-    );
-    
-    $endTime = microtime(true);
-    $duration = round($endTime - $startTime, 2);
-    
-    echo "\n✅ FINALIZATION COMPLETE in {$duration} seconds!\n";
-    
+    $genericClient = new GenericBankClient($participantConfig);
+    $result1 = $genericClient->verifyAssetSigned($basePayload);
+    dump('Result', $result1);
+    dump('raw_response (untruncated)', $result1['raw_response'] ?? '(none captured)');
 } catch (\Throwable $e) {
-    echo "❌ FINALIZATION FAILED: " . $e->getMessage() . "\n";
-    echo "Trace: " . $e->getTraceAsString() . "\n";
-    exit(1);
+    dump('EXCEPTION', get_class($e) . ': ' . $e->getMessage() . "\n" . $e->getTraceAsString());
 }
 
 // ============================================================
-// STEP 4: DISPLAY RESULTS
+// STAGE 2 — CardAcquirerBankClient directly (what SHOULD be running
+// in production if the factory fix deployed correctly)
 // ============================================================
-echo "\n📊 STEP 4: RESULTS\n";
-echo str_repeat('-', 40) . "\n";
+section('STAGE 2: CardAcquirerBankClient::verifyAssetSigned() — WITH card-specific logic');
 
-if ($result) {
-    $gross = $result['actually_claimed_gross'] ?? 0;
-    $net = $result['actually_claimed_net'] ?? 0;
-    $totalFees = $gross - $net;
-    $cashGiven = $result['cash_now_amount'] ?? 0;
-    $remainder = $result['remainder_reswap']['amount'] ?? 0;
-    $swapCount = $result['swap_count'] ?? 0;
-    $successful = count($result['successful_deposits'] ?? []);
-    $failed = count($result['failed_deposits'] ?? []);
-    $status = $result['status'] ?? 'unknown';
-    
-    echo "Status: {$status}\n";
-    echo "Gross amount: {$gross} BWP\n";
-    echo "Net amount (after fees): {$net} BWP\n";
-    echo "Total fees: {$totalFees} BWP\n";
-    echo "Cash given to client: {$cashGiven} BWP\n";
-    echo "Remainder re-swapped: {$remainder} BWP\n";
-    echo "Swap count: {$swapCount}\n";
-    echo "Successful deposits: {$successful}\n";
-    echo "Failed deposits: {$failed}\n";
-    
-    // Show individual deposit results
-    if (!empty($result['successful_deposits'])) {
-        echo "\n✅ Successful deposits:\n";
-        foreach ($result['successful_deposits'] as $dep) {
-            $fee = $dep['gross_amount'] - $dep['net_deposited'];
-            echo "  - Hold {$dep['hold_id']}: {$dep['gross_amount']} BWP → {$dep['net_deposited']} BWP (fee: {$fee} BWP)\n";
-        }
-    }
-    
-    if (!empty($result['failed_deposits'])) {
-        echo "\n❌ Failed deposits:\n";
-        foreach ($result['failed_deposits'] as $dep) {
-            echo "  - Hold {$dep['hold_id']}: {$dep['gross_amount']} BWP - {$dep['error']}\n";
-        }
-    }
-    
-    // Show remainder re-swap details
-    if ($result['remainder_reswap'] && $result['remainder_reswap']['status'] === 'completed') {
-        echo "\n🔄 Remainder re-swap:\n";
-        echo "  - Amount: {$remainder} BWP\n";
-        echo "  - Status: {$result['remainder_reswap']['status']}\n";
-        $remResult = $result['remainder_reswap']['result'] ?? [];
-        echo "  - New hold reference: " . ($remResult['hold_reference'] ?? 'N/A') . "\n";
-        echo "  - New hold ID: " . ($remResult['hold_id'] ?? 'N/A') . "\n";
-        echo "  - Expires at: " . ($remResult['expires_at'] ?? 'N/A') . "\n";
-    }
-}
-
-// ============================================================
-// STEP 5: VERIFY DATABASE STATE
-// ============================================================
-echo "\n📊 STEP 5: VERIFYING DATABASE STATE\n";
-echo str_repeat('-', 40) . "\n";
-
-// Check all holds after the operation
-$stmt = $db->prepare("
-    SELECT hold_id, amount, status, authorized_at, completed_at
-    FROM identity_swap_holds 
-    WHERE identity_type = :type 
-      AND identity_value = :value 
-    ORDER BY created_at ASC
-");
-$stmt->execute([':type' => $identityType, ':value' => $identityValue]);
-$allHolds = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-$completedCount = 0;
-$pendingCount = 0;
-$confirmedCount = 0;
-
-echo "All holds after operation:\n";
-foreach ($allHolds as $hold) {
-    $status = $hold['status'];
-    $completedAt = !empty($hold['completed_at']) ? "completed: {$hold['completed_at']}" : '';
-    echo "  - Hold {$hold['hold_id']}: {$hold['amount']} BWP, status: {$status} {$completedAt}\n";
-    if ($status === 'completed') $completedCount++;
-    elseif ($status === 'pending') $pendingCount++;
-    elseif ($status === 'confirmed') $confirmedCount++;
-}
-echo "Completed: {$completedCount}, Confirmed: {$confirmedCount}, Pending: {$pendingCount}\n";
-
-// Check the new remainder hold (if created)
-if ($remainder > 0) {
-    $stmt = $db->prepare("
-        SELECT hold_id, amount, status, swap_reference, created_at
-        FROM identity_swap_holds 
-        WHERE swap_reference LIKE 'AGG_REMAIN_%'
-        ORDER BY created_at DESC
-        LIMIT 1
-    ");
-    $stmt->execute();
-    $newHold = $stmt->fetch(PDO::FETCH_ASSOC);
-    
-    if ($newHold) {
-        echo "\n🔄 New remainder hold created:\n";
-        echo "  - Hold ID: {$newHold['hold_id']}\n";
-        echo "  - Amount: {$newHold['amount']} BWP\n";
-        echo "  - Status: {$newHold['status']}\n";
-        echo "  - Reference: {$newHold['swap_reference']}\n";
-        echo "  - Created at: {$newHold['created_at']}\n";
-    }
-}
-
-// Check deposit transactions
-$stmt = $db->prepare("
-    SELECT transaction_reference, amount, currency, status, created_at
-    FROM deposit_transactions 
-    WHERE transaction_reference LIKE 'SWAP_REMAINDER_%' 
-       OR transaction_reference LIKE 'AGG_REMAIN_%'
-    ORDER BY created_at DESC
-    LIMIT 10
-");
-$stmt->execute();
-$deposits = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-echo "\n💰 Recent deposit transactions:\n";
-foreach ($deposits as $dep) {
-    echo "  - {$dep['transaction_reference']}: {$dep['amount']} {$dep['currency']} - {$dep['status']}\n";
-}
-
-// ============================================================
-// STEP 6: MATH VERIFICATION
-// ============================================================
-echo "\n📊 STEP 6: MATH VERIFICATION\n";
-echo str_repeat('-', 40) . "\n";
-
-$expectedAgentKeeps = $net - $cashGiven - $remainder;
-$totalAccounted = $cashGiven + $remainder + $totalFees + $expectedAgentKeeps;
-
-echo "Money flow:\n";
-echo "  Gross: {$gross} BWP\n";
-echo "  Fees: {$totalFees} BWP\n";
-echo "  Net: {$net} BWP\n";
-echo "  Cash to client: {$cashGiven} BWP\n";
-echo "  Remainder re-swapped: {$remainder} BWP\n";
-echo "  Agent keeps (net - cash - remainder): {$expectedAgentKeeps} BWP\n";
-echo "  Total accounted: {$totalAccounted} BWP\n";
-
-if (abs($totalAccounted - $gross) < 0.01) {
-    echo "✅ MATH CHECKS OUT! (Gross = Fees + Cash + Remainder + Agent Keeps)\n";
+if (!class_exists(CardAcquirerBankClient::class)) {
+    dump('FATAL', 'CardAcquirerBankClient class not found/autoloadable. Check namespace/path: src/Infrastructure/Banks/CardAcquirerBankClient.php');
 } else {
-    echo "⚠️ MATH DOESN'T CHECK OUT! Difference: " . abs($totalAccounted - $gross) . " BWP\n";
+    try {
+        $cardClient = new CardAcquirerBankClient($participantConfig);
+        $result2 = $cardClient->verifyAssetSigned($basePayload);
+        dump('Result', $result2);
+        dump('raw_response (untruncated)', $result2['raw_response'] ?? '(none — pre_auth_check=false means no network call was made, this is expected)');
+    } catch (\Throwable $e) {
+        dump('EXCEPTION', get_class($e) . ': ' . $e->getMessage() . "\n" . $e->getTraceAsString());
+    }
 }
 
 // ============================================================
-// STEP 7: FINAL SUMMARY
+// STAGE 3 — placeHold() via CardAcquirerBankClient (this DOES hit
+// the network regardless of pre_auth_check, since AUTHORIZE always
+// calls FNBB's mock)
 // ============================================================
-echo "\n🔍 STEP 7: FINAL SUMMARY\n";
-echo str_repeat('-', 40) . "\n";
+section('STAGE 3: CardAcquirerBankClient::placeHold() — hits /authorize.php for real');
 
-echo "✅ TEST COMPLETE\n\n";
-
-echo "Summary:\n";
-echo "  - Identity: {$identityValue}\n";
-echo "  - PIN used: {$testPin}\n";
-echo "  - Pending holds found: {$holdCount}\n";
-echo "  - Total gross: {$totalGross} BWP\n";
-echo "  - Net deposited: {$net} BWP\n";
-echo "  - Total fees: " . ($totalGross - $net) . " BWP\n";
-echo "  - Cash given to client: {$cashGiven} BWP\n";
-echo "  - Remainder re-swapped: {$remainder} BWP\n";
-echo "  - Status: {$status}\n";
-
-if ($pendingCount === 0 && $completedCount > 0) {
-    echo "\n🎉 ALL HOLDS HAVE BEEN FINALIZED!\n";
-    echo "   The aggregated claim flow is working correctly.\n";
-} elseif ($pendingCount > 0) {
-    echo "\n⚠️ {$pendingCount} hold(s) still pending.\n";
-    echo "   Check the logs for details.\n";
+if (class_exists(CardAcquirerBankClient::class)) {
+    try {
+        $cardClient = $cardClient ?? new CardAcquirerBankClient($participantConfig);
+        $holdPayload = array_merge($basePayload, [
+            'hold_reason' => 'DIAGNOSTIC_TEST',
+        ]);
+        $result3 = $cardClient->placeHold($holdPayload);
+        dump('Result', $result3);
+        dump('raw_response (untruncated)', $result3['raw_response'] ?? '(none captured)');
+    } catch (\Throwable $e) {
+        dump('EXCEPTION', get_class($e) . ': ' . $e->getMessage() . "\n" . $e->getTraceAsString());
+    }
 }
 
-// Show next steps if there are pending holds
-if ($pendingCount > 0) {
-    echo "\n📋 Next steps:\n";
-    echo "  1. Check the pending holds: SELECT * FROM identity_swap_holds WHERE hold_id IN (...);\n";
-    echo "  2. If deposits exist, mark as completed: UPDATE identity_swap_holds SET status = 'completed' WHERE hold_id IN (...);\n";
-    echo "  3. Or retry with the PIN again.\n";
+// ============================================================
+// STAGE 4 — Direct raw cURL to /preauth.php, completely bypassing
+// GenericBankClient/CardAcquirerBankClient. Signs manually using
+// CertificateManagerFactory the same way GenericBankClient does
+// internally, so we can see EXACTLY what goes over the wire and
+// EXACTLY what comes back, with zero abstraction in between.
+// ============================================================
+section('STAGE 4: Raw direct cURL to /preauth.php (bypasses all client classes)');
+
+try {
+    $certManager = \Infrastructure\Crypto\CertificateManagerFactory::get('VOUCHMORPH');
+    if (!$certManager->isConfigured()) {
+        dump('WARNING', 'CertificateManager reports NOT configured — signing will fail or produce an unsigned payload.');
+    }
+
+    $rawPayload = array_merge($basePayload, [
+        'action' => 'VERIFY_ASSET',
+        'institution' => 'FNBB_ACQUIRER',
+        'timestamp' => time(),
+    ]);
+
+    $signed = $certManager->createSignedRequest($rawPayload, 'VOUCHMORPH');
+    dump('Signed payload being sent', $signed);
+
+    $url = 'https://zurubank-production.up.railway.app/Backend/api/preauth.php';
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => json_encode($signed, JSON_UNESCAPED_SLASHES),
+        CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'Accept: application/json'],
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 15,
+    ]);
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlError = curl_error($ch);
+    curl_close($ch);
+
+    dump('URL', $url);
+    dump('HTTP status', $httpCode);
+    dump('curl error', $curlError ?: '(none)');
+    dump('RAW response body (completely untruncated)', $response ?: '(empty response body)');
+
+    $decoded = json_decode($response, true);
+    if ($decoded === null && $response !== '') {
+        dump('WARNING', 'Response body is NOT valid JSON — this alone would explain "Verification failed" further up the stack, since json_decode() failing silently produces an empty/null data array.');
+    }
+} catch (\Throwable $e) {
+    dump('EXCEPTION', get_class($e) . ': ' . $e->getMessage() . "\n" . $e->getTraceAsString());
 }
 
-echo "\nTest completed at " . date('Y-m-d H:i:s') . "\n";
+// ============================================================
+// STAGE 5 — Same raw cURL, but to the DECLINED pan, to confirm the
+// decline path is reachable at all once auth is settled.
+// ============================================================
+section('STAGE 5: Raw direct cURL to /authorize.php with the DECLINED test PAN');
+
+try {
+    $certManager = \Infrastructure\Crypto\CertificateManagerFactory::get('VOUCHMORPH');
+    $declinedPayload = array_merge($basePayload, [
+        'action' => 'AUTHORIZE',
+        'institution' => 'FNBB_ACQUIRER',
+        'card_token' => '4000000000000002',
+        'source_identifier' => '4000000000000002',
+        'timestamp' => time(),
+        'reference' => 'DIAG_DECLINE_' . time(),
+    ]);
+    $signedDeclined = $certManager->createSignedRequest($declinedPayload, 'VOUCHMORPH');
+
+    $url = 'https://zurubank-production.up.railway.app/Backend/api/authorize.php';
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => json_encode($signedDeclined, JSON_UNESCAPED_SLASHES),
+        CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'Accept: application/json'],
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 15,
+    ]);
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlError = curl_error($ch);
+    curl_close($ch);
+
+    dump('URL', $url);
+    dump('HTTP status', $httpCode);
+    dump('curl error', $curlError ?: '(none)');
+    dump('RAW response body (completely untruncated)', $response ?: '(empty response body)');
+} catch (\Throwable $e) {
+    dump('EXCEPTION', get_class($e) . ': ' . $e->getMessage() . "\n" . $e->getTraceAsString());
+}
+
+section('DIAGNOSTIC COMPLETE');
+echo "Paste the FULL output of this script back — every stage matters,\n";
+echo "even the ones that look redundant. Stage 4/5's raw response bodies\n";
+echo "are the most important: they show EXACTLY what FnbbAcquirerMock\n";
+echo "sent back with zero VouchMorph-side interpretation in the way.\n";
