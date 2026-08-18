@@ -375,7 +375,7 @@ participants:
 
     card_acquirer:
       source_enabled: true
-      pre_auth_check: false
+      pre_auth_check: true
       pre_auth_amount: 1.00
       max_single_auth_amount: 5000.00
       authorization_window_seconds: 604800
