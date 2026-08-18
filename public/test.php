@@ -30,10 +30,23 @@ declare(strict_types=1);
 
 $AUTOLOAD_PATH = __DIR__ . '/vendor/autoload.php'; // <-- ADJUST IF NEEDED
 
+// FIX: STDERR is undefined when this script runs under a web SAPI
+// (confirmed: it was hit via GET /test.php on PHP's built-in dev
+// server, not CLI). Use error_log()/echo instead, which work in both
+// contexts.
+if (php_sapi_name() === 'cli' && !defined('STDERR')) {
+    define('STDERR', fopen('php://stderr', 'w'));
+}
+function diag_fail(string $msg): void
+{
+    error_log($msg);
+    echo "!! " . $msg . "\n";
+}
+
 if (file_exists($AUTOLOAD_PATH)) {
     require_once $AUTOLOAD_PATH;
 } else {
-    fwrite(STDERR, "!! Autoload not found at {$AUTOLOAD_PATH} — edit \$AUTOLOAD_PATH at the top of this script.\n");
+    diag_fail("Autoload not found at {$AUTOLOAD_PATH} — edit \$AUTOLOAD_PATH at the top of this script.");
     exit(1);
 }
 
