@@ -1658,12 +1658,13 @@ return [
     // ============================================================================
 
     public function verifyAssetSigned(array $payload): array
-    {
-        error_log("=== GENERIC BANK CLIENT: verifyAssetSigned ===");
-        $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
-        return $this->verifyAsset($signedPayload);
-    }
-
+{
+    error_log("=== GENERIC BANK CLIENT: verifyAssetSigned ===");
+    $payload = $this->addSourceIdentifier($payload);   // moved before signing — same fix as placeHoldSigned()
+    $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
+    return $this->verifyAsset($signedPayload);
+}
+ 
    public function placeHoldSigned(array $payload): array
 {
     error_log("=== GENERIC BANK CLIENT: placeHoldSigned ===");
