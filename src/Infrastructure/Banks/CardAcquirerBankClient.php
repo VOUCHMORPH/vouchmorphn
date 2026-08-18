@@ -74,7 +74,7 @@ class CardAcquirerBankClient extends GenericBankClient
         $preAuthPayload['action'] = 'PRE_AUTH_CHECK';
 
         $result = $this->send('verify_asset', $this->createSignedPayload($preAuthPayload, 'VOUCHMORPH'));
-        $data = $result['data'] ?? [];
+        $data = $this->unwrapNestedData($result['data'] ?? []);
 
         return [
             'success' => $result['success'] ?? false,
@@ -132,7 +132,25 @@ class CardAcquirerBankClient extends GenericBankClient
         $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
 
         $result = $this->send('place_hold', $signedPayload, $payload['access_token'] ?? null);
-        $data = $result['data'] ?? [];
+
+        // ============================================================
+        // FIX: FNBB (via ZuruBank's mock) nests the real authorization
+        // fields one level deeper than this class expected -
+        // {"success":true,"message":"Authorized","data":{
+        //   "authorization_reference":"...","authorization_code":"...",
+        //   "status":"ACTIVE",...}}
+        // -- rather than returning them flattened at the top of "data".
+        // Without unwrapping, $authRef below always resolved to null even
+        // on a genuine approval (confirmed live: HTTP 200, "status":
+        // "ACTIVE", a real authorization_code present, no decline_code
+        // anywhere - and this method still reported hold_placed=false,
+        // using the bank's own "Authorized" message as the "decline
+        // reason" in the log). unwrapNestedData() merges the inner object
+        // up so every field below - and the raw $data returned to the
+        // caller - is reachable at a single, consistent level regardless
+        // of which shape the specific endpoint used.
+        // ============================================================
+        $data = $this->unwrapNestedData($result['data'] ?? []);
         $authRef = $data['authorization_reference'] ?? $data['auth_reference'] ?? $data['hold_reference'] ?? null;
         $authCode = $data['authorization_code'] ?? $data['auth_code'] ?? null;
         if (!$result['success'] || empty($authRef)) {
@@ -192,7 +210,10 @@ class CardAcquirerBankClient extends GenericBankClient
         $signedPayload = $this->createSignedPayload($capturePayload, 'VOUCHMORPH');
         $result = $this->send('debit_funds', $signedPayload, $payload['access_token'] ?? null);
 
-        $data = $result['data'] ?? [];
+        // FIX: same nested-data shape as placeHold() (see comment there) -
+        // apply the same unwrap so transaction_reference isn't missed if
+        // Capture.php follows the same convention as Preauth.php/Authorize.php.
+        $data = $this->unwrapNestedData($result['data'] ?? []);
         $txRef = $data['transaction_reference'] ?? $data['capture_reference'] ?? null;
 
         if (!$result['success'] || empty($txRef)) {
@@ -237,7 +258,9 @@ class CardAcquirerBankClient extends GenericBankClient
         ], 'VOUCHMORPH');
 
         $result = $this->send('release_hold', $voidPayload);
-        $data = $result['data'] ?? [];
+        // FIX: same nested-data shape as placeHold() (see comment there) -
+        // apply the same unwrap in case Void.php follows the same convention.
+        $data = $this->unwrapNestedData($result['data'] ?? []);
 
         return [
             'success' => $result['success'] ?? false,
@@ -344,7 +367,9 @@ class CardAcquirerBankClient extends GenericBankClient
         $signedPayload = $this->createSignedPayload($loadPayload, 'VOUCHMORPH');
         $result = $this->send('process_deposit', $signedPayload, $payload['access_token'] ?? null);
 
-        $data = $result['data'] ?? [];
+        // FIX: same nested-data shape as placeHold() (see comment there) -
+        // apply the same unwrap in case Cardload.php follows the same convention.
+        $data = $this->unwrapNestedData($result['data'] ?? []);
         $txRef = $data['transaction_reference'] ?? $data['load_reference'] ?? null;
 
         if (!$result['success'] || empty($txRef)) {
@@ -423,5 +448,29 @@ class CardAcquirerBankClient extends GenericBankClient
             unset($payload[$field]);
         }
         return $payload;
+    }
+
+    // ========================================================================
+    // NEW: shared unwrap helper
+    //
+    // GenericBankClient::send() decodes the bank's entire response body
+    // into 'data' as-is. For most participants that body is already flat
+    // ({"success":true,"authorization_reference":"..."}), but FNBB (via
+    // ZuruBank's mock, at least for Preauth.php/Authorize.php) nests the
+    // real fields one level deeper: {"success":true,"message":"...",
+    // "data":{"authorization_reference":"...", ...}}. Every method in this
+    // class reads fields directly off the top of $result['data'], so
+    // without unwrapping, those reads silently return null on an
+    // otherwise-successful response. This merges the inner object up
+    // (inner values win on key collision) so both shapes work identically.
+    // Safe to call even when the response is already flat - if there's no
+    // nested 'data' array, this is a no-op.
+    // ========================================================================
+    private function unwrapNestedData(array $data): array
+    {
+        if (isset($data['data']) && is_array($data['data'])) {
+            $data = array_merge($data, $data['data']);
+        }
+        return $data;
     }
 }
