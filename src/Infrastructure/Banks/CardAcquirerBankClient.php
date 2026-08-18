@@ -45,7 +45,7 @@ class CardAcquirerBankClient extends GenericBankClient
     // file is a complete drop-in replacement, not a partial patch.
     // ========================================================================
 
-    public function verifyAssetSigned(array $payload): array
+   public function verifyAssetSigned(array $payload): array
     {
         if (!$this->isSourceEnabled()) {
             return $this->disabledCapabilityResponse('source (acquiring)', 'verified');
@@ -69,7 +69,27 @@ class CardAcquirerBankClient extends GenericBankClient
         }
 
         $preAuthAmount = (float)($this->config['card_acquirer']['pre_auth_amount'] ?? 1.00);
-        $preAuthPayload = $this->stripCvvAfterUse($payload);
+
+        // ============================================================
+        // FIX: stripCvvAfterUse() used to run BEFORE signing here, and
+        // CVV was never restored — same bug already fixed in
+        // placeHold() (see the FIX comment there). The acquirer's mock
+        // apparently requires CVV in the signed+sent payload for
+        // PRE_AUTH_CHECK, same as it does for AUTHORIZE. Confirmed
+        // live: every /Preauth.php call returned "Asset verification
+        // failed: Authentication failed" regardless of PAN — both the
+        // approved and the declined test PAN produced the byte-
+        // identical error, meaning neither ever reached PAN-specific
+        // evaluation; the request was being rejected before that point.
+        //
+        // Fix is the same as placeHold(): sign the payload AS SENT,
+        // cvv included, so what's hashed and what's transmitted match.
+        // If CVV must stay out of application logs for PCI reasons,
+        // redact it only at the log call site (see
+        // createSignedPayload()'s own error_log() calls) — never strip
+        // it from what's actually signed and sent.
+        // ============================================================
+        $preAuthPayload = $payload;
         $preAuthPayload['amount'] = $preAuthAmount;
         $preAuthPayload['action'] = 'PRE_AUTH_CHECK';
 
@@ -86,7 +106,6 @@ class CardAcquirerBankClient extends GenericBankClient
             'raw_response' => $result['raw_response'] ?? null,
         ];
     }
-
    public function placeHold(array $payload): array
     {
         if (!$this->isSourceEnabled()) {
