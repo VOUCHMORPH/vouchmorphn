@@ -28,7 +28,7 @@
 
 declare(strict_types=1);
 
-$AUTOLOAD_PATH = __DIR__ . '/vendor/autoload.php'; // <-- ADJUST IF NEEDED
+$AUTOLOAD_PATH = __DIR__ . '/../vendor/autoload.php'; // <-- ADJUST IF NEEDED
 
 // FIX: STDERR is undefined when this script runs under a web SAPI
 // (confirmed: it was hit via GET /test.php on PHP's built-in dev
