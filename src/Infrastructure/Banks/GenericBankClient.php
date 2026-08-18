@@ -1203,9 +1203,11 @@ if (!$result['success'] && isset($data['message']) &&
 // document to verify the bank's signature; passing the outgoing
 // $payload here (as before) checks the wrong document and always
 // fails verification, regardless of whether the signature is valid.
-$responseForVerification = $data;
-unset($responseForVerification['signature'], $responseForVerification['certificate']);
-
+$responseForVerification = $data['original_payload'] ?? $data;
+if (!isset($data['original_payload'])) {
+    unset($responseForVerification['signature'], $responseForVerification['certificate']);
+}
+     
 return [
     'success' => $result['success'] ?? false,
     'hold_placed' => $result['success'] ?? false,
