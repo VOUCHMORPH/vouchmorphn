@@ -1808,25 +1808,6 @@ return [
     // PROTECTED HELPERS
     // ============================================================================
 
-    /**
-     * FIX: Reordered success detection to check action-specific flags BEFORE
-     * generic status string matches.
-     * 
-     * The previous ordering checked:
-     * 1. HTTP OK
-     * 2. status === 'SUCCESS' (string match)
-     * 3. action-specific flags (hold_placed, debited, released, credited)
-     * 
-     * This caused MTN's response with status: 'ACTIVE' to short-circuit the
-     * chain before hold_placed: true was ever read, treating successful
-     * holds as failures.
-     * 
-     * NEW ORDERING:
-     * 1. HTTP OK
-     * 2. ACTION-SPECIFIC FLAGS (hold_placed, debited, released, credited)
-     * 3. Generic success/status flags (success, status === 'SUCCESS')
-     * 4. Fallback: assume success if HTTP OK
-     */
     protected function send(string $action, array $payload, ?string $accessToken = null): array
     {
         $endpoint = $this->getEndpoint($action);
@@ -1929,84 +1910,59 @@ return [
             error_log("Failed to decode JSON response. Raw response: " . substr($response, 0, 1000));
         }
         
+        // ============================================================================
+        // FIX: success detection reordered + fail-closed default.
+        //
+        // 1. REORDERED: action-specific flags (hold_placed / debited /
+        //    released / credited) now take priority over the generic
+        //    'status' string check. Previously this was an ELSEIF chain
+        //    that checked 'status' BEFORE the action-specific flag, so a
+        //    response like {"status":"ACTIVE","hold_placed":true} was
+        //    read as a FAILURE, because "ACTIVE" !== "SUCCESS" short-
+        //    circuited the chain and 'hold_placed' was never consulted.
+        //    Confirmed live against MTN: "Hold failed: Collection
+        //    approved (simulated) — funds held" — MTN's own success
+        //    message, misread as a failure reason.
+        //
+        // 2. FAIL-CLOSED: when NONE of success/hold_placed/debited/
+        //    released/credited/status is present in the response body,
+        //    this used to default to SUCCESS as long as the HTTP status
+        //    was 2xx. That is a fail-OPEN default in a client that
+        //    authorizes real holds, debits, and deposits — an
+        //    incomplete or malformed 200 response was being silently
+        //    treated as a successful money movement. It now defaults to
+        //    FAILURE instead. This WILL surface any bank integration
+        //    that doesn't emit an explicit success signal; that is the
+        //    point — those integrations need to be fixed to emit one,
+        //    not have the client guess on their behalf.
         // ============================================================
-        // FIX: Reordered success detection
-        // 
-        // 1. First check if HTTP request was successful
-        // 2. THEN check action-specific flags (hold_placed, debited, 
-        //    released, credited) before generic status matches
-        // 3. THEN check generic success/status flags
-        // 4. Fallback: assume success if HTTP OK and no failure indicators
-        // ============================================================
-        
-        $httpOk = $httpCode >= 200 && $httpCode < 300 && $decodedResponse !== null;
         $bodySuccessFlag = null;
-        
         if (is_array($decodedResponse)) {
-            // STEP 1: Action-specific flags (priority - these are the most reliable)
-            // Check for hold_placed (placeHold)
-            if (array_key_exists('hold_placed', $decodedResponse)) {
-                $bodySuccessFlag = (bool)$decodedResponse['hold_placed'];
-                error_log("[GenericBankClient] send({$action}): Found hold_placed = " . ($bodySuccessFlag ? 'true' : 'false'));
-            }
-            // Check for debited (debitFunds)
-            elseif (array_key_exists('debited', $decodedResponse)) {
-                $bodySuccessFlag = (bool)$decodedResponse['debited'];
-                error_log("[GenericBankClient] send({$action}): Found debited = " . ($bodySuccessFlag ? 'true' : 'false'));
-            }
-            // Check for released (releaseHold)
-            elseif (array_key_exists('released', $decodedResponse)) {
-                $bodySuccessFlag = (bool)$decodedResponse['released'];
-                error_log("[GenericBankClient] send({$action}): Found released = " . ($bodySuccessFlag ? 'true' : 'false'));
-            }
-            // Check for credited (processDeposit)
-            elseif (array_key_exists('credited', $decodedResponse)) {
-                $bodySuccessFlag = (bool)$decodedResponse['credited'];
-                error_log("[GenericBankClient] send({$action}): Found credited = " . ($bodySuccessFlag ? 'true' : 'false'));
-            }
-            // STEP 2: Generic success/status flags
-            elseif (array_key_exists('success', $decodedResponse)) {
+            if (array_key_exists('success', $decodedResponse)) {
                 $bodySuccessFlag = (bool)$decodedResponse['success'];
-                error_log("[GenericBankClient] send({$action}): Found success = " . ($bodySuccessFlag ? 'true' : 'false'));
-            }
-            // Check for status === 'SUCCESS' or 'OK' or 'COMPLETED'
-            elseif (array_key_exists('status', $decodedResponse)) {
-                $status = strtoupper((string)$decodedResponse['status']);
-                $bodySuccessFlag = in_array($status, ['SUCCESS', 'OK', 'COMPLETED', 'ACTIVE']);
-                error_log("[GenericBankClient] send({$action}): status = '{$status}', mapped to " . ($bodySuccessFlag ? 'true' : 'false'));
-            }
-            // STEP 3: Fallback - if HTTP OK and no failure indicators, assume success
-            else {
-                $bodySuccessFlag = true;
-                error_log("[GenericBankClient] send({$action}): No explicit success/failure flags, defaulting to true (HTTP OK)");
-            }
-        }
-        
-        // Only override with false if we have explicit failure indicators
-        if ($httpOk && $decodedResponse !== null && is_array($decodedResponse)) {
-            // Check for explicit failure indicators
-            if (isset($decodedResponse['error']) || 
-                isset($decodedResponse['failed']) || 
-                (isset($decodedResponse['status']) && strtoupper((string)$decodedResponse['status']) === 'FAILED')) {
-                $bodySuccessFlag = false;
-                error_log("[GenericBankClient] send({$action}): Override to false due to failure indicator");
+            } elseif ($action === 'place_hold' && array_key_exists('hold_placed', $decodedResponse)) {
+                $bodySuccessFlag = (bool)$decodedResponse['hold_placed'];
+            } elseif ($action === 'debit_funds' && array_key_exists('debited', $decodedResponse)) {
+                $bodySuccessFlag = (bool)$decodedResponse['debited'];
+            } elseif ($action === 'release_hold' && array_key_exists('released', $decodedResponse)) {
+                $bodySuccessFlag = (bool)$decodedResponse['released'];
+            } elseif (in_array($action, ['process_deposit', 'processDepositWithProof'], true) && array_key_exists('credited', $decodedResponse)) {
+                $bodySuccessFlag = (bool)$decodedResponse['credited'];
+            } elseif (array_key_exists('status', $decodedResponse)) {
+                $bodySuccessFlag = strtoupper((string)$decodedResponse['status']) === 'SUCCESS';
             }
         }
 
-        // ============================================================
-        // FIX: Fail closed, not open
-        // 
-        // $overallSuccess requires BOTH HTTP OK AND body success flag true.
-        // No more fail-open default where HTTP errors get treated as success.
-        // ============================================================
+        $httpOk = $httpCode >= 200 && $httpCode < 300 && $decodedResponse !== null;
+        // FIX: was `$bodySuccessFlag === null ? true : $bodySuccessFlag`
+        // (fail-open). Now fails closed when no signal was found.
         $overallSuccess = $httpOk && $bodySuccessFlag === true;
-        
-        if (!$httpOk) {
-            error_log("[GenericBankClient] send({$action}): HTTP NOT OK ({$httpCode}) - treating as FAILURE");
-        } elseif ($bodySuccessFlag === false) {
-            error_log("[GenericBankClient] send({$action}): Body reports failure - treating as FAILURE");
-        } elseif ($overallSuccess) {
-            error_log("[GenericBankClient] send({$action}): SUCCESS - HTTP OK and body reports success");
+
+        if ($httpOk && $bodySuccessFlag === false) {
+            error_log("send({$action}): HTTP {$httpCode} but response body reports failure - treating as FAILURE. Body: " . substr($response, 0, 300));
+        }
+        if ($httpOk && $bodySuccessFlag === null) {
+            error_log("send({$action}): HTTP {$httpCode} but response body has NO recognizable success signal (no success/hold_placed/debited/released/credited/status key) - treating as FAILURE (fail-closed). Body: " . substr($response, 0, 300));
         }
 
         return [
