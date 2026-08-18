@@ -203,6 +203,46 @@ class CardAcquirerBankClient extends GenericBankClient
         ];
     }
     
+    // ========================================================================
+    // FIX: override placeHoldSigned() to prevent double-signing.
+    //
+    // GenericInstitutionAdapter::placeHold() calls
+    // $this->bankClient->placeHoldSigned(...) — not placeHold() directly.
+    // CardAcquirerBankClient never overrode placeHoldSigned(), so it
+    // inherited GenericBankClient's version, which signs the payload ONCE
+    // and then calls $this->placeHold($signedPayload). Because $this is a
+    // CardAcquirerBankClient instance, that call dispatches to THIS
+    // class's placeHold() override (above) — which signs the payload a
+    // SECOND time. Same double-signing bug already fixed for
+    // generateToken()/generateTokenWithProof() elsewhere in
+    // GenericBankClient; CardAcquirerBankClient just never got the
+    // equivalent guard.
+    //
+    // Worse than an ordinary double-sign here specifically: the first
+    // signature (computed inside the inherited placeHoldSigned()) covers
+    // the payload BEFORE action=AUTHORIZE, expiry, and reference are even
+    // set — those fields only get added inside placeHold() itself, after
+    // that first signature was already thrown away and recomputed.
+    // Confirmed live: every FNBB_ACQUIRER hold through SwapService (which
+    // always goes through placeHoldSigned()) failed with "Hold failed:
+    // Authentication failed", while calling placeHold() directly in
+    // isolated diagnostics (bypassing placeHoldSigned() entirely) worked
+    // correctly every time — the double-sign only exists on the real,
+    // production entry point.
+    //
+    // placeHold() above is already fully self-contained: it sets its own
+    // action/expiry/reference and signs exactly once, CVV included (see
+    // the FIX comment in placeHold() itself). The fix is to stop
+    // pre-signing here — don't call createSignedPayload() at all, just
+    // forward straight to placeHold() and let it be the single source of
+    // truth for what gets signed and sent.
+    // ========================================================================
+    public function placeHoldSigned(array $payload): array
+    {
+        $payload = $this->addSourceIdentifier($payload);
+        return $this->placeHold($payload);
+    }
+
     public function debitFunds(array $payload): array
     {
         if (!$this->isSourceEnabled()) {
