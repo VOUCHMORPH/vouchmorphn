@@ -4,7 +4,7 @@
 // separate, independently-gated capability from card-SOURCE (acquiring).
 
 declare(strict_types=1);
-
+ 
 namespace Infrastructure\Banks;
 
 /**
