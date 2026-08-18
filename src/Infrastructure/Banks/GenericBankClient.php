@@ -1071,7 +1071,7 @@ if ($currentSection === 'auth' && preg_match('/^    ([a-z_]+): (.+)$/', $line, $
      * 2. The certificate is included in the payload
      * 3. The signature is included in the payload
      */
-    public function placeHold(array $payload): array
+public function placeHold(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: placeHold ===");
         
@@ -1183,48 +1183,64 @@ if ($currentSection === 'auth' && preg_match('/^    ([a-z_]+): (.+)$/', $line, $
         $result = $this->send('place_hold', $payload, $payload['access_token'] ?? null);
         
         $data = $result['data'] ?? [];
+
+        // ============================================================
+        // FIX: Some institutions (e.g. FNBB_ACQUIRER via ZuruBank's mock)
+        // nest the actual authorization fields one level deeper, under
+        // "data" -- {"success":true,"message":"Authorized","data":{
+        // "authorization_reference":...,"authorization_code":...,
+        // "status":"ACTIVE",...}} -- rather than flattening them like
+        // hold.php/credit_funds.php do for other participants. Without
+        // this unwrap, hold_reference/hold_id below resolve to null even
+        // though $result['success'] is correctly true, producing a
+        // response that claims success but carries no reference the
+        // caller can act on. Same pattern already fixed in debitFunds()
+        // for ZuruBank's notify_debit.php; applying the identical guard
+        // here.
+        // ============================================================
+        if (isset($data['data']) && is_array($data['data'])) {
+            $data = array_merge($data, $data['data']);
+        }
         
         // If the hold failed due to certificate issues, log it clearly
-       $data = $result['data'] ?? [];
+        if (!$result['success'] && isset($data['message']) && 
+            strpos($data['message'], 'Certificate required') !== false) {
+            error_log("[GenericBankClient] placeHold: ❌ HOLD FAILED - Certificate required but not sent or invalid");
+            error_log("[GenericBankClient] placeHold: Payload certificate key exists: " . 
+                      (isset($payload['certificate']) ? 'YES' : 'NO'));
+            error_log("[GenericBankClient] placeHold: Payload signature key exists: " . 
+                      (isset($payload['signature']) ? 'YES' : 'NO'));
+        }
 
-// If the hold failed due to certificate issues, log it clearly
-if (!$result['success'] && isset($data['message']) && 
-    strpos($data['message'], 'Certificate required') !== false) {
-    error_log("[GenericBankClient] placeHold: ❌ HOLD FAILED - Certificate required but not sent or invalid");
-    error_log("[GenericBankClient] placeHold: Payload certificate key exists: " . 
-              (isset($payload['certificate']) ? 'YES' : 'NO'));
-    error_log("[GenericBankClient] placeHold: Payload signature key exists: " . 
-              (isset($payload['signature']) ? 'YES' : 'NO'));
-}
-
-// The document the bank actually signed is ITS OWN response body
-// (minus signature/certificate, which it appends after signing) -
-// not the request we sent it. AggregateSigner needs this exact
-// document to verify the bank's signature; passing the outgoing
-// $payload here (as before) checks the wrong document and always
-// fails verification, regardless of whether the signature is valid.
-$responseForVerification = $data['original_payload'] ?? $data;
-if (!isset($data['original_payload'])) {
-    unset($responseForVerification['signature'], $responseForVerification['certificate']);
-}
-     
-return [
-    'success' => $result['success'] ?? false,
-    'hold_placed' => $result['success'] ?? false,
-    'hold_reference' => $data['hold_reference'] ?? $data['reference'] ?? null,
-    'hold_id' => $data['hold_id'] ?? null,
-    'status' => $data['status'] ?? 'ACTIVE',
-    'data' => $data,
-    'message' => $data['message'] ?? ($result['success'] ? 'Hold placed' : 'Hold failed'),
-    'status_code' => $result['status_code'] ?? 0,
-    'curl_error' => $result['curl_error'] ?? null,
-    'raw_response' => $result['raw_response'] ?? null,
-    'signature' => $data['signature'] ?? $payload['signature'] ?? null,
-'certificate' => $payload['certificate'] ?? $data['certificate'] ?? null,
- 'original_payload' => $responseForVerification,   // <-- fixed: response, not request
-    'timestamp' => $data['timestamp'] ?? time()
-];
+        // The document the bank actually signed is ITS OWN response body
+        // (minus signature/certificate, which it appends after signing) -
+        // not the request we sent it. AggregateSigner needs this exact
+        // document to verify the bank's signature; passing the outgoing
+        // $payload here (as before) checks the wrong document and always
+        // fails verification, regardless of whether the signature is valid.
+        $responseForVerification = $data['original_payload'] ?? $data;
+        if (!isset($data['original_payload'])) {
+            unset($responseForVerification['signature'], $responseForVerification['certificate']);
+        }
+             
+        return [
+            'success' => $result['success'] ?? false,
+            'hold_placed' => $result['success'] ?? false,
+            'hold_reference' => $data['hold_reference'] ?? $data['authorization_reference'] ?? $data['reference'] ?? null,
+            'hold_id' => $data['hold_id'] ?? $data['authorization_code'] ?? null,
+            'status' => $data['status'] ?? 'ACTIVE',
+            'data' => $data,
+            'message' => $data['message'] ?? ($result['success'] ? 'Hold placed' : 'Hold failed'),
+            'status_code' => $result['status_code'] ?? 0,
+            'curl_error' => $result['curl_error'] ?? null,
+            'raw_response' => $result['raw_response'] ?? null,
+            'signature' => $data['signature'] ?? $payload['signature'] ?? null,
+            'certificate' => $payload['certificate'] ?? $data['certificate'] ?? null,
+            'original_payload' => $responseForVerification,   // <-- fixed: response, not request
+            'timestamp' => $data['timestamp'] ?? time()
+        ];
     }
+ 
     public function releaseHold(array $payload): array
     {
         error_log("=== GENERIC BANK CLIENT: releaseHold ===");
