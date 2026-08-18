@@ -754,123 +754,126 @@ class PoolCoordinator
         return $verifications;
     }
 
-    private function placeHolds(array $pool, array $contributions, array $verifications, ?array &$heldSources = null): array
-    {
-        $holds = [];
-        $heldSources = [];
+   private function placeHolds(array $pool, array $contributions, array $verifications, ?array &$heldSources = null): array
+{
+    $holds = [];
+    $heldSources = [];
+    
+    foreach ($contributions as $index => $contribution) {
+        $institution = $contribution['institution'];
+        $amount = $contribution['amount'];
         
-        foreach ($contributions as $index => $contribution) {
-            $institution = $contribution['institution'];
-            $amount = $contribution['amount'];
-            
-            $sourceIdentifier = $contribution['source_identifier'] ?? 
-                               $contribution['identifier'] ?? 
-                               $contribution['account_id'] ?? 
-                               null;
-            
-            $sourceIdentifierType = $contribution['source_identifier_type'] ?? 
-                                    $contribution['identifier_type'] ?? 
-                                    'auto';
-            
-            // FIX: Get original source data for certificate/signature
-            $originalSource = null;
+        $sourceIdentifier = $contribution['source_identifier'] ?? 
+                           $contribution['identifier'] ?? 
+                           $contribution['account_id'] ?? 
+                           null;
+        
+        $sourceIdentifierType = $contribution['source_identifier_type'] ?? 
+                                $contribution['identifier_type'] ?? 
+                                'auto';
+        
+        // FIX: Get original source data for certificate/signature
+        $originalSource = null;
+        foreach ($pool['sources'] ?? [] as $source) {
+            $sourceId = $source['source_identifier'] ?? $source['identifier'] ?? $source['account_id'] ?? null;
+            if ($sourceId === $sourceIdentifier) {
+                $originalSource = $source;
+                break;
+            }
+        }
+        
+        // If not found by identifier, try matching by institution
+        if (!$originalSource) {
             foreach ($pool['sources'] ?? [] as $source) {
-                $sourceId = $source['source_identifier'] ?? $source['identifier'] ?? $source['account_id'] ?? null;
-                if ($sourceId === $sourceIdentifier) {
+                if (($source['source_type'] ?? '') === $institution || 
+                    ($source['institution'] ?? '') === $institution) {
                     $originalSource = $source;
                     break;
                 }
             }
-            
-            // If not found by identifier, try matching by institution
-            if (!$originalSource) {
-                foreach ($pool['sources'] ?? [] as $source) {
-                    if (($source['source_type'] ?? '') === $institution || 
-                        ($source['institution'] ?? '') === $institution) {
-                        $originalSource = $source;
-                        break;
-                    }
-                }
-            }
-            
-            $holdPayload = [
-                'action' => 'PLACE_HOLD',
-                'reference' => $pool['reference'] ?? uniqid(),
-                'asset_type' => $contribution['asset_type'] ?? 'ACCOUNT',
-                'amount' => $amount,
-                'currency' => $contribution['currency'] ?? 'BWP',
-                'hold_reason' => 'MULTI_SOURCE_SWAP',
-                'expiry' => date('Y-m-d H:i:s', strtotime('+1 hour')),
-                'timestamp' => time(),
-                'from_institution' => $institution,
-                'source_institution' => $institution,
-                'source_identifier' => $sourceIdentifier,
-                'source_identifier_type' => $sourceIdentifierType,
-                'user_id' => $pool['user_id'] ?? 0,
-                'destination_institution' => $pool['destination_institution'] ?? null,
-            ];
-            
-            // FIX: Include certificate and signature from original source
-            if ($originalSource) {
-                if (isset($originalSource['certificate'])) {
-                    $holdPayload['certificate'] = $originalSource['certificate'];
-                }
-                if (isset($originalSource['signature'])) {
-                    $holdPayload['signature'] = $originalSource['signature'];
-                }
-                
-                $this->logger->debug('Including certificate/signature for hold', [
-                    'institution' => $institution,
-                    'has_certificate' => isset($originalSource['certificate']),
-                    'has_signature' => isset($originalSource['signature'])
-                ]);
-            } else {
-                $this->logger->warning('No original source found for hold', [
-                    'institution' => $institution,
-                    'source_identifier' => $sourceIdentifier
-                ]);
-            }
-            
-            $verificationResult = $verifications[$index] ?? [];
-            $result = $this->swapService->placeHoldSigned($holdPayload, $institution, $verificationResult);
-            
-            if (!$result['hold_placed']) {
-                $this->rollbackHolds($heldSources);
-                throw new RuntimeException("Hold failed for source: {$institution} - " . ($result['message'] ?? 'Unknown error'));
-            }
-            
-            $holdData = [
-                'index' => $index,
-                'institution' => $institution,
-                'hold_id' => $result['hold_id'] ?? null,
-                'hold_reference' => $result['hold_reference'] ?? null,
-                'amount' => $amount,
-                'signature' => $result['signature'] ?? null,
-                'certificate' => $result['certificate'] ?? null,
-                'original_payload' => $result['original_payload'] ?? $holdPayload,   
-                'source_payload' => $contribution
-            ];
-            
-            // FIX: Wrap DB updates in savepoint to prevent transaction poisoning
-            if (isset($contribution['_contribution_id']) && !empty($holdData['hold_reference'])) {
-                $this->runInSavepoint(function() use ($contribution, $holdData) {
-                    $this->contributionRepository->updateHoldReference(
-                        $contribution['_contribution_id'],
-                        $holdData['hold_reference']
-                    );
-                    $this->contributionRepository->updateStatus(
-                        $contribution['_contribution_id'],
-                        ContributionStatus::HELD
-                    );
-                }, 'sp_hold_update_' . $index);
-            }
-            
-            $holds[] = $holdData;
-            $heldSources[] = $holdData;
         }
         
-        return $holds;
+        // FIX: Use unique sub_reference per source, not shared pool reference
+        $uniqueReference = $contribution['_sub_reference'] ?? $pool['reference'] . '_' . $index;
+        
+        $holdPayload = [
+            'action' => 'PLACE_HOLD',
+            'reference' => $uniqueReference,  // <-- FIXED: unique per source
+            'asset_type' => $contribution['asset_type'] ?? 'ACCOUNT',
+            'amount' => $amount,
+            'currency' => $contribution['currency'] ?? 'BWP',
+            'hold_reason' => 'MULTI_SOURCE_SWAP',
+            'expiry' => date('Y-m-d H:i:s', strtotime('+1 hour')),
+            'timestamp' => time(),
+            'from_institution' => $institution,
+            'source_institution' => $institution,
+            'source_identifier' => $sourceIdentifier,
+            'source_identifier_type' => $sourceIdentifierType,
+            'user_id' => $pool['user_id'] ?? 0,
+            'destination_institution' => $pool['destination_institution'] ?? null,
+        ];
+        
+        // FIX: Include certificate and signature from original source
+        if ($originalSource) {
+            if (isset($originalSource['certificate'])) {
+                $holdPayload['certificate'] = $originalSource['certificate'];
+            }
+            if (isset($originalSource['signature'])) {
+                $holdPayload['signature'] = $originalSource['signature'];
+            }
+            
+            $this->logger->debug('Including certificate/signature for hold', [
+                'institution' => $institution,
+                'has_certificate' => isset($originalSource['certificate']),
+                'has_signature' => isset($originalSource['signature'])
+            ]);
+        } else {
+            $this->logger->warning('No original source found for hold', [
+                'institution' => $institution,
+                'source_identifier' => $sourceIdentifier
+            ]);
+        }
+        
+        $verificationResult = $verifications[$index] ?? [];
+        $result = $this->swapService->placeHoldSigned($holdPayload, $institution, $verificationResult);
+        
+        if (!$result['hold_placed']) {
+            $this->rollbackHolds($heldSources);
+            throw new RuntimeException("Hold failed for source: {$institution} - " . ($result['message'] ?? 'Unknown error'));
+        }
+        
+        $holdData = [
+            'index' => $index,
+            'institution' => $institution,
+            'hold_id' => $result['hold_id'] ?? null,
+            'hold_reference' => $result['hold_reference'] ?? null,
+            'amount' => $amount,
+            'signature' => $result['signature'] ?? null,
+            'certificate' => $result['certificate'] ?? null,
+            'original_payload' => $result['original_payload'] ?? $holdPayload,   
+            'source_payload' => $contribution
+        ];
+        
+        // FIX: Wrap DB updates in savepoint to prevent transaction poisoning
+        if (isset($contribution['_contribution_id']) && !empty($holdData['hold_reference'])) {
+            $this->runInSavepoint(function() use ($contribution, $holdData) {
+                $this->contributionRepository->updateHoldReference(
+                    $contribution['_contribution_id'],
+                    $holdData['hold_reference']
+                );
+                $this->contributionRepository->updateStatus(
+                    $contribution['_contribution_id'],
+                    ContributionStatus::HELD
+                );
+            }, 'sp_hold_update_' . $index);
+        }
+        
+        $holds[] = $holdData;
+        $heldSources[] = $holdData;
     }
+    
+    return $holds;
+}
 
     private function rollbackHolds(array $heldSources): void
     {
