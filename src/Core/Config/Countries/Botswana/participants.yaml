@@ -388,6 +388,8 @@ participants:
         type: env_var
         name: "FNBB_ACQUIRER_API_KEY"
 
+   bank_client_class: "Infrastructure\\Banks\\CardAcquirerBankClient"
+
     settlement_confirmation:
       mode: POLL
 
