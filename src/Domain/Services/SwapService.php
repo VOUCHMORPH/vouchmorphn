@@ -10210,8 +10210,8 @@ private function recordManualReconciliationRequired(
         
         try {
             $stmt = $this->swapDB->prepare($sql);
-            $stmt->execute([
-                ':hold_ref' => 'HOLD_' . $this->currentSwapRef . '_' . $institution,   // <-- fix
+           $stmt->execute([
+                ':hold_ref' => 'HOLD_' . ($externalHoldRef ?? $payload['reference'] ?? $this->currentSwapRef) . '_' . $institution,
                 ':swap_ref' => $this->currentSwapRef,
                 ':participant_name' => $institution,
                 ':asset_type' => $payload['asset_type'] ?? 'ACCOUNT',
