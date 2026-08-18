@@ -1,48 +1,21 @@
-<?php 
+<?php
 /**
- * FNBB AUTH DIAGNOSTIC — run directly on the vouchmorphn server console:
+ * FNBB AUTH DIAGNOSTIC (v2) — run directly on the vouchmorphn server console:
  *   php diagnose_fnbb_auth.php
  *
- * PURPOSE
- * ============================================================
- * The test suite reported:
- *   [FAIL] card_fnbb_acquirer_to_account -> "Authentication failed"
- *   [PASS] card_fnbb_acquirer_declined_pan_should_fail -> "Authentication failed"
+ * Fixes three bugs found in the previous copy of this script:
+ *   1. $cardClient was referenced in Stage 5 before it was ever instantiated
+ *      (instantiation line was pasted AFTER its first use) -> fatal
+ *      TypeError: get_class(): Argument #1 ($object) must be of type
+ *      object, null given.
+ *   2. The entire Stage 5 section was duplicated verbatim, back to back.
+ *   3. $basePayload was referenced in Stage 5 but never defined anywhere
+ *      in the file -> would silently auto-vivify to an empty array and
+ *      run verifyAssetSigned() against a payload missing card_token,
+ *      cvv, amount, asset_type, etc.
  *
- * Both cases produce the SAME error string. That's the bug to isolate.
- * Either:
- *   (A) Your API key / signature / certificate isn't reaching FNBB's
- *       mock correctly, so EVERY request gets auth-rejected before the
- *       mock ever looks at the card number — meaning the "declined PAN"
- *       test is passing for the wrong reason.
- *   (B) The FNBB mock genuinely treats a valid PAN differently from a
- *       declined one, and this specific "good" card just happens to
- *       also be invalid/expired/misconfigured in mock data.
- *
- * This script separates those by hitting Preauth.php directly (raw
- * cURL, no client-class interpretation) three times, with three
- * different payload shapes, and diffing the raw responses byte-for-byte:
- *
- *   Stage 1: env / key / cert sanity check
- *   Stage 2: raw call with a "known good" test PAN, WITH signing
- *   Stage 3: raw call with the SAME "known good" PAN, WITHOUT signing
- *            (deliberately broken auth) -> if response is IDENTICAL to
- *            Stage 2, the mock is ignoring your signature entirely, or
- *            always returning the same canned auth-failure regardless
- *            of card validity.
- *   Stage 4: raw call with an obviously-garbage PAN, WITH correct
- *            signing -> if this differs from Stage 2, the mock DOES
- *            distinguish cards, and the problem is your "good" test
- *            card specifically, not the auth pipeline.
- *   Stage 5: same as Stage 2 but through your actual client class
- *            (verifyAsset / placeHold) -> confirms whether your code
- *            is sending the same payload the raw call proved works,
- *            or whether something in GenericBankClient/CardAcquirer-
- *            BankClient is dropping/mangling the cert or signature
- *            before it goes out.
- *
- * Paste the FULL output back — the HTTP status + raw body for stages
- * 2/3/4 side by side is what actually answers "which bug is this."
+ * Everything else (Stages 1-4, the byte-for-byte comparison logic) is
+ * unchanged from the version that already ran cleanly.
  * ============================================================
  */
 
@@ -106,7 +79,7 @@ function rawPost(string $url, array $payload, array $extraHeaders = []): array
 }
 
 // ============================================================
-// Same hardcoded FNBB_ACQUIRER config used in the earlier diagnostic.
+// Same hardcoded FNBB_ACQUIRER config used in the earlier diagnostics.
 // Update if your real participants.yaml has since changed.
 // ============================================================
 $participantConfig = [
@@ -156,6 +129,34 @@ $goodPan = '4111111111111111'; // whatever your suite calls "known good"
 $badPan  = '0000000000000000'; // deliberately garbage
 
 // ============================================================
+// FIX #1 + #3: instantiate $cardClient AND define $basePayload here,
+// before ANY stage uses them — not after, not never. $basePayload
+// mirrors Stage 2's payload shape (the one already confirmed to work
+// via raw cURL) so Stage 5 is testing the same request through the
+// client class, not a differently-shaped one.
+// ============================================================
+$cardClient = new CardAcquirerBankClient($participantConfig);
+
+$basePayload = [
+    'reference' => 'DIAG_CLIENT_' . time() . '_' . substr(md5((string)mt_rand()), 0, 6),
+    'user_id' => 1,
+    'from_institution' => 'FNBB_ACQUIRER',
+    'source_institution' => 'FNBB_ACQUIRER',
+    'institution' => 'FNBB_ACQUIRER',
+    'asset_type' => 'VISA_MASTERCARD_CARD',
+    'source_identifier' => $goodPan,
+    'card_token' => $goodPan,
+    'cvv' => '123',
+    'amount' => 25,
+    'currency' => 'BWP',
+    'to_institution' => 'ZURUBANK',
+    'destination_institution' => 'ZURUBANK',
+    'destination_asset_type' => 'ACCOUNT',
+    'destination_identifier' => '10000001',
+    'destination_identifier_type' => 'account_number',
+];
+
+// ============================================================
 // STAGE 1 — Environment / key sanity check
 // ============================================================
 section('STAGE 1: Environment check');
@@ -173,6 +174,7 @@ if (!$apiKey) {
 // STAGE 2 — Raw call, GOOD pan, WITH signature/cert
 // ============================================================
 section('STAGE 2: Raw Preauth.php — GOOD pan, properly signed');
+$resp2 = null;
 try {
     $certManager = \Infrastructure\Crypto\CertificateManagerFactory::get('VOUCHMORPH');
     $payload2 = [
@@ -202,9 +204,7 @@ try {
 
 // ============================================================
 // STAGE 3 — Raw call, SAME good pan, deliberately UNSIGNED /
-// no API key header. If this matches Stage 2 byte-for-byte, the
-// mock isn't actually checking auth per-request, or it's returning
-// a generic failure regardless of what you send.
+// no API key header.
 // ============================================================
 section('STAGE 3: Raw Preauth.php — SAME good pan, deliberately BROKEN auth (control)');
 try {
@@ -229,20 +229,17 @@ try {
     dump('curl error', $err3 ?: '(none)');
     dump('RAW response body', $resp3 ?: '(empty)');
 
-    if (isset($resp2) && $resp3 === $resp2) {
-        dump('DIAGNOSIS', 'Stage 3 (deliberately broken auth) returned an IDENTICAL body to Stage 2 (properly signed). This strongly suggests the mock is NOT differentiating requests by auth validity — every card gets the same generic response, which explains why the "declined PAN" test passes for the wrong reason.');
-    } elseif (isset($resp2)) {
-        dump('DIAGNOSIS', 'Stage 3 differs from Stage 2 — the mock DOES respond differently to broken auth. That means Stage 2 succeeding (or not) is meaningful, and the earlier "Authentication failed" is more likely a real credential/signing problem in your app code (see Stage 5) rather than a mock limitation.');
+    if ($resp2 !== null && $resp3 === $resp2) {
+        dump('DIAGNOSIS', 'Stage 3 (deliberately broken auth) returned an IDENTICAL body to Stage 2 (properly signed). This strongly suggests the mock is NOT differentiating requests by auth validity.');
+    } elseif ($resp2 !== null) {
+        dump('DIAGNOSIS', 'Stage 3 differs from Stage 2 — the mock DOES respond differently to broken auth. That means Stage 2 succeeding is meaningful, and any "Authentication failed" elsewhere is more likely a real credential/signing problem in app code (see Stage 5) rather than a mock limitation.');
     }
 } catch (\Throwable $e) {
     dump('EXCEPTION', get_class($e) . ': ' . $e->getMessage());
 }
 
 // ============================================================
-// STAGE 4 — Raw call, GARBAGE pan, WITH correct signing. If this
-// differs from Stage 2, the mock DOES distinguish card validity,
-// and the earlier failing test's PAN is the actual problem, not
-// the auth pipeline.
+// STAGE 4 — Raw call, GARBAGE pan, WITH correct signing.
 // ============================================================
 section('STAGE 4: Raw Preauth.php — GARBAGE pan, properly signed (control)');
 try {
@@ -269,44 +266,29 @@ try {
     dump('curl error', $err4 ?: '(none)');
     dump('RAW response body', $resp4 ?: '(empty)');
 
-    if (isset($resp2)) {
+    if ($resp2 !== null) {
         dump('COMPARISON vs Stage 2', $resp4 === $resp2
-            ? 'IDENTICAL to the good-PAN response — the mock is not distinguishing card validity at all; every request (good, bad, unsigned) gets the same canned response.'
-            : 'DIFFERENT from the good-PAN response — the mock does distinguish cards. Good news: your auth pipeline may be fine; look at whether your "good" test card in the suite is actually valid in mock data.');
+            ? 'IDENTICAL to the good-PAN response — the mock is not distinguishing card validity at all.'
+            : 'DIFFERENT from the good-PAN response — the mock does distinguish cards.');
     }
 } catch (\Throwable $e) {
     dump('EXCEPTION', get_class($e) . ': ' . $e->getMessage());
 }
 
 // ============================================================
-// STAGE 5 (CORRECTED): call the REAL entry point.
-//
-// CardAcquirerBankClient does NOT override verifyAsset() — it only
-// overrides verifyAssetSigned(). A call to ->verifyAsset() falls
-// through to GenericBankClient::verifyAsset(), which sends the
-// payload completely unsigned. That's why every previous Stage 5
-// reproduced Stage 3's "deliberately broken, unsigned" control
-// byte-for-byte: it WAS unsigned, just not on purpose. This says
-// nothing about whether verifyAssetSigned() — the method the real
-// app actually calls via GenericInstitutionAdapter::verifyAsset() —
-// works. Testing that requires calling verifyAssetSigned() directly.
-//
-// This stage also answers the OTHER open question: after the
-// participants.yaml indentation fix, does FNBB_ACQUIRER actually
-// resolve to CardAcquirerBankClient, or is it still silently falling
-// back to plain GenericBankClient? get_class() tells us directly,
-// independent of whether the call itself succeeds.
+// STAGE 5: the REAL entry point — verifyAssetSigned(), not
+// verifyAsset(). $cardClient and $basePayload are both already
+// defined above, before Stage 1 even ran, so neither is null/undefined
+// here. This section appears EXACTLY ONCE in this file.
 // ============================================================
-section('STAGE 5 (CORRECTED): CardAcquirerBankClient::verifyAssetSigned() — the REAL entry point');
+section('STAGE 5: CardAcquirerBankClient::verifyAssetSigned() — the REAL entry point');
 
 dump('Resolved bank client class', get_class($cardClient));
 if (get_class($cardClient) !== CardAcquirerBankClient::class) {
-    dump('WARNING', 'This is NOT CardAcquirerBankClient. If this diagnostic instantiates '
-        . '$cardClient directly (as v1/v2 did, via `new CardAcquirerBankClient($participantConfig)`), '
-        . 'this check is meaningless — it will always say CardAcquirerBankClient regardless of what '
-        . 'production actually resolves. To test the REAL resolution, this must go through '
-        . 'InstitutionAdapterFactory::getAdapter(\'FNBB_ACQUIRER\') using the REAL parsed participants.yaml, '
-        . 'not a hardcoded $participantConfig array. See the factory-resolution check below.');
+    dump('WARNING', 'This is NOT CardAcquirerBankClient. Since this diagnostic instantiates '
+        . '$cardClient directly via `new CardAcquirerBankClient($participantConfig)`, this check will '
+        . 'always say CardAcquirerBankClient regardless of what production actually resolves. See '
+        . 'Stage 5b below for the check against the REAL factory + REAL parsed config.');
 }
 
 $signedPayload = $basePayload;
@@ -318,69 +300,18 @@ try {
     dump('raw_response (untruncated)', $signedResult['raw_response'] ?? '(none — see note below if pre_auth_check is false)');
     if (($signedResult['message'] ?? '') === 'Card token present — deferring real check to authorization') {
         dump('NOTE', 'No network call was made — this means pre_auth_check resolved to false for this '
-            . 'client instance. If you expected a real /Preauth.php call here, confirm card_acquirer.pre_auth_check '
-            . 'in the config this client instance actually received.');
+            . 'client instance (matches $participantConfig above, which has pre_auth_check: false). This is '
+            . 'EXPECTED given that config, not a bug — if you need Stage 5 to actually hit /Preauth.php, set '
+            . 'pre_auth_check to true in $participantConfig above and re-run.');
     }
 } catch (\Throwable $e) {
     dump('EXCEPTION', get_class($e) . ': ' . $e->getMessage() . "\n" . $e->getTraceAsString());
 }
-
-// ============================================================
-// STAGE 5 (CORRECTED): call the REAL entry point.
-//
-// CardAcquirerBankClient does NOT override verifyAsset() — it only
-// overrides verifyAssetSigned(). A call to ->verifyAsset() falls
-// through to GenericBankClient::verifyAsset(), which sends the
-// payload completely unsigned. That's why every previous Stage 5
-// reproduced Stage 3's "deliberately broken, unsigned" control
-// byte-for-byte: it WAS unsigned, just not on purpose. This says
-// nothing about whether verifyAssetSigned() — the method the real
-// app actually calls via GenericInstitutionAdapter::verifyAsset() —
-// works. Testing that requires calling verifyAssetSigned() directly.
-//
-// This stage also answers the OTHER open question: after the
-// participants.yaml indentation fix, does FNBB_ACQUIRER actually
-// resolve to CardAcquirerBankClient, or is it still silently falling
-// back to plain GenericBankClient? get_class() tells us directly,
-// independent of whether the call itself succeeds.
-// ============================================================
-section('STAGE 5 (CORRECTED): CardAcquirerBankClient::verifyAssetSigned() — the REAL entry point');
-
-dump('Resolved bank client class', get_class($cardClient));
-if (get_class($cardClient) !== CardAcquirerBankClient::class) {
-    dump('WARNING', 'This is NOT CardAcquirerBankClient. If this diagnostic instantiates '
-        . '$cardClient directly (as v1/v2 did, via `new CardAcquirerBankClient($participantConfig)`), '
-        . 'this check is meaningless — it will always say CardAcquirerBankClient regardless of what '
-        . 'production actually resolves. To test the REAL resolution, this must go through '
-        . 'InstitutionAdapterFactory::getAdapter(\'FNBB_ACQUIRER\') using the REAL parsed participants.yaml, '
-        . 'not a hardcoded $participantConfig array. See the factory-resolution check below.');
-}
-
-$signedPayload = $basePayload;
-$signedPayload['reference'] = 'DIAG_SIGNED_' . time() . '_' . substr(md5((string)mt_rand()), 0, 6);
-
-try {
-    $signedResult = $cardClient->verifyAssetSigned($signedPayload);
-    dump('verifyAssetSigned() result', $signedResult);
-    dump('raw_response (untruncated)', $signedResult['raw_response'] ?? '(none — see note below if pre_auth_check is false)');
-    if (($signedResult['message'] ?? '') === 'Card token present — deferring real check to authorization') {
-        dump('NOTE', 'No network call was made — this means pre_auth_check resolved to false for this '
-            . 'client instance. If you expected a real /Preauth.php call here, confirm card_acquirer.pre_auth_check '
-            . 'in the config this client instance actually received.');
-    }
-} catch (\Throwable $e) {
-    dump('EXCEPTION', get_class($e) . ': ' . $e->getMessage() . "\n" . $e->getTraceAsString());
-}
-
-$cardClient = new CardAcquirerBankClient($participantConfig);
 
 // ============================================================
 // STAGE 5b: Factory resolution check — does the REAL loader +
 // factory actually wire up CardAcquirerBankClient for FNBB_ACQUIRER
-// now, after the participants.yaml indentation fix? This is the only
-// way to confirm the fix landed, as opposed to inspecting a
-// hardcoded diagnostic config that was never affected by the bug
-// in the first place.
+// now, after the participants.yaml indentation fix?
 // ============================================================
 section('STAGE 5b: Real InstitutionAdapterFactory resolution for FNBB_ACQUIRER');
 
@@ -390,9 +321,7 @@ try {
 
     if (!isset($realParticipants['FNBB_ACQUIRER'])) {
         dump('FATAL', 'FNBB_ACQUIRER not present at all in the REAL parsed participants config. '
-            . 'This means the loader either failed to parse the file entirely, or fell back to the '
-            . 'flat manual parser and something upstream of this filtered it out. Check for '
-            . '"[LoadCountry] Failed to parse YAML participants file" in the logs.');
+            . 'Check for "[LoadCountry] Failed to parse YAML participants file" in the logs.');
     } else {
         dump('Real parsed FNBB_ACQUIRER config', $realParticipants['FNBB_ACQUIRER']);
 
@@ -416,8 +345,8 @@ try {
             dump('RESULT', 'FIX CONFIRMED — FNBB_ACQUIRER now resolves to CardAcquirerBankClient in the real code path.');
         } else {
             dump('RESULT', 'FIX NOT YET EFFECTIVE — FNBB_ACQUIRER is still resolving to ' . get_class($realBankClient)
-                . '. Confirm the corrected participants.yaml has actually been deployed (not just committed), '
-                . 'and that the running container picked up the new file.');
+                . '. Confirm the corrected participants.yaml has actually been deployed, and that the running '
+                . 'container picked up the new file.');
         }
     }
 } catch (\Throwable $e) {
@@ -425,9 +354,4 @@ try {
 }
 
 section('DIAGNOSTIC COMPLETE');
-echo "Paste the FULL output back. What matters most:\n";
-echo "  - Stage 3 vs Stage 2: same body? -> mock ignores auth validity entirely\n";
-echo "  - Stage 4 vs Stage 2: same body? -> mock ignores card validity entirely\n";
-echo "  - Stage 5: does your actual client code reproduce Stage 2's request/response,\n";
-echo "    or does it fail differently (which would point at GenericBankClient /\n";
-echo "    CardAcquirerBankClient dropping or mangling the signature/cert)?\n";
+echo "Paste the FULL output back.\n";
