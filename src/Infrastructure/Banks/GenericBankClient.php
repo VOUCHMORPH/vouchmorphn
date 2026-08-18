@@ -1921,7 +1921,7 @@ return [
             }
         }
 
-        $httpOk = $httpCode >= 200 && $httpCode < 300 && $decodedResponse !== null;
+        $httpOk = $httpCode >= 200 && $httpCode < 300 && $decodedResponse !== null; 
 $overallSuccess = $httpOk && $bodySuccessFlag === true;
         if ($httpOk && $bodySuccessFlag === false) {
             error_log("send({$action}): HTTP {$httpCode} but response body reports success=false - treating as FAILURE. Body: " . substr($response, 0, 300));
