@@ -259,13 +259,13 @@ FNBB_ACQUIRER:
 
   endpoints:
     source:
-      verify_asset: "/preauth.php"
-      place_hold: "/authorize.php"
-      debit_funds: "/capture.php"
-      release_hold: "/void.php"
+      verify_asset: "/Preauth.php"
+      place_hold: "/Authorize.php"
+      debit_funds: "/Capture.php"
+      release_hold: "/Void.php"
       get_balance: "/n-a"
     destination_deposit:
-      process_deposit: "/card-load.php"
+      process_deposit: "/Cardload.php"
 
   retry_policy:
     max_retries: 3
