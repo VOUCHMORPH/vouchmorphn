@@ -1883,7 +1883,7 @@ public function placeHold(array $payload): array
             error_log("[GenericBankClient] send({$action}): Signature length: " . strlen($payload['signature']));
         }
         
-                $headers = $this->buildHeaders($payload, $accessToken);
+        $headers = $this->buildHeaders($payload, $accessToken);
 
         $jsonPayload = json_encode($payload, JSON_UNESCAPED_SLASHES);
 
@@ -1892,15 +1892,6 @@ public function placeHold(array $payload): array
         // JSON_UNESCAPED_SLASHES -- a different byte length than what's
         // actually transmitted below. Now logs the real transmitted length.
         error_log("Payload length: " . strlen($jsonPayload));
-        // TEMPORARY: log the full exact bytes being transmitted, to
-        // byte-compare against isolated diagnostic payloads that succeed
-        // against the same endpoint with (apparently) the same content.
-        // REMOVE once the FNBB_ACQUIRER "Authentication failed"
-        // investigation is resolved -- this leaks card_token/cvv into
-        // logs, which is NOT acceptable to leave in permanently.
-        if (($this->config['provider_code'] ?? '') === 'FNBB_ACQUIRER') {
-            error_log("[TEMP DEBUG] Full outgoing JSON for {$action}: " . $jsonPayload);
-        }
 
         $ch = curl_init($url);
         curl_setopt_array($ch, [
