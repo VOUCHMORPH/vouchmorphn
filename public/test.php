@@ -1,17 +1,16 @@
 <?php
 /**
- * FNBB FLOAT-VS-INT DIAGNOSTIC — run directly:
- *   php diagnose_fnbb_float.php
+ * FNBB REQUESTER-ORDER DIAGNOSTIC — run directly:
+ *   php diagnose_fnbb_requester.php
  *
- * All 5 field-content variants in the previous diagnostic succeeded,
- * ruling out field names/set and plain literal values as the cause.
- * The one thing not yet tested: CardAcquirerBankClient's real code
- * does `(float)($config['pre_auth_amount'] ?? 1.00)` — an explicit
- * float cast — not a plain int. PHP's json_encode (default
- * serialize_precision=-1) renders a whole-number float like 1.0 as
- * "amount":1.0 (with decimal point), while a plain int renders as
- * "amount":1 (no decimal). This tests whether that byte-level
- * difference alone is what FNBB's mock rejects.
+ * Every prior isolated test omitted 'requester' from the base payload
+ * and let createSignedRequest() add it itself -- and all succeeded.
+ * The REAL failing payload has 'requester' pre-set BEFORE signing
+ * (SwapService::verifyAssetSigned() includes it in $verifyPayload's
+ * original construction). This tests whether THAT specific difference
+ * -- requester present before vs added during signing -- is what
+ * breaks verification, by comparing two variants that are IDENTICAL
+ * except for this one thing.
  */
 
 declare(strict_types=1);
@@ -35,13 +34,14 @@ function sendVariant(string $label, array $basePayload): void
     section("VARIANT: {$label}");
     $certManager = \Infrastructure\Crypto\CertificateManagerFactory::get('VOUCHMORPH');
     $basePayload['timestamp'] = time();
-    $basePayload['reference'] = 'DIAG_FLOAT_' . preg_replace('/\W+/', '_', strtolower($label)) . '_' . time();
+    $basePayload['reference'] = 'DIAG_REQ_' . preg_replace('/\W+/', '_', strtolower($label)) . '_' . time();
+
+    dump('Base payload keys BEFORE signing (order matters)', array_keys($basePayload));
 
     $signed = $certManager->createSignedRequest($basePayload, 'VOUCHMORPH');
     $jsonBody = json_encode($signed, JSON_UNESCAPED_SLASHES);
 
-    dump('Raw JSON amount field (grep manually)', substr($jsonBody, (int)strpos($jsonBody, '"amount"'), 20));
-    dump('Full payload byte length', strlen($jsonBody));
+    dump('Final key order AFTER signing', array_keys($signed));
 
     $ch = curl_init('https://zurubank-production.up.railway.app/Backend/api/Preauth.php');
     curl_setopt_array($ch, [
@@ -60,31 +60,51 @@ function sendVariant(string $label, array $basePayload): void
     dump('RESULT', $httpCode === 200 ? 'SUCCEEDED' : 'FAILED');
 }
 
-$baseline = [
+$commonFields = [
     'action' => 'PRE_AUTH_CHECK',
-    'institution' => 'FNBB_ACQUIRER',
-    'from_institution' => 'FNBB_ACQUIRER',
-    'source_institution' => 'FNBB_ACQUIRER',
     'asset_type' => 'VISA_MASTERCARD_CARD',
+    'card_token' => '4111111111111111',
+    'currency' => 'BWP',
+    'cvv' => '123',
+    'from_institution' => 'FNBB_ACQUIRER',
+    'institution' => 'FNBB_ACQUIRER',
+    'amount' => 1,
     'source_identifier' => '4111111111111111',
     'source_identifier_type' => 'auto',
-    'card_token' => '4111111111111111',
-    'cvv' => '123',
-    'currency' => 'BWP',
+    'source_institution' => 'FNBB_ACQUIRER',
     'swap_type' => 'DEPOSIT',
 ];
 
-section('Testing amount as PLAIN INT vs FLOAT CAST — everything else identical');
+section('Testing requester PRE-SET vs ADDED-DURING-SIGNING — identical field values otherwise');
 
-sendVariant('F - amount as int 1 (plain literal)', array_merge($baseline, [
+// H: requester NOT pre-set (matches every prior successful isolated test)
+sendVariant('H - requester NOT pre-set (control, known-good pattern)', $commonFields);
+
+// I: requester pre-set BEFORE signing, positioned right after action+asset fields
+// but BEFORE source_identifier -- mimics SwapService's exact construction order
+// (action, reference, asset_type, amount, currency, institution, timestamp,
+// swap_type, requester, from_institution, source_institution -- THEN
+// source_identifier gets added after via a separate if-block)
+$withRequesterEarly = [
+    'action' => 'PRE_AUTH_CHECK',
+    'asset_type' => 'VISA_MASTERCARD_CARD',
     'amount' => 1,
-]));
-
-sendVariant('G - amount as (float)1.00 (exact real-code cast)', array_merge($baseline, [
-    'amount' => (float)($_ENV['PRE_AUTH_AMOUNT'] ?? 1.00),
-]));
+    'currency' => 'BWP',
+    'institution' => 'FNBB_ACQUIRER',
+    'swap_type' => 'DEPOSIT',
+    'requester' => 'VOUCHMORPH',
+    'from_institution' => 'FNBB_ACQUIRER',
+    'source_institution' => 'FNBB_ACQUIRER',
+    'card_token' => '4111111111111111',
+    'cvv' => '123',
+    'source_identifier' => '4111111111111111',
+    'source_identifier_type' => 'auto',
+];
+sendVariant('I - requester PRE-SET before signing (matches real SwapService order)', $withRequesterEarly);
 
 section('DIAGNOSTIC COMPLETE');
-echo "Compare variant F vs G's raw JSON amount field and RESULT. If F\n";
-echo "succeeds and G fails, the float-cast amount (1.0 vs 1) is confirmed\n";
-echo "as the cause. Paste the full output back.\n";
+echo "If H succeeds and I fails, pre-setting 'requester' before signing is\n";
+echo "confirmed as the cause -- meaning createSignedRequest() signs over a\n";
+echo "different byte representation than what actually gets transmitted\n";
+echo "whenever the caller already provides 'requester' as an original key.\n";
+echo "Paste the full output back.\n";
