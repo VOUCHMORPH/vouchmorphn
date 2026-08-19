@@ -8015,6 +8015,23 @@ private function loadAtmNotesStrict(array $countryConfig, string $countryFallbac
         ];
     }
 
+ private function forwardCardCredentials(array $originalPayload, array &$targetPayload): void
+{
+    if (!empty($originalPayload['card_token'])) {
+        $targetPayload['card_token'] = $originalPayload['card_token'];
+    }
+    if (!empty($originalPayload['card_number'])) {
+        $targetPayload['card_number'] = $originalPayload['card_number'];
+    }
+    if (!empty($originalPayload['cvv'])) {
+        $targetPayload['cvv'] = $originalPayload['cvv'];
+    }
+    if (!empty($originalPayload['card_pin'])) {
+        $targetPayload['card_pin'] = $originalPayload['card_pin'];
+    }
+}
+
+
     private function forwardPin(array $originalPayload, array &$targetPayload): void
     {
         $isHooked = isset($originalPayload['_is_hooked']) && $originalPayload['_is_hooked'] === true;
@@ -8082,6 +8099,8 @@ private function loadAtmNotesStrict(array $countryConfig, string $countryFallbac
 
         $this->forwardPin($payload, $verifyPayload);
 
+        $this->forwardCardCredentials($payload, $verifyPayload);  
+
         if ($sourceId['has_value']) {
             $verifyPayload['source_identifier'] = $sourceId['identifier'];
             $verifyPayload['source_identifier_type'] = $sourceId['type'];
@@ -8146,6 +8165,8 @@ private function loadAtmNotesStrict(array $countryConfig, string $countryFallbac
         ];
 
         $this->forwardPin($payload, $holdPayload);
+
+        $this->forwardCardCredentials($payload, $holdPayload);   // ADD THIS LINE
 
         if ($sourceId['has_value']) {
             $holdPayload['source_identifier'] = $sourceId['identifier'];
