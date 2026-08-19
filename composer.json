@@ -26,5 +26,10 @@
         }
     },
     "minimum-stability": "stable",
-    "prefer-stable": true
+    "prefer-stable": true,
+    "config": {
+        "platform": {
+            "php": "8.2.33"
+        }
+    }
 }
