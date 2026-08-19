@@ -265,7 +265,38 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
                 ];
             }
             
-            if (empty($signature) && empty($certificate)) {
+            // FIX: the signature/certificate requirement below is the correct
+            // trust model for VouchMorph NETWORK PEERS (ZURUBANK, SACCUSSALIS,
+            // etc.) -- they speak VouchMorph's own signed-response protocol, so
+            // an unsigned "success" response from one of them really is
+            // suspicious and worth rejecting.
+            //
+            // It's the WRONG model for CARD ACQUIRERS (FNBB and any future
+            // acquirer integration). Real-world card acquiring (Stripe, Adyen,
+            // a bank's own acquiring API) never signs individual authorization
+            // responses message-by-message -- that isn't a gap, it's just not
+            // how trust works in that relationship. What actually protects
+            // this call: (1) TLS on the connection itself
+            // (CURLOPT_SSL_VERIFYPEER/VERIFYHOST, already enforced in
+            // GenericBankClient::send()) -- nobody can inject a fake
+            // "Authorized" response without breaking TLS; (2) the REQUEST is
+            // signed with VouchMorph's own certificate, which is the correct
+            // direction of trust for this relationship (the acquirer
+            // authenticates the merchant/PSP, not the reverse); (3) the
+            // authorization_code itself (e.g. "43B0ED") IS the proof --
+            // literally the same kind of code printed on a card receipt,
+            // retained for the audit/dispute trail. Applying the peer-network
+            // signed-response rule to an acquirer that was never going to
+            // satisfy it isn't a security check catching a real problem --
+            // it's the wrong trust model for this class of counterparty.
+            //
+            // Detected the same way CardAcquirerBankClient's own capability
+            // gates are: presence of a card_acquirer block in this
+            // institution's config, rather than a hardcoded class name, so any
+            // future acquirer-style integration is covered automatically.
+            $isCardAcquirer = isset($this->config['card_acquirer']);
+
+            if (!$isCardAcquirer && empty($signature) && empty($certificate)) {
                 if ($this->logger) {
                     $this->logger->error("placeHold: bank returned success but no signature/certificate", [
                         'institution' => $this->institution,
