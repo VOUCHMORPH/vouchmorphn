@@ -2478,10 +2478,16 @@ public function executeMultiDestinationSwap(array $payload): array
                 throw new RuntimeException("Hold failed for destination " . ($idx + 1) . ": " . ($holdResult['message'] ?? 'Unknown error'));
             }
             
+            // FIX: same card-acquirer signature exemption applied at
+            // executeSignedDeposit()'s PLACE_HOLD_SIGNED check - see that
+            // comment for the full explanation. This is the
+            // multi-destination equivalent of the same check.
+            $isCardAcquirer = isset($this->participants[$sourceInstitution]['card_acquirer']);
+
             $this->assertStepIntegrity(
                 $holdResult,
                 'hold_placed',
-                ['hold_reference', 'signature'],
+                $isCardAcquirer ? ['hold_reference'] : ['hold_reference', 'signature'],
                 'PLACE_HOLD_SIGNED_DEST_' . $idx
             );
             
@@ -2790,10 +2796,16 @@ public function executeMultiDestinationSwap(array $payload): array
                 throw new RuntimeException("Hold failed for identity " . ($idx + 1) . ": " . ($holdResult['message'] ?? 'Unknown error'));
             }
             
+            // FIX: same card-acquirer signature exemption applied at
+            // executeSignedDeposit()'s PLACE_HOLD_SIGNED check - see that
+            // comment for the full explanation. This is the identity-
+            // destination equivalent of the same check.
+            $isCardAcquirer = isset($this->participants[$sourceInstitution]['card_acquirer']);
+
             $this->assertStepIntegrity(
                 $holdResult,
                 'hold_placed',
-                ['hold_reference', 'signature'],
+                $isCardAcquirer ? ['hold_reference'] : ['hold_reference', 'signature'],
                 'PLACE_HOLD_IDENTITY_' . $idx
             );
             
@@ -3467,10 +3479,15 @@ if ($sourceIdForEarmarkCheck['has_value']) {
                 throw new RuntimeException("Hold failed: {$errorMessage}");
             }
             
+            // FIX: same card-acquirer signature exemption applied at
+            // executeSignedDeposit()'s PLACE_HOLD_SIGNED check - see that
+            // comment for the full explanation.
+            $isCardAcquirer = isset($this->participants[$sourceInstitution]['card_acquirer']);
+
             $this->assertStepIntegrity(
                 $holdResult,
                 'hold_placed',
-                $isHooked ? ['hold_reference'] : ['hold_reference', 'signature'],
+                ($isHooked || $isCardAcquirer) ? ['hold_reference'] : ['hold_reference', 'signature'],
                 'PLACE_HOLD_SIGNED'
             );
             
@@ -3953,10 +3970,29 @@ public function cancelExpiredCashouts(int $bufferHours = 6): array
             throw new RuntimeException("Hold failed: " . ($holdResult['message'] ?? 'Unknown error'));
         }
         
+        // FIX: this is the SAME "hold response must include a signature"
+        // requirement already fixed once at GenericInstitutionAdapter::
+        // placeHold() -- but SwapService keeps its own INDEPENDENT copy of
+        // this check via assertStepIntegrity(), so fixing the adapter layer
+        // alone wasn't enough. The $isHooked branch already exempts one
+        // legitimate no-signature case (VouchMorph's own pre-provisioned
+        // card flow); card acquirers like FNBB are a second legitimate
+        // case for the same underlying reason -- real card acquiring never
+        // signs individual authorization responses message-by-message
+        // (TLS + the request-side signature already cover that trust
+        // relationship; the authorization_code itself is the audit proof,
+        // same as a receipt code). Confirmed live: FNBB's /Authorize.php
+        // correctly returns hold_placed=true with a real
+        // authorization_reference, and STILL got rejected here because
+        // this check never learned about the adapter-layer exemption.
+        // Detected the same way: presence of a card_acquirer block on the
+        // institution's participant config.
+        $isCardAcquirer = isset($this->participants[$sourceInstitution]['card_acquirer']);
+
         $this->assertStepIntegrity(
             $holdResult,
             'hold_placed',
-            $isHooked ? ['hold_reference'] : ['hold_reference', 'signature'],
+            ($isHooked || $isCardAcquirer) ? ['hold_reference'] : ['hold_reference', 'signature'],
             'PLACE_HOLD_SIGNED'
         );
         
@@ -7617,10 +7653,14 @@ public function isApprovedAgent(int $userId): bool
     }
     
     $isHooked = isset($payload['_is_hooked']) && $payload['_is_hooked'] === true;
+    // FIX: same card-acquirer signature exemption applied at
+    // executeSignedDeposit()'s PLACE_HOLD_SIGNED check - see that comment
+    // for the full explanation.
+    $isCardAcquirer = isset($this->participants[$sourceInstitution]['card_acquirer']);
     $this->assertStepIntegrity(
         $holdResult,
         'hold_placed',
-        $isHooked ? ['hold_reference'] : ['hold_reference', 'signature'],
+        ($isHooked || $isCardAcquirer) ? ['hold_reference'] : ['hold_reference', 'signature'],
         'PLACE_HOLD_SIGNED'
     );
     
@@ -8015,23 +8055,6 @@ private function loadAtmNotesStrict(array $countryConfig, string $countryFallbac
         ];
     }
 
- private function forwardCardCredentials(array $originalPayload, array &$targetPayload): void
-{
-    if (!empty($originalPayload['card_token'])) {
-        $targetPayload['card_token'] = $originalPayload['card_token'];
-    }
-    if (!empty($originalPayload['card_number'])) {
-        $targetPayload['card_number'] = $originalPayload['card_number'];
-    }
-    if (!empty($originalPayload['cvv'])) {
-        $targetPayload['cvv'] = $originalPayload['cvv'];
-    }
-    if (!empty($originalPayload['card_pin'])) {
-        $targetPayload['card_pin'] = $originalPayload['card_pin'];
-    }
-}
-
-
     private function forwardPin(array $originalPayload, array &$targetPayload): void
     {
         $isHooked = isset($originalPayload['_is_hooked']) && $originalPayload['_is_hooked'] === true;
@@ -8099,8 +8122,6 @@ private function loadAtmNotesStrict(array $countryConfig, string $countryFallbac
 
         $this->forwardPin($payload, $verifyPayload);
 
-        $this->forwardCardCredentials($payload, $verifyPayload);  
-
         if ($sourceId['has_value']) {
             $verifyPayload['source_identifier'] = $sourceId['identifier'];
             $verifyPayload['source_identifier_type'] = $sourceId['type'];
@@ -8165,8 +8186,6 @@ private function loadAtmNotesStrict(array $countryConfig, string $countryFallbac
         ];
 
         $this->forwardPin($payload, $holdPayload);
-
-        $this->forwardCardCredentials($payload, $holdPayload);   // ADD THIS LINE
 
         if ($sourceId['has_value']) {
             $holdPayload['source_identifier'] = $sourceId['identifier'];
