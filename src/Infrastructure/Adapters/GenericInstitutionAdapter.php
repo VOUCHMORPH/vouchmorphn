@@ -229,7 +229,24 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
             
             $data = $result['data'] ?? [];
             
-            $holdReference = $data['hold_reference'] ?? $data['reference'] ?? null;
+            // FIX: this only checked $data['hold_reference'] / $data['reference'] --
+            // the RAW bank response fields -- completely ignoring $result['hold_reference'],
+            // which the bank client (e.g. CardAcquirerBankClient::placeHold()) already
+            // computed correctly, including its own fallback to authorization_reference
+            // for acquirers like FNBB that never send a field literally named
+            // hold_reference or reference. Confirmed live: FNBB's /Authorize.php
+            // response only has authorization_reference/authorization_code, and this
+            // layer independently re-derived (and failed to find) a hold reference the
+            // bank client had already resolved one line of code away. Adding
+            // authorization_reference to the local check AND falling back to the bank
+            // client's own $result['hold_reference'] as the ultimate source of truth --
+            // trusting the lower layer's already-correct computation instead of
+            // duplicating (and under-covering) its extraction logic here.
+            $holdReference = $data['hold_reference']
+                ?? $data['authorization_reference']
+                ?? $data['reference']
+                ?? $result['hold_reference']
+                ?? null;
             $signature = $data['signature'] ?? $result['signature'] ?? null;
             $certificate = $data['certificate'] ?? $result['certificate'] ?? null;
             
