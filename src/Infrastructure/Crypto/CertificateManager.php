@@ -133,7 +133,25 @@ class CertificateManager
         
         // CRITICAL: DO NOT include requester in the signed payload
         // Saccussalis and ZuruBank remove requester before verification
+        //
+        // FIX: this comment described the intent but the code never
+        // actually enforced it -- array_merge() alone does nothing to
+        // remove a pre-existing 'requester' key from $payload. Callers
+        // that already set 'requester' before calling this method (e.g.
+        // SwapService::verifyAssetSigned(), which includes it in its
+        // $verifyPayload construction) had it survive straight through
+        // into $jsonToSign, silently signing a DIFFERENT document than
+        // the one FNBB's mock (and, per the comment, Saccussalis/ZuruBank
+        // too) reconstructs for verification -- a cryptographically valid
+        // signature over the wrong bytes, which verifies as invalid on
+        // the receiving end. Confirmed live: identical payloads differing
+        // ONLY in whether 'requester' was pre-set before this call
+        // produced HTTP 200 (verified) vs HTTP 401 "Authentication
+        // failed" against FNBB_ACQUIRER. Explicitly unsetting it here,
+        // unconditionally, closes the gap regardless of what the caller
+        // already had in $payload.
         $payloadWithTimestamp = array_merge($payload, ['timestamp' => $timestamp]);
+        unset($payloadWithTimestamp['requester']);
         ksort($payloadWithTimestamp);
         
         $jsonToSign = json_encode($payloadWithTimestamp, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
