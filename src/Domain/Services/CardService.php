@@ -1575,6 +1575,115 @@ class CardService
         }
     }
 
+    
+public function releaseHook(
+    string $hookReference,
+    int $requestingUserId,
+    SwapService $swapService
+): array {
+    $this->db->beginTransaction();
+ 
+    try {
+        $hookStmt = $this->db->prepare("
+            SELECT * FROM card_pool_hooks WHERE hook_reference = ? FOR UPDATE
+        ");
+        $hookStmt->execute([$hookReference]);
+        $hook = $hookStmt->fetch(PDO::FETCH_ASSOC);
+ 
+        if (!$hook) {
+            $this->db->rollBack();
+            return ['success' => false, 'error' => 'Hook not found.'];
+        }
+ 
+        if ((int)$hook['user_id'] !== $requestingUserId) {
+            $this->db->rollBack();
+            return ['success' => false, 'error' => 'Only the card owner can unhook.'];
+        }
+ 
+        if ($hook['status'] !== 'HOOKED') {
+            $this->db->rollBack();
+            return [
+                'success' => false,
+                'error' => "This hook is {$hook['status']} and can no longer be unhooked "
+                    . "(it has either already been spent, expired, or was already released).",
+            ];
+        }
+ 
+        $sourcesStmt = $this->db->prepare("
+            SELECT * FROM card_pool_hook_sources
+            WHERE hook_id = ? AND status = 'HELD'
+            FOR UPDATE
+        ");
+        $sourcesStmt->execute([$hook['id']]);
+        $heldSources = $sourcesStmt->fetchAll(PDO::FETCH_ASSOC);
+ 
+        $released = [];
+        $failed = [];
+ 
+        foreach ($heldSources as $source) {
+            try {
+                $swapService->releaseHold(
+                    ['institution' => $source['institution'], 'asset_type' => $source['asset_type']],
+                    $source['institution'],
+                    null,
+                    $source['hold_reference']
+                );
+ 
+                $this->db->prepare("
+                    UPDATE card_pool_hook_sources
+                    SET status = 'RELEASED', released_at = NOW()
+                    WHERE id = ?
+                ")->execute([$source['id']]);
+ 
+                $released[] = [
+                    'institution' => $source['institution'],
+                    'amount' => (float)$source['held_amount'],
+                ];
+            } catch (\Throwable $releaseErr) {
+                error_log("[CardService] releaseHook: failed to release source id={$source['id']} "
+                    . "({$source['institution']}) for hook {$hookReference}: " . $releaseErr->getMessage());
+                $failed[] = [
+                    'institution' => $source['institution'],
+                    'amount' => (float)$source['held_amount'],
+                    'error' => $releaseErr->getMessage(),
+                ];
+            }
+        }
+ 
+        $hookStatus = empty($failed) ? 'UNHOOKED' : 'UNHOOK_PARTIAL';
+ 
+        $this->db->prepare("
+            UPDATE card_pool_hooks
+            SET status = ?, unhooked_at = NOW()
+            WHERE id = ?
+        ")->execute([$hookStatus, $hook['id']]);
+ 
+        $this->db->commit();
+ 
+        error_log("[CardService] releaseHook: hook={$hookReference} status={$hookStatus} "
+            . "released=" . count($released) . " failed=" . count($failed));
+ 
+        return [
+            'success' => empty($failed),
+            'hook_reference' => $hookReference,
+            'status' => $hookStatus,
+            'released' => $released,
+            'failed' => $failed,
+            'message' => empty($failed)
+                ? 'All hooked sources released.'
+                : 'Some sources could not be released automatically — they remain held and will need a retry or manual review.',
+        ];
+ 
+    } catch (\Throwable $e) {
+        if ($this->db->inTransaction()) {
+            $this->db->rollBack();
+        }
+        error_log("[CardService] releaseHook failed: " . $e->getMessage());
+        return ['success' => false, 'error' => $e->getMessage()];
+    }
+}
+
+
     // ============================================================
     // POOLED CARD HOOK/SWIPE/FINALIZE - VouchMorph's own network
     // ============================================================
