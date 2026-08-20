@@ -79,21 +79,22 @@ try {
         exit();
     }
 
-    // Pull every currently-active hook for this card, joined through
-    // card_pool_hooks so we only surface hooks that actually succeeded
-    // (not failed/reversed ones).
+    // FIX 1: Changed status from 'ACTIVE' to 'HOOKED' to match what
+    // hookSourcesToCard() actually writes to the database.
+    // FIX 2: Changed 'identifier' to 'source_identifier' to match the
+    // actual column name in card_pool_hook_sources.
     $sourceStmt = $db->prepare("
         SELECT
             cphs.institution,
             cphs.asset_type,
-            cphs.identifier,
+            cphs.source_identifier AS identifier,
             cphs.owner_user_id,
-            cphs.amount AS authorized_amount,
+            cphs.held_amount AS authorized_amount,
             cphs.hold_reference
         FROM card_pool_hook_sources cphs
         JOIN card_pool_hooks cph ON cph.id = cphs.hook_id
         WHERE cph.card_suffix = :suffix
-          AND cph.status = 'ACTIVE'
+          AND cph.status = 'HOOKED'
     ");
     $sourceStmt->execute([':suffix' => $cardSuffix]);
     $hookedRows = $sourceStmt->fetchAll(PDO::FETCH_ASSOC);
