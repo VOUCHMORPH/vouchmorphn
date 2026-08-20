@@ -6517,17 +6517,44 @@ public function executeIdentityClaimWithSplit(
 
     // ------------------------------------------------------------
     // STEP 4: pay out the cash-now portion (or all of it).
+    //
+    // FIX: no fee was being calculated anywhere in this method at all.
+    // Per the agreed rule (fee applies only to money actually delivered
+    // now, never to money going back into a HOLDING/identity-parked
+    // state), the fee is computed against payoutAmount specifically --
+    // the leg that's actually leaving the pool right now -- and
+    // deducted from what the destination institution is instructed to
+    // deposit/dispense. The remainder calculation below stays based on
+    // the GROSS payoutAmount, not the fee-reduced net: the fee is
+    // VouchMorph's revenue taken out of the delivered leg, it doesn't
+    // change how much of the pool was consumed.
     // ------------------------------------------------------------
     $payoutAmount = $cashNowAmount === null ? $sweptAmount : min($cashNowAmount, $sweptAmount);
     $remainder = round($sweptAmount - $payoutAmount, 2);
 
-    $payoutResult = null;
+    $netPayoutAmount = $payoutAmount;
+    $feeBreakdown = null;
     if ($payoutAmount > 0) {
+        $feeType = $destinationType === 'CASHOUT' ? 'CASHOUT' : 'DEPOSIT';
+        $feeBreakdown = $this->calculateFeesWithDetails($feeType, $payoutAmount, array_merge(
+            $destinationDetails,
+            [
+                'currency' => $currency,
+                'institution' => $destinationInstitution,
+                'destination_institution' => $destinationInstitution,
+                'asset_type' => $destinationDetails['destination_asset_type'] ?? 'ACCOUNT',
+            ]
+        ));
+        $netPayoutAmount = round($feeBreakdown['net_amount_source_currency'] ?? $payoutAmount, 2);
+    }
+
+    $payoutResult = null;
+    if ($netPayoutAmount > 0) {
         if ($destinationType === 'DEPOSIT') {
             $payoutResult = $this->payHoldingToMerchant(
                 $destinationInstitution,
                 $currency,
-                $payoutAmount,
+                $netPayoutAmount,
                 $destinationDetails['destination_identifier'],
                 $destinationDetails['destination_identifier_type'] ?? 'account_number',
                 $destinationDetails['destination_asset_type'] ?? 'ACCOUNT',
@@ -6537,7 +6564,7 @@ public function executeIdentityClaimWithSplit(
             $payoutResult = $this->generateCashoutFromHolding(
                 $destinationInstitution,
                 $currency,
-                $payoutAmount,
+                $netPayoutAmount,
                 $destinationDetails['delivery_method'] ?? 'ATM',
                 $beneficiaryPhone,
                 $consolidationReference . '_PAYOUT'
@@ -6591,7 +6618,9 @@ public function executeIdentityClaimWithSplit(
         'holds_landed' => count($landedHoldIds),
         'holds_failed' => $failedHolds,
         'total_consolidated' => $sweptAmount,
-        'payout_amount' => $payoutAmount,
+        'payout_amount_gross' => $payoutAmount,
+        'fee' => $feeBreakdown,
+        'payout_amount_net' => $netPayoutAmount,
         'payout_result' => $payoutResult,
         'remainder_held' => $remainder,
         'holding_position_id' => $holdingPositionId,
