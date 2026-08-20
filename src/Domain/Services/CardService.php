@@ -108,6 +108,44 @@ class CardService
     }
     
     // ============================================================
+    // SAVEPOINT HELPER — same discipline as SwapService::runInSavepoint()
+    // ============================================================
+    
+    /**
+     * Same discipline as SwapService::runInSavepoint() — a plain
+     * try/catch around a failed statement is NOT enough on Postgres once
+     * that statement has thrown; the whole surrounding transaction is
+     * left in an aborted state and every subsequent statement fails too,
+     * even ones with no real problem of their own. Only a real SAVEPOINT
+     * + ROLLBACK TO SAVEPOINT clears that state.
+     */
+    private function runInSavepoint(string $label, callable $fn)
+    {
+        $safeName = 'sp_card_' . preg_replace('/[^a-zA-Z0-9_]/', '_', $label);
+    
+        try {
+            $this->db->exec("SAVEPOINT {$safeName}");
+        } catch (\Throwable $e) {
+            error_log("[CardService] Failed to create savepoint {$safeName}: " . $e->getMessage());
+            throw $e;
+        }
+    
+        try {
+            $result = $fn();
+            $this->db->exec("RELEASE SAVEPOINT {$safeName}");
+            return $result;
+        } catch (\Throwable $e) {
+            try {
+                $this->db->exec("ROLLBACK TO SAVEPOINT {$safeName}");
+                $this->db->exec("RELEASE SAVEPOINT {$safeName}");
+            } catch (\Throwable $rollbackError) {
+                error_log("[CardService] ROLLBACK TO SAVEPOINT {$safeName} itself failed: " . $rollbackError->getMessage());
+            }
+            throw $e;
+        }
+    }
+    
+    // ============================================================
     // TOTP DYNAMIC CODE - REPLACES STATIC CVV
     // ============================================================
     
@@ -1629,11 +1667,16 @@ public function releaseHook(
                     $source['hold_reference']
                 );
  
-                $this->db->prepare("
-                    UPDATE card_pool_hook_sources
-                    SET status = 'RELEASED', released_at = NOW()
-                    WHERE id = ?
-                ")->execute([$source['id']]);
+                // ============================================================
+                // FIX: Wrap source status update in a savepoint
+                // ============================================================
+                $this->runInSavepoint('release_source_' . $source['id'], function () use ($source) {
+                    $this->db->prepare("
+                        UPDATE card_pool_hook_sources
+                        SET status = 'RELEASED', released_at = NOW()
+                        WHERE id = ?
+                    ")->execute([$source['id']]);
+                });
  
                 $released[] = [
                     'institution' => $source['institution'],
@@ -1652,11 +1695,16 @@ public function releaseHook(
  
         $hookStatus = empty($failed) ? 'UNHOOKED' : 'UNHOOK_PARTIAL';
  
-        $this->db->prepare("
-            UPDATE card_pool_hooks
-            SET status = ?, unhooked_at = NOW()
-            WHERE id = ?
-        ")->execute([$hookStatus, $hook['id']]);
+        // ============================================================
+        // FIX: Wrap hook-level status update in a savepoint
+        // ============================================================
+        $this->runInSavepoint('release_hook_' . $hook['id'], function () use ($hookStatus, $hook) {
+            $this->db->prepare("
+                UPDATE card_pool_hooks
+                SET status = ?, unhooked_at = NOW()
+                WHERE id = ?
+            ")->execute([$hookStatus, $hook['id']]);
+        });
  
         $this->db->commit();
  
