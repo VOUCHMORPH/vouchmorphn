@@ -85,7 +85,8 @@ if (json_last_error() !== JSON_ERROR_NONE) {
     exit();
 }
 
-foreach (['card_suffix', 'amount'] as $field) {
+// FIX 2 (PART 1): Added dynamic_code to required fields validation
+foreach (['card_suffix', 'amount', 'dynamic_code'] as $field) {
     if (empty($input[$field])) {
         http_response_code(400);
         echo json_encode(['success' => false, 'error' => "{$field} is required"]);
@@ -95,6 +96,8 @@ foreach (['card_suffix', 'amount'] as $field) {
 
 $cardSuffix = (string)$input['card_suffix'];
 $amount = (float)$input['amount'];
+
+// FIX 2 (PART 2): Added dynamic_code to merchantContext so it reaches CardService::authorizePooledSwipe()
 $merchantContext = [
     'merchant_reference' => $input['merchant_reference'] ?? null,
     'merchant_id' => $input['merchant_id'] ?? null,
@@ -102,6 +105,7 @@ $merchantContext = [
     'terminal_id' => $input['terminal_id'] ?? null,
     'acquirer' => $input['acquirer'] ?? null,
     'channel' => $input['channel'] ?? 'POS',
+    'dynamic_code' => $input['dynamic_code'] ?? null,  // <-- FIXED: was missing
 ];
 
 if ($amount <= 0) {
@@ -148,10 +152,11 @@ try {
         // message_cards row regardless of what (incorrectly) ends up in
         // card_pool_hooks.
         // ============================================================
+        // FIX 1: Changed 'status' to 'lifecycle_status' (the correct column name)
         $brandCheck = $db->prepare("
             SELECT 1 FROM message_cards 
             WHERE card_suffix = ? 
-            AND status = 'ACTIVE'
+            AND lifecycle_status = 'ACTIVE'
             LIMIT 1
         ");
         $brandCheck->execute([$cardSuffix]);
