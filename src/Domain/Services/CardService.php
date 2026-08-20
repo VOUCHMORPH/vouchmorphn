@@ -1865,6 +1865,59 @@ if ($balance <= 0) {
                 $expirySeconds = 3600; // conservative 1-hour default
             }
             $minExpirySeconds = min($minExpirySeconds, $expirySeconds);
+
+            // ============================================================
+            // IMMEDIATE FEE CHARGE — the hold on this source is now real,
+            // so its levy + fixed source cut are charged now. Charged
+            // against DEPOSIT's fee schedule (see file header note on why
+            // — nothing is known yet about how this card will finalize).
+            // Non-refundable once charged EXCEPT if this whole hook
+            // attempt later fails and rolls back (see the catch block
+            // below) — that's the one system-caused exception, same rule
+            // as PoolCoordinator's immediate-fee reversal.
+            // ============================================================
+            try {
+                $hookFeeResult = $swapService->getMultiSourceFeeCalculator()->calculateFees(
+                    count($sources),
+                    'deposit',
+                    $requestedAmount,
+                    $source['currency'] ?? $currency,
+                    $source['currency'] ?? $currency
+                );
+
+                $perSourceCut = $hookFeeResult['per_source_cut'] ?? 0;
+                $levyPerSource = $hookFeeResult['swap_levy_per_source'] ?? 0;
+                $chargeCurrency = $hookFeeResult['currency'] ?? $source['currency'] ?? $currency;
+
+                if ($perSourceCut > 0) {
+                    $swapService->invoiceInstitutionFee(
+                        $hookReference, $source['institution'], 'SOURCE_FEE', $perSourceCut, $chargeCurrency
+                    );
+                }
+                if ($levyPerSource > 0) {
+                    $swapService->invoiceInstitutionFee(
+                        $hookReference, 'VOUCHMORPH', 'SWAP_LEVY', $levyPerSource, $chargeCurrency
+                    );
+                }
+
+                // Record on the LAST placedHolds entry (the one just
+                // pushed) so a rollback can reverse exactly this amount
+                // without recomputing — same discipline as
+                // PoolCoordinator's persisted fee_breakdown.
+                $placedHolds[count($placedHolds) - 1]['fee_charged'] = [
+                    'source_cut' => $perSourceCut,
+                    'levy' => $levyPerSource,
+                    'currency' => $chargeCurrency,
+                ];
+
+            } catch (\Throwable $feeError) {
+                // A fee-charging failure must never block a real,
+                // already-placed hold from being usable — log loudly,
+                // don't throw. Same non-blocking posture as every other
+                // "tracking" write in this codebase (see SwapService's
+                // runInSavepoint()-wrapped tracking tables).
+                error_log("[CardService] hookSourcesToCard: immediate fee charge failed for {$source['institution']}: " . $feeError->getMessage());
+            }
         }
 
         $expiresAt = date('Y-m-d H:i:s', time() + $minExpirySeconds);
@@ -1919,6 +1972,30 @@ if ($balance <= 0) {
                     isset($held['hold_id']) ? (string)$held['hold_id'] : null,
                     $held['hold_reference'] ?? null
                 );
+
+                // NEW: reverse whatever was charged for this specific
+                // source, if the immediate charge succeeded before the
+                // overall hook attempt failed. This IS the "atomic
+                // reverse due to system problems" exception — every
+                // other release path (natural expiry, explicit
+                // Unhook.php) keeps the charge.
+                if (!empty($held['fee_charged'])) {
+                    $fc = $held['fee_charged'];
+                    $reversalRef = $hookReference . '_REVERSAL';
+                    if (($fc['source_cut'] ?? 0) > 0) {
+                        $swapService->invoiceInstitutionFee(
+                            $reversalRef, $held['source']['institution'],
+                            'SOURCE_FEE_REVERSAL', -1 * $fc['source_cut'], $fc['currency'] ?? 'BWP'
+                        );
+                    }
+                    if (($fc['levy'] ?? 0) > 0) {
+                        $swapService->invoiceInstitutionFee(
+                            $reversalRef, 'VOUCHMORPH',
+                            'SWAP_LEVY_REVERSAL', -1 * $fc['levy'], $fc['currency'] ?? 'BWP'
+                        );
+                    }
+                }
+
             } catch (\Throwable $releaseErr) {
                 error_log("[CardService] Failed to release hold during hook rollback: " . $releaseErr->getMessage());
             }
