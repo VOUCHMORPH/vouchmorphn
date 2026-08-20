@@ -4233,7 +4233,8 @@ $this->recordSettlementPending(
             $payload,
             $swapRef,
             $holdResult,
-            $this->currentHoldId
+            $this->currentHoldId,
+            $skipHold
         );
         $identityHoldId = $identityHoldStored['hold_id'];
         $claimPin = $identityHoldStored['claim_pin'];
@@ -8954,7 +8955,7 @@ private function generateCashoutToken(array $payload, string $institution, float
     // IDENTITY SWAP HELPER METHODS
     // ============================================================================
 
-   private function storeIdentityHold(array $payload, string $swapRef, array $holdResult, int $holdId): array
+   private function storeIdentityHold(array $payload, string $swapRef, array $holdResult, int $holdId, bool $isReusedHold = false): array
 {
     $sourceInstitution = $this->extractSourceInstitution($payload);
     $identityType = strtolower($payload['identity_type']);
@@ -8963,7 +8964,43 @@ private function generateCashoutToken(array $payload, string $institution, float
     $owner = $this->findVerifiedIdentityOwner($identityType, $identityValue);
     $notificationPhone = $payload['notification_phone'] ?? $payload['beneficiary_phone'] ?? null;
 
-    $levyAmount = (float)($this->feesConfig['DEPOSIT']['fee_components']['F7']['amount'] ?? 0);
+    // FIX: this used to read $levyAmount from feesConfig directly and never
+    // use it anywhere -- dead code, no fee was ever actually calculated or
+    // charged for placing this hold. Now computes a real fee via the same
+    // calculateFeesWithDetails() wrapper used everywhere else in this class.
+    //
+    // Gated on !$isReusedHold: storeIdentityHold() is the only call site
+    // for this method, called unconditionally by initiateSwapToIdentity()
+    // whether a hold was freshly placed OR an existing one is being reused
+    // via _skip_hold (e.g. a MULTI_SOURCE pool hold placed earlier by
+    // different code). Charging this fee on the reuse path would
+    // double-charge a hold that may already have been fee'd when it was
+    // first created. Only a genuinely NEW hold gets a hold fee.
+    //
+    // IMPORTANT: this fee does NOT reduce $payload['amount'] below, and the
+    // full gross amount is still what gets held/verified at the source bank
+    // and stored as this row's `amount`. Reducing the stored amount instead
+    // would mean only the smaller net gets captured later in
+    // finalizeHoldToReceiving() -- the uncaptured difference (the fee)
+    // would simply release back to the client on hold expiry, which is the
+    // opposite of collecting it. Instead, the fee is recorded here (in
+    // metadata, no schema change needed) and must be netted out of what
+    // source ultimately owes destination in the settlement bill --
+    // consistent with VouchMorph never custodying money at any point in
+    // this design. Whoever builds the settle/bill step needs to read
+    // metadata->hold_fee for every consolidated hold and include it in
+    // what's deducted from the source's settlement obligation.
+    $holdFeeBreakdown = null;
+    $holdFeeAmount = 0.0;
+    $holdLevyAmount = 0.0;
+    if (!$isReusedHold) {
+        $holdFeeBreakdown = $this->calculateFeesWithDetails('IDENTITY_HOLD', (float)$payload['amount'], array_merge(
+            $payload,
+            ['institution' => $sourceInstitution]
+        ));
+        $holdFeeAmount = (float)($holdFeeBreakdown['total_fee'] ?? 0);
+        $holdLevyAmount = (float)($holdFeeBreakdown['swap_levy'] ?? 0);
+    }
  
     $claimType = null;
     $otpHash = null;
@@ -9108,7 +9145,16 @@ private function generateCashoutToken(array $payload, string $institution, float
             ':source_payload' => json_encode($payload),
             ':metadata' => json_encode([
                 'signed_payloads' => $this->signedPayloads,
-                'hold_result' => $holdResult
+                'hold_result' => $holdResult,
+                'hold_fee' => [
+                    'total_fee' => $holdFeeAmount,
+                    'swap_levy' => $holdLevyAmount,
+                    'breakdown' => $holdFeeBreakdown['breakdown'] ?? [],
+                    // must be netted out of source's obligation at
+                    // settlement time -- see the FIX comment above
+                    // $holdFeeBreakdown for why this isn't deducted
+                    // from the held/captured amount itself.
+                ],
             ]),
             ':created_by' => $payload['user_id'] ?? null,
             ':otp_pin_hash' => $otpHash,
@@ -9130,6 +9176,44 @@ private function generateCashoutToken(array $payload, string $institution, float
     } catch (PDOException $e) {
         error_log("[SwapService] Failed to store identity hold: " . $e->getMessage());
         throw new RuntimeException("Failed to store identity hold: " . $e->getMessage());
+    }
+}
+
+/**
+ * Marks an identity_swap_holds row's hold fee as waived -- called from
+ * rollbackAtomicSwap() when a hold's release is caused by VouchMorph's
+ * own system failure, not a client choice. Never deletes or refunds
+ * anything, since the fee was never collected as cash upfront (it's
+ * netted into the settlement bill at finalize time). Whatever later
+ * builds the settle/bill step must check metadata->hold_fee->waived
+ * and skip any hold where it's true.
+ */
+private function waiveIdentityHoldFee(int $holdId, string $waivedReason): void
+{
+    try {
+        $stmt = $this->swapDB->prepare("
+            UPDATE identity_swap_holds
+            SET metadata = jsonb_set(
+                jsonb_set(metadata, '{hold_fee,waived}', 'true'::jsonb, true),
+                '{hold_fee,waived_reason}', to_jsonb(:reason::text), true
+            )
+            WHERE hold_id = :hold_id
+        ");
+        $stmt->execute([':hold_id' => $holdId, ':reason' => $waivedReason]);
+
+        $this->logger->info("Identity hold fee waived", [
+            'hold_id' => $holdId,
+            'reason' => $waivedReason,
+        ]);
+    } catch (PDOException $e) {
+        // Deliberately non-fatal: failing to mark a fee as waived must
+        // never block the actual hold release, which is the operation
+        // that matters for the client. Log loudly so this doesn't go
+        // unnoticed -- an un-waived fee row needs manual correction
+        // before it's netted into a settlement bill.
+        error_log("[SwapService] CRITICAL: Failed to waive hold fee for hold_id={$holdId} - "
+            . "this fee may incorrectly get netted into a settlement bill unless corrected "
+            . "manually: " . $e->getMessage());
     }
 }
 
@@ -10104,7 +10188,8 @@ private function recordManualReconciliationRequired(
             'institution' => $holdInstitution,
             'amount' => $amount
         ]);
-    } elseif ($holdReference && $holdInstitution) {
+    }
+    if (!$isPostDeliveryFailure && $holdReference && $holdInstitution) {
         try {
             $adapter = $this->adapterFactory->getAdapter($holdInstitution);
             $releasePayload = array_merge([
@@ -10117,6 +10202,22 @@ private function recordManualReconciliationRequired(
                 'swap_reference' => $swapRef,
                 'institution' => $holdInstitution
             ]);
+
+            // FIX: atomic rollback means the reversal is caused by
+            // VouchMorph's own system, never by a client choice -- charging
+            // a hold fee here would be billing the client for VouchMorph's
+            // own failure. The fee isn't collected as cash upfront (it's
+            // netted into the settlement bill at finalize -- see
+            // storeIdentityHold()'s FIX comment), so "waiving" it means
+            // marking it void here so it's excluded from that netting,
+            // rather than refunding money that was never actually taken.
+            // Contrast with a voluntary cancellation or unclaimed-hold
+            // expiry, where the reservation WAS successfully placed and
+            // the fee is kept -- those are separate code paths, not this
+            // one, and are unaffected by this change.
+            if ($this->currentHoldId) {
+                $this->waiveIdentityHoldFee($this->currentHoldId, 'ATOMIC_ROLLBACK: ' . $reason);
+            }
 
             $this->logger->info("Released real hold during rollback", [
                 'reference' => $swapRef,
