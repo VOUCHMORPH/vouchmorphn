@@ -192,6 +192,11 @@ class PoolCoordinator
             $holds = $this->placeHolds($pool, $contributions, $verifications, $heldSources);
             $this->logger->info('Holds placed', ['holds' => count($holds)]);
             
+            // NEW: charge levy + source cuts (+ cashout generate-code portion) NOW.
+            // Non-refundable from this point on except a system-caused rollback
+            // below (see catch block).
+            $this->invoiceImmediateFees($pool, $contributions);
+            
             // 7. Transition to FUNDED
             $this->stateMachine->transition($pool, PoolStatus::FUNDED->value);
             
@@ -273,6 +278,11 @@ class PoolCoordinator
             // Bug 2 fixed: Now releases holds properly with real institution calls
             $this->rollbackHolds($heldSources);
             
+            // NEW: this branch — a mid-swap technical failure that unwinds the
+            // whole atomic attempt — is the ONLY case where immediate fees get
+            // reversed. Voluntary cancel() and expiry cron paths never call this.
+            $this->reverseImmediateFees($pool ?? null);
+            
             $this->rollback($pool ?? null);
             throw new RuntimeException("Multi-source swap failed: " . $e->getMessage());
         }
@@ -289,7 +299,7 @@ class PoolCoordinator
         $this->logger->info('Settlement completed');
 
         $this->stateMachine->transition($pool, PoolStatus::INVOICING->value);
-        $invoiceResult = $this->invoice($pool, $contributions);
+        $invoiceResult = $this->invoiceDeferredFees($pool, $contributions);  // was: $this->invoice($pool, $contributions);
         $this->logger->info('Invoicing completed');
 
         $this->stateMachine->transition($pool, PoolStatus::COMPLETED->value);
@@ -1195,18 +1205,41 @@ class PoolCoordinator
         );
     }
 
-    private function invoice(array $pool, array $contributions): array
+    /**
+     * NEW METHOD: deriveDeliveryMode()
+     * Extracted out of the old invoice() so both the immediate and deferred
+     * invoicing steps compute the identical delivery mode — previously this
+     * logic only existed inline in one place.
+     */
+    private function deriveDeliveryMode(array $pool): string
     {
-        // Derive delivery mode from how the pool was destined
         $deliveryMode = match (true) {
             isset($pool['identity_type'], $pool['identity_value']) => 'deposit', // identity swaps settle as deposits internally
             strtoupper($pool['destination_asset_type'] ?? '') === 'CASHOUT' => 'cashout',
             default => 'deposit',
         };
-        // If the caller flagged this pool as a cashout explicitly, honor that instead
         if (!empty($pool['delivery_mode'])) {
             $deliveryMode = $pool['delivery_mode'];
         }
+        if (strtoupper($pool['delivery_method'] ?? '') === 'CASHOUT') {
+            $deliveryMode = 'cashout';
+        }
+        return $deliveryMode;
+    }
+
+    /**
+     * NEW METHOD: invoiceImmediateFees()
+     * Called once, right after placeHolds() succeeds — the swap levy and
+     * every source's fixed cut are now genuinely charged at hold time, not
+     * bundled into the single end-of-swap invoice() call. Also invoices the
+     * CASHOUT generate-code portion immediately, since that's earned at code
+     * generation per fees.json's own destination_split.generate_code_earned_at:
+     * "code_generation" — the DEPOSIT case has no immediate destination
+     * component (destination_immediate is always 0 for it).
+     */
+    private function invoiceImmediateFees(array $pool, array $contributions): array
+    {
+        $deliveryMode = $this->deriveDeliveryMode($pool);
 
         $feeResult = $this->feeCalculator->calculateFees(
             count($contributions),
@@ -1216,36 +1249,194 @@ class PoolCoordinator
             $pool['destination_currency'] ?? $pool['currency'] ?? 'BWP'
         );
 
-        $invoiceResults = [];
+        $reference = $pool['reference'] ?? uniqid();
+        $currency = $feeResult['currency'] ?? $pool['currency'] ?? 'BWP';
+        $vouchmorphId = $this->swapService->getParticipantId('VOUCHMORPH');
 
-        $platformShare = $feeResult['split_distribution']['platform_share'] ?? 0;
-        if ($platformShare > 0) {
-            $result = $this->settlement->invoiceFee(
-                $pool['reference'] ?? uniqid(),
-                'VOUCHMORPH',
-                1,
-                'PLATFORM_FEE',
-                $platformShare,
-                $feeResult['currency'] ?? $pool['currency'] ?? 'BWP'
+        // Swap levy — per source, charged now, non-refundable once a real
+        // hold exists (see reverseImmediateFees() for the ONLY exception:
+        // a system-caused rollback before the swap ever completes).
+        if (($feeResult['swap_levy_total'] ?? 0) > 0) {
+            $this->settlement->invoiceFee(
+                $reference, 'VOUCHMORPH', $vouchmorphId,
+                'SWAP_LEVY', $feeResult['swap_levy_total'], $currency
             );
-            $invoiceResults[] = $result;
         }
 
-        // Invoice each source's individual share, using per_source_fees
-        // (keyed by contribution index, matching $contributions' own indexing)
+        // Each source's fixed cut — same amount per source, not divided.
         foreach ($feeResult['per_source_fees'] ?? [] as $index => $amount) {
             if ($amount <= 0 || !isset($contributions[$index])) {
                 continue;
             }
-            $result = $this->settlement->invoiceFee(
-                $pool['reference'] ?? uniqid(),
-                $contributions[$index]['institution'],
-                0,
-                'SOURCE_FEE',
-                $amount,
-                $feeResult['currency'] ?? $pool['currency'] ?? 'BWP'
+            $institution = $contributions[$index]['institution'];
+            $this->settlement->invoiceFee(
+                $reference, $institution, $this->swapService->getParticipantId($institution),
+                'SOURCE_FEE', $amount, $currency
             );
-            $invoiceResults[] = $result;
+        }
+
+        // CASHOUT only — generate-code portion of destination's cut, earned
+        // immediately per fees.json. DEPOSIT has nothing to invoice here.
+        if ($deliveryMode === 'cashout' && ($feeResult['destination_immediate'] ?? 0) > 0 && !empty($pool['destination_institution'])) {
+            $destInstitution = $pool['destination_institution'];
+            $this->settlement->invoiceFee(
+                $reference, $destInstitution, $this->swapService->getParticipantId($destInstitution),
+                'CASHOUT_GENERATE_CODE_FEE', $feeResult['destination_immediate'], $currency
+            );
+        }
+
+        // Persist for reuse by invoiceDeferredFees() later, and so a
+        // reversal (if the swap fails post-hold) knows exactly what was
+        // charged.
+        try {
+            $this->poolRepository->updateStatus($pool['id'], $pool['status'], [
+                'fee_breakdown' => $feeResult,
+                'immediate_fees_invoiced' => true,
+            ]);
+        } catch (\Throwable $e) {
+            $this->logger->error('Failed to persist fee_breakdown to pool metadata', [
+                'pool_id' => $pool['id'], 'error' => $e->getMessage(),
+            ]);
+        }
+
+        $this->logger->info('Immediate fees invoiced', [
+            'pool_id' => $pool['id'],
+            'swap_levy_total' => $feeResult['swap_levy_total'] ?? 0,
+            'total_source_cut' => $feeResult['total_source_cut'] ?? 0,
+            'destination_immediate' => $feeResult['destination_immediate'] ?? 0,
+        ]);
+
+        return $feeResult;
+    }
+
+    /**
+     * NEW METHOD: reverseImmediateFees()
+     * Only ever called from the system-failure catch branch — never from
+     * expiry cron paths or voluntary cancel(), which both keep the charge
+     * per your rule ("the job was done"). Issues reversing (negative-amount)
+     * invoices for exactly what invoiceImmediateFees() charged, read back
+     * from the persisted fee_breakdown rather than recomputed, so a reversal
+     * always matches the original charge even if config changed in between.
+     */
+    private function reverseImmediateFees(?array $pool): void
+    {
+        if (!$pool || empty($pool['id'])) {
+            return;
+        }
+
+        try {
+            $row = $this->poolRepository->findByIdAsArray($pool['id']);
+            if (!$row) {
+                return;
+            }
+            $metadata = json_decode($row['metadata'] ?? '{}', true) ?: [];
+            if (empty($metadata['immediate_fees_invoiced']) || empty($metadata['fee_breakdown'])) {
+                // Immediate fees were never charged (failure happened before
+                // placeHolds() completed) — nothing to reverse.
+                return;
+            }
+
+            $feeResult = $metadata['fee_breakdown'];
+            $reference = $pool['reference'] ?? $row['swap_reference'] ?? null;
+            if (!$reference) {
+                return;
+            }
+            $currency = $feeResult['currency'] ?? $pool['currency'] ?? 'BWP';
+            $vouchmorphId = $this->swapService->getParticipantId('VOUCHMORPH');
+
+            if (($feeResult['swap_levy_total'] ?? 0) > 0) {
+                $this->settlement->invoiceFee(
+                    $reference . '_REVERSAL', 'VOUCHMORPH', $vouchmorphId,
+                    'SWAP_LEVY_REVERSAL', -1 * $feeResult['swap_levy_total'], $currency
+                );
+            }
+
+            // Per-source fee reversal
+            $contributionRows = $this->contributionRepository->getAllByPoolIdAsArray($pool['id']);
+            foreach ($contributionRows as $row2) {
+                $perSourceCut = $feeResult['per_source_cut'] ?? 0;
+                if ($perSourceCut <= 0) {
+                    continue;
+                }
+                $institution = $row2['institution'];
+                $this->settlement->invoiceFee(
+                    $reference . '_REVERSAL', $institution, $this->swapService->getParticipantId($institution),
+                    'SOURCE_FEE_REVERSAL', -1 * $perSourceCut, $currency
+                );
+            }
+
+            if (($feeResult['destination_immediate'] ?? 0) > 0 && !empty($pool['destination_institution'])) {
+                $destInstitution = $pool['destination_institution'];
+                $this->settlement->invoiceFee(
+                    $reference . '_REVERSAL', $destInstitution, $this->swapService->getParticipantId($destInstitution),
+                    'CASHOUT_GENERATE_CODE_FEE_REVERSAL', -1 * $feeResult['destination_immediate'], $currency
+                );
+            }
+
+            $this->logger->warning('Immediate fees reversed (system-caused rollback)', [
+                'pool_id' => $pool['id'], 'reference' => $reference,
+            ]);
+
+        } catch (\Throwable $e) {
+            // Never let a reversal failure mask the original rollback error
+            // that's already propagating — log loudly, same discipline as
+            // SwapService::waiveIdentityHoldFee().
+            $this->logger->error('CRITICAL: Failed to reverse immediate fees after system rollback — needs manual correction', [
+                'pool_id' => $pool['id'] ?? null, 'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * REPLACED invoice() WITH invoiceDeferredFees()
+     * Two fixes bundled in: (a) it now actually invoices the destination
+     * institution's remaining share — the old version silently dropped it —
+     * and (b) participant IDs are resolved via getParticipantId() instead
+     * of hardcoded 1/0. It reuses the SAME fee_breakdown computed at
+     * hold time (from metadata) instead of recomputing, so immediate +
+     * deferred always sum to exactly one coherent total.
+     */
+    private function invoiceDeferredFees(array $pool, array $contributions): array
+    {
+        $row = $this->poolRepository->findByIdAsArray($pool['id']);
+        $metadata = $row ? (json_decode($row['metadata'] ?? '{}', true) ?: []) : [];
+        $feeResult = $metadata['fee_breakdown'] ?? null;
+
+        if ($feeResult === null) {
+            // Defensive fallback only — should not happen if
+            // invoiceImmediateFees() ran as it now always does after
+            // placeHolds(). Recompute rather than silently invoicing zero.
+            $this->logger->warning('No persisted fee_breakdown found at completion — recomputing (should not normally happen)', ['pool_id' => $pool['id']]);
+            $deliveryMode = $this->deriveDeliveryMode($pool);
+            $feeResult = $this->feeCalculator->calculateFees(
+                count($contributions), $deliveryMode, $pool['amount'] ?? 0,
+                $pool['currency'] ?? 'BWP', $pool['destination_currency'] ?? $pool['currency'] ?? 'BWP'
+            );
+        }
+
+        $reference = $pool['reference'] ?? uniqid();
+        $currency = $feeResult['currency'] ?? $pool['currency'] ?? 'BWP';
+        $invoiceResults = [];
+
+        $platformCut = $feeResult['platform_cut'] ?? $feeResult['split_distribution']['platform_share'] ?? 0;
+        if ($platformCut > 0) {
+            $invoiceResults[] = $this->settlement->invoiceFee(
+                $reference, 'VOUCHMORPH', $this->swapService->getParticipantId('VOUCHMORPH'),
+                'PLATFORM_FEE', $platformCut, $currency
+            );
+        }
+
+        // FIX: destination's share was computed by the fee calculator on
+        // every prior version of this method and NEVER invoiced. This is
+        // the missing call.
+        $destinationDeferred = $feeResult['destination_deferred'] ?? $feeResult['destination_cut'] ?? $feeResult['split_distribution']['destination_share'] ?? 0;
+        if ($destinationDeferred > 0 && !empty($pool['destination_institution'])) {
+            $destInstitution = $pool['destination_institution'];
+            $feeType = ($feeResult['delivery_mode'] ?? '') === 'cashout' ? 'CASHOUT_COMPLETION_FEE' : 'DESTINATION_FEE';
+            $invoiceResults[] = $this->settlement->invoiceFee(
+                $reference, $destInstitution, $this->swapService->getParticipantId($destInstitution),
+                $feeType, $destinationDeferred, $currency
+            );
         }
 
         return $invoiceResults;
@@ -1314,6 +1505,7 @@ class PoolCoordinator
             ];
         }
         
+        // No reversal call added per your rule: "otherwise non-refundable once hold placed"
         $this->poolRepository->updateStatus($poolId, PoolStatus::CANCELLED->value);
         
         return [
@@ -1381,6 +1573,7 @@ class PoolCoordinator
                 ");
                 $stmt2->execute([':hold_id' => $row['anchor_hold_id']]);
 
+                // No reversal call added per your rule: "If later the hold expires, they are still non-refundable because the job was done"
                 $this->poolRepository->updateStatus($poolId, PoolStatus::CANCELLED->value, [
                     'cancel_reason' => 'identity_claim_expired',
                 ]);
@@ -1513,6 +1706,13 @@ class PoolCoordinator
                 'verified' => true,
             ], $holds);
 
+            // NEW: same immediate-charge rule applies here — the card hook already
+            // placed real holds via CardService::hookSourcesToCard() before this
+            // method ever ran, but the FEE invoicing itself still happens here,
+            // the first point PoolCoordinator can see the finalized contribution
+            // set. See note below on hook-time vs pool-time charging.
+            $this->invoiceImmediateFees($pool, $contributions);
+
             // 6. Master signature, destination execution — identical to
             // the normal path from here on.
             $masterSignature = $this->aggregateSigner->signAggregate($pool, $holds, $verifications);
@@ -1582,6 +1782,10 @@ class PoolCoordinator
             // corrected contribution session. Releasing on a pool-level
             // failure is CardContributionSessionService's decision (or the
             // hook's own natural expiry), not PoolCoordinator's.
+            
+            // NEW: reverse immediate fees on system failure in card hook flow
+            $this->reverseImmediateFees($pool ?? null);
+            
             $this->rollback($pool ?? null);
 
             throw new RuntimeException("Card hook pool execution failed: " . $e->getMessage());
