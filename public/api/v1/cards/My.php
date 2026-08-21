@@ -107,6 +107,26 @@ try {
 
     $cardSuffix = $provision['card_suffix'];
 
+    // NEW: TOTP setup — only present on the exact request that created
+    // the card. Never shown again after this response — if the client
+    // misses it, the card owner has to use RegenerateTotp.php instead
+    // of ever seeing this original secret.
+    $totpSetup = null;
+    if (($provision['newly_created'] ?? false) && !empty($provision['totp_secret'])) {
+        $otpauthUri = sprintf(
+            'otpauth://totp/%s:%s?secret=%s&issuer=%s&algorithm=SHA1&digits=6&period=30',
+            rawurlencode('VouchMorph'),
+            rawurlencode($cardSuffix),
+            $provision['totp_secret'],
+            rawurlencode('VouchMorph')
+        );
+        $totpSetup = [
+            'secret' => $provision['totp_secret'],
+            'otpauth_uri' => $otpauthUri,
+            'warning' => 'Save this now in an authenticator app (Google Authenticator, Authy, etc). It will never be shown again — if you miss it, use "Reset swipe code" to generate a new one.',
+        ];
+    }
+
     $stmt = $db->prepare("
         SELECT card_suffix, cardholder_name, lifecycle_status, funding_mode, currency
         FROM message_cards WHERE card_suffix = :suffix
@@ -208,6 +228,7 @@ try {
             'qr_payload' => $qrPayload,
             'hook' => $hook,
             'active_session' => $activeSession,
+            'totp_setup' => $totpSetup,
         ],
     ], JSON_PRETTY_PRINT);
 
