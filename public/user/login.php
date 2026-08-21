@@ -38,6 +38,13 @@ use Infrastructure\Email\EmailGatewayClient;
 // fail-closed, never fail-open. Confirmed live 21 Aug 2026: this was
 // previously hardcoded true with no environment check at all, meaning
 // ANY PIN (or none) authenticated any known identifier, in production.
+//
+// SECOND BUG FOUND AND FIXED 21 Aug 2026: even after the APP_ENV gate
+// above was added, $pinValid was initialized to `true` and no failure
+// branch ever set it back to `false` — so a wrong/no PIN in production
+// still logged the user in (an $error string was set, but never
+// actually checked before granting the session). $pinValid now
+// defaults to `false` and every grant path sets it explicitly.
 // ============================================================
 $appEnv = getenv('APP_ENV') ?: 'production';
 $isTestEnvironment = in_array($appEnv, ['test', 'dev', 'development', 'staging'], true);
@@ -180,21 +187,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 error_log("[USER LOGIN SUPER TEST] User not verified: {$formattedValue}");
             } else {
                 // ========================================================
-                // SUPER TEST MODE: NO PIN VERIFICATION
-                // ANY PIN works, or no PIN at all
+                // PIN CHECK
+                // Defaults to CLOSED. Every branch that should grant
+                // access sets $pinValid = true explicitly — nothing
+                // falls through to a granted session by default.
                 // ========================================================
 
-                $pinValid = true; // ALWAYS true in super test mode
+                $pinValid = false; // default to CLOSED
 
                 if (SKIP_PIN_VERIFICATION) {
-                    // NO PIN verification - ANY PIN works
+                    // Test/dev/staging only (gated by APP_ENV above) —
+                    // any PIN, or none, is accepted.
+                    $pinValid = true;
                     error_log("[USER LOGIN SUPER TEST] PIN SKIPPED - any PIN accepted (or no PIN)");
                 } elseif (!empty($user['password_hash']) && password_verify($pin, $user['password_hash'])) {
                     $pinValid = true;
                     error_log("[USER LOGIN SUPER TEST] PIN verified successfully");
                 } else {
-                    // Even if PIN fails, we allow it in test mode
+                    $pinValid = false;
                     if (TEST_MODE) {
+                        // Unreachable in practice: TEST_MODE and
+                        // SKIP_PIN_VERIFICATION are set from the same
+                        // $isTestEnvironment flag, so if TEST_MODE is
+                        // true the SKIP_PIN_VERIFICATION branch above
+                        // already fired. Left in place defensively —
+                        // does NOT default to allowing login.
                         error_log("[USER LOGIN SUPER TEST] PIN verification failed but TEST_MODE allows login");
                         $pinValid = true;
                     } else {
@@ -689,10 +706,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       </div>
       <?php endif; ?>
 
+      <?php if ($isTestEnvironment): ?>
       <div class="dev-notice">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
         <span><strong>Test mode</strong> — PIN verification is disabled. Any identifier logs you straight in. Turn this off before launch.</span>
       </div>
+      <?php endif; ?>
 
       <form method="POST" action="" id="credentialsForm" novalidate>
         <input type="hidden" name="identifier_type" id="identifier_type" value="phone">
@@ -716,7 +735,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </div>
 
         <div class="field">
-          <label>PIN <span class="hint">(any value is accepted in test mode)</span></label>
+          <label>PIN<?php if ($isTestEnvironment): ?> <span class="hint">(any value is accepted in test mode)</span><?php endif; ?></label>
           <div class="field-input">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="11" width="14" height="9" rx="1"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
             <input type="password" name="pin" class="pin-input" maxlength="6" placeholder="••••••" inputmode="numeric" autocomplete="current-password">
