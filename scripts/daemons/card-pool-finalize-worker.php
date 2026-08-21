@@ -2,126 +2,175 @@
 declare(strict_types=1);
 
 /**
- * Card Pool Finalize Worker
+ * card-pool-finalize-worker.php
  *
- * Polls card_pool_finalize_queue for approved swipes and runs the real,
- * potentially-slow work: debiting pooled sources, releasing unused hold
- * remainders, settling to the merchant, and billing any shortfall to the
- * specific source account whose debit failed - never the card owner,
- * never the other sources.
+ * The piece named in authorize.php's own header comment but never
+ * actually built: "the real debit/settlement happens asynchronously
+ * afterward, picked up by scripts/daemons/card-pool-finalize-worker.php
+ * from the card_pool_finalize_queue table". Confirmed live 21 Aug 2026:
+ * card_pool_finalize_queue only ever had rows INSERTed into it
+ * (authorize.php, Iso8583AuthorizationBridge) or DELETEd from it
+ * (CardService::reversePooledSwipe()) — nothing ever read a PENDING
+ * row and actually called finalizePooledSwipe(). Every "approved"
+ * swipe this session held at authorization only; no source was ever
+ * debited past the hold, no destination was ever settled.
  *
- * Run continuously (systemd/supervisor), same pattern as outbox-worker.php.
+ * This is a polling worker, not a queue consumer library — deliberately
+ * simple (SELECT ... FOR UPDATE SKIP LOCKED, process, mark done, sleep,
+ * repeat) so it can run as a single long-lived Railway process without
+ * needing a message broker. Safe to run more than one instance
+ * concurrently — SKIP LOCKED means two workers never grab the same row.
+ *
+ * DEPLOYMENT: this needs to run as its OWN Railway service (a
+ * background worker, not a web service — no HTTP port to bind to,
+ * just `php card-pool-finalize-worker.php` as the start command),
+ * separate from the vouchmorphn web service. It needs the same
+ * DATABASE_URL and bootstrap dependencies as the rest of the app.
+ *
+ * SCHEMA NOTE: confirmed live 21 Aug 2026 against the real
+ * card_pool_finalize_queue table — columns are id, hook_reference,
+ * merchant_context, status, attempts, created_at, processed_at.
+ * There is no result or last_error column, so a completed row's full
+ * result and a failed row's error message are only ever written to
+ * error_log, not persisted on the row itself. Worth adding both
+ * columns later for failure visibility without digging through logs —
+ * not done here since it wasn't asked for and changes the schema.
  */
 
-define('ROOT_PATH', dirname(__DIR__, 2));
-$container = require_once ROOT_PATH . '/src/bootstrap.php';
+require_once __DIR__ . '/../../bootstrap.php'; // adjust relative path to match this file's real deployed location
+require_once __DIR__ . '/../../src/Domain/Services/CardService.php';
+require_once __DIR__ . '/../../src/Domain/Services/ContributionCalculator.php';
 
 use Domain\Services\CardService;
-use Domain\Services\SwapService;
 use Domain\Services\ContributionCalculator;
-use Domain\Services\Settlement\HybridSettlementStrategy;
-use Infrastructure\SMS\SmsNotificationService;
 
-$db = $container->get(PDO::class);
-$cardService = new CardService($db, $container->get('countryCode'), $container->get('countryConfig'));
-$swapService = $container->get('Domain\Services\SwapService') ?? null;
-$settlement = new HybridSettlementStrategy($db);
-$contributionCalculator = new ContributionCalculator();
+const POLL_INTERVAL_SECONDS = 3;
+const MAX_ATTEMPTS_PER_ROW = 5;
 
-// ============================================================
-// SMS ALERT SERVICE
-// ============================================================
-// Load SMS config from participants to alert ops when a job
-// permanently fails after 5 attempts. This is a critical alert
-// because the merchant has already been paid, but settlement
-// and shortfall billing are stuck - ops needs to intervene.
-$smsConfig = [];
-$participants = $container->get('participants') ?? [];
-if (!empty($participants['sms'])) {
-    $smsConfig = $participants['sms'];
-} else {
-    // Fallback: try to load from country config
-    $countryConfig = $container->get('countryConfig') ?? [];
-    $smsConfig = $countryConfig['sms'] ?? [];
-}
-$smsService = !empty($smsConfig) ? new SmsNotificationService($smsConfig) : null;
+function runWorkerLoop($container): void
+{
+    $db = $container->get(PDO::class);
+    $swapService = $container->get('Domain\Services\SwapService');
+    $settlement = $container->get('Domain\Services\Settlement\HybridSettlementStrategy');
+    $cardService = new CardService($db, $container->get('countryCode'), $container->get('countryConfig'));
+    $contributionCalculator = new ContributionCalculator();
 
-if ($smsService) {
-    echo "[CardPoolWorker] SMS service initialized\n";
-} else {
-    echo "[CardPoolWorker] SMS service NOT available - alerts will be logged only\n";
+    error_log("[FinalizeWorker] Started. Polling card_pool_finalize_queue every " . POLL_INTERVAL_SECONDS . "s.");
+
+    while (true) {
+        try {
+            processNextBatch($db, $cardService, $swapService, $settlement, $contributionCalculator);
+        } catch (\Throwable $e) {
+            // A failure in the polling loop itself must never kill the
+            // worker process — log loudly and keep going, same
+            // non-blocking discipline as every other background piece
+            // in this codebase.
+            error_log("[FinalizeWorker] CRITICAL: unhandled error in poll loop: " . $e->getMessage());
+        }
+        sleep(POLL_INTERVAL_SECONDS);
+    }
 }
 
-echo "[CardPoolWorker] Started\n";
+function processNextBatch(
+    PDO $db,
+    CardService $cardService,
+    $swapService,
+    $settlement,
+    ContributionCalculator $contributionCalculator
+): void {
+    $db->beginTransaction();
 
-while (true) {
-    $stmt = $db->prepare("
-        SELECT * FROM card_pool_finalize_queue
-        WHERE status = 'PENDING' AND attempts < 5
-        ORDER BY created_at ASC
-        LIMIT 10
-        FOR UPDATE SKIP LOCKED
-    ");
-    $stmt->execute();
-    $jobs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    try {
+        // FOR UPDATE SKIP LOCKED: if multiple worker instances run
+        // concurrently, each grabs a DIFFERENT pending row instead of
+        // blocking on or double-processing the same one.
+        $stmt = $db->prepare("
+            SELECT id, hook_reference, merchant_context, attempts
+            FROM card_pool_finalize_queue
+            WHERE status = 'PENDING'
+              AND (attempts IS NULL OR attempts < :max_attempts)
+            ORDER BY id ASC
+            LIMIT 1
+            FOR UPDATE SKIP LOCKED
+        ");
+        $stmt->execute([':max_attempts' => MAX_ATTEMPTS_PER_ROW]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
-    if (empty($jobs)) {
-        sleep(2);
-        continue;
+        if (!$row) {
+            $db->commit();
+            return; // nothing pending — normal, quiet case
+        }
+
+        // Mark IN_PROGRESS immediately so a slow finalize doesn't get
+        // picked up twice by another worker instance before it commits.
+        $db->prepare("
+            UPDATE card_pool_finalize_queue
+            SET status = 'IN_PROGRESS', attempts = COALESCE(attempts, 0) + 1
+            WHERE id = ?
+        ")->execute([$row['id']]);
+
+        $db->commit();
+
+    } catch (\Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        error_log("[FinalizeWorker] Failed to claim a queue row: " . $e->getMessage());
+        return;
     }
 
-    foreach ($jobs as $job) {
-        $db->prepare("UPDATE card_pool_finalize_queue SET status = 'PROCESSING', attempts = attempts + 1 WHERE id = ?")
-            ->execute([$job['id']]);
+    // Actual finalize runs in its OWN transaction, inside
+    // finalizePooledSwipe() itself — deliberately not nested inside the
+    // claim transaction above, so a long-running finalize doesn't hold
+    // the SKIP LOCKED row lock any longer than necessary for other
+    // workers.
+    $hookReference = $row['hook_reference'];
+    $merchantContext = json_decode($row['merchant_context'], true) ?: [];
+
+    error_log("[FinalizeWorker] Processing hook_reference={$hookReference} (attempt " . ($row['attempts'] + 1) . ")");
+
+    try {
+        $result = $cardService->finalizePooledSwipe(
+            $hookReference,
+            $swapService,
+            $settlement,
+            $contributionCalculator,
+            $merchantContext
+        );
+
+        $db->prepare("
+            UPDATE card_pool_finalize_queue
+            SET status = 'COMPLETED', processed_at = NOW()
+            WHERE id = ?
+        ")->execute([$row['id']]);
+
+        error_log("[FinalizeWorker] SUCCESS hook_reference={$hookReference} total_debited=" .
+            ($result['total_debited'] ?? 'unknown') . " full_result=" . json_encode($result));
+
+    } catch (\Throwable $e) {
+        $newStatus = ($row['attempts'] + 1 >= MAX_ATTEMPTS_PER_ROW) ? 'FAILED' : 'PENDING';
+
+        error_log("[FinalizeWorker] FAILED hook_reference={$hookReference}: " . $e->getMessage() .
+            " — status set to {$newStatus}");
 
         try {
-            $merchantContext = json_decode($job['merchant_context'], true) ?? [];
+            $db->prepare("
+                UPDATE card_pool_finalize_queue
+                SET status = ?, processed_at = CASE WHEN ? = 'FAILED' THEN NOW() ELSE processed_at END
+                WHERE id = ?
+            ")->execute([$newStatus, $newStatus, $row['id']]);
+        } catch (\Throwable $updateErr) {
+            error_log("[FinalizeWorker] EMERGENCY: could not even update queue row status after finalize failure: " . $updateErr->getMessage());
+        }
 
-            $result = $cardService->finalizePooledSwipe(
-                $job['hook_reference'],
-                $swapService,
-                $settlement,
-                $contributionCalculator,
-                $merchantContext
-            );
-
-            $db->prepare("UPDATE card_pool_finalize_queue SET status = 'DONE', processed_at = NOW() WHERE id = ?")
-                ->execute([$job['id']]);
-
-            echo "[CardPoolWorker] Finalized {$job['hook_reference']} - " .
-                 (empty($result['shortfall_bills']) ? "no shortfalls" : count($result['shortfall_bills']) . " shortfall bill(s)") . "\n";
-
-        } catch (Exception $e) {
-            error_log("[CardPoolWorker] Finalize failed for {$job['hook_reference']}: " . $e->getMessage());
-
-            $status = $job['attempts'] + 1 >= 5 ? 'FAILED' : 'PENDING';
-            $db->prepare("UPDATE card_pool_finalize_queue SET status = ? WHERE id = ?")
-                ->execute([$status, $job['id']]);
-
-            if ($status === 'FAILED') {
-                error_log("[CardPoolWorker] GIVING UP on {$job['hook_reference']} after 5 attempts - needs manual review. The merchant has already been paid; this failure means settlement/shortfall billing may be incomplete.");
-
-                // ============================================================
-                // SMS ALERT TO OPS
-                // ============================================================
-                $opsPhone = getenv('OPS_ALERT_PHONE');
-                if ($opsPhone && $smsService) {
-                    try {
-                        $message = "URGENT: Card pool finalize FAILED after 5 attempts - {$job['hook_reference']}. Merchant already paid, settlement/billing incomplete. Needs manual review.";
-                        $smsService->send($opsPhone, $message);
-                        echo "[CardPoolWorker] SMS alert sent to {$opsPhone} for {$job['hook_reference']}\n";
-                    } catch (Exception $smsErr) {
-                        error_log("[CardPoolWorker] Alert SMS itself failed: " . $smsErr->getMessage());
-                        echo "[CardPoolWorker] Alert SMS FAILED: " . $smsErr->getMessage() . "\n";
-                    }
-                } elseif (!$opsPhone) {
-                    error_log("[CardPoolWorker] OPS_ALERT_PHONE not set - SMS alert not sent");
-                    echo "[CardPoolWorker] OPS_ALERT_PHONE not set - SMS alert not sent\n";
-                } elseif (!$smsService) {
-                    error_log("[CardPoolWorker] SMS service not available - alert not sent");
-                    echo "[CardPoolWorker] SMS service not available - alert not sent\n";
-                }
-            }
+        if ($newStatus === 'FAILED') {
+            error_log("[FinalizeWorker] CRITICAL: hook_reference={$hookReference} exhausted {$row['attempts']} attempts and is now FAILED — needs manual investigation. A swipe was authorized but could not be finalized after repeated attempts.");
         }
     }
 }
+
+// ============================================================
+// ENTRY POINT
+// ============================================================
+$container = require_once __DIR__ . '/../../bootstrap.php'; // adjust to match real deployment path
+runWorkerLoop($container);
