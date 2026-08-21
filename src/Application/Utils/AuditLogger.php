@@ -5,72 +5,59 @@ namespace Application\Utils;
 
 use PDO;
 use Throwable;
-use Domain\Models\AuditLog;
 
 /**
- * Wraps the existing Domain\Models\AuditLog (action/performed_by/target/
- * created_at only — a much narrower schema than the richer call shape
- * authorize.php actually uses). Rather than silently drop the extra
- * context (severity, category, entity_id, structured details),
- * everything beyond the base three columns is folded into a single
- * JSON-encoded `target` string, so nothing recorded here is lost even
- * though the underlying table wasn't designed for it.
+ * ROOT CAUSE FIX (confirmed live 21 Aug 2026): the real audit_logs
+ * table has columns audit_id, audit_uuid, entity_type, entity_id,
+ * action, category, severity, old_value, new_value, changes,
+ * performed_by_type, performed_by_id, ip_address, user_agent,
+ * geo_location, request_id, performed_at, integrity_hash, timestamp,
+ * event_type, client_id, endpoint, duration_ms, prev_hash, entry_hash
+ * — nothing like the narrow action/performed_by/target/created_at
+ * shape Domain\Models\AuditLog assumed. That model was built against
+ * the wrong schema from the start; every fix so far (namespace,
+ * strict_types, use PDO) made the CLASS load correctly, but the
+ * INSERT inside it was always going to fail against the real table.
  *
- * ROOT CAUSE FIX (confirmed live 21 Aug 2026): this file previously
- * required AuditLog.php explicitly via require_once. composer.json
- * defines a PSR-4 autoload mapping for the WHOLE Domain\ namespace
- * (Domain\ -> src/Domain/), so \Domain\Models\AuditLog is ALREADY
- * autoloaded automatically the moment it's referenced anywhere in a
- * request — the explicit require_once here was redundant, and is
- * exactly what caused "Cannot declare class AuditLog, because the
- * name is already in use": the autoloader had already declared it
- * before this file's own require_once tried to declare it again.
- * `use Domain\Models\AuditLog;` at the top of this file is now the
- * ONLY reference — Composer's autoloader handles the rest, exactly
- * once, no matter how many places in the codebase reference the class.
+ * Rather than patch that model again, this class now writes directly
+ * to audit_logs, using the SAME technique
+ * SwapService::writeAuditLogEntry() already uses successfully against
+ * this exact table: introspect the real columns at runtime, only
+ * insert what exists, and chain entry_hash = SHA256(prev_hash ||
+ * canonical fields) the same way, so this audit trail is provably
+ * continuous with the one SwapService already writes — one real audit
+ * log, not two different half-working ones.
  *
- * DEFENSIVE INSTANTIATION KEPT: AuditLog.php itself re-requires
- * src/bootstrap.php internally, using a path built from its own
- * directory that resolves to '.../src/src/bootstrap.php' — a doubled
- * 'src' segment that looks like a genuine bug in that file, not fixed
- * here. That internal require_once still fires the FIRST time the
- * autoloader pulls the file in (autoloading doesn't skip a file's own
- * top-level code), and a failed require_once is a catchable \Error in
- * PHP 8 — so instantiation below stays wrapped in try/catch, which is
- * what lets audit logging degrade cleanly to "log to error_log and
- * continue" if that internal bug is ever hit, instead of taking down
- * whatever called AuditLogger.
+ * No dependency on Domain\Models\AuditLog remains.
  */
 class AuditLogger
 {
-    private ?AuditLog $auditLog = null;
+    private ?PDO $db;
+    private array $columns = [];
 
     public function __construct(?PDO $db = null)
     {
+        $this->db = $db ?? $this->resolveDb();
+
+        if ($this->db === null) {
+            error_log("[AuditLogger] No PDO connection available — audit logging disabled for this request.");
+            return;
+        }
+
         try {
-            $db = $db ?? $this->resolveDb();
-            if ($db === null) {
-                error_log("[AuditLogger] No PDO connection available — audit logging disabled for this request.");
-                return;
+            $stmt = $this->db->query("SELECT * FROM audit_logs LIMIT 0");
+            for ($i = 0; $i < $stmt->columnCount(); $i++) {
+                $this->columns[] = $stmt->getColumnMeta($i)['name'];
             }
-
-            $this->auditLog = new AuditLog($db);
-
         } catch (Throwable $e) {
-            // Catches AuditLog.php's own internal bootstrap require
-            // failing (its doubled-'src' path bug, if still present) as
-            // well as any other constructor failure — audit logging is
-            // never allowed to take the caller down with it.
-            error_log("[AuditLogger] Failed to initialize — audit logging disabled for this request: " . $e->getMessage());
-            $this->auditLog = null;
+            error_log("[AuditLogger] audit_logs table unreadable — audit logging disabled for this request: " . $e->getMessage());
+            $this->db = null;
         }
     }
 
     private function resolveDb(): ?PDO
     {
         try {
-            // Core\ is also PSR-4 autoloaded (composer.json), so no
-            // manual require needed here either — same fix applied.
             if (class_exists('\Core\Database\DBConnection')) {
                 return \Core\Database\DBConnection::getConnection();
             }
@@ -84,12 +71,12 @@ class AuditLogger
      * Matches the call shape authorize.php already uses:
      *   $auditLogger->log('CARD_AUTH_APPROVED', 'INFO', 'card_network', null, null, [...]);
      *
-     * @param string      $action     What happened, e.g. 'CARD_AUTH_APPROVED'
-     * @param string      $severity   e.g. 'INFO', 'WARNING', 'CRITICAL' — folded into target
-     * @param string      $category   e.g. 'card_network' — folded into target
-     * @param string|int|null $performedBy  Who/what performed the action; defaults to 'SYSTEM'
-     * @param string|int|null $entityId     Optional entity identifier — folded into target
-     * @param array       $details    Arbitrary structured context — folded into target as JSON
+     * @param string      $action     What happened, e.g. 'CARD_AUTH_APPROVED' — written to both action and event_type
+     * @param string      $severity   e.g. 'INFO', 'WARNING', 'CRITICAL'
+     * @param string      $category   e.g. 'card_network' — written to both category and entity_type
+     * @param string|int|null $performedBy  Who/what performed the action — written to performed_by_id if numeric
+     * @param string|int|null $entityId     Optional entity identifier — written to entity_id, falls back to $performedBy
+     * @param array       $details    Arbitrary structured context — written to new_value as JSON (closest real column for free-form payload)
      */
     public function log(
         string $action,
@@ -99,31 +86,91 @@ class AuditLogger
         $entityId = null,
         array $details = []
     ): void {
-        if ($this->auditLog === null) {
-            // Audit logging unavailable this request — never block the
-            // caller over it, but don't lose the signal silently either.
-            error_log("[AuditLogger] log() skipped (no DB/model available) — action='{$action}' severity={$severity} category={$category} details=" . json_encode($details));
+        if ($this->db === null || empty($this->columns)) {
+            error_log("[AuditLogger] log() skipped (no DB/schema available) — action='{$action}' severity={$severity} category={$category} details=" . json_encode($details));
             return;
         }
 
         try {
-            $performedByLabel = $performedBy !== null ? (string)$performedBy : 'SYSTEM';
+            $performedById = is_numeric($performedBy) ? (int)$performedBy : null;
+            $performedByType = $performedById !== null ? 'user' : 'system';
+            $resolvedEntityId = $entityId !== null ? (string)$entityId : (string)($performedBy ?? $action);
+            $performedAt = date('Y-m-d H:i:s');
 
-            $targetPayload = json_encode(array_filter([
-                'severity' => $severity,
+            // Same hash-chain technique as SwapService::writeAuditLogEntry() —
+            // global chain (not per-entity), so this audit trail is
+            // provably continuous with every other entry already written
+            // to this table by the rest of the system.
+            $prevHash = null;
+            if (in_array('entry_hash', $this->columns, true)) {
+                try {
+                    $prevHash = $this->db->query(
+                        "SELECT entry_hash FROM audit_logs ORDER BY audit_id DESC LIMIT 1"
+                    )->fetchColumn() ?: null;
+                } catch (Throwable $e) {
+                    // No prior rows yet — chain starts at null.
+                }
+            }
+
+            $canonical = json_encode([
+                'entity_type' => $category,
+                'entity_id' => $resolvedEntityId,
+                'action' => $action,
+                'performed_at' => $performedAt,
+                'performed_by_id' => $performedById,
+            ]);
+            $entryHash = hash('sha256', ($prevHash ?? '') . $canonical);
+
+            $values = [
+                'entity_type' => $category,
+                'entity_id' => $resolvedEntityId,
+                'action' => $action,
                 'category' => $category,
-                'entity_id' => $entityId,
-                'details' => $details ?: null,
-            ], fn($v) => $v !== null));
+                'severity' => $severity,
+                'performed_by_type' => $performedByType,
+                'performed_by_id' => $performedById,
+                'performed_at' => $performedAt,
+                'timestamp' => $performedAt,
+                'event_type' => $action,
+                'audit_uuid' => $this->generateUuid(),
+                'prev_hash' => $prevHash,
+                'entry_hash' => $entryHash,
+                'new_value' => !empty($details) ? json_encode($details) : null,
+            ];
 
-            $this->auditLog->log($action, $performedByLabel, $targetPayload ?: '{}');
+            $fields = [];
+            $placeholders = [];
+            $params = [];
+            foreach ($values as $col => $val) {
+                if (in_array($col, $this->columns, true) && $val !== null) {
+                    $fields[] = $col;
+                    $placeholders[] = ":{$col}";
+                    $params[":{$col}"] = $val;
+                }
+            }
+
+            if (empty($fields)) {
+                error_log("[AuditLogger] No matching columns found for action='{$action}' — audit_logs schema may have changed again.");
+                return;
+            }
+
+            $sql = "INSERT INTO audit_logs (" . implode(', ', $fields) . ") VALUES (" . implode(', ', $placeholders) . ")";
+            $stmt = $this->db->prepare($sql);
+            $stmt->execute($params);
 
         } catch (Throwable $e) {
             // Same non-blocking posture as every other audit/tracking
-            // write in this codebase (see SwapService::writeAuditLogEntry()
-            // and its writeAuditFallback()) — a logging failure must never
+            // write in this codebase — a logging failure must never
             // surface as the caller's own failure.
             error_log("[AuditLogger] Failed to write audit log entry for action='{$action}': " . $e->getMessage());
         }
+    }
+
+    private function generateUuid(): string
+    {
+        $data = random_bytes(16);
+        $data[6] = chr(ord($data[6]) & 0x0f | 0x40);
+        $data[8] = chr(ord($data[8]) & 0x3f | 0x80);
+        return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($data), 4));
     }
 }
