@@ -5,7 +5,7 @@ namespace Application\Utils;
 
 use PDO;
 use Throwable;
-use Core\Database\DBConnection;
+use Domain\Models\AuditLog;
 
 /**
  * Wraps the existing Domain\Models\AuditLog (action/performed_by/target/
@@ -16,64 +16,51 @@ use Core\Database\DBConnection;
  * JSON-encoded `target` string, so nothing recorded here is lost even
  * though the underlying table wasn't designed for it.
  *
- * DEFENSIVE REQUIRE: AuditLog.php (src/Domain/Models/AuditLog.php) itself
- * re-requires src/bootstrap.php internally, using a path built from its
- * own directory (dirname(__DIR__, 2) . '/src/bootstrap.php'). From that
- * file's real location this resolves to '.../src/src/bootstrap.php' — a
- * doubled 'src' segment that looks like a genuine path bug in that file,
- * not something fixed here. Confirmed tonight: a failed require_once is
- * a catchable \Error in PHP 8 (it's exactly what crashed authorize.php
- * with an UNCAUGHT fatal when THIS file was simply missing) — so the
- * require below is wrapped in try/catch specifically so that if
- * AuditLog.php's own internal require is in fact broken, audit logging
- * degrades to "log to error_log and continue" instead of taking down
- * whatever called AuditLogger, the same way this whole investigation
- * started.
+ * ROOT CAUSE FIX (confirmed live 21 Aug 2026): this file previously
+ * required AuditLog.php explicitly via require_once. composer.json
+ * defines a PSR-4 autoload mapping for the WHOLE Domain\ namespace
+ * (Domain\ -> src/Domain/), so \Domain\Models\AuditLog is ALREADY
+ * autoloaded automatically the moment it's referenced anywhere in a
+ * request — the explicit require_once here was redundant, and is
+ * exactly what caused "Cannot declare class AuditLog, because the
+ * name is already in use": the autoloader had already declared it
+ * before this file's own require_once tried to declare it again.
+ * `use Domain\Models\AuditLog;` at the top of this file is now the
+ * ONLY reference — Composer's autoloader handles the rest, exactly
+ * once, no matter how many places in the codebase reference the class.
+ *
+ * DEFENSIVE INSTANTIATION KEPT: AuditLog.php itself re-requires
+ * src/bootstrap.php internally, using a path built from its own
+ * directory that resolves to '.../src/src/bootstrap.php' — a doubled
+ * 'src' segment that looks like a genuine bug in that file, not fixed
+ * here. That internal require_once still fires the FIRST time the
+ * autoloader pulls the file in (autoloading doesn't skip a file's own
+ * top-level code), and a failed require_once is a catchable \Error in
+ * PHP 8 — so instantiation below stays wrapped in try/catch, which is
+ * what lets audit logging degrade cleanly to "log to error_log and
+ * continue" if that internal bug is ever hit, instead of taking down
+ * whatever called AuditLogger.
  */
 class AuditLogger
 {
-    private $auditLog = null; // \Domain\Models\AuditLog|null — untyped to avoid a hard class dependency if the require below fails
+    private ?AuditLog $auditLog = null;
 
     public function __construct(?PDO $db = null)
     {
         try {
-            $modelPath = dirname(__DIR__, 2) . '/Domain/Models/AuditLog.php';
-
-            // FIX: guard with class_exists() BEFORE require_once, not just
-            // rely on require_once's own path-based dedup. Confirmed live
-            // 21 Aug 2026: "Cannot declare class AuditLog, because the name
-            // is already in use" — something else (most likely a Composer/
-            // PSR-4 autoloader) is also loading this class via a
-            // differently-formed but equivalent path, and require_once
-            // only dedupes by exact resolved path string, not by class
-            // name or realpath. This makes the load idempotent regardless
-            // of how many other places also try to load the same class.
-            if (!class_exists('\Domain\Models\AuditLog')) {
-                if (!file_exists($modelPath)) {
-                    error_log("[AuditLogger] AuditLog model not found at expected path: {$modelPath} — audit logging disabled for this request.");
-                    return;
-                }
-                require_once $modelPath;
-            }
-
-            if (!class_exists('\Domain\Models\AuditLog')) {
-                error_log("[AuditLogger] AuditLog.php was loaded but \\Domain\\Models\\AuditLog class was not defined afterward — audit logging disabled for this request.");
-                return;
-            }
-
             $db = $db ?? $this->resolveDb();
             if ($db === null) {
                 error_log("[AuditLogger] No PDO connection available — audit logging disabled for this request.");
                 return;
             }
 
-            $this->auditLog = new \Domain\Models\AuditLog($db);
+            $this->auditLog = new AuditLog($db);
 
         } catch (Throwable $e) {
-            // Catches a failed require_once inside AuditLog.php itself
-            // (e.g. its own broken bootstrap path) as well as any
-            // constructor failure — audit logging is never allowed to
-            // take the caller down with it.
+            // Catches AuditLog.php's own internal bootstrap require
+            // failing (its doubled-'src' path bug, if still present) as
+            // well as any other constructor failure — audit logging is
+            // never allowed to take the caller down with it.
             error_log("[AuditLogger] Failed to initialize — audit logging disabled for this request: " . $e->getMessage());
             $this->auditLog = null;
         }
@@ -82,12 +69,8 @@ class AuditLogger
     private function resolveDb(): ?PDO
     {
         try {
-            if (!class_exists('\Core\Database\DBConnection')) {
-                $dbConnectionPath = dirname(__DIR__, 2) . '/Core/Database/DBConnection.php';
-                if (file_exists($dbConnectionPath)) {
-                    require_once $dbConnectionPath;
-                }
-            }
+            // Core\ is also PSR-4 autoloaded (composer.json), so no
+            // manual require needed here either — same fix applied.
             if (class_exists('\Core\Database\DBConnection')) {
                 return \Core\Database\DBConnection::getConnection();
             }
