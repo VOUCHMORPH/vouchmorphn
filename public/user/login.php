@@ -454,6 +454,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     .field input::placeholder { color: var(--ink-300); opacity: 0.8; }
     .pin-input { font-family: var(--f-mono); letter-spacing: 0.35em; }
 
+    .field-input.has-toggle input { padding-right: 44px; }
+    .pin-toggle {
+        position: absolute;
+        right: var(--sp-2);
+        top: 50%;
+        transform: translateY(-50%);
+        width: 32px;
+        height: 32px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: none;
+        border: none;
+        padding: 0;
+        cursor: pointer;
+        color: var(--ink-300);
+        transition: color .15s;
+    }
+    .pin-toggle:hover { color: var(--ink-700); }
+    .pin-toggle svg { width: 18px; height: 18px; pointer-events: none; }
+
     .btn {
         width: 100%;
         padding: var(--sp-4);
@@ -736,9 +757,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         <div class="field">
           <label>PIN<?php if ($isTestEnvironment): ?> <span class="hint">(any value is accepted in test mode)</span><?php endif; ?></label>
-          <div class="field-input">
+          <div class="field-input has-toggle">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="11" width="14" height="9" rx="1"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
-            <input type="password" name="pin" class="pin-input" maxlength="6" placeholder="••••••" inputmode="numeric" autocomplete="current-password">
+            <input type="password" name="pin" id="pin-input" class="pin-input" maxlength="6" placeholder="••••••" inputmode="numeric" autocomplete="current-password">
+            <button type="button" class="pin-toggle" id="pin-toggle" aria-label="Show PIN" aria-pressed="false">
+              <svg class="icon-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+              <svg class="icon-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="display:none"><path d="M3 3l18 18"/><path d="M10.6 5.2A10.6 10.6 0 0 1 12 5c6.4 0 10 7 10 7a15.5 15.5 0 0 1-3.4 4.4M6.6 6.6C4 8.3 2 12 2 12s3.6 7 10 7c1.4 0 2.7-.3 3.8-.8"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
+            </button>
           </div>
         </div>
 
@@ -818,6 +843,27 @@ document.querySelectorAll('.id-tab').forEach(btn => {
 document.getElementById('identifier-input')?.addEventListener('keypress', function (e) {
     if (e.key === 'Enter') this.closest('form').submit();
 });
+
+// ------------------------------------------------------------
+// PIN show/hide toggle
+// ------------------------------------------------------------
+(function setupPinToggle() {
+    const toggle = document.getElementById('pin-toggle');
+    const input = document.getElementById('pin-input');
+    if (!toggle || !input) return;
+
+    const eyeIcon = toggle.querySelector('.icon-eye');
+    const eyeOffIcon = toggle.querySelector('.icon-eye-off');
+
+    toggle.addEventListener('click', () => {
+        const showing = input.type === 'text';
+        input.type = showing ? 'password' : 'text';
+        toggle.setAttribute('aria-pressed', String(!showing));
+        toggle.setAttribute('aria-label', showing ? 'Show PIN' : 'Hide PIN');
+        eyeIcon.style.display = showing ? '' : 'none';
+        eyeOffIcon.style.display = showing ? 'none' : '';
+    });
+})();
 
 // ------------------------------------------------------------
 // Doodle field generator — scatters the icon library across the
