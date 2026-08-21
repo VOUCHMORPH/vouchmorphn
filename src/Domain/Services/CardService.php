@@ -2102,31 +2102,30 @@ if ($balance <= 0) {
         return ['success' => false, 'error' => $e->getMessage(), 'message' => 'Hook failed - no sources were held'];
     }
 }
-    /**
-     * FAST PATH ONLY. Called at swipe time. No bank calls - a local check
-     * against currently-valid held totals. This is what has to happen in
-     * milliseconds; the real debits happen afterward in finalizePooledSwipe().
-     * 
-     * FIXED: Added TOTP dynamic code verification (same as authorizeTransaction)
-     */
-    public function authorizePooledSwipe(string $cardSuffix, float $amount, array $merchantContext): array
+    
+     public function authorizePooledSwipe(string $cardSuffix, float $amount, array $merchantContext): array
     {
         $startTime = microtime(true);
 
         // ============================================================
-        // TOTP DYNAMIC CODE CHECK - required for pooled swipes too
+        // IDENTITY VERIFICATION
         // ============================================================
-        if (empty($merchantContext['dynamic_code'])) {
-            return [
-                'success' => false, 'authorized' => false,
-                'response_code' => '57', 'response_message' => 'Dynamic code required',
-            ];
-        }
-        if (!$this->verifyDynamicCode($cardSuffix, $merchantContext['dynamic_code'])) {
-            return [
-                'success' => false, 'authorized' => false,
-                'response_code' => '57', 'response_message' => 'Invalid or expired dynamic code',
-            ];
+        $pinVerifiedViaHsm = ($merchantContext['pin_verified_via_hsm'] ?? false) === true
+            && in_array($merchantContext['channel'] ?? '', ['ISO8583_ATM', 'ISO8583_POS'], true);
+
+        if (!$pinVerifiedViaHsm) {
+            if (empty($merchantContext['dynamic_code'])) {
+                return [
+                    'success' => false, 'authorized' => false,
+                    'response_code' => '57', 'response_message' => 'Dynamic code required',
+                ];
+            }
+            if (!$this->verifyDynamicCode($cardSuffix, $merchantContext['dynamic_code'])) {
+                return [
+                    'success' => false, 'authorized' => false,
+                    'response_code' => '57', 'response_message' => 'Invalid or expired dynamic code',
+                ];
+            }
         }
 
         $stmt = $this->db->prepare("
@@ -2153,6 +2152,41 @@ if ($balance <= 0) {
             ];
         }
 
+        
+        // ============================================================
+        // FIXED-ASSET (VOUCHER) PRE-CHECK
+        // ============================================================
+        // Mirrors ContributionCalculator::isFixedAsset() — VOUCHER and
+        // CASHOUT-VOUCHER must be drawn in full, never split. If their
+        // combined held total exceeds the requested swipe amount,
+        // finalizePooledSwipe() will later throw
+        // "Voucher total exceeds target amount" — decline HERE instead,
+        // before the terminal ever sees an approval.
+        //
+        // NOTE: this does not currently catch the ATM-as-voucher case
+        // (asset_type='ATM' with an is_voucher flag) —
+        // card_pool_hook_sources has no column recording that flag as
+        // shown in this file. If ATM-sourced vouchers are hookable in
+        // practice, this check needs that flag threaded through at hook
+        // time (hookSourcesToCard() would need to persist it alongside
+        // asset_type) before this pre-check can cover that case too.
+        $fixedAssetStmt = $this->db->prepare("
+            SELECT COALESCE(SUM(held_amount), 0) AS fixed_total
+            FROM card_pool_hook_sources
+            WHERE hook_id = ? AND status = 'HELD' AND UPPER(asset_type) IN ('VOUCHER', 'CASHOUT-VOUCHER')
+        ");
+        $fixedAssetStmt->execute([$hook['id']]);
+        $fixedAssetTotal = (float)$fixedAssetStmt->fetchColumn();
+
+        if ($fixedAssetTotal > $amount + 0.01) {
+            return [
+                'success' => false, 'authorized' => false,
+                'response_code' => '51',
+                'response_message' => 'This card has a voucher source that must be used in full — the swipe amount must be at least the voucher value',
+                'fixed_asset_total' => $fixedAssetTotal, 'requested' => $amount,
+            ];
+        }
+
         $update = $this->db->prepare("
             UPDATE card_pool_hooks
             SET status = 'SWIPE_RECEIVED', swipe_amount = ?, merchant_reference = ?
@@ -2170,7 +2204,93 @@ if ($balance <= 0) {
             'processing_time_ms' => $responseTime,
         ];
     }
+    /**
+ * Handles an ATM/POS-initiated reversal for a previously-approved
+ * swipe. Two real outcomes:
+ *   - Swipe was approved (authorizePooledSwipe) but NOT YET finalized
+ *     (still sitting in card_pool_finalize_queue, or the hook is still
+ *     'SWIPE_RECEIVED') -> safe to fully reverse: mark the hook back to
+ *     'HOOKED' (funds remain held, available for a future swipe) and
+ *     remove the queued finalize entry.
+ *   - Swipe was ALREADY finalized (sources debited, destination
+ *     settled) -> CANNOT be silently reversed here. Flag for manual
+ *     reconciliation — same posture as
+ *     SwapService::recordManualReconciliationRequired().
+ */
+public function reversePooledSwipe(string $hookReference, string $reversalReason): array
+{
+    $stmt = $this->db->prepare("SELECT * FROM card_pool_hooks WHERE hook_reference = ? FOR UPDATE");
+    $stmt->execute([$hookReference]);
+    $hook = $stmt->fetch(PDO::FETCH_ASSOC);
 
+    if (!$hook) {
+        return ['success' => false, 'error' => 'Hook not found for reversal.'];
+    }
+
+    if ($hook['status'] === 'SWIPE_RECEIVED') {
+        // Not yet finalized — safe, clean reversal.
+        $this->db->beginTransaction();
+        try {
+            $this->db->prepare("
+                UPDATE card_pool_hooks SET status = 'HOOKED', swipe_amount = NULL, merchant_reference = NULL WHERE id = ?
+            ")->execute([$hook['id']]);
+
+            $this->db->prepare("
+                DELETE FROM card_pool_finalize_queue WHERE hook_reference = ? AND status = 'PENDING'
+            ")->execute([$hookReference]);
+
+            $this->db->commit();
+
+            error_log("[CardService] Swipe reversed cleanly (not yet finalized): hook={$hookReference}, reason={$reversalReason}");
+
+            return ['success' => true, 'status' => 'reversed', 'hook_reference' => $hookReference];
+        } catch (\Throwable $e) {
+            if ($this->db->inTransaction()) $this->db->rollBack();
+            error_log("[CardService] reversePooledSwipe failed during clean-reversal path: " . $e->getMessage());
+            return ['success' => false, 'error' => $e->getMessage()];
+        }
+    }
+
+    if (in_array($hook['status'], ['SETTLED'], true)) {
+        // Already finalized — real money already moved. Do NOT attempt
+        // to auto-reverse. Same discipline as
+        // SwapService::recordManualReconciliationRequired().
+        try {
+            $this->db->exec("
+                CREATE TABLE IF NOT EXISTS card_swipe_manual_reconciliation_required (
+                    id BIGSERIAL PRIMARY KEY,
+                    hook_reference VARCHAR(255) NOT NULL,
+                    reversal_reason TEXT NOT NULL,
+                    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                    resolved_at TIMESTAMP,
+                    resolved_by VARCHAR(100)
+                )
+            ");
+            $stmt = $this->db->prepare("
+                INSERT INTO card_swipe_manual_reconciliation_required (hook_reference, reversal_reason)
+                VALUES (?, ?)
+            ");
+            $stmt->execute([$hookReference, $reversalReason]);
+        } catch (\Throwable $e) {
+            error_log("[CardService] EMERGENCY: failed to record manual reconciliation for already-settled reversal on hook {$hookReference}: " . $e->getMessage());
+        }
+
+        error_log("[CardService] CRITICAL: reversal requested for ALREADY-SETTLED swipe (hook={$hookReference}) — flagged for manual reconciliation, NOT auto-reversed.");
+
+        return [
+            'success' => false,
+            'status' => 'already_settled_manual_reconciliation_required',
+            'error' => 'This transaction has already been fully settled and cannot be automatically reversed. Flagged for manual review.',
+        ];
+    }
+
+    // Any other state (e.g. mid-finalize) — reject rather than guess.
+    return [
+        'success' => false,
+        'error' => "Hook is in state '{$hook['status']}' — reversal is not defined for this state. Needs manual review.",
+    ];
+}
+    
     /**
      * ASYNC, runs right after approval. Debits only what the merchant
      * actually charged, releases the unused remainder of every hold back
@@ -2267,14 +2387,70 @@ if ($balance <= 0) {
                 }
             }
 
-            $settlementResult = $settlement->updateNetPosition(
-                $hookReference,
-                'VOUCHMORPH_CARD_POOL',
-                $merchantContext['acquirer'] ?? $merchantContext['merchant_id'] ?? 'MERCHANT',
-                $swipeAmount,
-                'CARD_POOL_SWIPE_SETTLED',
-                $hook['currency']
-            );
+            // Resolve the REAL destination institution (the bank whose ATM
+// dispensed cash, or whose merchant terminal took the POS payment) —
+// never a free-text label the terminal itself supplied.
+$destinationInstitution = $merchantContext['resolved_destination_institution'] ?? null;
+if (!$destinationInstitution) {
+    // Fallback to whatever the caller sent, but log loudly — this
+    // means resolveInstitutionByAcquirerId() (SwapService) either
+    // wasn't called upstream or failed to resolve, and settlement is
+    // about to happen against an UNVERIFIED counterparty. Should not
+    // reach this in a fully wired deployment.
+    error_log("[CardService] finalizePooledSwipe: no resolved destination institution for hook {$hookReference} — settling against unverified label, this needs fixing upstream");
+    $destinationInstitution = $merchantContext['acquirer'] ?? $merchantContext['merchant_id'] ?? 'UNKNOWN';
+}
+
+// Settle EACH source institution's actual debited share to the
+// destination — not one lump sum from an opaque pool label. This
+// means the ATM-owning bank (or merchant's acquirer) gets paid
+// correctly attributed money from each real institution that was
+// actually debited, same granularity debitSource() already used above.
+$settlementResults = [];
+$totalSettled = 0.0;
+foreach ($contributions as $i => $contribution) {
+    $sourceRow = $sources[$i];
+    $debitedAmount = (float)($sourceRow['debited_amount'] ?? $contribution['actual_amount']);
+    if ($debitedAmount <= 0) continue;
+
+    try {
+        $settledAmount = $swapService->settleCardSwipeToDestination(
+            $sourceRow['institution'],
+            $destinationInstitution,
+            $hook['currency'],
+            $debitedAmount,
+            $hookReference . '_SETTLE_' . $sourceRow['institution']
+        );
+        $settlementResults[] = [
+            'source_institution' => $sourceRow['institution'],
+            'destination_institution' => $destinationInstitution,
+            'amount' => $settledAmount,
+            'status' => 'settled',
+        ];
+        $totalSettled += $settledAmount;
+    } catch (\Throwable $settleErr) {
+        // Source was ALREADY debited above — a settlement failure here
+        // means the destination institution hasn't been paid for cash
+        // they already physically dispensed. This is the exact
+        // "manual reconciliation required" case SwapService already
+        // has a pattern for elsewhere (recordManualReconciliationRequired()) —
+        // flag it the same way rather than silently losing track of it.
+        error_log("[CardService] CRITICAL: settlement to {$destinationInstitution} failed for {$sourceRow['institution']}'s debited {$debitedAmount} — destination already dispensed/credited real value, needs manual reconciliation: " . $settleErr->getMessage());
+        $settlementResults[] = [
+            'source_institution' => $sourceRow['institution'],
+            'destination_institution' => $destinationInstitution,
+            'amount' => $debitedAmount,
+            'status' => 'settlement_failed_needs_manual_reconciliation',
+            'error' => $settleErr->getMessage(),
+        ];
+    }
+}
+
+$settlementResult = [
+    'settled_legs' => $settlementResults,
+    'total_settled' => $totalSettled,
+    'destination_institution' => $destinationInstitution,
+];
 
             $status = 'SETTLED';
             $this->db->prepare("
