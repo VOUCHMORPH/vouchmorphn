@@ -2,6 +2,8 @@
 
 require_once __DIR__ . '/../../bootstrap.php';
 
+namespace Domain\Models;
+
 class AuditLog
 {
     public int $id;
