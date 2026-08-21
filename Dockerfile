@@ -44,6 +44,14 @@ COPY composer.json composer.lock ./
 RUN composer install --no-dev --optimize-autoloader --no-interaction --prefer-dist
 COPY src/ src/
 COPY public/ public/
+# FIX (21 Aug 2026): scripts/ was never copied into the image, so any
+# background worker or cron script living under scripts/ (e.g.
+# scripts/daemons/card-pool-finalize-worker.php) failed with "Could not
+# open input file" on every container built from this Dockerfile,
+# regardless of whether the file existed in the git repo. Both the
+# worker service AND the cron entries defined in railway.json's "cron"
+# block depend on this directory existing in the built image.
+COPY scripts/ scripts/
 COPY docker/nginx.conf /etc/nginx/sites-enabled/default
 RUN composer dump-autoload --optimize --no-interaction
 EXPOSE 9000
