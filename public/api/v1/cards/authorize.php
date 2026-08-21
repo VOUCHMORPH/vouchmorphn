@@ -54,22 +54,32 @@ require_once ROOT_PATH . '/src/Application/Utils/AuditLogger.php';
 use Domain\Services\CardService;
 use Application\Utils\AuditLogger;
 
-// ============================================================
-// AUTHENTICATION - system + per-participant keys from env
-// ============================================================
+/**
+ * Unified with execute.php's auth model — VOUCHMORPH_API_KEY only,
+ * exact constant-time comparison. Previously checked API_KEY_SYSTEM /
+ * API_KEY_<INSTITUTION>, environment variables that were never
+ * actually set in this deployment, meaning every call to this
+ * endpoint was rejected regardless of the key supplied. Confirmed
+ * live 21 Aug 2026.
+ */
+function isValidApiKeyForAuthorize(?string $providedKey): bool {
+    $validKey = getenv('VOUCHMORPH_API_KEY') ?: '';
+
+    if ($validKey === '') {
+        error_log("[authorize.php] CRITICAL: VOUCHMORPH_API_KEY is not configured in this environment");
+        return false;
+    }
+    if ($providedKey === null || $providedKey === '') {
+        return false;
+    }
+    return hash_equals($validKey, $providedKey);
+}
+
 $headers = function_exists('getallheaders') ? getallheaders() : [];
 $headersLower = array_change_key_case($headers, CASE_LOWER);
 $providedKey = $headersLower['x-api-key'] ?? null;
 
-$validKeys = array_filter([getenv('API_KEY_SYSTEM')]);
-$participants = $container->get('participants') ?? [];
-foreach ($participants as $code => $participant) {
-    $envKey = 'API_KEY_' . strtoupper($code);
-    $val = getenv($envKey);
-    if ($val) $validKeys[] = $val;
-}
-
-if (!$providedKey || !in_array($providedKey, $validKeys, true)) {
+if (!isValidApiKeyForAuthorize($providedKey)) {
     http_response_code(401);
     echo json_encode(['success' => false, 'error' => 'Unauthorized: invalid or missing API key']);
     exit();
