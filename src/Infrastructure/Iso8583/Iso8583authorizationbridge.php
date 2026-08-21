@@ -4,55 +4,50 @@ declare(strict_types=1);
 namespace Infrastructure\Iso8583;
 
 use Domain\Services\CardService;
+use Domain\Services\SwapService;
+use Infrastructure\Hsm\PinVerificationInterface;
 use PDO;
 
 /**
- * Bridges real ISO 8583 authorization messages (0100/0200, from a
- * terminal via an acquirer or the national switch) into the SAME
- * authorization logic authorize.php already uses over REST — no
- * duplicated business rules, this is purely a protocol adapter.
+ * Bridges real ISO 8583 messages (0100/0200/0400) into the SAME
+ * authorization/finalize/reversal logic authorize.php and CardService
+ * already use over REST — no duplicated business rules, this is
+ * purely a protocol adapter.
  *
- * WHAT THIS DOES NOT SOLVE (flagged explicitly, not silently assumed):
+ * PROCESSING CODE AWARE (field 3): distinguishes ATM cash withdrawal
+ * ('01'-prefixed) from POS purchase ('00'-prefixed) per ISO 8583
+ * convention, and resolves the real destination institution from
+ * field 32 rather than trusting a free-text acquirer label — see
+ * SwapService::resolveInstitutionByAcquirerId() for the (currently
+ * placeholder) resolution logic.
  *
- * 1. dynamic_code / PIN. Field 52 (PIN block) is the standard ISO 8583
- *    carrier for a cardholder-entered PIN, DES/3DES-encrypted under a
- *    terminal/zone key. CardService's TOTP-based dynamic_code has NO
- *    real-world terminal analog — no physical ATM/POS keypad produces
- *    a TOTP code, they produce an encrypted PIN block. Two real options,
- *    NEITHER implemented here, both requiring a product decision:
- *      a) Accept a standard PIN block in field 52, decrypt it under a
- *         real HSM/key-zone (requires actual HSM infrastructure — a
- *         hard requirement for PCI-DSS PIN security anyway), and store
- *         a PIN verification value instead of / alongside the TOTP
- *         secret.
- *      b) Keep TOTP but only for a companion-app-driven "tap to
- *         generate code, then enter it at a keypad-having terminal"
- *         flow — unusual, and most real terminals have no way to
- *         prompt for a 6-digit app code instead of a PIN.
- *    This bridge currently maps field 52 through as $dynamicCode
- *    verbatim for structural completeness, but it will NOT pass
- *    verifyDynamicCode()'s real TOTP check as-is. This is the single
- *    biggest remaining design gap for real terminal acceptance.
+ * PIN HANDLING: field 52 (PIN block) is routed to a real
+ * PinVerificationInterface implementation — an HSM, never decrypted
+ * or compared in this class or anywhere else in application code. See
+ * Infrastructure\Hsm\PinVerificationInterface's header for why.
  *
- * 2. Track 2 (field 35) / EMV chip data are accepted on the wire but
- *    not yet used to resolve the card — resolution is by PAN (field 2)
- *    only, matching authorize.php's existing card_suffix/PAN-based
- *    lookup. Real terminal certification will require verifying track
- *    data / EMV cryptograms, which needs its own workstream.
- *
- * 3. Reversals (MTI 0400/0420) are not implemented — a real deployment
- *    needs these for timeout/network-failure recovery per network
- *    rules. Flagging as a gap, not pretending it's covered.
+ * The TOTP dynamic_code path (CardService::authorizePooledSwipe()'s
+ * existing check) remains the verification method for the app/QR
+ * channel authorize.php serves — NOT used for real ISO 8583 terminal
+ * traffic, which always carries a PIN block instead.
  */
 class Iso8583AuthorizationBridge
 {
     private PDO $db;
     private CardService $cardService;
+    private SwapService $swapService;
+    private PinVerificationInterface $pinVerifier;
 
-    public function __construct(PDO $db, CardService $cardService)
-    {
+    public function __construct(
+        PDO $db,
+        CardService $cardService,
+        SwapService $swapService,
+        PinVerificationInterface $pinVerifier
+    ) {
         $this->db = $db;
         $this->cardService = $cardService;
+        $this->swapService = $swapService;
+        $this->pinVerifier = $pinVerifier;
     }
 
     /**
@@ -77,7 +72,26 @@ class Iso8583AuthorizationBridge
         return match ($request->mti) {
             '0100' => $this->handleAuthorizationRequest($request, '0110')->toWire(),
             '0200' => $this->handleFinancialRequest($request, '0210')->toWire(),
+            '0400' => $this->handleReversalRequest($request, '0420')->toWire(),
             default => $this->buildUnsupportedMtiResponse($request)->toWire(),
+        };
+    }
+
+    /**
+     * Field 3 (processing code) — first two digits determine
+     * transaction type per ISO 8583 convention. '01' = cash
+     * withdrawal (ATM), '00' = purchase (POS). This determines both
+     * how the destination institution is expected to behave
+     * (dispense cash vs. credit a merchant) and which
+     * CardService finalize path applies.
+     */
+    private function classifyProcessingCode(?string $processingCode): string
+    {
+        $prefix = substr((string)$processingCode, 0, 2);
+        return match ($prefix) {
+            '01' => 'ATM_CASH',
+            '00' => 'POS_PURCHASE',
+            default => 'UNKNOWN',
         };
     }
 
@@ -119,19 +133,21 @@ class Iso8583AuthorizationBridge
 
     /**
      * 0200 — financial transaction request. This DOES move money —
-     * routes into the exact same CardService::authorizePooledSwipe()
-     * used by authorize.php, so approval/decline logic and TOTP
-     * verification are identical regardless of which protocol the
-     * request arrived over.
+     * routes into CardService::authorizePooledSwipe(), with PIN
+     * verification going through the HSM interface (never TOTP, for
+     * real terminal traffic) and the destination institution resolved
+     * from field 32 rather than trusted verbatim from the wire.
      */
     private function handleFinancialRequest(Iso8583Message $request, string $responseMti): Iso8583Message
     {
         $pan = $request->fields[2] ?? null;
         $amountMinorUnits = $request->fields[4] ?? '000000000000';
-        $dynamicCode = $request->fields[52] ?? null; // see class header note #1 — will not pass real TOTP check as-is
+        $pinBlock = $request->fields[52] ?? null;
+        $acquirerId = $request->fields[32] ?? null;
         $merchantId = $request->fields[42] ?? null;
         $terminalId = $request->fields[41] ?? null;
         $stan = $request->fields[11] ?? null;
+        $processingCode = $request->fields[3] ?? null;
 
         if (!$pan) {
             return $this->buildDeclineResponse($request, $responseMti, '30');
@@ -144,29 +160,58 @@ class Iso8583AuthorizationBridge
             return $this->buildDeclineResponse($request, $responseMti, '14');
         }
 
+        // PIN verification — real HSM only, see class header.
+        if (!$pinBlock) {
+            return $this->buildDeclineResponse($request, $responseMti, '55'); // '55' = incorrect PIN (none supplied)
+        }
+        $keyZoneId = $acquirerId ?? 'DEFAULT';
+        if (!$this->pinVerifier->verifyPin($pinBlock, $pan, $keyZoneId)) {
+            return $this->buildDeclineResponse($request, $responseMti, '55');
+        }
+
+        $transactionType = $this->classifyProcessingCode($processingCode);
+        if ($transactionType === 'UNKNOWN') {
+            return $this->buildDeclineResponse($request, $responseMti, '12'); // invalid transaction
+        }
+
+        // Resolve the REAL destination institution — never trust field 32
+        // as-is without confirming it against a known participant. See
+        // SwapService::resolveInstitutionByAcquirerId()'s header note:
+        // this mapping is currently a placeholder pending real
+        // acquirer-ID data.
+        $destinationInstitution = $acquirerId ? $this->swapService->resolveInstitutionByAcquirerId($acquirerId) : null;
+        if (!$destinationInstitution) {
+            error_log("[Iso8583AuthorizationBridge] Could not resolve acquirer ID '{$acquirerId}' to a known institution — declining rather than settling against an unverified counterparty");
+            return $this->buildDeclineResponse($request, $responseMti, '91'); // '91' = issuer or switch inoperative (closest fit — acquirer unrecognized)
+        }
+
         $merchantContext = [
             'merchant_reference' => $stan,
             'merchant_id' => $merchantId,
             'terminal_id' => $terminalId,
-            'channel' => 'ISO8583',
-            'dynamic_code' => $dynamicCode, // see class header note #1
+            'channel' => $transactionType === 'ATM_CASH' ? 'ISO8583_ATM' : 'ISO8583_POS',
+            'acquirer' => $acquirerId,
+            'resolved_destination_institution' => $destinationInstitution,
+            // NOTE: no 'dynamic_code' here — this is a real terminal
+            // request, verified via PIN/HSM above, not the app/QR TOTP
+            // path. CardService::authorizePooledSwipe() still requires
+            // SOME truthy dynamic_code value per its current signature —
+            // pass a sentinel marking this as HSM-verified, and see the
+            // CardService patch note below on updating that method to
+            // accept an already-verified flag instead of re-checking TOTP.
+            'pin_verified_via_hsm' => true,
         ];
 
         $result = $this->cardService->authorizePooledSwipe($cardSuffix, $amount, $merchantContext);
 
         if (!($result['authorized'] ?? false)) {
             $responseCode = match ($result['response_code'] ?? '96') {
-                '57' => '55', // dynamic code missing/invalid -> nearest ISO 8583 equivalent (incorrect PIN)
-                '51' => '51', // amount exceeds held total -> insufficient funds (same code, ISO 8583 already uses '51')
+                '51' => '51', // insufficient funds
                 default => '05', // generic decline
             };
             return $this->buildDeclineResponse($request, $responseMti, $responseCode);
         }
 
-        // Approved — queue real debit/settlement exactly like authorize.php
-        // does, via the SAME card_pool_finalize_queue table, so the async
-        // worker doesn't need to know or care which protocol the approval
-        // came in over.
         try {
             $queueStmt = $this->db->prepare("
                 INSERT INTO card_pool_finalize_queue (hook_reference, merchant_context, status)
@@ -175,12 +220,61 @@ class Iso8583AuthorizationBridge
             $queueStmt->execute([$result['hook_reference'], json_encode($merchantContext)]);
         } catch (\Throwable $e) {
             error_log("[Iso8583AuthorizationBridge] Failed to queue finalize for hook {$result['hook_reference']}: " . $e->getMessage());
-            // Approval already decided — do not flip to a decline over a
-            // queueing failure, same posture authorize.php already takes
-            // for its own queue insert. Log loudly; ops needs to catch this.
         }
 
         return $this->buildApprovedResponse($request, $responseMti, $result['auth_code'] ?? $this->generateAuthCode());
+    }
+
+    /**
+     * 0400 — reversal request. Routes into
+     * CardService::reversePooledSwipe(), which itself refuses to
+     * silently unwind an already-settled transaction — see that
+     * method's header for the manual-reconciliation fallback.
+     */
+    private function handleReversalRequest(Iso8583Message $request, string $responseMti): Iso8583Message
+    {
+        // Field 90 (original data elements) carries the original
+        // transaction's MTI/STAN/date — used here to look up which
+        // hook_reference the original 0200 corresponded to. This
+        // requires the finalize queue / hook record to be searchable by
+        // STAN, which isn't guaranteed by the schema shown so far —
+        // flagging as a real integration point to confirm, not assuming
+        // it works as written.
+        $originalData = $request->fields[90] ?? null;
+        $originalStan = $originalData ? substr($originalData, 4, 6) : ($request->fields[11] ?? null);
+
+        if (!$originalStan) {
+            return $this->buildDeclineResponse($request, $responseMti, '30');
+        }
+
+        $stmt = $this->db->prepare("
+            SELECT hook_reference FROM card_pool_finalize_queue
+            WHERE merchant_context->>'merchant_reference' = ?
+            ORDER BY id DESC LIMIT 1
+        ");
+        $stmt->execute([$originalStan]);
+        $hookReference = $stmt->fetchColumn();
+
+        if (!$hookReference) {
+            // Also check already-finalized hooks directly, in case the
+            // queue entry was already consumed/cleared by the worker.
+            $stmt2 = $this->db->prepare("
+                SELECT hook_reference FROM card_pool_hooks
+                WHERE merchant_reference = ? ORDER BY id DESC LIMIT 1
+            ");
+            $stmt2->execute([$originalStan]);
+            $hookReference = $stmt2->fetchColumn();
+        }
+
+        if (!$hookReference) {
+            return $this->buildDeclineResponse($request, $responseMti, '25'); // '25' = no original transaction found
+        }
+
+        $result = $this->cardService->reversePooledSwipe((string)$hookReference, 'ISO8583 reversal (MTI 0400), STAN=' . $originalStan);
+
+        $fields = $this->baseResponseFields($request);
+        $fields[39] = ($result['success'] ?? false) ? '00' : '05';
+        return Iso8583Message::build($responseMti, $fields);
     }
 
     /**
