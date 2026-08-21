@@ -213,6 +213,55 @@ class CardService
         
         return $plaintext;
     }
+
+/**
+ * Rotates a card's TOTP secret. The card owner must re-set-up their
+ * authenticator app after this runs — the old secret stops working
+ * immediately. Requires the caller to own the card (enforced by
+ * matching card_suffix + user_id, never trusting a bare card_suffix
+ * from the request alone).
+ */
+public function regenerateTotpSecret(string $cardSuffix, int $userId): array
+{
+    $stmt = $this->db->prepare("
+        SELECT card_id FROM message_cards
+        WHERE card_suffix = :suffix AND user_id = :uid
+    ");
+    $stmt->execute([':suffix' => $cardSuffix, ':uid' => $userId]);
+    $card = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$card) {
+        return ['success' => false, 'error' => 'Card not found or does not belong to you.'];
+    }
+
+    $google2fa = new Google2FA();
+    $newSecret = $google2fa->generateSecretKey();
+    $encrypted = $this->encryptTotpSecret($newSecret);
+
+    $stmt = $this->db->prepare("
+        UPDATE message_cards
+        SET totp_secret_encrypted = ?, totp_secret_iv = ?, totp_secret_tag = ?
+        WHERE card_id = ?
+    ");
+    $stmt->execute([
+        $encrypted['ciphertext'], $encrypted['iv'], $encrypted['tag'], $card['card_id'],
+    ]);
+
+    error_log("[CardService] TOTP secret regenerated for card_suffix={$cardSuffix}, user_id={$userId}");
+
+    $otpauthUri = sprintf(
+        'otpauth://totp/%s:%s?secret=%s&issuer=%s&algorithm=SHA1&digits=6&period=30',
+        rawurlencode('VouchMorph'), rawurlencode($cardSuffix), $newSecret, rawurlencode('VouchMorph')
+    );
+
+    return [
+        'success' => true,
+        'card_suffix' => $cardSuffix,
+        'secret' => $newSecret, // SHOWN ONCE — same rule as provisionUserCard()/issueCard()
+        'otpauth_uri' => $otpauthUri,
+        'warning' => 'Your old swipe code no longer works. Set up this new one in your authenticator app now — it will not be shown again.',
+    ];
+}
     
     /**
      * Verify a dynamic code the app displayed against the card's stored secret.
