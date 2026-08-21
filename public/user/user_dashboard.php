@@ -211,19 +211,17 @@ foreach ($assets as $assetKey => $assetConfig) {
     --header-h: 68px;
     --max-w: 1040px;
 }
-
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html { scroll-behavior: smooth; }
 body { background: var(--bg); color: var(--text); font-family: var(--font); min-height: 100vh; line-height: 1.5; -webkit-font-smoothing: antialiased; }
-
 input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 input[type=number] { -moz-appearance: textfield; }
-
 .fade-in-up { animation: fadeInUp 0.4s ease forwards; }
 @keyframes fadeInUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes popIn { 0% { transform: scale(0.85); opacity: 0; } 60% { transform: scale(1.04); opacity: 1; } 100% { transform: scale(1); } }
 @keyframes ringDraw { from { stroke-dashoffset: var(--ring-from); } to { stroke-dashoffset: var(--ring-to); } }
 @keyframes confettiFall { 0% { transform: translateY(-10px) rotate(0deg); opacity: 1; } 100% { transform: translateY(140px) rotate(280deg); opacity: 0; } }
+@keyframes softPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
 
 .role-badge { font-size: 9px; color: var(--primary); border: 1px solid var(--border-strong); padding: 3px 8px; text-transform: uppercase; font-weight: 700; letter-spacing: 0.04em; }
 .agent-badge { font-size: 9px; color: #fff; background: var(--accent-2); padding: 3px 8px; text-transform: uppercase; font-weight: 700; }
@@ -245,6 +243,7 @@ input[type=number] { -moz-appearance: textfield; }
 .nav-pill, .nav-link { display: inline-flex; align-items: center; gap: 7px; padding: 9px 16px; font-size: 12px; font-weight: 600; font-family: var(--font); border: none; background: transparent; color: var(--text-muted); cursor: pointer; text-decoration: none; transition: var(--transition); white-space: nowrap; text-transform: uppercase; letter-spacing: 0.04em; }
 .nav-pill.active, .nav-pill:hover { background: var(--primary); color: #fff; }
 .nav-link:hover { color: var(--text); background: var(--surface-muted); }
+.nav-icon { font-size: 13px; opacity: 0.85; }
 
 .header-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
 .header-meta { display: none; align-items: center; gap: 10px; }
@@ -258,12 +257,11 @@ input[type=number] { -moz-appearance: textfield; }
 @media (min-width: 640px) { .user-chip-text { display: flex; } }
 .user-chip-name { font-size: 13px; font-weight: 600; color: var(--text); }
 .user-chip-role { font-size: 11px; color: var(--text-dim); }
-.user-avatar { width: 32px; height: 32px; background: var(--primary); color: #fff; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.user-avatar { width: 32px; height: 32px; background: var(--primary); color: #fff; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; position: relative; }
 .logout-btn { font-size: 12px; font-weight: 600; color: var(--text-dim); text-decoration: none; padding: 8px 6px; }
 .logout-btn:hover { color: var(--danger); }
 
 .container { width: 100%; max-width: 460px; margin: 0 auto; padding: 40px 24px 48px; position: relative; z-index: 1; }
-
 .message { padding: 12px 16px; margin: 0 0 20px; font-size: 13px; display: none; font-weight: 500; }
 .message.show { display: block; }
 .message.info { background: var(--accent-soft); border-left: 3px solid var(--accent); color: var(--primary); }
@@ -318,6 +316,7 @@ input[type=number] { -moz-appearance: textfield; }
 .btn-secondary:hover { background: var(--surface-muted); }
 .btn-danger-outline { background: transparent; color: var(--danger); border: 1px solid rgba(198,40,40,0.4); padding: 6px 14px; font-size: 11px; cursor: pointer; font-weight: 600; }
 .btn-sm { padding: 10px 16px !important; font-size: 11px; text-transform: none; letter-spacing: 0; }
+.btn-link { background: none; border: none; padding: 0; cursor: pointer; color: var(--accent); font-size: 12px; font-weight: 600; }
 
 .quick-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
 .quick-link { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; color: var(--text-muted); background: transparent; border: 1px solid var(--border-strong); padding: 8px 12px; cursor: pointer; transition: var(--transition); text-transform: uppercase; letter-spacing: 0.03em; }
@@ -338,6 +337,7 @@ input[type=number] { -moz-appearance: textfield; }
 .modal-header h2 { font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text); font-family: var(--font-mono); }
 .modal-close { background: none; border: none; color: var(--text-muted); font-size: 20px; cursor: pointer; line-height: 1; padding: 4px; }
 #modalBody { padding: 22px; }
+.modal.wide { max-width: 760px; }
 
 .confirm-overlay { display: none; position: fixed; inset: 0; background: rgba(4,18,14,0.55); z-index: 1100; align-items: center; justify-content: center; padding: 20px; }
 .confirm-overlay.active { display: flex; }
@@ -467,16 +467,56 @@ input[type=number] { -moz-appearance: textfield; }
 .page-footer .footer-links span { color: var(--text-muted); font-weight: 600; cursor: pointer; }
 .page-footer .footer-links span:hover { color: var(--accent); text-decoration: underline; }
 
-@media (max-width: 768px) {
-    .header-inner { padding: 0 16px; height: auto; min-height: var(--header-h); flex-wrap: wrap; padding-top: 12px; padding-bottom: 12px; }
-    .container { padding: 28px 16px 40px; }
-    .ledger-sentence { font-size: 20px; }
-    .cta-row { flex-direction: column; align-items: stretch; }
-    .cta-row .btn, .cta-row .btn-secondary { max-width: none; }
-    .modal-actions { flex-direction: column-reverse; }
-    .modal-actions .btn-primary { width: 100%; }
+.myc-layout { display: grid; grid-template-columns: 320px 1fr; gap: 18px; align-items: start; }
+@media (max-width: 860px) { .myc-layout { grid-template-columns: 1fr; } }
+
+.myc-qr-panel { background: var(--surface); border: 1px solid var(--border); padding: 28px 22px; display: flex; flex-direction: column; align-items: center; text-align: center; }
+
+.myc-card-visual { width: 100%; aspect-ratio: 1.586 / 1; background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%); position: relative; overflow: hidden; margin-bottom: 22px; }
+.myc-card-visual::before { content: ""; position: absolute; top: -40%; right: -20%; width: 70%; height: 180%; background: rgba(0,168,120,0.14); transform: rotate(18deg); }
+.myc-card-top { position: absolute; top: 16px; left: 18px; right: 18px; display: flex; justify-content: space-between; align-items: flex-start; }
+.myc-card-mark { font-size: 11px; font-weight: 800; color: rgba(255,255,255,0.92); letter-spacing: 0.02em; }
+.myc-card-mark sup { color: var(--accent); font-size: 8px; }
+.myc-card-status { font-size: 8px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: rgba(255,255,255,0.55); border: 1px solid rgba(255,255,255,0.25); padding: 3px 7px; }
+.myc-card-status.active { color: var(--accent); border-color: rgba(0,168,120,0.5); }
+.myc-card-bottom { position: absolute; bottom: 16px; left: 18px; right: 18px; }
+.myc-card-number { font-family: var(--font-mono); font-size: 14px; letter-spacing: 0.1em; color: rgba(255,255,255,0.9); font-weight: 600; }
+.myc-card-name { font-size: 10px; color: rgba(255,255,255,0.5); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.05em; }
+
+.myc-qr-frame { background: #fff; padding: 14px; border: 1px solid var(--border-strong); display: inline-flex; align-items: center; justify-content: center; }
+.myc-qr-caption { font-size: 11px; color: var(--text-dim); margin-top: 12px; }
+.myc-qr-suffix-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 8px 14px; background: var(--surface-muted); border: 1px solid var(--border); }
+.myc-qr-suffix { font-family: var(--font-mono); font-size: 13px; font-weight: 700; letter-spacing: 0.04em; }
+
+.myc-panel { background: var(--surface); border: 1px solid var(--border); padding: 18px 20px; margin-bottom: 14px; }
+.myc-panel-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.myc-panel-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); font-family: var(--font-mono); }
+.myc-panel-total { font-size: 13px; font-weight: 700; font-family: var(--font-mono); }
+
+.myc-source-row { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--border); }
+.myc-source-row:last-child { border-bottom: none; }
+.myc-source-tile { width: 32px; height: 32px; background: var(--surface-muted); border: 1px solid var(--border-strong); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 800; font-family: var(--font-mono); flex-shrink: 0; }
+.myc-source-info { flex: 1; min-width: 0; }
+.myc-source-inst { font-size: 13px; font-weight: 700; }
+.myc-source-ident { font-size: 11px; color: var(--text-dim); }
+.myc-source-amt { font-size: 13px; font-weight: 700; font-family: var(--font-mono); color: var(--accent); }
+
+.myc-swap-strip { display: flex; align-items: center; margin-bottom: 14px; flex-wrap: wrap; row-gap: 8px; }
+.myc-avatar-tile { width: 34px; height: 34px; background: var(--primary); color: #fff; font-size: 11px; font-weight: 800; font-family: var(--font-mono); display: flex; align-items: center; justify-content: center; border: 2px solid var(--surface); margin-left: -9px; }
+.myc-avatar-tile:first-child { margin-left: 0; }
+.myc-avatar-tile.you { background: var(--accent); }
+.myc-avatar-tile.pending { background: var(--surface-muted); color: var(--text-dim); border-style: dashed; border-color: var(--border-strong); }
+.myc-swap-strip-label { margin-left: 12px; font-size: 12px; color: var(--text-muted); }
+
+.myc-contributor-row { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+.myc-contributor-row:last-child { border-bottom: none; }
+.myc-contributor-tile { width: 22px; height: 22px; background: var(--surface-muted); border: 1px solid var(--border-strong); font-size: 9px; font-weight: 800; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.myc-contributor-name { flex: 1; color: var(--text); font-weight: 600; }
+.myc-contributor-amt { font-family: var(--font-mono); font-weight: 700; }
+
+@media (max-width: 480px) {
+    .myc-qr-panel { padding: 22px 16px; }
 }
-@media (max-width: 480px) { .btn, .btn-secondary { width: 100%; } }
 </style>
 </head>
 <body>
@@ -2118,9 +2158,11 @@ function renderTabSourceCard(src, idx) {
         .map(f => `<div class="field-group" style="margin-top:8px;"><label>${f.label}</label><input value="${src.fields[f.name] || ''}" placeholder="${f.placeholder || ''}" oninput="setMultiSourceField(${src.id}, '${f.name}', this.value)"></div>`)
         .join('');
 
+    const srcCurrency = PARTICIPANTS[src.institution]?.limits?.currency || '';
+
     let amountHtml;
     if (isFixed) {
-        amountHtml = `<div class="tab-fixed-note">Uses full voucher balance — not split (${formatMoney(src.amount || 0, '')})</div>`;
+        amountHtml = `<div class="tab-fixed-note">Uses full voucher balance — not split (${formatMoney(src.amount || 0, srcCurrency)})</div>`;
     } else if (state.contributionStrategy === 'RATIO') {
         amountHtml = `<div class="field-group" style="margin-top:8px;"><label>Estimated amount</label><input type="number" value="${src.amount || ''}" disabled style="background:var(--surface);color:var(--text-dim);"></div><div class="tab-estimated-note">Estimated from live balance — recalculated at execution time</div>`;
     } else if (state.contributionStrategy === 'SMART') {
@@ -3815,7 +3857,7 @@ function openHelpModal() {
                 <li>Open Toolbox &rarr; My VouchMorph Card. Every account gets one automatically.</li>
                 <li>It starts inactive — activate it once with a small one-time fee from any linked source.</li>
                 <li>Once active, other VouchMorph users can hook their own sources to your card by scanning its QR code, and you can hook your sources to theirs the same way. Hooking places a 24-hour hold that releases automatically once spent or once the 24 hours pass — there's no way to release it early, so only hook what you're comfortable tying up.</li>
-                <li>When multiple people are hooked, the card owner starts a payment, picks how contributions should split (Smart is the easy default), and everyone watches the live progress until it's fully covered — then the owner executes it.</li>
+                <li>When multiple people are hooked, the card owner starts a swap, picks how contributions should split (Smart is the easy default), and everyone watches the live progress until it's fully covered — then the owner executes it.</li>
             </ol>
             <p style="font-weight:700;margin-bottom:6px;">Claiming money sent to you</p>
             <ol style="padding-left:18px;margin-bottom:16px;">
@@ -3873,6 +3915,7 @@ function openModal(title, bodyHtml) {
 
 function closeModal() {
     document.getElementById('modal').classList.remove('active');
+    document.getElementById('modalContent').classList.remove('wide');
     stopSessionPolling();
     returnAllMovableNodesHome();
     updateSelectionChips();
@@ -3887,10 +3930,6 @@ function showMessage(text, type = 'info') {
 }
 
 function escapeHtml(str) { const div = document.createElement('div'); div.textContent = str == null ? '' : String(str); return div.innerHTML; }
-
-// ============================================================
-// VOUCHMORPH CARD — hooking, QR, activation, contribution sessions
-// ============================================================
 
 let myCard = null;
 let activeSessionPollTimer = null;
@@ -3913,6 +3952,7 @@ async function callApiGet(endpoint) {
 }
 
 async function openMyCardModal() {
+    document.getElementById('modalContent').classList.add('wide');
     openModal('My VouchMorph Card', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading...</div>');
     try {
         const result = await callApiGet(CONFIG.API_BASE + '/api/v1/cards/My.php');
@@ -3963,37 +4003,59 @@ function renderMyCardModal() {
     const hook = myCard.hook;
     const contributorsHtml = hook && hook.contributors.length
         ? hook.contributors.map(c => `
-            <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:12px;">
-                <span>${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)} · ${escapeHtml(c.source_identifier)} ${c.is_me ? '<strong>(you)</strong>' : ''}</span>
-                <span style="font-family:var(--font-mono);font-weight:600;">${formatMoney(c.held_amount, hook.currency)}</span>
+            <div class="myc-source-row">
+                <div class="myc-source-tile">${escapeHtml(institutionInitials(c.institution))}</div>
+                <div class="myc-source-info">
+                    <div class="myc-source-inst">${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)}${c.is_me ? ' <span style="color:var(--accent);font-weight:700;">(you)</span>' : ''}</div>
+                    <div class="myc-source-ident">${escapeHtml(c.source_identifier)}</div>
+                </div>
+                <div class="myc-source-amt">${formatMoney(c.held_amount, hook.currency)}</div>
             </div>`).join('')
-        : `<div style="font-size:12px;color:var(--text-dim);">No sources hooked yet.</div>`;
+        : `<div style="font-size:12px;color:var(--text-dim);padding:8px 0;">No sources hooked yet.</div>`;
 
     const cardName = myCard.display_name || (Journey.read().cardNamed ? Journey.read().cardNamed : null);
 
     return `
-        <div style="text-align:center;margin-bottom:16px;">
-            <div id="cardQrContainer" style="display:inline-block;padding:12px;background:#fff;border:1px solid var(--border-strong);"></div>
-            <div style="font-size:11px;color:var(--text-dim);margin-top:8px;">Scan to hook a source to this card</div>
-            <div style="font-family:var(--font-mono);font-size:13px;font-weight:700;margin-top:4px;">•••• ${escapeHtml(myCard.card_suffix)}</div>
-            ${cardName ? `<div style="font-size:13px;font-weight:700;color:var(--accent);margin-top:4px;">"${escapeHtml(cardName)}"</div>` : `<div style="margin-top:6px;"><span class="quick-link muted" onclick="openNameCardModal()">Give your card a name →</span></div>`}
-        </div>
+        <div class="myc-layout">
+            <div class="myc-qr-panel">
+                <div class="myc-card-visual">
+                    <div class="myc-card-top">
+                        <div class="myc-card-mark">VouchMorph<sup>TM</sup></div>
+                        <div class="myc-card-status active">Active</div>
+                    </div>
+                    <div class="myc-card-bottom">
+                        <div class="myc-card-number">•••• •••• •••• ${escapeHtml(myCard.card_suffix)}</div>
+                        <div class="myc-card-name">${cardName ? escapeHtml(cardName) : 'VouchMorph Card'}</div>
+                    </div>
+                </div>
 
-        <div style="border-top:1px solid var(--border);padding-top:14px;margin-top:14px;">
-            <div class="field-label" style="margin-bottom:8px;">Hooked sources ${hook ? `— ${formatMoney(hook.total_held, hook.currency)} total` : ''}</div>
-            ${hook ? `<div class="help" style="margin-bottom:10px;">Held until ${new Date(hook.expires_at).toLocaleString()} — releases automatically after 24 hours if it isn't spent first. There's no way to release it early once hooked.</div>` : ''}
-            ${contributorsHtml}
-        </div>
+                <div class="myc-qr-frame" id="cardQrContainer"></div>
+                <div class="myc-qr-caption">Scan to hook a source to this card</div>
+                <div class="myc-qr-suffix-row">
+                    <span class="myc-qr-suffix">•••• ${escapeHtml(myCard.card_suffix)}</span>
+                </div>
 
-        <div class="cta-row" style="margin-top:16px;">
-            <button class="btn btn-secondary" onclick="openHookSourceModal(myCard.card_suffix)">Hook a source</button>
-            ${hook && hook.contributors.length ? `<button class="btn btn-primary" onclick="openCreateSessionModal(myCard.card_suffix)">Start a payment</button>` : ''}
-        </div>
+                ${cardName ? '' : `<div style="margin-top:12px;"><span class="quick-link muted" onclick="openNameCardModal()">Give your card a name →</span></div>`}
 
-        <div id="sessionStatusArea" style="margin-top:16px;">${myCard.active_session ? renderSessionStatus(myCard.active_session) : ''}</div>
+                <div class="cta-row" style="margin-top:20px;width:100%;">
+                    <button class="btn btn-secondary" onclick="openHookSourceModal(myCard.card_suffix)">Hook a source</button>
+                    ${hook && hook.contributors.length ? `<button class="btn btn-primary" onclick="openCreateSessionModal(myCard.card_suffix)">Start a swap</button>` : ''}
+                </div>
+                <div style="margin-top:14px;"><span class="quick-link muted" onclick="openScanToHookModal()">Hook to someone else's card (scan their QR)</span></div>
+            </div>
 
-        <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px;">
-            <span class="quick-link" onclick="openScanToHookModal()">Hook to someone else's card (scan their QR)</span>
+            <div>
+                <div class="myc-panel">
+                    <div class="myc-panel-head">
+                        <span class="myc-panel-title">Hooked sources</span>
+                        ${hook ? `<span class="myc-panel-total">${formatMoney(hook.total_held, hook.currency)}</span>` : ''}
+                    </div>
+                    ${hook ? `<div class="help" style="margin-bottom:6px;">Held until ${new Date(hook.expires_at).toLocaleString()} — releases automatically after 24 hours if it isn't spent first. There's no way to release it early once hooked.</div>` : ''}
+                    ${contributorsHtml}
+                </div>
+
+                <div id="sessionStatusArea">${myCard.active_session ? renderSessionStatus(myCard.active_session) : ''}</div>
+            </div>
         </div>`;
 }
 
@@ -4017,7 +4079,7 @@ function renderCardQr(payloadText) {
     const el = document.getElementById('cardQrContainer');
     if (!el || typeof QRCode === 'undefined') return;
     el.innerHTML = '';
-    new QRCode(el, { text: payloadText, width: 180, height: 180 });
+    new QRCode(el, { text: payloadText, width: 176, height: 176 });
 }
 
 function openActivateCardModal() {
@@ -4251,7 +4313,7 @@ async function submitManualCardNumber() {
 
 function openCreateSessionModal(cardSuffix) {
     const instOptions = Object.keys(PARTICIPANTS).map(c => `<option value="${c}">${PARTICIPANTS[c]?.name || c}</option>`).join('');
-    openModal('Start a payment', `
+    openModal('Start a swap', `
         <div class="field-group"><label>Amount needed at destination</label><input type="number" id="sessTarget" min="0.01" step="0.01" placeholder="0.00"></div>
         <div class="field-group"><label>Currency</label><select id="sessCurrency">${[...new Set(Object.values(PARTICIPANTS).map(p => p?.limits?.currency).filter(Boolean))].map(c => `<option value="${c}" ${c === (myCard.hook?.currency || myCard.currency) ? 'selected' : ''}>${c}</option>`).join('') || `<option value="${myCard.hook?.currency || myCard.currency || 'BWP'}">${myCard.hook?.currency || myCard.currency || 'BWP'}</option>`}</select></div>
         <div class="field-group"><label>Destination institution</label><select id="sessToInst"><option value="">Select</option>${instOptions}</select></div>
@@ -4265,7 +4327,7 @@ function openCreateSessionModal(cardSuffix) {
             </select>
         </div>
         <div style="font-size:11px;color:var(--text-dim);margin-bottom:12px;">Everyone currently hooked will see this in real time. You decide the strategy; they follow it — under Manual, each person enters their own share.</div>
-        <div class="cta-row"><button class="btn btn-primary" onclick="submitCreateSession('${cardSuffix}')">Start session</button></div>`);
+        <div class="cta-row"><button class="btn btn-primary" onclick="submitCreateSession('${cardSuffix}')">Start swap</button></div>`);
 }
     
 async function submitCreateSession(cardSuffix) {
@@ -4287,19 +4349,28 @@ async function submitCreateSession(cardSuffix) {
         destination_identifier: toIdentifier,
     });
 
-    if (!result.ok) { showMessage('Couldn\'t start that session: ' + friendlyApiError(result.error), 'error'); return; }
-    showMessage('Session started.', 'success');
+    if (!result.ok) { showMessage('Couldn\'t start that swap: ' + friendlyApiError(result.error), 'error'); return; }
+    showMessage('Swap started.', 'success');
     openMyCardModal();
 }
 
 function renderSessionStatus(session) {
     const preview = session.preview || { total_target: session.target_amount, total_covered: 0, remaining: session.target_amount, contributors: [] };
     const pct = preview.total_target > 0 ? Math.min(100, (preview.total_covered / preview.total_target) * 100) : 0;
+    const contributors = preview.contributors || [];
 
-    const rowsHtml = (preview.contributors || []).map(c => `
-        <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:12px;border-bottom:1px solid var(--border);">
-            <span>${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)} · ${escapeHtml(c.source_identifier)}${c.below_minimum ? ' <span style="color:var(--warning);" title="This source\'s share is below the institution\'s minimum swap amount">(below minimum — won\'t be included)</span>' : ''}</span>
-            <span style="font-family:var(--font-mono);font-weight:600;">${formatMoney(c.amount, session.currency)}</span>
+    const avatarsHtml = contributors.map(c => {
+        const hasContributed = (c.amount || 0) > 0;
+        const initials = escapeHtml(institutionInitials(c.institution));
+        return `<div class="myc-avatar-tile ${c.is_me ? 'you' : ''} ${hasContributed ? '' : 'pending'}" title="${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)}">${initials}</div>`;
+    }).join('');
+    const contributedCount = contributors.filter(c => (c.amount || 0) > 0).length;
+
+    const rowsHtml = contributors.map(c => `
+        <div class="myc-contributor-row">
+            <div class="myc-contributor-tile">${escapeHtml(institutionInitials(c.institution))}</div>
+            <span class="myc-contributor-name">${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)} · ${escapeHtml(c.source_identifier)}${c.below_minimum ? ' <span style="color:var(--warning);" title="This source\'s share is below the institution\'s minimum swap amount">(below minimum — won\'t be included)</span>' : ''}</span>
+            <span class="myc-contributor-amt">${formatMoney(c.amount, session.currency)}</span>
         </div>`).join('');
 
     const manualInput = session.strategy === 'MANUAL' ? `
@@ -4312,19 +4383,29 @@ function renderSessionStatus(session) {
         </div>` : '';
 
     return `
-        <div style="border-top:1px solid var(--border);padding-top:14px;">
-            <div class="field-label" style="margin-bottom:6px;">Payment in progress — ${escapeHtml(session.strategy)}</div>
+        <div class="myc-panel">
+            <div class="myc-panel-head">
+                <span class="myc-panel-title">Swap in progress — ${escapeHtml(session.strategy)}</span>
+            </div>
+
+            <div class="myc-swap-strip">
+                ${avatarsHtml}
+                <span class="myc-swap-strip-label">${contributors.length} hooked, ${contributedCount} have contributed</span>
+            </div>
+
             <div class="comp-bar-track"><div class="comp-bar-seg" style="width:${pct}%;background:var(--accent);"></div></div>
-            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:10px;">
-                <span>${formatMoney(preview.total_covered, session.currency)} of ${formatMoney(preview.total_target, session.currency)}</span>
+            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:14px;">
+                <span style="font-weight:700;font-family:var(--font-mono);">${formatMoney(preview.total_covered, session.currency)} of ${formatMoney(preview.total_target, session.currency)}</span>
                 <span style="color:var(--text-dim);">${preview.remaining > 0 ? formatMoney(preview.remaining, session.currency) + ' remaining' : 'Fully covered — ready to go! 🎉'}</span>
             </div>
+
             ${rowsHtml}
             ${manualInput}
+
             <div class="cta-row" style="margin-top:14px;">
                 <button class="btn btn-secondary" onclick="cancelSession(${session.session_id})">Cancel</button>
                 <button class="btn btn-primary" ${session.can_execute ? '' : 'disabled'} onclick="executeSession(${session.session_id})">
-                    ${session.can_execute ? 'Execute payment' : 'Waiting for full coverage…'}
+                    ${session.can_execute ? 'Execute swap' : 'Waiting for full coverage…'}
                 </button>
             </div>
         </div>`;
@@ -4358,21 +4439,21 @@ async function submitMyManualAmount(sessionId) {
 }
 
 async function executeSession(sessionId) {
-    showConfirm('Execute this payment now?', async () => {
+    showConfirm('Execute this swap now?', async () => {
         const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/execute.php', { session_id: sessionId });
         if (!result.ok) { showMessage('Execution didn\'t go through: ' + friendlyApiError(result.error), 'error'); return; }
         stopSessionPolling();
-        showMessage('Payment executed successfully. 🎉', 'success');
+        showMessage('Swap executed successfully. 🎉', 'success');
         closeModal();
     });
 }
 
 async function cancelSession(sessionId) {
-    showConfirm('Cancel this payment session? The hooked sources stay held for a new session or the swipe fast-path — this only cancels the payment attempt itself, not the holds.', async () => {
+    showConfirm('Cancel this swap session? The hooked sources stay held for a new swap or the swipe fast-path — this only cancels the swap attempt itself, not the holds.', async () => {
         const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/cancel.php', { session_id: sessionId, reason: 'Cancelled by owner' });
         if (!result.ok) { showMessage('Couldn\'t cancel: ' + friendlyApiError(result.error), 'error'); return; }
         stopSessionPolling();
-        showMessage('Session cancelled — hooked sources are still held for next time.', 'info');
+        showMessage('Swap cancelled — hooked sources are still held for next time.', 'info');
         openMyCardModal();
     });
 }
