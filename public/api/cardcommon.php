@@ -24,6 +24,14 @@ const ABSA_ACCOUNT        = '10000002'; // balance 1,000,000
 const ABSA_ACCOUNT_2      = '10000003'; // balance 500 — distinct account for same-institution-repeat tests
 const ABSA_ACCOUNT_3      = '10000004'; // balance 500
 
+// REAL agent/merchant account for POS settlement testing — confirmed
+// by the person running these tests as an actual ZURUBANK agent/
+// merchant account, not a placeholder. Used to test
+// settleCardSwipeToMerchant() against a genuine destination account
+// rather than the resolveMerchantAccountByMerchantId() placeholder.
+const ZURUBANK_MERCHANT_ACCOUNT = '10000001';
+const ZURUBANK_MERCHANT_ID      = 'ZURUBANK_MERCHANT_10000001'; // synthetic ISO 8583 field-42 value mapping to the above
+
 const CAZACOM_PHONE = '+26770000000';
 const MTN_PHONE_1   = '+26779000000'; // balance 5000
 const MTN_PHONE_2   = '+26779000001'; // balance 5000
@@ -34,6 +42,11 @@ const LOGIN_NATIONAL_ID   = '657613013'; // CONFIRMED NOT FOUND on this deployme
 const LOGIN_PHONE         = '+26770000000'; // CONFIRMED WORKING login identifier
 
 const TEST_CARD_PRIMARY = ['pan' => '4111111111111111', 'cvv' => '123'];
+
+// Test-mode ISO 8583 endpoint (wraps Iso8583AuthorizationBridge for
+// HTTP testing) — not yet confirmed deployed. See test report for
+// status.
+const ISO8583_TEST_ENDPOINT = '/api/v1/cards/iso8583_test.php';
 
 /**
  * Real login, via /user/login.php's SUPER TEST MODE (PIN is not
