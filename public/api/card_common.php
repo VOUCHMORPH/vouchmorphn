@@ -80,6 +80,21 @@ function login(string $identifierType, string $identifier, string $pin = '0000')
     $curlError = curl_error($ch);
     curl_close($ch);
 
+    // FIX: curl_exec() returns false (not a string) on a transport-level
+    // failure — e.g. this container calling its own public HTTPS domain
+    // from inside itself, which can fail on DNS/loopback/TLS grounds even
+    // when the app is otherwise healthy. Guard against that before ever
+    // touching $raw as a string; the previous version crashed with an
+    // uncaught TypeError here under strict_types when $raw was false.
+    if ($raw === false) {
+        return [
+            'ok' => false,
+            'http_code' => $httpCode,
+            'curl_error' => $curlError ?: 'curl_exec() returned false with no curl_error set — likely a self-loopback/DNS/TLS issue calling this host\'s own public domain from inside its own container',
+            'raw_headers' => null,
+        ];
+    }
+
     $redirectedToLoggedIn = ($httpCode >= 300 && $httpCode < 400) && stripos($raw, 'user_dashboard.php') !== false;
 
     return [
