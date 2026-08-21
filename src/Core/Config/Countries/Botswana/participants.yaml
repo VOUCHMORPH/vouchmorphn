@@ -19,7 +19,7 @@ participants:
     status: ACTIVE
     swift_bic: ZURUBWXX
 
-    settlement_webhook_url: "https://zurubank-example.com/api/v1/vouchmorph/settlement-instruction"
+    settlement_webhook_url: "https://zurubank-production.up.railway.app/api/v1/vouchmorph/settlement-instruction"
 
     asset_types:
       - ACCOUNT
@@ -89,7 +89,7 @@ participants:
     swift_bic: ABSABWXX
     technical_host: ZURUBANK
 
-    settlement_webhook_url: "https://absa-example.com/api/v1/vouchmorph/settlement-instruction"
+    settlement_webhook_url: "https://zurubank-production.up.railway.app/api/v1/vouchmorph/settlement-instruction"
 
     asset_types:
       - ACCOUNT
@@ -160,7 +160,7 @@ participants:
     status: ACTIVE
     swift_bic: SACCUBWXX
 
-    settlement_webhook_url: "https://saccussalis-example.com/api/v1/vouchmorph/settlement-instruction"
+    settlement_webhook_url: "https://saccussalis-production.up.railway.app/api/v1/vouchmorph/settlement-instruction"
 
     asset_types:
       - ACCOUNT
@@ -226,7 +226,7 @@ participants:
     country: BW
     status: ACTIVE
 
-    settlement_webhook_url: "https://cazacom-example.com/api/v1/vouchmorph/settlement-instruction"
+    settlement_webhook_url: "https://cazacom-production.up.railway.app/api/v1/vouchmorph/settlement-instruction"
 
     asset_types:
       - WALLET
@@ -297,7 +297,7 @@ participants:
     status: ACTIVE
     technical_host: CAZACOM
 
-    settlement_webhook_url: "https://mtn-example.com/api/v1/vouchmorph/settlement-instruction"
+    settlement_webhook_url: "https://cazacom-production.up.railway.app/api/v1/vouchmorph/settlement-instruction"
 
     asset_types:
       - WALLET
