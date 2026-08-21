@@ -10589,7 +10589,49 @@ private function updateHoldExpiry(?int $holdId, string $expiresAt): void
         
         throw new RuntimeException("Participant not found: {$institution}");
     }
+/**
+ * Settles a card-swipe leg to the institution that physically
+ * dispensed cash (ATM) or credited a merchant (POS), sourced from a
+ * specific hooked source institution's settlement account. Reuses the
+ * SAME switch-vs-direct decision logic identity-claim consolidation
+ * already uses — a card swipe settlement and an identity-claim
+ * settlement are the same underlying operation (move money from one
+ * institution's settlement position to another's receiving account),
+ * just triggered by a different event.
+ */
+public function settleCardSwipeToDestination(
+    string $sourceInstitution,
+    string $destinationInstitution,
+    string $currency,
+    float $amount,
+    string $reference
+): float {
+    return $this->settleToDestinationReceiving(
+        $sourceInstitution, $destinationInstitution, $currency, $amount, $reference
+    );
+}
 
+ /**
+ * PLACEHOLDER — see class header note. Assumes field 32 arrives as
+ * the institution's own participants.yaml code directly, which will
+ * NOT be true for any real switch/acquirer traffic. Replace with a
+ * real acquirer-ID → institution-code lookup once that mapping data
+ * exists.
+ */
+public function resolveInstitutionByAcquirerId(string $acquirerId): ?string
+{
+    // Best-effort direct match only.
+    if (isset($this->participants[$acquirerId])) {
+        return $acquirerId;
+    }
+    foreach ($this->participants as $code => $participant) {
+        if (($participant['iso8583_acquirer_id'] ?? null) === $acquirerId) {
+            return $code;
+        }
+    }
+    return null;
+}
+ 
  /**
  * Exposes the already-constructed, already-wired FeeService instance
  * for read-only fee previews by external protocol adapters (Mojaloop
