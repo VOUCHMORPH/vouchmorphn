@@ -38,11 +38,23 @@ class AuditLogger
     {
         try {
             $modelPath = dirname(__DIR__, 2) . '/Domain/Models/AuditLog.php';
-            if (!file_exists($modelPath)) {
-                error_log("[AuditLogger] AuditLog model not found at expected path: {$modelPath} — audit logging disabled for this request.");
-                return;
+
+            // FIX: guard with class_exists() BEFORE require_once, not just
+            // rely on require_once's own path-based dedup. Confirmed live
+            // 21 Aug 2026: "Cannot declare class AuditLog, because the name
+            // is already in use" — something else (most likely a Composer/
+            // PSR-4 autoloader) is also loading this class via a
+            // differently-formed but equivalent path, and require_once
+            // only dedupes by exact resolved path string, not by class
+            // name or realpath. This makes the load idempotent regardless
+            // of how many other places also try to load the same class.
+            if (!class_exists('\Domain\Models\AuditLog')) {
+                if (!file_exists($modelPath)) {
+                    error_log("[AuditLogger] AuditLog model not found at expected path: {$modelPath} — audit logging disabled for this request.");
+                    return;
+                }
+                require_once $modelPath;
             }
-            require_once $modelPath;
 
             if (!class_exists('\Domain\Models\AuditLog')) {
                 error_log("[AuditLogger] AuditLog.php was loaded but \\Domain\\Models\\AuditLog class was not defined afterward — audit logging disabled for this request.");
