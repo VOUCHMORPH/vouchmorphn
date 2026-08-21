@@ -4910,6 +4910,177 @@ private function settleDirect(
     return $amount;
 }
 
+/**
+ * POS counterpart to settleToDestinationReceiving() — credits a named
+ * MERCHANT account at the destination institution, not that
+ * institution's general receiving pool. Same switch-vs-direct
+ * decision, same source-side settlement-account debit; only the
+ * destination credit target differs.
+ */
+private function settlePosToMerchant(
+    string $sourceInstitution,
+    string $destinationInstitution,
+    string $merchantAccountIdentifier,
+    string $merchantAccountIdentifierType,
+    string $currency,
+    float $amount,
+    string $reference
+): float {
+    $switchCode = $this->getCommonSwitch([$sourceInstitution, $destinationInstitution]);
+
+    if ($switchCode !== null) {
+        return $this->settlePosViaSwitch(
+            $switchCode, $sourceInstitution, $destinationInstitution,
+            $merchantAccountIdentifier, $currency, $amount, $reference
+        );
+    }
+
+    return $this->settlePosDirect(
+        $sourceInstitution, $destinationInstitution,
+        $merchantAccountIdentifier, $merchantAccountIdentifierType, $currency, $amount, $reference
+    );
+}
+
+private function settlePosViaSwitch(
+    string $switchCode,
+    string $sourceInstitution,
+    string $destinationInstitution,
+    string $merchantAccountIdentifier,
+    string $currency,
+    float $amount,
+    string $reference
+): float {
+    $sourceSettlement = $this->getSourceSettlementAccount($sourceInstitution, $currency);
+
+    $this->logger->info("Settling POS swipe to merchant via switch", [
+        'switch' => $switchCode, 'source' => $sourceInstitution, 'destination' => $destinationInstitution,
+        'merchant_account' => $merchantAccountIdentifier, 'amount' => $amount, 'reference' => $reference,
+    ]);
+
+    $switchAdapter = $this->adapterFactory->getAdapter($switchCode);
+
+    $originSwitchId = $this->participants[$sourceInstitution]['switch_participant_ids'][$switchCode] ?? null;
+    $destSwitchId = $this->participants[$destinationInstitution]['switch_participant_ids'][$switchCode] ?? null;
+    $vouchmorphSwitchId = $this->participants['VOUCHMORPH']['switch_participant_ids'][$switchCode] ?? null;
+
+    if (!$originSwitchId || !$destSwitchId) {
+        throw new RuntimeException("Switch participant IDs missing for {$sourceInstitution}/{$destinationInstitution} on rail {$switchCode} despite getCommonSwitch() reporting a match.");
+    }
+
+    try {
+        $result = $switchAdapter->submitTransfer([
+            'method' => 'PUSH',
+            'requester_participant_id' => $vouchmorphSwitchId,
+            'origin_participant_id' => $originSwitchId,
+            'destination_participant_id' => $destSwitchId,
+            'origin_account_number' => $sourceSettlement['identifier'],
+            // Directly to the MERCHANT's account, not a receiving pool.
+            'destination_account_number' => $merchantAccountIdentifier,
+            'amount' => $amount,
+            'currency' => $currency,
+            'idempotency_key' => $reference,
+        ]);
+    } catch (\Domain\Services\Routing\Exceptions\SwitchUnavailableException $e) {
+        $this->logger->warning("Switch unavailable for POS merchant settlement, falling back to direct", [
+            'reference' => $reference, 'error' => $e->getMessage(),
+        ]);
+        return $this->settlePosDirect(
+            $sourceInstitution, $destinationInstitution, $merchantAccountIdentifier,
+            'account_number', $currency, $amount, $reference
+        );
+    }
+
+    if (!($result['status'] ?? null)) {
+        throw new RuntimeException("Switch settlement to merchant failed for {$reference}");
+    }
+
+    return $amount;
+}
+
+private function settlePosDirect(
+    string $sourceInstitution,
+    string $destinationInstitution,
+    string $merchantAccountIdentifier,
+    string $merchantAccountIdentifierType,
+    string $currency,
+    float $amount,
+    string $reference
+): float {
+    $sourceSettlement = $this->getSourceSettlementAccount($sourceInstitution, $currency);
+
+    $payload = [
+        'reference' => $reference,
+        'amount' => $amount,
+        'currency' => $currency,
+        // Directly to the MERCHANT's own account — the key difference
+        // from settleDirect()'s institution-pool version.
+        'destination_identifier' => $merchantAccountIdentifier,
+        'destination_identifier_type' => $merchantAccountIdentifierType,
+        'destination_asset_type' => 'ACCOUNT',
+        'to_institution' => $destinationInstitution,
+        'destination_institution' => $destinationInstitution,
+        'from_institution' => $sourceInstitution,
+        'source_institution' => $sourceInstitution,
+        'source_identifier' => $sourceSettlement['identifier'],
+        'source_type' => 'INSTITUTION_SETTLEMENT_ACCOUNT',
+        'action' => 'PROCESS_DEPOSIT_WITH_PROOF',
+        'account_number' => $merchantAccountIdentifier,
+        'destination_account' => $merchantAccountIdentifier,
+    ];
+
+    $adapter = $this->adapterFactory->getAdapter($destinationInstitution);
+    $result = $adapter->credit($payload, [
+        'destination_institution' => $destinationInstitution,
+        'destination_identifier' => $merchantAccountIdentifier,
+        'source_type' => 'INSTITUTION_SETTLEMENT_ACCOUNT',
+    ]);
+
+    if (!($result['credited'] ?? false)) {
+        throw new RuntimeException("Direct settlement to merchant account failed: " . ($result['message'] ?? 'Unknown error'));
+    }
+
+    return $amount;
+}
+
+/**
+ * Public passthrough — see SwapService::settleCardSwipeToDestination()
+ * for the ATM/institution-level counterpart. Use this one for POS;
+ * that one for ATM cash.
+ */
+public function settleCardSwipeToMerchant(
+    string $sourceInstitution,
+    string $destinationInstitution,
+    string $merchantAccountIdentifier,
+    string $merchantAccountIdentifierType,
+    string $currency,
+    float $amount,
+    string $reference
+): float {
+    return $this->settlePosToMerchant(
+        $sourceInstitution, $destinationInstitution,
+        $merchantAccountIdentifier, $merchantAccountIdentifierType,
+        $currency, $amount, $reference
+    );
+}
+
+ /**
+ * PLACEHOLDER — no real merchant-onboarding table exists yet in this
+ * codebase. Assumes the ISO 8583 merchant ID (field 42) IS the real
+ * account identifier directly, which will not be true for real
+ * traffic. Replace once merchant onboarding/KYC data exists.
+ */
+public function resolveMerchantAccountByMerchantId(string $merchantId): ?array
+{
+    // Real implementation needs a merchant_accounts (or similar) table:
+    //   SELECT account_identifier, account_identifier_type
+    //   FROM merchant_accounts WHERE merchant_id = ? AND status = 'active'
+    return [
+        'identifier' => $merchantId, // WRONG for real traffic — placeholder only
+        'identifier_type' => 'account_number',
+    ];
+}
+
+ 
 // ============================================================================
 // STEP A+B TOGETHER, per hold — this is what executeIdentityClaimWithSplit()
 // calls in its consolidation loop.
