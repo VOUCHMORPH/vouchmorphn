@@ -10802,6 +10802,47 @@ public function resolveInstitutionByAcquirerId(string $acquirerId): ?string
     }
     return null;
 }
+
+ /**
+ * Exposes the already-constructed MultiSourceFeeCalculator instance —
+ * same instance calculateFeesWithDetails() and the multi-source
+ * orchestrator already use internally, just never exposed to external
+ * callers like CardService before now.
+ */
+public function getMultiSourceFeeCalculator(): \Domain\Services\MultiSourceFeeCalculator
+{
+    if ($this->multiSourceFeeCalculator === null) {
+        throw new RuntimeException("MultiSourceFeeCalculator is not initialized");
+    }
+    return $this->multiSourceFeeCalculator;
+}
+
+/**
+ * Generic institution-fee invoicing passthrough, for callers (like
+ * CardService) that hold a SwapService instance but not their own
+ * HybridSettlementStrategy. Mirrors invoicePlatformFee()'s existing
+ * shape but targets any institution, not just VOUCHMORPH.
+ */
+public function invoiceInstitutionFee(
+    string $reference,
+    string $institution,
+    string $feeType,
+    float $amount,
+    string $currency
+) {
+    $result = $this->settlement->invoiceFee(
+        $reference,
+        $institution,
+        $this->getParticipantId($institution),
+        $feeType,
+        $amount,
+        $currency
+    );
+    if (!is_array($result)) {
+        return ['success' => true, 'raw_result' => $result];
+    }
+    return $result;
+}
  
  /**
  * Exposes the already-constructed, already-wired FeeService instance
