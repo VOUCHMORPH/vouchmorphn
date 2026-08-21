@@ -32,10 +32,25 @@ use Infrastructure\Email\EmailGatewayClient;
 // ============================================================
 // SUPER TEST MODE: NO PIN REQUIRED
 // ============================================================
-define('ENABLE_OTP', false);           // OTP disabled
-define('TEST_MODE', true);             // No restrictions
-define('SKIP_PIN_VERIFICATION', true); // SKIP PIN verification entirely
-define('ALLOW_EMPTY_PIN', true);       // Allow login with empty PIN
+// ============================================================
+// SECURITY: test-mode PIN bypass is now gated behind APP_ENV.
+// Defaults to PRODUCTION (secure) behavior if APP_ENV is unset —
+// fail-closed, never fail-open. Confirmed live 21 Aug 2026: this was
+// previously hardcoded true with no environment check at all, meaning
+// ANY PIN (or none) authenticated any known identifier, in production.
+// ============================================================
+$appEnv = getenv('APP_ENV') ?: 'production';
+$isTestEnvironment = in_array($appEnv, ['test', 'dev', 'development', 'staging'], true);
+
+define('ENABLE_OTP', !$isTestEnvironment);
+define('TEST_MODE', $isTestEnvironment);
+define('SKIP_PIN_VERIFICATION', $isTestEnvironment);
+define('ALLOW_EMPTY_PIN', $isTestEnvironment);
+
+if ($isTestEnvironment) {
+    error_log("[USER LOGIN] WARNING: running in TEST MODE (APP_ENV={$appEnv}) — PIN verification is bypassed. This must never run with APP_ENV unset or 'production'.");
+}
+
 SessionManager::start();
 if (SessionManager::isLoggedIn()) {
     header('Location: user_dashboard.php');
