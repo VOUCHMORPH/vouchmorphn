@@ -240,7 +240,7 @@ MTN:
 
 # ------------------------------------------------------------
 FNBB_ACQUIRER:
-  base_url: "https://zurubank-production.up.railway.app/Backend/api"
+  base_url: "https://zurubank-production.up.railway.app/Backend"
   # TEMPORARY stand-in — real FNBB block below, commented, ready to
   # restore once sandbox access comes through:
   #
@@ -259,13 +259,15 @@ FNBB_ACQUIRER:
 
   endpoints:
     source:
-      verify_asset: "/Preauth.php"
-      place_hold: "/Authorize.php"
-      debit_funds: "/Capture.php"
-      release_hold: "/Void.php"
+      verify_asset: "/api/Preauth.php"
+      place_hold: "/api/Authorize.php"
+      debit_funds: "/api/Capture.php"
+      release_hold: "/api/Void.php"
       get_balance: "/n-a"
     destination_deposit:
-      process_deposit: "/Cardload.php"
+      process_deposit: "/api/Cardload.php"
+   common:
+      health: "/health.php"
 
   retry_policy:
     max_retries: 3
