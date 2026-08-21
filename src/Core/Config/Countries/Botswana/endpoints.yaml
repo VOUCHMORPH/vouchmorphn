@@ -39,7 +39,7 @@ ZURUBANK:
       reverse: "/api/v1/hold.php"
       status: "/api/v1/status"
       check_settlement: "/api/v1/settlement/check.php"
-      health: "/health"
+      health: "/health.php"
 
   message_profile:
     timestamp_header: "X-Timestamp"
@@ -83,7 +83,7 @@ ABSA:
       transferWithProof: "/absa_participant.php?action=process_deposit"
       status: "/absa_participant.php?action=check_status"
       check_settlement: "/absa_participant.php?action=check_settlement"
-      health: "/health"
+      health: "/health.php"
 
   message_profile:
     timestamp_header: "X-Api-Timestamp"
@@ -129,7 +129,7 @@ SACCUSSALIS:
       reverse: "/api/v1/hold.php"
       status: "/api/v1/status"
       check_settlement: "/api/v1/settlement/check.php"
-      health: "/health"
+      health: "/health.php"
 
   callbacks:
     settlement_confirmed: "https://vouchmorphn-production.up.railway.app/api/v1/callbacks/settlement_confirmed.php"
