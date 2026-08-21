@@ -53,7 +53,7 @@ ZURUBANK:
 
 # ------------------------------------------------------------
 ABSA:
-  base_url: "https://zurubank-production.up.railway.app/Backend/api"
+  base_url: "https://zurubank-production.up.railway.app/Backend"
   timeout_ms: 5000
   sandbox_mode: true
   adapter_class: "GenericFinancialInstitutionAdapter"
@@ -65,24 +65,24 @@ ABSA:
 
   endpoints:
     source:
-      verify_asset: "/absa_participant.php?action=verify_asset"
-      place_hold: "/absa_participant.php?action=place_hold"
-      debit_funds: "/absa_participant.php?action=debit_funds"
-      release_hold: "/absa_participant.php?action=release_hold"
-      get_balance: "/absa_participant.php?action=account_balance"
+      verify_asset: "/api/absa_participant.php?action=verify_asset"
+      place_hold: "/api/absa_participant.php?action=place_hold"
+      debit_funds: "/api/absa_participant.php?action=debit_funds"
+      release_hold: "/api/absa_participant.php?action=release_hold"
+      get_balance: "/api/absa_participant.php?action=account_balance"
     destination_cashout:
-      generate_token: "/absa_participant.php?action=generate_token"
-      verify_token: "/absa_participant.php?action=verify_token"
-      confirm_cashout: "/absa_participant.php?action=confirm_cashout"
+      generate_token: "/api/absa_participant.php?action=generate_token"
+      verify_token: "/api/absa_participant.php?action=verify_token"
+      confirm_cashout: "/api/absa_participant.php?action=confirm_cashout"
     destination_deposit:
-      process_deposit: "/absa_participant.php?action=process_deposit"
-      verify_account: "/absa_participant.php?action=verify_account"
+      process_deposit: "/api/absa_participant.php?action=process_deposit"
+      verify_account: "/api/absa_participant.php?action=verify_account"
     internal:
-      sweep: "/absa_participant.php?action=internal_sweep"
+      sweep: "/api/absa_participant.php?action=internal_sweep"
     common:
-      transferWithProof: "/absa_participant.php?action=process_deposit"
-      status: "/absa_participant.php?action=check_status"
-      check_settlement: "/absa_participant.php?action=check_settlement"
+      transferWithProof: "/api/absa_participant.php?action=process_deposit"
+      status: "/api/absa_participant.php?action=check_status"
+      check_settlement: "/api/absa_participant.php?action=check_settlement"
       health: "/health.php"
 
   message_profile:
