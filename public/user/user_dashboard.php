@@ -343,6 +343,12 @@ input[type=number] { -moz-appearance: textfield; }
 .swap-destination-section.ready .swap-destination-heading { color: var(--accent); }
 .swap-dest-types { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 
+/* Phones: source then destination, stacked. Laptops/desktops: side by
+   side, so the wide viewport is actually used instead of leaving a
+   480px phone-shaped column stranded in the middle of the screen. */
+.swap-layout { display: block; }
+.swap-col-source, .swap-col-dest { width: 100%; }
+
 .cta-row { display: flex; justify-content: center; margin-top: 10px; gap: 10px; }
 .cta-row .btn, .cta-row .btn-secondary { flex: 1 1 0; max-width: 360px; }
 .btn { padding: 17px 26px; border: none; font-size: 13px; font-weight: 700; font-family: var(--font); cursor: pointer; letter-spacing: 0.06em; text-transform: uppercase; transition: var(--transition); width: 100%; background: var(--primary); color: #fff; }
@@ -611,7 +617,7 @@ input[type=number] { -moz-appearance: textfield; }
 .hook-mode-row button { flex: 1; padding: 11px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; background: transparent; border: none; color: var(--text-muted); cursor: pointer; border-right: 1px solid var(--border-strong); font-family: var(--font); }
 .hook-mode-row button:last-child { border-right: none; }
 .hook-mode-row button.active { background: var(--primary); color: #fff; }
-.source-type-picker { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
+.source-type-picker { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 14px; }
 .source-type-opt { border: 1px solid var(--border-strong); padding: 14px 12px; text-align: center; cursor: pointer; font-size: 12px; font-weight: 700; }
 .source-type-opt:hover { background: var(--surface-muted); }
 .source-type-opt.active { background: var(--primary); color: #fff; }
@@ -640,6 +646,27 @@ input[type=number] { -moz-appearance: textfield; }
     .myc-qr-panel { padding: 22px 16px; }
     .shell-header-inner { padding: 0 16px; }
     .product-view-inner { padding: 32px 16px 48px; }
+}
+
+/* ============================================================
+   WIDE SCREENS — laptops and desktops. Everything above this is
+   phone-first by design (tall, single narrow column), which is
+   correct for a phone but leaves a stranded 480px-wide strip in
+   the middle of a 1440px monitor. From here up, layouts widen and,
+   where it genuinely helps (Swap, the Card), split into columns
+   instead of just centering a taller version of the phone layout.
+   ============================================================ */
+@media (min-width: 900px) {
+    .product-view-inner { max-width: 640px; }
+    .product-view-inner.wide { max-width: 960px; }
+
+    .swap-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; align-items: start; }
+    /* A vertical divider between the two halves makes the "source,
+       then destination" relationship readable even though they now
+       sit side by side instead of one after another. */
+    .swap-col-source { border-right: 1px solid var(--border); padding-right: 28px; }
+
+    .myc-qr-panel { position: sticky; top: 88px; }
 }
 </style>
 </head>
@@ -723,40 +750,51 @@ input[type=number] { -moz-appearance: textfield; }
             </div>
             <div style="text-align:center;font-size:12px;color:var(--text-muted);margin-top:8px;">You'll swap <strong id="amountPreview" style="font-family:var(--font-mono);color:var(--text);">0.00</strong></div>
 
-            <div class="swap-source-types">
-                <div class="swap-source-type-opt active" id="swapSrcWallet" onclick="setSwapSourceMode('WALLET')"><span class="icon">💳</span>Wallet</div>
-                <div class="swap-source-type-opt" id="swapSrcCard" onclick="setSwapSourceMode('CARD')"><span class="icon">🪪</span>Card</div>
-                <div class="swap-source-type-opt" id="swapSrcVoucher" onclick="setSwapSourceMode('VOUCHER')"><span class="icon">🎟️</span>Voucher</div>
-                <div class="swap-source-type-opt" id="swapSrcVmcard" onclick="setSwapSourceMode('VMCARD')"><span class="icon">🧩</span>My Card</div>
-                <div class="swap-source-type-opt" id="swapSrcCombine" onclick="quickSetSwapType('MULTI_SOURCE')"><span class="icon">➕</span>Combine</div>
-            </div>
-
-            <div id="swapSingleSourceHolder"></div>
-            <div id="swapCardSourceHolder" style="display:none;"></div>
-
-            <!-- The next step, given its own weight so it's obviously a
-                 real choice rather than an afterthought — Identity and
-                 Combine are just as valid a destination path as a plain
-                 deposit or cashout, not buried as small text links. -->
-            <div class="swap-destination-section" id="swapDestinationSection">
-                <div class="swap-destination-heading">Where's this going?</div>
-                <div class="swap-dest-types">
-                    <div class="swap-source-type-opt" id="destTypeDeposit" onclick="setSwapDestCategory('DEPOSIT')"><span class="icon">🏦</span>Deposit</div>
-                    <div class="swap-source-type-opt" id="destTypeCashout" onclick="setSwapDestCategory('CASHOUT')"><span class="icon">💵</span>Cashout</div>
-                    <div class="swap-source-type-opt" id="destTypeIdentity" onclick="setSwapDestCategory('IDENTITY')"><span class="icon">🪪</span>Identity</div>
-                </div>
-                <div class="ledger-rows" id="destDetailRow" style="display:none;margin-top:14px;">
-                    <div class="ledger-row" onclick="openDestinationModal()" style="border-bottom:none;">
-                        <span class="ledger-row-label"><span class="row-icon" id="destRowIcon">🎯</span>Details</span>
-                        <span class="ledger-row-value" id="destRowText">Not selected &rsaquo;</span>
+            <!-- Two logical halves — source (left) and destination
+                 (right) — stack on phones but sit side by side on wider
+                 screens instead of leaving a narrow phone-width column
+                 stranded in the middle of a laptop screen. -->
+            <div class="swap-layout">
+                <div class="swap-col-source">
+                    <div class="swap-source-types">
+                        <div class="swap-source-type-opt active" id="swapSrcWallet" onclick="setSwapSourceMode('WALLET')"><span class="icon">💳</span>Wallet</div>
+                        <div class="swap-source-type-opt" id="swapSrcCard" onclick="setSwapSourceMode('CARD')"><span class="icon">🪪</span>Card</div>
+                        <div class="swap-source-type-opt" id="swapSrcVoucher" onclick="setSwapSourceMode('VOUCHER')"><span class="icon">🎟️</span>Voucher</div>
+                        <div class="swap-source-type-opt" id="swapSrcVmcard" onclick="setSwapSourceMode('VMCARD')"><span class="icon">🧩</span>My Card</div>
+                        <div class="swap-source-type-opt" id="swapSrcCombine" onclick="setSwapSourceMode('COMBINE')"><span class="icon">➕</span>Combine</div>
                     </div>
+
+                    <div id="swapSingleSourceHolder"></div>
+                    <div id="swapCardSourceHolder" style="display:none;"></div>
+                    <div id="swapCombineSourceHolder" style="display:none;"></div>
+                </div>
+
+                <div class="swap-col-dest">
+                    <!-- The next step, given its own weight so it's obviously a
+                         real choice rather than an afterthought — Identity and
+                         Combine are just as valid a destination path as a plain
+                         deposit or cashout, not buried as small text links. -->
+                    <div class="swap-destination-section" id="swapDestinationSection">
+                        <div class="swap-destination-heading">Where's this going?</div>
+                        <div class="swap-dest-types">
+                            <div class="swap-source-type-opt" id="destTypeDeposit" onclick="setSwapDestCategory('DEPOSIT')"><span class="icon">🏦</span>Deposit</div>
+                            <div class="swap-source-type-opt" id="destTypeCashout" onclick="setSwapDestCategory('CASHOUT')"><span class="icon">💵</span>Cashout</div>
+                            <div class="swap-source-type-opt" id="destTypeIdentity" onclick="setSwapDestCategory('IDENTITY')"><span class="icon">🪪</span>Identity</div>
+                        </div>
+                        <div class="ledger-rows" id="destDetailRow" style="display:none;margin-top:14px;">
+                            <div class="ledger-row" onclick="openDestinationModal()" style="border-bottom:none;">
+                                <span class="ledger-row-label"><span class="row-icon" id="destRowIcon">🎯</span>Details</span>
+                                <span class="ledger-row-value" id="destRowText">Not selected &rsaquo;</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="cta-row">
+                        <button class="btn btn-primary" id="reviewBtn" onclick="previewSwap()">Review swap</button>
+                    </div>
+                    <div id="swapReadinessHint"></div>
                 </div>
             </div>
-
-            <div class="cta-row">
-                <button class="btn btn-primary" id="reviewBtn" onclick="previewSwap()">Review swap</button>
-            </div>
-            <div id="swapReadinessHint"></div>
         </div>
 
         <div class="balance-link-wrap">
@@ -992,15 +1030,6 @@ input[type=number] { -moz-appearance: textfield; }
         <div id="identitySwapHint">We'll text the recipient a code. If they have a VouchMorph account, they finalize instantly — no code needed. If not, an agent finalizes it for them using the code.</div>
         <div class="hint" id="identityHint" style="font-size:11px;color:var(--text-muted);margin-top:4px;">The recipient will be notified and can claim the funds within 24 hours.</div>
     </div>
-
-    <div id="multiDestControls">
-        <div id="multiDestModeRow" class="quick-actions">
-            <span class="quick-link" onclick="tabSetMultiDest('institution')">Account / Wallet / Card</span>
-            <span class="quick-link" onclick="tabSetMultiDest('identity')">Send to identity</span>
-            <span class="quick-link" onclick="tabSetMultiDest('vmcard')">VouchMorph Card</span>
-        </div>
-        <div id="vmCardNote" class="vm-card-note" style="display:none;">No balance of its own — it's a pathway. One swipe draws directly from everything on this tab.</div>
-    </div>
 </div>
 
 <div class="modal-overlay" id="modal" onclick="if(event.target===this)closeModal()">
@@ -1097,7 +1126,7 @@ let state = {
     deliveryMethod: 'ATM', beneficiaryPhone: '',
     toIdentityType: 'national_id', toIdentityValue: '', toIdentitySms: '',
     multiSources: [], lastPreview: null, swapPayload: null,
-    multiDestMode: 'institution', tabTotalAmount: 0, tabAllocationMode: 'even', contributionStrategy: 'SMART',
+    tabTotalAmount: 0, tabAllocationMode: 'even', contributionStrategy: 'SMART',
     swapSourceMode: 'WALLET', // WALLET | CARD | VOUCHER | VMCARD — which of the 4 Swap source tiles is active
     vmCardStrategy: 'SMART',  // strategy used when swapSourceMode === 'VMCARD'
 };
@@ -1152,7 +1181,7 @@ function goView(name) {
     // empty picker underneath, since nothing has told it to populate
     // #swapSingleSourceHolder yet (that only happens inside
     // setSwapSourceMode()/toggleSourcePanelInline()).
-    if (name === 'swap') { setSwapSourceMode(state.swapSourceMode || 'WALLET'); }
+    if (name === 'swap') { restoreSwapSourceUI(); }
 }
 function pushView(name) { viewStack.push(name); renderView(); }
 function goBack() {
@@ -1354,14 +1383,39 @@ async function callApiGet(endpoint) {
 // from whatever is hooked to your VouchMorph Card using the same
 // Smart/Equal/Ratio/Manual strategy as Combine Sources.
 // ============================================================
+// Re-entering Swap (e.g. after navigating away mid-flow) must not
+// force the Combine builder back open if sources were already
+// confirmed — it should just redisplay the summary, same as any
+// other already-filled-in source.
+function restoreSwapSourceUI() {
+    if (state.swapSourceMode === 'COMBINE' && multiSourcesValid()) {
+        ['Wallet', 'Card', 'Voucher', 'Vmcard', 'Combine'].forEach(suffix => document.getElementById('swapSrc' + suffix)?.classList.remove('active'));
+        document.getElementById('swapSrcCombine')?.classList.add('active');
+        document.getElementById('swapSingleSourceHolder').style.display = 'none';
+        document.getElementById('swapCardSourceHolder').style.display = 'none';
+        renderCombineSourceSummary();
+        refreshUI();
+        return;
+    }
+    setSwapSourceMode(state.swapSourceMode === 'COMBINE' ? 'WALLET' : (state.swapSourceMode || 'WALLET'));
+}
+
 function setSwapSourceMode(mode) {
+    // COMBINE is entered/edited through its own builder modal, never by
+    // just toggling in place — there's real multi-row state to fill in
+    // first, so clicking the tile opens the builder instead of clearing
+    // straight to an empty combined state.
+    if (mode === 'COMBINE') { openCombineSources(); return; }
+
     state.swapSourceMode = mode;
-    ['Wallet', 'Card', 'Voucher', 'Vmcard'].forEach(suffix => document.getElementById('swapSrc' + suffix).classList.remove('active'));
+    ['Wallet', 'Card', 'Voucher', 'Vmcard', 'Combine'].forEach(suffix => document.getElementById('swapSrc' + suffix)?.classList.remove('active'));
     const idMap = { WALLET: 'swapSrcWallet', CARD: 'swapSrcCard', VOUCHER: 'swapSrcVoucher', VMCARD: 'swapSrcVmcard' };
     document.getElementById(idMap[mode]).classList.add('active');
 
     const singleHolder = document.getElementById('swapSingleSourceHolder');
     const cardHolder = document.getElementById('swapCardSourceHolder');
+    const combineHolder = document.getElementById('swapCombineSourceHolder');
+    combineHolder.style.display = 'none';
 
     if (mode === 'VMCARD') {
         singleHolder.style.display = 'none';
@@ -1558,7 +1612,7 @@ function amountWithinLimits(instCode, amount) {
 }
 function selectToInst(code) {
     state.toInst = code || null; state.toAsset = null; state.toFields = {};
-    if (state.swapType === 'DEPOSIT' || state.swapType === 'MULTI_SOURCE') {
+    if (state.swapType === 'DEPOSIT') {
         const sel = document.getElementById('toAssetSelect');
         const group = document.getElementById('toAssetSection');
         if (!code) { group.style.display = 'none'; document.getElementById('toFields').style.display = 'none'; refreshUI(); return; }
@@ -1593,24 +1647,23 @@ function setDeliveryMethod(method) {
 
 function setSwapType(type) {
     state.swapType = type;
-    const isIdentity = type === 'IDENTITY', isMulti = type === 'MULTI_SOURCE', isDeposit = type === 'DEPOSIT', isCashout = type === 'CASHOUT';
+    const isIdentity = type === 'IDENTITY', isDeposit = type === 'DEPOSIT', isCashout = type === 'CASHOUT';
     const identityFieldsEl = document.getElementById('identityFields');
-    if (identityFieldsEl) identityFieldsEl.style.display = (isIdentity || (isMulti && state.multiDestMode === 'identity')) ? 'block' : 'none';
+    if (identityFieldsEl) identityFieldsEl.style.display = isIdentity ? 'block' : 'none';
     const identitySwapHintEl = document.getElementById('identitySwapHint');
     if (identitySwapHintEl) identitySwapHintEl.style.display = isIdentity ? 'block' : 'none';
     const cashoutFieldsEl = document.getElementById('cashoutFields');
     if (cashoutFieldsEl) cashoutFieldsEl.style.display = isCashout ? 'block' : 'none';
     const toInstSectionEl = document.getElementById('toInstSection');
-    if (toInstSectionEl) toInstSectionEl.style.display = (isDeposit || isCashout || (isMulti && state.multiDestMode !== 'identity')) ? 'block' : 'none';
+    if (toInstSectionEl) toInstSectionEl.style.display = (isDeposit || isCashout) ? 'block' : 'none';
     const toAssetSectionEl = document.getElementById('toAssetSection');
-    if (toAssetSectionEl) toAssetSectionEl.style.display = (isDeposit || isMulti) && state.toAsset && !(isMulti && state.multiDestMode === 'identity') ? 'block' : 'none';
+    if (toAssetSectionEl) toAssetSectionEl.style.display = isDeposit && state.toAsset ? 'block' : 'none';
     const toFieldsEl = document.getElementById('toFields');
-    if (toFieldsEl) toFieldsEl.style.display = (isDeposit || isMulti) && state.toAsset && !(isMulti && state.multiDestMode === 'identity') ? 'block' : 'none';
+    if (toFieldsEl) toFieldsEl.style.display = isDeposit && state.toAsset ? 'block' : 'none';
     document.getElementById('depositToggleBtn')?.classList.toggle('selected', isDeposit);
     document.getElementById('cashoutToggleBtn')?.classList.toggle('selected', isCashout);
     if (isIdentity) updateIdentityHelp();
     updateCurrencyDisplay();
-    if (isMulti && state.multiSources.length === 0) { addMultiSourceRow(); addMultiSourceRow(); }
     refreshUI();
 }
 function updateIdentityHelp() {
@@ -1621,18 +1674,13 @@ function updateIdentityHelp() {
     if (documentTypes.includes(type)) hint.textContent = `This is a physical document that can be verified by an agent in person. The recipient will also receive a notification and can claim via dashboard within 24 hours.`;
     else hint.textContent = `The recipient will be notified via ${type === 'phone' ? 'SMS' : 'email'} and can claim the funds within 24 hours.`;
 }
-function quickSetSwapType(type) {
-    if (type === 'MULTI_SOURCE' && state.swapSourceMode === 'VMCARD') {
-        // Combine Sources (manually-picked rows) and My Card (auto-drawn
-        // from hooks) are two different multi-source mechanisms — letting
-        // both be "selected" at once means one silently overrides the
-        // other's payload in buildPayload(), which would look like a
-        // successful setup right up until the swap uses the wrong sources.
-        showMessage('Switched off "My Card" — Combine sources lets you pick sources manually instead.', 'info');
-        setSwapSourceMode('WALLET');
-    }
-    setSwapType(type);
-    if (type === 'MULTI_SOURCE') { openTabBuilder(); return; }
+// Combine Sources is purely a SOURCE-side alternative — same standing
+// as Wallet/Card/Voucher/My Card. It never touches destination at all;
+// once you confirm the source list, control returns to the ordinary
+// Swap "Where's this going?" step, same as every other source mode.
+function openCombineSources() {
+    if (state.multiSources.length === 0) { addMultiSourceRow(); addMultiSourceRow(); }
+    openTabBuilder();
 }
 
 let multiSourceSeq = 0;
@@ -1665,7 +1713,15 @@ function buildUserAmountsPayload() { const amounts = {}; state.multiSources.forE
 function round2(n) { return Math.round(n * 100) / 100; }
 function setTabTotalAmount(value) {
     state.tabTotalAmount = parseFloat(value) || 0;
-    if (state.contributionStrategy === 'EQUAL') autoSplitEven();
+    // SMART is the default, recommended, first-listed strategy — its
+    // amount field is shown disabled (the whole point is "you don't
+    // need to touch this"), but without actually filling in a value,
+    // multiSourcesValid() would never pass and "Use these sources"
+    // would stay permanently disabled with no way for the person to
+    // fix it themselves. An even split is a safe client-side stand-in;
+    // the backend still does the real optimal balancing at execution
+    // time regardless of what's sent here.
+    if (state.contributionStrategy === 'EQUAL' || state.contributionStrategy === 'SMART') autoSplitEven();
     if (state.contributionStrategy === 'RATIO') previewRatioSplit();
     reopenTabBuilder();
 }
@@ -1698,62 +1754,26 @@ async function previewRatioSplit() {
 }
 function setContributionStrategy(strategy) {
     state.contributionStrategy = strategy;
-    if (strategy === 'EQUAL') autoSplitEven();
+    // Same "don't leave amount at 0 under Smart" fix as setTabTotalAmount()
+    // above — needed here too since switching strategy re-triggers
+    // validation immediately, before the person types anything else.
+    if (strategy === 'EQUAL' || strategy === 'SMART') autoSplitEven();
     if (strategy === 'RATIO') { previewRatioSplit(); return; }
     reopenTabBuilder();
 }
-function tabSetMultiDest(mode) {
-    state.multiDestMode = mode;
-    if (mode === 'vmcard' && !PARTICIPANTS['vouchmorph']) { showMessage("VouchMorph Card isn't enabled for this country yet.", 'warning'); state.multiDestMode = 'institution'; mode = 'institution'; }
-    const vmNote = document.getElementById('vmCardNote');
-    const toInstSectionEl = document.getElementById('toInstSection');
-    const toAssetSectionEl = document.getElementById('toAssetSection');
-    const toFieldsEl = document.getElementById('toFields');
-    const identityFieldsEl = document.getElementById('identityFields');
-    if (mode === 'institution') {
-        if (toInstSectionEl) toInstSectionEl.style.display = 'block';
-        if (toAssetSectionEl) toAssetSectionEl.style.display = state.toAsset ? 'block' : 'none';
-        if (toFieldsEl) toFieldsEl.style.display = state.toAsset ? 'block' : 'none';
-        if (identityFieldsEl) identityFieldsEl.style.display = 'none';
-        if (vmNote) vmNote.style.display = 'none';
-    } else if (mode === 'identity') {
-        if (toInstSectionEl) toInstSectionEl.style.display = 'none';
-        if (toAssetSectionEl) toAssetSectionEl.style.display = 'none';
-        if (toFieldsEl) toFieldsEl.style.display = 'none';
-        if (identityFieldsEl) identityFieldsEl.style.display = 'block';
-        if (vmNote) vmNote.style.display = 'none';
-    } else if (mode === 'vmcard') {
-        if (toInstSectionEl) toInstSectionEl.style.display = 'none';
-        if (toAssetSectionEl) toAssetSectionEl.style.display = 'none';
-        if (toFieldsEl) toFieldsEl.style.display = 'none';
-        if (identityFieldsEl) identityFieldsEl.style.display = 'none';
-        if (vmNote) vmNote.style.display = 'block';
-        selectToInst('vouchmorph');
-        setTimeout(() => selectToAsset('CARD'), 50);
-    }
-    if (document.getElementById('tabBuilderDestArea')) renderTabBuilderDestSlot();
-    refreshUI();
-}
-function renderTabBuilderDestSlot() {
-    const destArea = document.getElementById('tabBuilderDestArea');
-    if (!destArea) return;
-    const identityEl = document.getElementById('identityFields');
-    const instGroupEl = document.getElementById('toInstAssetGroup');
-    if (state.multiDestMode === 'identity') {
-        if (identityEl) destArea.appendChild(identityEl);
-    } else {
-        if (instGroupEl) destArea.appendChild(instGroupEl);
-    }
-}
+
+// Combine Sources builds ONLY the source list — total amount, strategy,
+// and the rows themselves. It never asks about destination at all;
+// confirming it hands off straight to the normal Swap "Where's this
+// going?" step, exactly like finishing any other source mode.
 function openTabBuilder() {
     if (state.multiSources.length === 0) { addMultiSourceRow(); addMultiSourceRow(); }
+    returnMovableNodesHome();
     const modalBody = document.getElementById('modalBody');
-    modalBody.innerHTML = `<div id="tabBuilderGenerated"></div><div style="margin-top:18px;padding-top:18px;border-top:1px solid var(--border);"><div class="field-label" style="margin-bottom:8px;">Where should this land?</div><div id="multiDestControlsHost"></div><div id="tabBuilderDestArea" style="margin-top:10px;"></div></div>`;
+    modalBody.innerHTML = `<div id="tabBuilderGenerated"></div>`;
     document.getElementById('modalTitle').textContent = 'Combine sources';
     document.getElementById('modal').classList.add('active');
-    document.getElementById('multiDestControlsHost').appendChild(document.getElementById('multiDestControls'));
     document.getElementById('tabBuilderGenerated').innerHTML = renderTabBuilder();
-    tabSetMultiDest(state.multiDestMode || 'institution');
     animateTabBuilderIn();
 }
 function reopenTabBuilder() {
@@ -1762,6 +1782,45 @@ function reopenTabBuilder() {
     gen.innerHTML = renderTabBuilder();
     updateMultiTotal();
     animateTabBuilderIn();
+}
+
+// Validates the source list, marks Combine as the active source mode,
+// closes the builder, and returns control to the ordinary Swap screen —
+// the destination section lights up exactly as it does for any other
+// source, since nothing about "where's this going" was ever touched here.
+function confirmCombineSources() {
+    if (!multiSourcesValid()) { showMessage('Finish your combined sources first — see what\'s missing above.', 'warning'); return; }
+    state.swapSourceMode = 'COMBINE';
+    ['Wallet', 'Card', 'Voucher', 'Vmcard', 'Combine'].forEach(suffix => document.getElementById('swapSrc' + suffix)?.classList.remove('active'));
+    document.getElementById('swapSrcCombine')?.classList.add('active');
+    document.getElementById('swapSingleSourceHolder').style.display = 'none';
+    document.getElementById('swapCardSourceHolder').style.display = 'none';
+    renderCombineSourceSummary();
+    closeModal();
+    showMessage('Sources combined — now pick where this goes.', 'success');
+}
+function renderCombineSourceSummary() {
+    const holder = document.getElementById('swapCombineSourceHolder');
+    if (!holder) return;
+    holder.style.display = 'block';
+    const total = state.tabTotalAmount || state.multiSources.reduce((s, r) => s + (r.amount || 0), 0);
+    const cur = getInstitutionCurrency(state.multiSources.find(s => s.institution)?.institution);
+    const rows = state.multiSources.filter(s => s.institution).map(s => `
+        <div class="card-source-breakdown-row">
+            <span>${escapeHtml(PARTICIPANTS[s.institution]?.name || s.institution)}</span>
+            <span style="font-family:var(--font-mono);font-weight:700;">${formatMoney(s.amount, cur)}</span>
+        </div>`).join('');
+    holder.innerHTML = `
+        <div class="card-source-breakdown">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                <span style="font-size:11px;font-weight:700;text-transform:uppercase;color:var(--text-dim);">Combined — ${state.multiSources.filter(s=>s.institution).length} source(s)</span>
+                <button class="quick-link muted" onclick="openTabBuilder()">Edit &rsaquo;</button>
+            </div>
+            ${rows}
+            <div class="card-source-breakdown-row" style="border-bottom:none;padding-top:10px;font-weight:700;">
+                <span>Total</span><span style="font-family:var(--font-mono);color:var(--accent);">${formatMoney(total, cur)}</span>
+            </div>
+        </div>`;
 }
 function animateTabBuilderIn() {
     const list = document.getElementById('tabSourceList');
@@ -1820,8 +1879,8 @@ function renderCircuitDiagram() {
         <text x="${hubX + hubW / 2}" y="${hubY + hubH / 2 + 15}" text-anchor="middle" font-size="8" fill="var(--text-dim)">total</text>`;
     const hubPinY = hubY + hubH / 2;
     let destLabel = null;
-    if (state.multiDestMode === 'identity' && state.toIdentityValue) destLabel = maskIdentifier(state.toIdentityValue).replace(/[^A-Za-z0-9]/g, '').slice(0, 2).toUpperCase() || 'ID';
-    else if (state.multiDestMode !== 'identity' && state.toInst) destLabel = institutionInitials(state.toInst);
+    if (state.swapType === 'IDENTITY' && state.toIdentityValue) destLabel = maskIdentifier(state.toIdentityValue).replace(/[^A-Za-z0-9]/g, '').slice(0, 2).toUpperCase() || 'ID';
+    else if (state.swapType !== 'IDENTITY' && state.toInst) destLabel = institutionInitials(state.toInst);
     if (destLabel) {
         const midX = hubX + hubW + 60;
         html += `
@@ -1838,9 +1897,13 @@ function renderCircuitDiagram() {
 }
 
 function renderTabBuilder() {
-    const cur = getInstitutionCurrency(state.toInst) || '';
     const remaining = tabRemaining();
     const strategy = state.contributionStrategy;
+    // Currency for allocation status lines comes from whichever
+    // sources are already picked — there's no destination institution
+    // to borrow it from anymore, since this builder never touches
+    // destination at all.
+    const cur = getInstitutionCurrency(state.multiSources.find(s => s.institution)?.institution) || '';
     let statusHtml = '';
     if (voucherTotalExceedsTarget()) {
         statusHtml = `<div class="tab-status-line bad">Your voucher is bigger than the tab amount. <span class="quick-link muted" style="text-decoration:underline;" onclick="fixVoucherOverflow()">Fix it for me →</span></div>`;
@@ -1855,7 +1918,9 @@ function renderTabBuilder() {
     if (hasDuplicateInstitution() && strategy === 'USER_SPECIFIED') statusHtml += `<div class="tab-status-line bad">Manual mode needs one source per institution — remove the duplicate</div>`;
     const activeCount = state.multiSources.filter(s => s.institution && s.amount > 0).length;
     const cards = state.multiSources.map((s, i) => renderTabSourceCard(s, i)).join('');
+    const isValid = multiSourcesValid();
     return `
+        <div style="font-size:12px;color:var(--text-dim);text-align:center;margin-bottom:14px;">Build your combined sources here — where this lands is chosen back on the Swap screen once you're done.</div>
         <div class="tab-hero">
             <div class="tab-hero-label">Amount to swap</div>
             <input type="number" step="0.01" class="tab-hero-input" value="${state.tabTotalAmount || ''}" placeholder="0.00" oninput="setTabTotalAmount(this.value)">
@@ -1873,7 +1938,7 @@ function renderTabBuilder() {
         <div id="tabSourceList" class="tab-source-list" style="opacity:0;">${cards}</div>
         <button class="quick-link" style="width:100%;justify-content:center;padding:12px;margin-top:4px;" onclick="addMultiSourceRow(); reopenTabBuilder();">+ Add another source</button>
         ${strategy === 'USER_SPECIFIED' ? `<button class="quick-link muted" style="width:100%;justify-content:center;padding:10px;margin-top:8px;">↻ <span onclick="resetToEvenSplit()">Reset to even split</span></button>` : ''}
-        <div class="tab-invite-teaser" onclick="openTabInvite()"><span class="tab-invite-icon"></span><div><div class="tab-invite-title">Split this with friends</div><div class="tab-invite-sub">Invite other VouchMorph users to hook their own sources to this tab — coming soon</div></div></div>`;
+        <button class="btn btn-primary" style="margin-top:18px;" ${isValid ? '' : 'disabled'} onclick="confirmCombineSources()">${isValid ? `Use these ${activeCount} sources` : 'Finish adding sources'}</button>`;
 }
 
 function renderTabSourceCard(src, idx) {
@@ -1980,7 +2045,7 @@ function getSwapReadiness() {
         return { ready: reasons.length === 0, reasons, missingFields };
     }
 
-    if (state.swapType === 'MULTI_SOURCE') {
+    if (state.swapSourceMode === 'COMBINE') {
         if (!(state.tabTotalAmount > 0)) reasons.push('enter the total amount to swap');
         if (!multiSourcesValid()) {
             state.multiSources.forEach((s, idx) => {
@@ -1996,14 +2061,9 @@ function getSwapReadiness() {
             if (voucherTotalExceedsTarget()) reasons.push('voucher total exceeds your tab amount');
             else if (state.contributionStrategy === 'USER_SPECIFIED' && Math.abs(tabRemaining()) > 0.01) reasons.push('manually allocated amounts don\'t add up to the total');
             else if (hasDuplicateInstitution() && state.contributionStrategy === 'USER_SPECIFIED') reasons.push('manual mode needs one source per institution');
-            else reasons.push('build your tab (at least 2 sources, in the Combine Sources panel)');
+            else reasons.push('go back into Combine sources and finish building your source list');
         }
-        if (state.multiDestMode === 'identity') { if (!state.toIdentityValue) reasons.push('enter the identity value to swap to'); }
-        else {
-            if (!state.toInst) reasons.push('select a destination institution');
-            else if (!state.toAsset) reasons.push('select a destination asset type');
-            else if (!fieldsValidForAsset(state.toAsset, state.toFields, false).valid) { missingFields.push(`Destination: ${fieldsValidForAsset(state.toAsset, state.toFields, false).friendlyMessage || 'please fill this in'}`); reasons.push('fill in the required destination fields'); }
-        }
+        reasons.push(...destinationReadiness());
         return { ready: reasons.length === 0, reasons, missingFields };
     }
 
@@ -2040,6 +2100,9 @@ function sourceReadyForCurrentMode() {
     if (state.swapSourceMode === 'VMCARD') {
         return !!(myCard && myCard.is_active && vmCardSources && vmCardSources.length > 0 && state.fromAmount > 0);
     }
+    if (state.swapSourceMode === 'COMBINE') {
+        return multiSourcesValid();
+    }
     if (!state.fromInst || !state.fromAsset) return false;
     if (!(state.fromAmount > 0)) return false;
     if (!amountWithinLimits(state.fromInst, state.fromAmount)) return false;
@@ -2066,8 +2129,14 @@ function refreshUI() {
     if (btn) btn.disabled = false;
     const hint = document.getElementById('swapReadinessHint');
     if (hint) {
-        if (readiness.ready) { hint.textContent = ''; hint.className = ''; hint.style.display = 'none'; }
-        else {
+        if (readiness.ready) {
+            // Every other step in the journey tells you what's next —
+            // the final one shouldn't just go quiet. A short positive
+            // confirmation closes the loop: source done, destination
+            // done, here's the actual next tap.
+            hint.textContent = "You're all set — tap Review swap below.";
+            hint.className = 'show success'; hint.style.display = 'block';
+        } else {
             let msg = (readiness.missingFields && readiness.missingFields.length > 0) ? readiness.missingFields.join('; ') : readiness.reasons.join(', ');
             hint.textContent = msg; hint.className = 'show warning'; hint.style.display = 'block';
         }
@@ -2101,7 +2170,7 @@ function buildPayload() {
     // contribution session (cards/Create.php) instead of a normal swap
     // payload. See the comment above previewSwap() for why.
 
-    if (state.swapType === 'MULTI_SOURCE') {
+    if (state.swapSourceMode === 'COMBINE') {
         const activeRows = state.multiSources.filter(s => s.institution && s.assetType);
         const sources = activeRows.map(s => {
             const pin = extractPinFromFields(s.assetType, s.fields);
@@ -2114,18 +2183,34 @@ function buildPayload() {
         const sourceCurrency = activeRows.length ? (PARTICIPANTS[activeRows[0].institution]?.limits?.currency || null) : null;
         const payload = { swap_type: 'MULTI_SOURCE', reference, idempotency_key: idempotencyKey, user_id: CONFIG.USER_ID, amount: totalAmount, currency: sourceCurrency, contribution_strategy: state.contributionStrategy, sources };
         if (state.contributionStrategy === 'USER_SPECIFIED') payload.user_amounts = buildUserAmountsPayload();
-        if (state.multiDestMode === 'identity') {
+        if (state.swapType === 'IDENTITY') {
             payload.identity_type = state.toIdentityType; payload.identity_value = state.toIdentityValue;
             if (state.toIdentitySms) payload.notification_phone = state.toIdentitySms;
             payload.destination_currency = sourceCurrency;
             return payload;
         }
-        const destFields = { ...state.toFields };
-        if (assetHasAmountField(state.toAsset)) destFields.amount = totalAmount;
-        const destIdField = (ASSETS[state.toAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
         const destCurrency = PARTICIPANTS[state.toInst]?.limits?.currency || sourceCurrency;
         payload.currency = payload.currency || destCurrency; payload.destination_currency = destCurrency;
         payload.to_institution = state.toInst; payload.destination_institution = state.toInst;
+        if (state.swapType === 'CASHOUT') {
+            payload.delivery_method = state.deliveryMethod || 'ATM';
+            const beneficiaryPhone = state.beneficiaryPhone || state.toFields?.phone || state.toFields?.recipient_phone || null;
+            if (beneficiaryPhone) { payload.beneficiary_phone = beneficiaryPhone; payload.client_phone = beneficiaryPhone; }
+            if (state.toAsset === 'VOUCHER') {
+                payload.destination_asset_type = 'VOUCHER';
+                payload.destination_asset_fields = { voucher_type: 'CASHOUT', recipient_phone: beneficiaryPhone || state.toFields?.recipient_phone || null, voucher_number: state.toFields?.voucher_number || '' };
+                payload.destination_identifier = beneficiaryPhone || state.toFields?.recipient_phone || state.toFields?.phone || null;
+            } else {
+                payload.destination_asset_type = 'WALLET';
+                const phone = state.toFields?.phone || state.toFields?.recipient_phone || beneficiaryPhone || null;
+                payload.destination_asset_fields = { phone };
+                payload.destination_identifier = phone;
+            }
+            return payload;
+        }
+        const destFields = { ...state.toFields };
+        if (assetHasAmountField(state.toAsset)) destFields.amount = totalAmount;
+        const destIdField = (ASSETS[state.toAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
         payload.destination_asset_type = state.toAsset; payload.asset_type = state.toAsset;
         payload.destination_asset_fields = destFields;
         for (const [key, value] of Object.entries(destFields)) payload[`destination_${key}`] = value;
@@ -2224,30 +2309,51 @@ async function previewSwap() {
 // in on the Swap screen, then jumps to the Card view where the existing
 // renderSessionStatus()/startSessionPolling() UI (built earlier against
 // the real API) tracks it through OPEN → READY → EXECUTING → COMPLETED.
+//
+// Payload verified directly against the real Create.php source: it
+// requires card_suffix, target_amount, currency, strategy, plus EITHER
+// (identity_type + identity_value, optional beneficiary_phone) OR
+// (to_institution + destination_identifier, with destination_asset_type/
+// destination_identifier_type/delivery_method defaulting server-side to
+// 'WALLET'/'account'/'DEPOSIT' if omitted — but a real Cashout needs
+// delivery_method explicitly set, or it would silently default to a
+// deposit instead).
 async function startVmCardSwap() {
     const btn = document.getElementById('reviewBtn');
     const original = btn.innerHTML;
     btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Starting…';
 
-    let destination_identifier = null;
-    if (state.swapType !== 'IDENTITY') {
-        const destIdField = (ASSETS[state.toAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
-        destination_identifier = destIdField ? state.toFields[destIdField.name] : null;
-    }
     const payload = {
         card_suffix: myCard.card_suffix,
         target_amount: state.fromAmount,
-        currency: myCard.hook?.currency || myCard.currency,
+        currency: (myCard.hook?.currency || myCard.currency || '').toUpperCase(),
         strategy: state.vmCardStrategy,
-        to_institution: state.swapType === 'IDENTITY' ? undefined : state.toInst,
-        destination_identifier: state.swapType === 'IDENTITY' ? undefined : destination_identifier,
-        identity_type: state.swapType === 'IDENTITY' ? state.toIdentityType : undefined,
-        identity_value: state.swapType === 'IDENTITY' ? state.toIdentityValue : undefined,
     };
+
+    if (state.swapType === 'IDENTITY') {
+        payload.identity_type = state.toIdentityType;
+        payload.identity_value = state.toIdentityValue;
+        if (state.toIdentitySms) payload.beneficiary_phone = state.toIdentitySms;
+    } else {
+        const destIdField = (ASSETS[state.toAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+        payload.to_institution = state.toInst;
+        payload.destination_identifier = destIdField ? state.toFields[destIdField.name] : null;
+        payload.destination_asset_type = state.toAsset || 'WALLET';
+        payload.destination_identifier_type = (destIdField && (destIdField.name === 'phone' || destIdField.name === 'phone_number')) ? 'phone' : 'account';
+        if (state.swapType === 'CASHOUT') {
+            payload.delivery_method = state.deliveryMethod || 'ATM';
+            const beneficiaryPhone = state.beneficiaryPhone || state.toFields?.phone || state.toFields?.recipient_phone || null;
+            if (beneficiaryPhone) payload.beneficiary_phone = beneficiaryPhone;
+        } else {
+            payload.delivery_method = 'DEPOSIT';
+        }
+    }
+
     const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/Create.php', payload);
     btn.disabled = false; btn.innerHTML = original;
     if (!result.ok) { showMessage("Couldn't start that swap: " + friendlyApiError(result.error), 'error'); return; }
     showMessage('Swap started — track it from the Card page.', 'success');
+    resetSwapState();
     goView('card');
 }
 function showPreviewModal(previewData) {
@@ -2301,8 +2407,33 @@ function showResultModal(response, journeyData) {
     }
     const swapCount = journeyData?.swapsThisMonth || 1;
     const statLine = swapCount > 1 ? `<div class="result-stat">You've made ${swapCount} swaps this month. You've got the hang of this. 🎉</div>` : `<div class="result-stat">That's your swap — nicely done. It'll show up in Activity any time you want to check on it.</div>`;
-    openModal('Swap result', `${inner}${statLine}<div class="cta-row" style="margin-top:16px;"><button class="btn btn-primary" onclick="closeModal(); goView('hub');">Done</button></div></div>`);
+    // The journey shouldn't just stop at a checkmark — offer the two
+    // genuinely likely next moves alongside the default "Done."
+    openModal('Swap result', `${inner}${statLine}
+        <div class="cta-row" style="margin-top:16px;"><button class="btn btn-primary" onclick="closeModal(); resetSwapState(); goView('hub');">Done</button></div>
+        <div style="display:flex;justify-content:center;gap:20px;margin-top:12px;">
+            <button type="button" class="ledger-link" onclick="closeModal(); resetSwapState(); goView('activity');">View in Activity</button>
+            <button type="button" class="ledger-link" onclick="closeModal(); resetSwapState(); goView('swap');">Make another swap</button>
+        </div></div>`);
     setTimeout(() => fireConfetti(document.getElementById('resultBoxRoot')), 150);
+}
+
+// Clears everything about the swap just completed so the next visit
+// to Swap starts clean — without this, "Make another swap" (or even
+// just returning to the hub and back) would silently reuse the old
+// amount, destination, and combined-source list.
+function resetSwapState() {
+    state.fromAmount = 0; state.fromInst = null; state.fromAsset = null; state.fromFields = {};
+    state.toInst = null; state.toAsset = null; state.toFields = {};
+    state.toIdentityValue = ''; state.toIdentitySms = '';
+    state.multiSources = []; state.tabTotalAmount = 0; state.contributionStrategy = 'SMART';
+    state.swapSourceMode = 'WALLET'; state.swapType = 'DEPOSIT';
+    const amountField = document.getElementById('fromAmount');
+    if (amountField) amountField.value = '';
+    document.getElementById('destDetailRow').style.display = 'none';
+    document.getElementById('destTypeDeposit')?.classList.remove('active');
+    document.getElementById('destTypeCashout')?.classList.remove('active');
+    document.getElementById('destTypeIdentity')?.classList.remove('active');
 }
 
 const IDENTITY_TYPE_LABELS = { national_id: 'National ID', birth_certificate: 'Birth Certificate', voter_id: 'Voter ID', phone: 'Phone Number', email: 'Email' };
@@ -2318,6 +2449,11 @@ function switchCountry(country) { if (country !== CONFIG.COUNTRY_CODE) window.lo
 
 function openDestinationModal() {
     if (state.swapType !== 'DEPOSIT' && state.swapType !== 'CASHOUT') setSwapType('DEPOSIT');
+    // Defensive: guarantees #toSection is wherever this function expects
+    // it to be, even if a previous modal was never properly closed (e.g.
+    // triggered twice back to back through a non-click code path) —
+    // otherwise modalBody.innerHTML='' below would destroy it outright.
+    returnMovableNodesHome();
     const modalBody = document.getElementById('modalBody');
     modalBody.innerHTML = '';
     modalBody.appendChild(document.getElementById('toSection'));
@@ -2340,6 +2476,7 @@ function confirmDestinationSelection() {
 }
 function openIdentitySendModal() {
     setSwapType('IDENTITY');
+    returnMovableNodesHome();
     const modalBody = document.getElementById('modalBody');
     modalBody.innerHTML = '';
     const identityFieldsEl = document.getElementById('identityFields');
@@ -3098,7 +3235,7 @@ function openHelpModal() {
         <p style="font-weight:700;margin-bottom:6px;">Swapping to an identity</p>
         <ol style="padding-left:18px;margin-bottom:16px;"><li>Under "Where's this going?", tap Identity.</li><li>Enter their national ID, phone, or email.</li></ol>
         <p style="font-weight:700;margin-bottom:6px;">Combining multiple sources</p>
-        <ol style="padding-left:18px;margin-bottom:16px;"><li>Tap the "Combine" tile alongside the other source options.</li><li>Type the total amount — "Smart" (recommended) balances it across your sources for you automatically.</li><li>Pick where it settles: an account/wallet/card, an identity, or a VouchMorph Card.</li></ol>
+        <ol style="padding-left:18px;margin-bottom:16px;"><li>Tap the "Combine" tile alongside the other source options.</li><li>Type the total amount — "Smart" (recommended) balances it across your sources for you automatically.</li><li>Tap "Use these sources," then choose where it's going — Deposit, Cashout, or Identity — exactly like any other swap.</li></ol>
         <p style="font-weight:700;margin-bottom:6px;">Your VouchMorph Card</p>
         <ol style="padding-left:18px;margin-bottom:16px;"><li>From the hub, tap Card. Every account gets one automatically.</li><li>It starts inactive — activate it once with a small one-time fee from any linked source.</li><li>Hook one or many sources — from the Card view ("Hook a source"), or from any row in Toolbox → My sources ("Hook to card"). Each hooked source is held for up to 24 hours per its own authorized amount.</li><li>Once something is hooked, you can spend it directly: go to Swap and pick "My Card" as your source — it draws from everything hooked, using the same Smart/Equal/Ratio/Manual split as Combine sources.</li><li>Each hooked source shows an Unhook option if you want to release it before you spend it.</li></ol>
         <p style="font-weight:700;margin-bottom:6px;">Claiming money sent to you</p>
@@ -3152,11 +3289,10 @@ async function checkPendingClaims() {
     catch (e) { console.error('[claims] Failed to check pending claims', e); }
 }
 // ------------------------------------------------------------
-// Nodes like #fromSection / #toSection / #identityFields /
-// #multiDestControls get physically moved into whichever modal is
-// using them (Destination picker, Identity picker, Combine
-// sources, Activate card). If a modal is closed and these nodes
-// aren't returned home, the NEXT modal that does
+// Nodes like #fromSection / #toSection / #identityFields get
+// physically moved into whichever modal is using them (Destination
+// picker, Identity picker, Activate card). If a modal is closed and
+// these nodes aren't returned home, the NEXT modal that does
 // `modalBody.innerHTML = ''` destroys them outright, and every
 // subsequent flow that expects e.g. #toInstSelect to exist breaks.
 // This must run before any modal is reused.
@@ -3166,7 +3302,7 @@ function returnMovableNodesHome() {
     const toInstSlot = document.getElementById('toInstAssetGroupSlot');
     const toInstGroup = document.getElementById('toInstAssetGroup');
     if (toInstGroup && toInstSlot && toInstGroup.parentElement !== toInstSlot) toInstSlot.appendChild(toInstGroup);
-    ['fromSection', 'toSection', 'identityFields', 'multiDestControls'].forEach(id => {
+    ['fromSection', 'toSection', 'identityFields'].forEach(id => {
         const el = document.getElementById(id);
         if (el && offscreen && el.parentElement !== offscreen) offscreen.appendChild(el);
     });
@@ -3307,6 +3443,7 @@ function goQrFull() {
 }
 
 function openActivateCardModal() {
+    returnMovableNodesHome();
     const modalBody = document.getElementById('modalBody');
     modalBody.innerHTML = '';
     modalBody.appendChild(document.getElementById('fromSection'));
@@ -3336,16 +3473,20 @@ async function confirmActivateCard(cardSuffix) {
 
 // ============================================================
 // HOOK BUILDER — dual entry (card-side "Hook a source" / source-
-// side "Hook to card"), single or multiple sources per hook, four
-// asset types: Account, Wallet, Cashout Voucher, Identity claim
-// (only enabled once there's an actual claimed balance — mirrors
-// pendingClaims, same signal used elsewhere in the app).
+// side "Hook to card"), single or multiple sources per hook, five
+// asset types: Account, Wallet, Card (Visa/Mastercard), Cashout
+// Voucher, Identity claim (only enabled once there's an actual
+// claimed balance — mirrors pendingClaims, same signal used
+// elsewhere in the app). This is a plain bank-issued card, distinct
+// from the VouchMorph Card itself — hooking a VouchMorph Card to
+// another VouchMorph Card is a separate, blocked scenario.
 // ============================================================
 const HOOK_ASSET_TYPES = [
     { key: 'ACCOUNT', label: 'Account', icon: '🏦' },
     { key: 'WALLET', label: 'Wallet', icon: '📱' },
+    { key: 'CARD', label: 'Card (Visa/Mastercard)', icon: '🪪' },
     { key: 'VOUCHER', label: 'Cashout voucher', icon: '🎟️' },
-    { key: 'IDENTITY', label: 'Identity claim', icon: '🪪', note: 'Needs a claimed swap' },
+    { key: 'IDENTITY', label: 'Identity claim', icon: '🆔', note: 'Needs a claimed swap' },
 ];
 let hookMode = 'single';
 let hookRows = [];
