@@ -318,7 +318,7 @@ input[type=number] { -moz-appearance: textfield; }
 .balance-link-wrap { text-align: center; margin-top: 18px; }
 
 /* Swap source-type row now includes "My Card" as a fourth option */
-.swap-source-types { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 18px 0 4px; }
+.swap-source-types { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 18px 0 4px; }
 .swap-source-type-opt { border: 1px solid var(--border-strong); padding: 12px 6px; text-align: center; cursor: pointer; font-size: 10px; font-weight: 700; }
 .swap-source-type-opt:hover { background: var(--surface-muted); }
 .swap-source-type-opt.active { background: var(--primary); color: #fff; }
@@ -331,6 +331,17 @@ input[type=number] { -moz-appearance: textfield; }
 .strategy-row button { flex: 1; padding: 10px 4px; font-size: 10px; font-weight: 700; text-transform: uppercase; background: transparent; border: none; border-right: 1px solid var(--border-strong); color: var(--text-muted); cursor: pointer; font-family: var(--font); }
 .strategy-row button:last-child { border-right: none; }
 .strategy-row button.active { background: var(--primary); color: #fff; }
+
+/* Destination is the deliberate "next step" after a source is picked —
+   it gets its own bordered section that visually lights up (accent
+   border + soft tint) once the source step is actually satisfied, so
+   the person's attention is drawn to what to do next instead of
+   everything on the page looking equally important all the time. */
+.swap-destination-section { border: 1px solid var(--border); padding: 18px 16px; margin: 20px 0 4px; transition: all 0.2s ease; }
+.swap-destination-section.ready { border-color: var(--accent); background: var(--accent-soft); }
+.swap-destination-heading { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); margin-bottom: 12px; transition: color 0.2s ease; }
+.swap-destination-section.ready .swap-destination-heading { color: var(--accent); }
+.swap-dest-types { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 
 .cta-row { display: flex; justify-content: center; margin-top: 10px; gap: 10px; }
 .cta-row .btn, .cta-row .btn-secondary { flex: 1 1 0; max-width: 360px; }
@@ -460,6 +471,24 @@ input[type=number] { -moz-appearance: textfield; }
 .otp-input-group input { flex: 1; }
 
 .saved-source-list { border: 1px solid var(--border-strong); background: var(--surface); }
+
+/* ============================================================
+   COLLAPSIBLE DROPDOWN SELECT — the reusable pattern for every
+   "pick one from a list of sources" moment in the app (saved
+   wallet sources, Combine-sources' saved-source picker, etc).
+   Closed by default; opens to a scrollable option list; picking
+   an option closes it again and shows the pick as the button
+   label — so a list of 10 sources never just sits open forever
+   taking up the page.
+   ============================================================ */
+.dropdown-select { border: 1px solid var(--border-strong); background: var(--surface); position: relative; }
+.dropdown-select-trigger { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 14px 16px; cursor: pointer; font-size: 14px; }
+.dropdown-select-trigger .placeholder { color: var(--text-dim); }
+.dropdown-select-trigger .chosen { color: var(--text); font-weight: 700; }
+.dropdown-select-chevron { color: var(--text-dim); font-size: 12px; transition: transform 0.15s ease; flex-shrink: 0; }
+.dropdown-select.open .dropdown-select-chevron { transform: rotate(180deg); }
+.dropdown-select-panel { display: none; border-top: 1px solid var(--border-strong); max-height: 280px; overflow-y: auto; }
+.dropdown-select.open .dropdown-select-panel { display: block; }
 .saved-source-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 12px 14px; cursor: pointer; border-bottom: 1px solid var(--border); }
 .saved-source-row:last-child { border-bottom: none; }
 .saved-source-row:hover { background: var(--surface-muted); }
@@ -699,15 +728,28 @@ input[type=number] { -moz-appearance: textfield; }
                 <div class="swap-source-type-opt" id="swapSrcCard" onclick="setSwapSourceMode('CARD')"><span class="icon">🪪</span>Card</div>
                 <div class="swap-source-type-opt" id="swapSrcVoucher" onclick="setSwapSourceMode('VOUCHER')"><span class="icon">🎟️</span>Voucher</div>
                 <div class="swap-source-type-opt" id="swapSrcVmcard" onclick="setSwapSourceMode('VMCARD')"><span class="icon">🧩</span>My Card</div>
+                <div class="swap-source-type-opt" id="swapSrcCombine" onclick="quickSetSwapType('MULTI_SOURCE')"><span class="icon">➕</span>Combine</div>
             </div>
 
             <div id="swapSingleSourceHolder"></div>
             <div id="swapCardSourceHolder" style="display:none;"></div>
 
-            <div class="ledger-rows">
-                <div class="ledger-row" onclick="openDestinationModal()">
-                    <span class="ledger-row-label"><span class="row-icon" id="destRowIcon">🎯</span>Destination</span>
-                    <span class="ledger-row-value" id="destRowText">Not selected &rsaquo;</span>
+            <!-- The next step, given its own weight so it's obviously a
+                 real choice rather than an afterthought — Identity and
+                 Combine are just as valid a destination path as a plain
+                 deposit or cashout, not buried as small text links. -->
+            <div class="swap-destination-section" id="swapDestinationSection">
+                <div class="swap-destination-heading">Where's this going?</div>
+                <div class="swap-dest-types">
+                    <div class="swap-source-type-opt" id="destTypeDeposit" onclick="setSwapDestCategory('DEPOSIT')"><span class="icon">🏦</span>Deposit</div>
+                    <div class="swap-source-type-opt" id="destTypeCashout" onclick="setSwapDestCategory('CASHOUT')"><span class="icon">💵</span>Cashout</div>
+                    <div class="swap-source-type-opt" id="destTypeIdentity" onclick="setSwapDestCategory('IDENTITY')"><span class="icon">🪪</span>Identity</div>
+                </div>
+                <div class="ledger-rows" id="destDetailRow" style="display:none;margin-top:14px;">
+                    <div class="ledger-row" onclick="openDestinationModal()" style="border-bottom:none;">
+                        <span class="ledger-row-label"><span class="row-icon" id="destRowIcon">🎯</span>Details</span>
+                        <span class="ledger-row-value" id="destRowText">Not selected &rsaquo;</span>
+                    </div>
                 </div>
             </div>
 
@@ -715,11 +757,6 @@ input[type=number] { -moz-appearance: textfield; }
                 <button class="btn btn-primary" id="reviewBtn" onclick="previewSwap()">Review swap</button>
             </div>
             <div id="swapReadinessHint"></div>
-
-            <div class="ledger-links">
-                <button type="button" class="ledger-link" onclick="openIdentitySendModal()">Swap to identity</button>
-                <button type="button" class="ledger-link" onclick="quickSetSwapType('MULTI_SOURCE')">Combine sources</button>
-            </div>
         </div>
 
         <div class="balance-link-wrap">
@@ -855,9 +892,15 @@ input[type=number] { -moz-appearance: textfield; }
         <div id="sourcePanelWrap" class="source-panel-wrap" style="display:none;">
             <div id="walletPanel" class="source-panel" style="display:none;">
                 <div id="savedSourcesContainer" style="margin-bottom:12px;display:none;">
-                    <div id="savedSourcesChips" class="saved-source-list"></div>
+                    <div id="savedSourcesDropdown" class="dropdown-select">
+                        <div class="dropdown-select-trigger" onclick="toggleSavedSourceDropdown()">
+                            <span id="savedSourceTriggerLabel" class="placeholder">Select a saved source &rsaquo;</span>
+                            <span class="dropdown-select-chevron">&#9662;</span>
+                        </div>
+                        <div class="dropdown-select-panel" id="savedSourcesChips"></div>
+                    </div>
                     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-top:8px;">
-                        <div style="font-size:11px;color:var(--text-dim);">Tap a saved source to auto-fill it. <span class="quick-link muted" onclick="openAddSource()">+ Add another</span></div>
+                        <div style="font-size:11px;color:var(--text-dim);">Pick a saved source to auto-fill it. <span class="quick-link muted" onclick="openAddSource()">+ Add another</span></div>
                         <span class="quick-link muted" onclick="clearSourceSelection()" style="display:none;" id="clearSourceBtn">Clear</span>
                     </div>
                 </div>
@@ -885,8 +928,8 @@ input[type=number] { -moz-appearance: textfield; }
 
     <div id="toSection">
         <div class="quick-actions" id="destTypeToggle">
-            <span class="quick-link" id="depositToggleBtn" onclick="setSwapType('DEPOSIT')">🏦 To an account</span>
-            <span class="quick-link" id="cashoutToggleBtn" onclick="setSwapType('CASHOUT')">💵 Cash pickup</span>
+            <span class="quick-link" id="depositToggleBtn" onclick="setSwapType('DEPOSIT')">🏦 Deposit</span>
+            <span class="quick-link" id="cashoutToggleBtn" onclick="setSwapType('CASHOUT')">💵 Cashout</span>
         </div>
         <div id="toInstAssetGroupSlot">
             <div id="toInstAssetGroup">
@@ -1990,6 +2033,33 @@ function getSwapReadiness() {
     return { ready: reasons.length === 0, reasons, missingFields };
 }
 
+// Whether the SOURCE half of the swap is satisfied, independent of
+// destination — used to visually "light up" the destination section
+// as the obvious next step once it's actually relevant to fill in.
+function sourceReadyForCurrentMode() {
+    if (state.swapSourceMode === 'VMCARD') {
+        return !!(myCard && myCard.is_active && vmCardSources && vmCardSources.length > 0 && state.fromAmount > 0);
+    }
+    if (!state.fromInst || !state.fromAsset) return false;
+    if (!(state.fromAmount > 0)) return false;
+    if (!amountWithinLimits(state.fromInst, state.fromAmount)) return false;
+    return fieldsValidForAsset(state.fromAsset, state.fromFields, true).valid;
+}
+
+// Three equally-weighted destination categories — Deposit and Cashout
+// still open the existing institution/asset picker modal; Identity
+// skips straight to the identity modal since it needs different
+// fields entirely, not an institution at all.
+function setSwapDestCategory(cat) {
+    document.getElementById('destTypeDeposit')?.classList.toggle('active', cat === 'DEPOSIT');
+    document.getElementById('destTypeCashout')?.classList.toggle('active', cat === 'CASHOUT');
+    document.getElementById('destTypeIdentity')?.classList.toggle('active', cat === 'IDENTITY');
+    if (cat === 'IDENTITY') { openIdentitySendModal(); return; }
+    setSwapType(cat);
+    document.getElementById('destDetailRow').style.display = 'block';
+    openDestinationModal();
+}
+
 function refreshUI() {
     const readiness = getSwapReadiness();
     const btn = document.getElementById('reviewBtn');
@@ -2002,6 +2072,7 @@ function refreshUI() {
             hint.textContent = msg; hint.className = 'show warning'; hint.style.display = 'block';
         }
     }
+    document.getElementById('swapDestinationSection')?.classList.toggle('ready', sourceReadyForCurrentMode());
     updateMultiTotal();
     updateToolboxBadge();
     updateSelectionChips();
@@ -2011,7 +2082,7 @@ function updateSelectionChips() {
     const destIcon = document.getElementById('destRowIcon');
     if (destEl) {
         if (state.swapType === 'IDENTITY') {
-            if (state.toIdentityValue) { destEl.textContent = 'Identity: ' + maskIdentifier(state.toIdentityValue); destEl.classList.add('filled'); if (destIcon) destIcon.textContent = '🪪'; }
+            if (state.toIdentityValue) { destEl.textContent = 'Identity: ' + maskIdentifier(state.toIdentityValue); destEl.classList.add('filled'); if (destIcon) destIcon.textContent = '🪪'; document.getElementById('destTypeIdentity')?.classList.add('active'); }
             else { destEl.textContent = 'Not selected \u203a'; destEl.classList.remove('filled'); if (destIcon) destIcon.textContent = '🎯'; }
         } else if (state.toInst) {
             const instName = PARTICIPANTS[state.toInst]?.name || state.toInst;
@@ -2184,7 +2255,7 @@ function showPreviewModal(previewData) {
     const swapType = state.swapPayload.swap_type;
     const netAmount = data.net_amount_destination_currency || data.net_amount;
     const destCurrency = data.destination_currency || data.source_currency;
-    const swapTypeLabel = { DEPOSIT: 'To an account', CASHOUT: 'Cash pickup', IDENTITY: 'To an identity', MULTI_SOURCE: 'Combined sources' }[swapType] || swapType.replace(/_/g, ' ');
+    const swapTypeLabel = { DEPOSIT: 'Deposit', CASHOUT: 'Cashout', IDENTITY: 'To an identity', MULTI_SOURCE: 'Combined sources' }[swapType] || swapType.replace(/_/g, ' ');
     const bodyHtml = `
         <div class="review-hero"><div class="review-hero-label">You'll receive</div><div class="review-hero-amount">${formatMoney(netAmount, destCurrency)}</div><div class="review-hero-note">Live quote — locked in for a few minutes</div></div>
         <div class="preview-box">
@@ -2359,11 +2430,20 @@ function walletEligibleSources() {
         return assetType === 'ACCOUNT' || assetType === 'WALLET' || assetType === 'MNO-WALLET' || assetType === 'BANK-WALLET' || assetType === 'MOBILE_WALLET' || category === 'MOBILE_MONEY' || category === 'BANK_WALLET' || category === 'BANK_ACCOUNT';
     });
 }
+// Collapsible dropdown behavior: closed by default, opens on tap,
+// closes itself the moment a source is picked (see selectSavedSource).
+function toggleSavedSourceDropdown() {
+    document.getElementById('savedSourcesDropdown')?.classList.toggle('open');
+}
+function closeSavedSourceDropdown() {
+    document.getElementById('savedSourcesDropdown')?.classList.remove('open');
+}
 function renderSavedSourceChips() {
     const container = document.getElementById('savedSourcesContainer');
     const chipsContainer = document.getElementById('savedSourcesChips');
     const clearBtn = document.getElementById('clearSourceBtn');
     const emptyPrompt = document.getElementById('noSourcesPrompt');
+    const triggerLabel = document.getElementById('savedSourceTriggerLabel');
     if (!container || !chipsContainer) return;
     const activeSources = walletEligibleSources();
     if (activeSources.length === 0) { container.style.display = 'none'; emptyPrompt.style.display = 'block'; return; }
@@ -2375,11 +2455,22 @@ function renderSavedSourceChips() {
         return `<div class="saved-source-row ${isSelected ? 'active' : ''}" onclick="selectSavedSource('${source.id}')"><div class="row-main"><div class="row-inst">${assetIcon(source.asset_type)} ${escapeHtml(instName)}</div><div class="row-ident">${escapeHtml(identifier)}${source.account_name ? ' · ' + escapeHtml(source.account_name) : ''}</div></div><span class="row-check">✓</span></div>`;
     }).join('');
     clearBtn.style.display = selectedSourceId ? 'inline-flex' : 'none';
+    const selectedSource = activeSources.find(s => s.id === selectedSourceId);
+    if (triggerLabel) {
+        if (selectedSource) {
+            triggerLabel.className = 'chosen';
+            triggerLabel.textContent = `${assetIcon(selectedSource.asset_type)} ${PARTICIPANTS[selectedSource.institution]?.name || selectedSource.institution} — ${selectedSource.identifier || selectedSource.source_identifier || ''}`;
+        } else {
+            triggerLabel.className = 'placeholder';
+            triggerLabel.textContent = 'Select a saved source \u203a';
+        }
+    }
 }
 function selectSavedSource(sourceId) {
     const source = userSources.find(s => s.id === sourceId);
     if (!source) { showMessage('Source not found.', 'error'); return; }
     selectedSourceId = sourceId;
+    closeSavedSourceDropdown();
     state.fromInst = source.institution; state.fromAsset = source.asset_type; state.fromFields = {};
     const inst = PARTICIPANTS[source.institution];
     document.getElementById('fromLimitsHelp').textContent = inst?.limits ? `Limits: ${inst.limits.min_amount} – ${inst.limits.max_amount} ${inst.limits.currency}` : '';
@@ -2936,15 +3027,31 @@ function renderActivityBody(data) {
     const swaps = data.data || data.swaps || [];
     const body = document.getElementById('activityViewBody');
     if (swaps.length === 0) { body.innerHTML = `<div style="text-align:center;padding:30px;color:var(--text-muted);"><div style="font-weight:700;">No swaps yet</div><div style="font-size:12px;margin-top:8px;">Once you make your first swap, it'll show up here.</div></div>`; return; }
-    let html = `<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Showing ${swaps.length} swap(s)</div>`;
+    let html = `<div class="field-group" style="margin-bottom:16px;"><input id="activitySearchInput" placeholder="Search by type, institution, or reference…" oninput="filterActivity(this.value)" style="font-size:15px;padding:14px 16px;"></div>`;
+    html += `<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;" id="activityCount">Showing ${swaps.length} swap(s)</div>`;
+    html += `<div id="activityRowsHolder">`;
     swaps.forEach((swap) => {
         const statusColor = swap.status === 'completed' || swap.status === 'success' ? 'var(--success)' : swap.status === 'pending' ? 'var(--warning)' : 'var(--danger)';
         const code = swap.voucher_number || null, pin = swap.atm_pin || null, claimPin = swap.claim_pin || null;
         const hasCode = !!(code || pin || claimPin);
         const codeInlineHtml = hasCode ? `<div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);display:flex;gap:16px;flex-wrap:wrap;">${code ? `<div><div style="font-size:10px;color:var(--text-dim);">Code</div><div style="font-family:var(--font-mono);font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(code)}</div></div>` : ''}${pin ? `<div><div style="font-size:10px;color:var(--text-dim);">PIN</div><div style="font-family:var(--font-mono);font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(pin)}</div></div>` : ''}${claimPin ? `<div><div style="font-size:10px;color:var(--text-dim);">Claim PIN</div><div style="font-family:var(--font-mono);font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(claimPin)}</div></div>` : ''}</div>` : '';
-        html += `<div style="border:1px solid var(--border);padding:13px;margin-bottom:8px;background:#fff;cursor:pointer;" onclick="viewSwapDetail('${swap.reference || swap.swap_reference || 'N/A'}')"><div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;"><div><div style="font-weight:700;">${swap.swap_type || 'SWAP'} <span style="font-size:11px;color:var(--text-muted);">${swap.reference || swap.swap_reference || ''}</span></div><div style="font-size:12px;color:var(--text-muted);">${swap.source_institution || 'Unknown'} → ${swap.destination_institution || 'Unknown'}</div></div><div style="text-align:right;"><div style="font-weight:700;color:var(--accent);font-family:var(--font-mono);">${formatMoney(swap.amount, swap.currency)}</div><div style="font-size:11px;color:${statusColor};">${swap.status || 'unknown'}</div></div></div>${codeInlineHtml}</div>`;
+        const searchBlob = escapeHtml([swap.swap_type, swap.reference, swap.swap_reference, swap.source_institution, swap.destination_institution, swap.status].filter(Boolean).join(' '));
+        html += `<div class="myc-panel" style="cursor:pointer;margin-bottom:8px;" data-search="${searchBlob.toLowerCase()}" onclick="viewSwapDetail('${swap.reference || swap.swap_reference || 'N/A'}')"><div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;"><div><div style="font-weight:700;">${swap.swap_type || 'SWAP'} <span style="font-size:11px;color:var(--text-muted);">${swap.reference || swap.swap_reference || ''}</span></div><div style="font-size:12px;color:var(--text-muted);">${swap.source_institution || 'Unknown'} → ${swap.destination_institution || 'Unknown'}</div></div><div style="text-align:right;"><div style="font-weight:700;color:var(--accent);font-family:var(--font-mono);">${formatMoney(swap.amount, swap.currency)}</div><div style="font-size:11px;color:${statusColor};">${swap.status || 'unknown'}</div></div></div>${codeInlineHtml}</div>`;
     });
+    html += `</div>`;
     body.innerHTML = html;
+}
+function filterActivity(query) {
+    const q = query.trim().toLowerCase();
+    const rows = document.querySelectorAll('#activityRowsHolder [data-search]');
+    let visibleCount = 0;
+    rows.forEach(row => {
+        const matches = !q || row.dataset.search.includes(q);
+        row.style.display = matches ? '' : 'none';
+        if (matches) visibleCount++;
+    });
+    const countEl = document.getElementById('activityCount');
+    if (countEl) countEl.textContent = q ? `${visibleCount} match${visibleCount === 1 ? '' : 'es'}` : `Showing ${rows.length} swap(s)`;
 }
 async function viewSwapDetail(reference) {
     openModal('Swap details', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading details...</div>');
@@ -2987,11 +3094,11 @@ async function setTransactionPin() {
 function openHelpModal() {
     openModal('Help', `<div style="font-size:13px;line-height:1.7;color:var(--text);">
         <p style="font-weight:700;margin-bottom:6px;">Swapping money</p>
-        <ol style="padding-left:18px;margin-bottom:16px;"><li>From the hub, tap Swap.</li><li>Pick a source tile: Wallet, Card, Voucher, or My Card (draws from whatever's hooked to your VouchMorph Card).</li><li>Tap Destination — To an account, or Cash pickup.</li><li>Enter the amount, review the fee, and confirm. Nothing moves until you tap Confirm.</li></ol>
+        <ol style="padding-left:18px;margin-bottom:16px;"><li>From the hub, tap Swap.</li><li>Pick a source tile: Wallet, Card, Voucher, or My Card (draws from whatever's hooked to your VouchMorph Card).</li><li>Choose "Where's this going?" — Deposit, Cashout, or Identity.</li><li>Enter the amount, review the fee, and confirm. Nothing moves until you tap Confirm.</li></ol>
         <p style="font-weight:700;margin-bottom:6px;">Swapping to an identity</p>
-        <ol style="padding-left:18px;margin-bottom:16px;"><li>Tap "Swap to identity" below the amount.</li><li>Enter their national ID, phone, or email.</li></ol>
+        <ol style="padding-left:18px;margin-bottom:16px;"><li>Under "Where's this going?", tap Identity.</li><li>Enter their national ID, phone, or email.</li></ol>
         <p style="font-weight:700;margin-bottom:6px;">Combining multiple sources</p>
-        <ol style="padding-left:18px;margin-bottom:16px;"><li>Tap "Combine sources" below the amount.</li><li>Type the total amount — "Smart" (recommended) balances it across your sources for you automatically.</li><li>Pick where it settles: an account/wallet/card, an identity, or a VouchMorph Card.</li></ol>
+        <ol style="padding-left:18px;margin-bottom:16px;"><li>Tap the "Combine" tile alongside the other source options.</li><li>Type the total amount — "Smart" (recommended) balances it across your sources for you automatically.</li><li>Pick where it settles: an account/wallet/card, an identity, or a VouchMorph Card.</li></ol>
         <p style="font-weight:700;margin-bottom:6px;">Your VouchMorph Card</p>
         <ol style="padding-left:18px;margin-bottom:16px;"><li>From the hub, tap Card. Every account gets one automatically.</li><li>It starts inactive — activate it once with a small one-time fee from any linked source.</li><li>Hook one or many sources — from the Card view ("Hook a source"), or from any row in Toolbox → My sources ("Hook to card"). Each hooked source is held for up to 24 hours per its own authorized amount.</li><li>Once something is hooked, you can spend it directly: go to Swap and pick "My Card" as your source — it draws from everything hooked, using the same Smart/Equal/Ratio/Manual split as Combine sources.</li><li>Each hooked source shows an Unhook option if you want to release it before you spend it.</li></ol>
         <p style="font-weight:700;margin-bottom:6px;">Claiming money sent to you</p>
