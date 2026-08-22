@@ -781,17 +781,17 @@ input[type=number] { -moz-appearance: textfield; }
 <div class="view" id="unhookView">
     <div class="product-view-inner">
         <div class="product-view-header">
-            <div class="product-view-eyebrow">Release a hold</div>
-            <div class="product-view-title">Unhook source</div>
+            <div class="product-view-eyebrow">Release this hook</div>
+            <div class="product-view-title">Unhook everything</div>
         </div>
         <div class="unhook-summary">
             <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;" id="unhookInstLine"></div>
             <div style="font-size:24px;font-weight:600;font-family:var(--font-mono);color:var(--accent);" id="unhookAmountLine"></div>
         </div>
         <div class="myc-panel" style="font-size:12px;color:var(--text-muted);">
-            If this source hasn't been spent yet and its hold is eligible for release, unhooking removes it immediately and it stops counting toward this card's available balance. If it isn't eligible yet, the request queues until the hold's 24-hour window ends.
+            This releases every source currently hooked to this card, all together — there's no way to release just one source out of the group. Anything already spent (e.g. in a swap) can't be unhooked.
         </div>
-        <button class="btn" style="background:var(--danger);" onclick="confirmUnhook()">Unhook this source</button>
+        <button class="btn" style="background:var(--danger);" onclick="confirmUnhook()">Unhook everything</button>
         <button class="btn secondary" style="margin-top:10px;" onclick="goBack()">Keep it hooked</button>
     </div>
 </div>
@@ -1069,6 +1069,7 @@ let sourcePanelOpenCat = null;
 let SessionUser = null;
 let regIdentityState = { attemptId: null, identityType: null, identityValue: null };
 let myCard = null;
+let vmCardSources = null; // flat list from GetCardSources.php — the real source-of-truth for "My Card" as a Swap source, aggregated across all active hooks (unlike My.php's single most-recent hook)
 let activeSessionPollTimer = null;
 let html5QrScanner = null;
 
@@ -1093,7 +1094,7 @@ function escapeHtml(str) { const div = document.createElement('div'); div.textCo
 // ============================================================
 const VIEW_LABELS = {
     swap: 'Swap', card: 'Card', activity: 'Activity', toolbox: 'Toolbox',
-    hook: 'Hook a source', qrfull: 'Card QR', unhook: 'Unhook source',
+    hook: 'Hook a source', qrfull: 'Card QR', unhook: 'Unhook everything',
 };
 let viewStack = ['hub'];
 
@@ -1383,17 +1384,33 @@ async function renderVmCardBreakdown() {
         holder.innerHTML = `<div class="tab-status-line warn">Your VouchMorph Card isn't active yet. <span class="quick-link muted" style="text-decoration:underline;" onclick="goView('card')">Activate it →</span></div>`;
         return;
     }
-    const hook = myCard.hook;
-    if (!hook || !hook.contributors || hook.contributors.length === 0) {
-        holder.innerHTML = `<div class="tab-status-line warn">Nothing is hooked to your card yet. <span class="quick-link muted" style="text-decoration:underline;" onclick="goView('card')">Hook a source →</span></div>`;
+
+    // GetCardSources.php (not My.php's embedded "hook") is the real
+    // resolver for spending purposes — it aggregates every currently
+    // HOOKED source across ALL of this card's active hooks, capped by
+    // live balance. My.php only shows the single most-recently-created
+    // hook for display, which would under-count what's actually
+    // spendable if more than one hook is active at once.
+    const sourcesResult = await callApi(CONFIG.API_BASE + '/api/v1/cards/GetCardSources.php', { card_suffix: myCard.card_suffix });
+    if (!sourcesResult.ok) {
+        holder.innerHTML = `<div class="tab-status-line warn">${escapeHtml(friendlyApiError(sourcesResult.error))} <span class="quick-link muted" style="text-decoration:underline;" onclick="goView('card')">Hook a source →</span></div>`;
+        vmCardSources = null;
         return;
     }
+    const sources = sourcesResult.body.data?.sources || sourcesResult.body.data || [];
+    if (!sources.length) {
+        holder.innerHTML = `<div class="tab-status-line warn">Nothing is hooked to your card yet. <span class="quick-link muted" style="text-decoration:underline;" onclick="goView('card')">Hook a source →</span></div>`;
+        vmCardSources = null;
+        return;
+    }
+    vmCardSources = sources;
 
-    const total = hook.total_held || hook.contributors.reduce((s, c) => s + (c.held_amount || 0), 0);
-    const rows = hook.contributors.map(c => `
+    const currency = myCard.hook?.currency || myCard.currency;
+    const total = sources.reduce((s, c) => s + (c.available_balance ?? c.authorized_amount ?? 0), 0);
+    const rows = sources.map(c => `
         <div class="card-source-breakdown-row">
-            <span>${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)} · ${escapeHtml(c.source_identifier)}</span>
-            <span style="font-family:var(--font-mono);font-weight:700;">${formatMoney(c.held_amount, hook.currency)}</span>
+            <span>${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)} · ${escapeHtml(c.identifier)}</span>
+            <span style="font-family:var(--font-mono);font-weight:700;">${formatMoney(c.available_balance ?? c.authorized_amount, currency)}</span>
         </div>`).join('');
 
     holder.innerHTML = `
@@ -1407,7 +1424,7 @@ async function renderVmCardBreakdown() {
         <div class="card-source-breakdown">
             ${rows}
             <div class="card-source-breakdown-row" style="border-bottom:none;padding-top:10px;font-weight:700;">
-                <span>Max available to swap</span><span style="font-family:var(--font-mono);color:var(--accent);">${formatMoney(total, hook.currency)}</span>
+                <span>Max available to swap</span><span style="font-family:var(--font-mono);color:var(--accent);">${formatMoney(total, currency)}</span>
             </div>
         </div>`;
 }
@@ -1909,11 +1926,12 @@ function getSwapReadiness() {
     if (state.swapSourceMode === 'VMCARD') {
         if (!myCard) reasons.push('load your VouchMorph Card first');
         else if (!myCard.is_active) reasons.push('activate your VouchMorph Card first');
-        else if (!myCard.hook || !myCard.hook.contributors || myCard.hook.contributors.length === 0) reasons.push('hook at least one source to your card first');
+        else if (!vmCardSources || vmCardSources.length === 0) reasons.push('hook at least one source to your card first');
         else {
-            const maxAvailable = myCard.hook.total_held || 0;
-            if (!(state.fromAmount > 0)) reasons.push('enter an amount to swap (up to ' + formatMoney(maxAvailable, myCard.hook.currency) + ' hooked)');
-            else if (state.fromAmount > maxAvailable + 0.01) reasons.push('enter an amount no more than what\'s hooked — ' + formatMoney(maxAvailable, myCard.hook.currency));
+            const currency = myCard.hook?.currency || myCard.currency;
+            const maxAvailable = vmCardSources.reduce((s, c) => s + (c.available_balance ?? c.authorized_amount ?? 0), 0);
+            if (!(state.fromAmount > 0)) reasons.push('enter an amount to swap (up to ' + formatMoney(maxAvailable, currency) + ' hooked)');
+            else if (state.fromAmount > maxAvailable + 0.01) reasons.push('enter an amount no more than what\'s hooked — ' + formatMoney(maxAvailable, currency));
         }
         reasons.push(...destinationReadiness());
         return { ready: reasons.length === 0, reasons, missingFields };
@@ -2007,45 +2025,10 @@ function buildPayload() {
     const reference = 'SWAP_' + Date.now();
     const idempotencyKey = 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
 
-    // ------------------------------------------------------------
-    // VMCARD — sources are whatever's already hooked to the card,
-    // so we don't resend identifiers/PINs (those were captured at
-    // hook time and are held server-side). The backend needs a
-    // dedicated endpoint for this — see the accompanying report.
-    // ------------------------------------------------------------
-    if (state.swapSourceMode === 'VMCARD') {
-        const hook = myCard?.hook;
-        const destCurrency = PARTICIPANTS[state.toInst]?.limits?.currency || hook?.currency;
-        const payload = {
-            swap_type: 'CARD_SOURCE',
-            reference, idempotency_key: idempotencyKey, user_id: CONFIG.USER_ID,
-            card_suffix: myCard?.card_suffix,
-            contribution_strategy: state.vmCardStrategy,
-            amount: state.fromAmount > 0 ? state.fromAmount : hook?.total_held,
-            currency: hook?.currency,
-            destination_currency: destCurrency,
-        };
-        if (state.swapType === 'IDENTITY') {
-            payload.identity_type = state.toIdentityType;
-            payload.identity_value = state.toIdentityValue;
-            if (state.toIdentitySms) payload.notification_phone = state.toIdentitySms;
-            return payload;
-        }
-        payload.to_institution = state.toInst;
-        payload.destination_institution = state.toInst;
-        payload.destination_asset_type = state.toAsset;
-        const destFields = { ...state.toFields };
-        payload.destination_asset_fields = destFields;
-        for (const [key, value] of Object.entries(destFields)) payload[`destination_${key}`] = value;
-        const destIdField = (ASSETS[state.toAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
-        if (destIdField) payload.destination_identifier = state.toFields[destIdField.name];
-        if (state.swapType === 'CASHOUT') {
-            payload.delivery_method = state.deliveryMethod || 'ATM';
-            const beneficiaryPhone = state.beneficiaryPhone || state.toFields?.phone || state.toFields?.recipient_phone || null;
-            if (beneficiaryPhone) { payload.beneficiary_phone = beneficiaryPhone; payload.client_phone = beneficiaryPhone; }
-        }
-        return payload;
-    }
+    // Note: "My Card" (VMCARD) never reaches buildPayload() — it's
+    // handled entirely by startVmCardSwap(), which creates a real
+    // contribution session (cards/Create.php) instead of a normal swap
+    // payload. See the comment above previewSwap() for why.
 
     if (state.swapType === 'MULTI_SOURCE') {
         const activeRows = state.multiSources.filter(s => s.institution && s.assetType);
@@ -2140,29 +2123,73 @@ async function previewSwap() {
         showMessage(msg + '.', 'warning');
         return;
     }
+    // ------------------------------------------------------------
+    // "My Card" is not a normal preview → confirm → execute swap.
+    // Verified against the real backend (PoolCoordinator::executeFromCardHook,
+    // called only by CardContributionSessionService): swapping from a
+    // card's hooked sources always goes through a CONTRIBUTION SESSION —
+    // Create.php → (Contribute.php for Manual) → execute.php — the same
+    // mechanism as the Card page's "Start a swap" button. There is no
+    // separate one-shot "swap now from card" endpoint, so this delegates
+    // to that real, already-working flow instead of a fictional preview.
+    // ------------------------------------------------------------
+    if (state.swapSourceMode === 'VMCARD') {
+        await startVmCardSwap();
+        return;
+    }
     const payload = buildPayload();
     state.swapPayload = payload;
     const btn = document.getElementById('reviewBtn');
     const original = btn.innerHTML;
     btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Calculating…';
-    const endpoint = state.swapSourceMode === 'VMCARD' ? (CONFIG.API_BASE + '/api/v1/cards/PreviewCardSwap.php') : CONFIG.PREVIEW_ENDPOINT;
-    const result = await callApi(endpoint, payload);
+    const result = await callApi(CONFIG.PREVIEW_ENDPOINT, payload);
     btn.disabled = false; btn.innerHTML = original;
     refreshUI();
     if (!result.ok) { showMessage('Preview failed: ' + friendlyApiError(result.error), 'error'); return; }
     showPreviewModal(result.body);
+}
+
+// Builds a contribution session (Create.php) from what's already filled
+// in on the Swap screen, then jumps to the Card view where the existing
+// renderSessionStatus()/startSessionPolling() UI (built earlier against
+// the real API) tracks it through OPEN → READY → EXECUTING → COMPLETED.
+async function startVmCardSwap() {
+    const btn = document.getElementById('reviewBtn');
+    const original = btn.innerHTML;
+    btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Starting…';
+
+    let destination_identifier = null;
+    if (state.swapType !== 'IDENTITY') {
+        const destIdField = (ASSETS[state.toAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+        destination_identifier = destIdField ? state.toFields[destIdField.name] : null;
+    }
+    const payload = {
+        card_suffix: myCard.card_suffix,
+        target_amount: state.fromAmount,
+        currency: myCard.hook?.currency || myCard.currency,
+        strategy: state.vmCardStrategy,
+        to_institution: state.swapType === 'IDENTITY' ? undefined : state.toInst,
+        destination_identifier: state.swapType === 'IDENTITY' ? undefined : destination_identifier,
+        identity_type: state.swapType === 'IDENTITY' ? state.toIdentityType : undefined,
+        identity_value: state.swapType === 'IDENTITY' ? state.toIdentityValue : undefined,
+    };
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/Create.php', payload);
+    btn.disabled = false; btn.innerHTML = original;
+    if (!result.ok) { showMessage("Couldn't start that swap: " + friendlyApiError(result.error), 'error'); return; }
+    showMessage('Swap started — track it from the Card page.', 'success');
+    goView('card');
 }
 function showPreviewModal(previewData) {
     const data = previewData.preview || {};
     const swapType = state.swapPayload.swap_type;
     const netAmount = data.net_amount_destination_currency || data.net_amount;
     const destCurrency = data.destination_currency || data.source_currency;
-    const swapTypeLabel = { DEPOSIT: 'To an account', CASHOUT: 'Cash pickup', IDENTITY: 'To an identity', MULTI_SOURCE: 'Combined sources', CARD_SOURCE: 'From my card' }[swapType] || swapType.replace(/_/g, ' ');
+    const swapTypeLabel = { DEPOSIT: 'To an account', CASHOUT: 'Cash pickup', IDENTITY: 'To an identity', MULTI_SOURCE: 'Combined sources' }[swapType] || swapType.replace(/_/g, ' ');
     const bodyHtml = `
         <div class="review-hero"><div class="review-hero-label">You'll receive</div><div class="review-hero-amount">${formatMoney(netAmount, destCurrency)}</div><div class="review-hero-note">Live quote — locked in for a few minutes</div></div>
         <div class="preview-box">
             <div class="preview-row"><span>Swap type</span><span class="value">${escapeHtml(swapTypeLabel)}</span></div>
-            <div class="preview-row"><span>From</span><span class="value">${escapeHtml(data.source_institution || (swapType === 'CARD_SOURCE' ? 'My VouchMorph Card' : '—'))}</span></div>
+            <div class="preview-row"><span>From</span><span class="value">${escapeHtml(data.source_institution || '—')}</span></div>
             <div class="preview-row"><span>To</span><span class="value">${escapeHtml(data.destination_institution || '—')}</span></div>
             <div class="preview-row"><span>Amount</span><span class="value">${formatMoney(data.amount_requested, data.source_currency)}</span></div>
             <div class="preview-row"><span>Fee</span><span class="value">${formatMoney(data.total_fee, data.source_currency)}</span></div>
@@ -2180,8 +2207,7 @@ async function confirmSwap() {
     const btn = document.getElementById('reviewBtn');
     const original = btn.innerHTML;
     btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Executing…';
-    const endpoint = payload.swap_type === 'CARD_SOURCE' ? (CONFIG.API_BASE + '/api/v1/cards/ExecuteCardSwap.php') : CONFIG.EXECUTE_ENDPOINT;
-    const result = await callApi(endpoint, payload);
+    const result = await callApi(CONFIG.EXECUTE_ENDPOINT, payload);
     btn.disabled = false; btn.innerHTML = original;
     refreshUI();
     if (!result.ok) { showMessage('Swap failed: ' + friendlyApiError(result.error), 'error'); return; }
@@ -3102,16 +3128,18 @@ function renderCardViewBody() {
         </div>`;
     }
     const hook = myCard.hook;
+    // Per the real backend (CardService::releaseHook / unhook.php), a
+    // hook is released as one all-or-nothing unit — every source in it
+    // together, via hook_reference. There is no per-source release, so
+    // this is one "Unhook everything" action for the hook shown here,
+    // not a button on each row.
     const contributorsHtml = hook && hook.contributors.length ? hook.contributors.map(c => `
         <div class="myc-source-row">
             <div class="myc-source-tile">${escapeHtml(institutionInitials(c.institution))}</div>
             <div class="myc-source-info"><div class="myc-source-inst">${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)}${c.is_me ? ' <span style="color:var(--accent);font-weight:700;">(you)</span>' : ''}</div><div class="myc-source-ident">${escapeHtml(c.source_identifier)}</div></div>
             <div style="text-align:right;">
                 <div class="myc-source-amt">${formatMoney(c.held_amount, hook.currency)}</div>
-                <div class="myc-source-status-row">
-                    <span class="source-status-badge ${c.status === 'expired' ? 'expired' : 'open'}">${c.status === 'expired' ? 'Expired' : 'Open'}</span>
-                    <button class="unhook-link" onclick='openUnhook(${JSON.stringify({institution: PARTICIPANTS[c.institution]?.name || c.institution, identifier: c.source_identifier, amount: formatMoney(c.held_amount, hook.currency), sourceId: c.source_id || c.id})})'>Unhook</button>
-                </div>
+                <span class="source-status-badge open">Open</span>
             </div>
         </div>`).join('') : `<div style="font-size:12px;color:var(--text-dim);padding:8px 0;">No sources hooked yet.</div>`;
     const cardName = myCard.display_name || (Journey.read().cardNamed ? Journey.read().cardNamed : null);
@@ -3140,6 +3168,7 @@ function renderCardViewBody() {
                     <div class="myc-panel-head"><span class="myc-panel-title">Hooked sources</span>${hook ? `<span class="myc-panel-total">${formatMoney(hook.total_held, hook.currency)}</span>` : ''}</div>
                     ${hook ? `<div class="help" style="margin-bottom:6px;">Held until ${new Date(hook.expires_at).toLocaleString()} — releases automatically after 24 hours if it isn't spent first.</div>` : ''}
                     ${contributorsHtml}
+                    ${hook && hook.contributors.length ? `<button class="btn secondary" style="margin-top:14px;" onclick="openUnhook({hookReference: hook.hook_reference, count: hook.contributors.length, amount: formatMoney(hook.total_held, hook.currency)})">Unhook everything</button>` : ''}
                 </div>
                 <div id="sessionStatusArea">${myCard.active_session ? renderSessionStatus(myCard.active_session) : ''}</div>
             </div>
@@ -3365,30 +3394,34 @@ function submitManualQr() {
 }
 async function resolveScannedQr(raw) {
     if (html5QrScanner) { try { await html5QrScanner.stop(); } catch (e) {} }
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/ResolveQr.php', { raw });
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/Resolveqr.php', { raw });
     if (!result.ok) { showMessage('Couldn\'t read that code: ' + friendlyApiError(result.error), 'error'); return; }
     const { card_suffix, display_name } = result.body.data;
     openModal('Confirm', `<div style="text-align:center;padding:16px;"><div style="font-size:14px;margin-bottom:16px;">You're about to hook a source to <strong>${escapeHtml(display_name)}'s</strong> VouchMorph Card.</div><div class="cta-row"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="closeModal(); hookEntry={source:'card', targetCardSuffix:'${escapeHtml(card_suffix)}'}; hookRows=[]; hookRowSeq=0; addHookRow(); setHookMode('single'); document.getElementById('hookEyebrow').textContent='Hook to ${escapeHtml(display_name)}\\'s Card'; document.getElementById('hookEntryNote').textContent='Hooking a source to someone else\\'s card via their QR.'; pushView('hook');">Continue</button></div></div>`);
 }
 
 // ============================================================
-// UNHOOK — reachable from every hooked-source row on Card.
-// Backend note: the original codebase has no release/cancel-hold
-// endpoint (hook.php only creates holds) — this calls a new
-// endpoint that needs to exist server-side. See the report.
+// UNHOOK — real endpoint confirmed against the VouchMorph repo
+// (public/api/v1/cards/unhook.php + CardService::releaseHook()).
+// It releases an entire hook (hook_reference) as one all-or-nothing
+// unit — every source in that hook together. There is no per-source
+// release, so this is one "Unhook everything" action for the hook
+// currently shown on the Card view, not a button per row.
 // ============================================================
 let unhookTarget = null;
 function openUnhook(target) {
     unhookTarget = target;
-    document.getElementById('unhookInstLine').textContent = `${target.institution} · ${target.identifier}`;
+    document.getElementById('unhookInstLine').textContent = `${target.count} source${target.count > 1 ? 's' : ''} in this hook`;
     document.getElementById('unhookAmountLine').textContent = target.amount;
     pushView('unhook');
 }
 async function confirmUnhook() {
     if (!unhookTarget) { goBack(); return; }
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/Unhook.php', { card_suffix: myCard?.card_suffix, source_id: unhookTarget.sourceId });
-    if (!result.ok) { showMessage('Couldn\'t unhook that source: ' + friendlyApiError(result.error), 'error'); return; }
-    showMessage(result.body?.data?.queued ? 'Unhook queued — it will release once the hold is eligible.' : 'Source unhooked. 🎉', 'success');
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/unhook.php', { hook_reference: unhookTarget.hookReference, card_suffix: myCard?.card_suffix });
+    if (!result.ok) { showMessage('Couldn\'t unhook: ' + friendlyApiError(result.error), 'error'); return; }
+    const data = result.body || {};
+    if (data.status === 'UNHOOK_PARTIAL') showMessage('Some sources released — others could not be released automatically and remain held. See Help for what to do next.', 'warning');
+    else showMessage('All hooked sources released. 🎉', 'success');
     goBack();
     loadCardView();
 }
