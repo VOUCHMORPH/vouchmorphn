@@ -2321,16 +2321,35 @@ public function reversePooledSwipe(string $hookReference, string $reversalReason
 
             $swipeAmount = (float)$hook['swipe_amount'];
 
-            $contributions = $contributionCalculator->calculateContributions(
-                $swipeAmount,
-                array_map(fn($s) => [
-                    'institution' => $s['institution'],
-                    'asset_type' => $s['asset_type'],
-                    'identifier' => $s['source_identifier'],
-                    'available_balance' => (float)$s['held_amount'],
-                ], $sources),
-                'SMART'
-            );
+            // Inside finalizePooledSwipe(), before calling calculateContributions():
+
+$destinationDeliveryMethod = strtoupper($merchantContext['delivery_method'] ?? 'DEPOSIT');
+$isCashout = in_array($destinationDeliveryMethod, ['ATM', 'AGENT', 'CASHOUT'], true);
+
+$feesConfig = $swapService->getFeeService()->getRawFeesConfig(); // exposes fees.json — confirm this getter exists; if not, thread $this->feesConfig through the constructor the same way SwapService already does
+$currency = $hook['currency'] ?? 'BWP';
+
+if ($isCashout) {
+    $cashoutF1 = (float)($feesConfig['CASHOUT']['fee_components']['F1']['amount'] ?? 0);
+    $smallestNote = min($swapService->getAtmDenominations($currency)); // already exists on SwapService
+    $minContribution = $cashoutF1 + $smallestNote; // same combined-threshold shape as validateEarmarkedWithdrawal()
+} else {
+    $minContribution = (float)($feesConfig['DEPOSIT']['fee_components']['F1']['amount'] ?? 0);
+}
+
+$contributions = $contributionCalculator->calculateContributions(
+    $swipeAmount,
+    array_map(fn($s) => [
+        'institution' => $s['institution'],
+        'asset_type' => $s['asset_type'],
+        'identifier' => $s['source_identifier'],
+        'available_balance' => (float)$s['held_amount'],
+    ], $sources),
+    'SMART',
+    null,
+    null,
+    $minContribution   // NEW
+);
 
             $bills = [];
             $totalDebited = 0.0;
