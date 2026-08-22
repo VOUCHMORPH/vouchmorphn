@@ -337,8 +337,8 @@ input[type=number] { -moz-appearance: textfield; }
    border + soft tint) once the source step is actually satisfied, so
    the person's attention is drawn to what to do next instead of
    everything on the page looking equally important all the time. */
-.swap-destination-section { border: 1px solid var(--border); padding: 18px 16px; margin: 20px 0 4px; transition: all 0.2s ease; }
-.swap-destination-section.ready { border-color: var(--accent); background: var(--accent-soft); }
+.swap-destination-section { border: 1px solid var(--border); padding: 18px 16px; margin: 20px 0 4px; transition: all 0.2s ease; display: none; }
+.swap-destination-section.ready { display: block; border-color: var(--accent); background: var(--accent-soft); animation: fadeInUp 0.3s ease; }
 .swap-destination-heading { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); margin-bottom: 12px; transition: color 0.2s ease; }
 .swap-destination-section.ready .swap-destination-heading { color: var(--accent); }
 .swap-dest-types { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
@@ -1443,6 +1443,7 @@ function toggleSourcePanelInline(cat) {
     fieldsBox.innerHTML = ''; fieldsBox.style.display = 'none';
     const helpEl = document.getElementById('sourceSelectedHelp');
     if (helpEl) helpEl.style.display = 'none';
+    document.getElementById('hookToCardEntryPoint')?.remove(); // clear any leftover trigger from the previous mode/source
 
     const walletPanel = document.getElementById('walletPanel');
     const instAssetPanel = document.getElementById('instAssetPanel');
@@ -1547,7 +1548,24 @@ function selectFromInst(code) {
     updateCurrencyDisplay();
     refreshUI();
 }
-function updateFromField(name, value) { state.fromFields[name] = value; refreshUI(); }
+function updateFromField(name, value) {
+    state.fromFields[name] = value;
+    refreshUI();
+    // Card and Voucher sources are filled in manually (no saved-source
+    // step to hang the hook-trigger off), so it has to appear here
+    // instead, the moment the fields actually validate — matching the
+    // same "hook this source instead" moment Wallet gets after picking
+    // a saved source.
+    if (['CARD', 'VOUCHER'].includes(state.swapSourceMode) && state.fromInst && state.fromAsset) {
+        const existing = document.getElementById('hookToCardEntryPoint');
+        const valid = fieldsValidForAsset(state.fromAsset, state.fromFields, true).valid;
+        if (valid && !existing) {
+            document.getElementById('fromFields')?.insertAdjacentHTML('afterend', `<div id="hookToCardEntryPoint" style="margin-top:8px;"><span class="quick-link muted" onclick="hookSelectedSourceToCard()">Hook this source to a card instead →</span></div>`);
+        } else if (!valid && existing) {
+            existing.remove();
+        }
+    }
+}
 function assetHasAmountField(assetType) { return (getAssetConfig(assetType)?.fields || []).some(f => f.name === 'amount'); }
 function renderDynamicFields(containerId, assetType, prefix, onChange, includePin) {
     const container = document.getElementById(containerId);
@@ -2643,7 +2661,7 @@ function selectSavedSource(sourceId) {
         showMessage(`${getAssetConfig(source.asset_type)?.label || source.asset_type} selected: ${inst?.name || source.institution}`, 'success');
         const existingHookLink = document.getElementById('hookToCardEntryPoint');
         if (existingHookLink) existingHookLink.remove();
-        document.getElementById('sourceSelectedHelp')?.insertAdjacentHTML('afterend', `<div id="hookToCardEntryPoint" style="margin-top:8px;"><span class="quick-link muted" onclick="hookSelectedSourceToCard()">Hook this source to a VouchMorph Card instead →</span></div>`);
+        document.getElementById('sourceSelectedHelp')?.insertAdjacentHTML('afterend', `<div id="hookToCardEntryPoint" style="margin-top:8px;"><span class="quick-link muted" onclick="hookSelectedSourceToCard()">Hook this source to a card instead →</span></div>`);
         refreshUI();
     }, 300);
     updateCurrencyDisplay(); refreshUI();
@@ -2810,7 +2828,7 @@ function renderToolboxBody() {
                 <div class="myc-source-info"><div class="myc-source-inst">${escapeHtml(PARTICIPANTS[source.institution]?.name || source.institution)}</div><div class="myc-source-ident">${escapeHtml(ASSETS[source.asset_type]?.label || source.asset_type)} · ${escapeHtml(source.identifier || source.source_identifier || '')}</div></div>
                 <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
                     ${isActive ? `<button class="unhook-link" style="color:var(--accent);" onclick="useSourceForSwap('${source.id}')">Use</button>` : `<span class="source-status-badge expired">${escapeHtml(source.status)}</span>`}
-                    ${isActive ? `<button class="unhook-link" style="color:var(--text-muted);" onclick="openHookBuilder('source', {instName: '${escapeHtml(PARTICIPANTS[source.institution]?.name || source.institution)}', institution: '${source.institution}', assetType: '${source.asset_type}', identifier: '${escapeHtml(source.identifier || source.source_identifier || '')}'})">Hook to card &rsaquo;</button>` : ''}
+                    ${isActive ? `<button class="unhook-link" style="color:var(--text-muted);" onclick="promptHookThisSource({instName: '${escapeHtml(PARTICIPANTS[source.institution]?.name || source.institution)}', institution: '${source.institution}', assetType: '${source.asset_type}', identifier: '${escapeHtml(source.identifier || source.source_identifier || '')}'})">Hook to card &rsaquo;</button>` : ''}
                 </div>
             </div>`;
         }).join('');
@@ -2914,7 +2932,7 @@ function updateToolboxBadge() {
 function hookSelectedSourceToCard() {
     const idField = (getAssetConfig(state.fromAsset)?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
     const identifier = idField ? state.fromFields[idField.name] : '';
-    openHookBuilder('source', { instName: PARTICIPANTS[state.fromInst]?.name || state.fromInst, institution: state.fromInst, assetType: state.fromAsset, identifier });
+    promptHookThisSource({ instName: PARTICIPANTS[state.fromInst]?.name || state.fromInst, institution: state.fromInst, assetType: state.fromAsset, identifier });
 }
 
 function openFinalizeIdentityModal() { openModal('Finalize identity swap', renderFinalizeIdentityModal()); }
@@ -2926,7 +2944,81 @@ function renderFinalizeIdentityModal() {
         const codeInlineHtml = hasCode ? `<div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--border);display:flex;gap:16px;flex-wrap:wrap;">${code ? `<div><div style="font-size:10px;color:var(--text-dim);">Code</div><div style="font-family:var(--font-mono);font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(code)}</div></div>` : ''}${pin ? `<div><div style="font-size:10px;color:var(--text-dim);">PIN</div><div style="font-family:var(--font-mono);font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(pin)}</div></div>` : ''}${claimPin ? `<div><div style="font-size:10px;color:var(--text-dim);">Claim PIN</div><div style="font-family:var(--font-mono);font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(claimPin)}</div></div>` : ''}${c.voucher_expiry ? `<div><div style="font-size:10px;color:var(--text-dim);">Expires</div><div style="font-size:12px;color:var(--text-muted);">${new Date(c.voucher_expiry).toLocaleString()}</div></div>` : ''}</div>` : '';
         return `<div style="border:1px solid var(--border);padding:13px;margin-bottom:8px;background:#fff;"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;"><div style="flex:1;"><div style="font-weight:700;font-size:15px;color:var(--accent);font-family:var(--font-mono);">${formatMoney(c.amount, c.currency)}</div><div style="font-size:12px;color:var(--text-muted);">From ${escapeHtml(c.source_institution || 'Unknown')}</div><div style="font-size:11px;color:var(--text-dim);">Needs ${pinLabel} · Expires ${c.hold_expires_at ? new Date(c.hold_expires_at).toLocaleString() : 'soon'}</div></div><button class="btn btn-primary btn-sm" onclick="openClaimForm(${i})" style="flex-shrink:0;">Finalize</button></div>${codeInlineHtml}</div>`;
     }).join('')}</div>`;
-    return `<div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">Money sent to your national ID, phone, or email shows up here.</div>${claimsHtml}<div style="border-top:1px solid var(--border);padding-top:16px;margin-top:4px;"><div class="field-label" style="margin-bottom:6px;">Need to claim an identity swap?</div><div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">If you received a swap notification, enter the claim PIN below to complete the transaction.</div><div class="field-group"><label>Swap reference</label><input id="directClaimRef" placeholder="e.g. SWAP_123456789"></div><div class="field-group"><label>Claim PIN</label><input type="password" id="directClaimPin" placeholder="Enter the PIN you received" maxlength="6"></div><div class="cta-row"><button class="btn btn-primary" onclick="submitDirectClaim()">Claim swap</button></div></div><div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px;font-size:11px;color:var(--text-dim);"><span class="quick-link muted" onclick="closeModal();openAddIdentityModal();">Need to register a new identity instead? Click here →</span></div>`;
+    return `<div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">Money sent to your national ID, phone, or email shows up here. Tap Finalize on any of them — Cashout, Deposit, and Hook to a VouchMorph Card are all options there, so you're not limited to withdrawing it first.</div>${claimsHtml}<div style="border-top:1px solid var(--border);padding-top:16px;margin-top:4px;"><div class="field-label" style="margin-bottom:6px;">Need to claim an identity swap?</div><div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">If you received a swap notification, enter the claim PIN below to complete the transaction.</div><div class="field-group"><label>Swap reference</label><input id="directClaimRef" placeholder="e.g. SWAP_123456789"></div><div class="field-group"><label>Claim PIN</label><input type="password" id="directClaimPin" placeholder="Enter the PIN you received" maxlength="6"></div><div class="cta-row"><button class="btn btn-primary" onclick="submitDirectClaim()">Claim swap</button></div></div><div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px;font-size:11px;color:var(--text-dim);"><span class="quick-link muted" onclick="closeModal();openAddIdentityModal();">Need to register a new identity instead? Click here →</span></div>`;
+}
+// Which card a pending claim-via-hook should target, and which claim
+// index we're mid-way through resolving it for — needed because
+// picking "Another VouchMorph Card" has to temporarily replace this
+// same modal's content (there's only one modal at a time) and then
+// come back to the claim form afterward with the target filled in.
+let claimHookCardSuffix = null;
+let claimHookCardLabel = null;
+let pendingClaimIdxForHook = null;
+
+function openClaimForm(idx) {
+    if (pendingClaimIdxForHook !== idx) { claimHookCardSuffix = null; claimHookCardLabel = null; } // fresh claim, drop any stale target from a different one
+    pendingClaimIdxForHook = idx;
+    const claim = pendingClaims[idx]; if (!claim) return;
+    const pinHint = claim.claim_type === 'otp_pin' ? 'Use the one-time PIN sent by SMS when this money was sent.' : 'Use your VouchMorph transaction PIN.';
+    const body = `<div style="background:var(--accent-soft);padding:14px;margin-bottom:14px;"><div style="font-size:20px;font-weight:600;color:var(--accent);font-family:var(--font-mono);">${formatMoney(claim.amount, claim.currency)}</div><div style="font-size:12px;color:var(--text-muted);">From ${escapeHtml(claim.source_institution || 'Unknown')}</div></div><div class="field-group"><label>Claim PIN</label><input type="password" id="claimPin" inputmode="numeric" maxlength="6" placeholder="••••"><div class="help">${pinHint}</div></div><div class="field-group"><label>Receive as</label><select id="claimDestType" onchange="toggleClaimDestFields(this.value)"><option value="CASHOUT">Cashout (ATM / Agent code)</option><option value="DEPOSIT">Deposit to an account/wallet</option><option value="HOOK" ${claimHookCardSuffix ? 'selected' : ''}>Hook to a VouchMorph Card</option></select></div><div id="claimDepositFields" style="display:none;"><div class="field-group"><label>Destination institution</label><select id="claimDestInst"><option value="">Select institution</option>${Object.keys(PARTICIPANTS).map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('')}</select></div><div class="field-group"><label>Account / wallet number</label><input id="claimDestIdentifier" placeholder="Account number or phone"></div></div><div id="claimHookFields" style="display:${claimHookCardSuffix ? 'block' : 'none'};"><div class="cta-row" style="flex-direction:column;gap:10px;"><button class="btn btn-secondary" onclick="chooseClaimHookTarget('my')">My VouchMorph Card</button><button class="btn btn-secondary" onclick="chooseClaimHookTarget('other')">Another VouchMorph Card</button></div><div style="margin-top:10px;font-size:12px;color:var(--accent);text-align:center;">${claimHookCardSuffix ? `Will hook to ${escapeHtml(claimHookCardLabel || ('•••• ' + claimHookCardSuffix))}` : ''}</div></div><div class="cta-row"><button class="btn btn-secondary" onclick="openFinalizeIdentityModal()">Back</button><button class="btn btn-primary" onclick="submitClaim('${claim.swap_reference}')">Finalize</button></div>`;
+    openModal('Finalize identity swap', body);
+    if (claimHookCardSuffix) toggleClaimDestFields('HOOK');
+}
+function toggleClaimDestFields(type) {
+    document.getElementById('claimDepositFields').style.display = type === 'DEPOSIT' ? 'block' : 'none';
+    document.getElementById('claimHookFields').style.display = type === 'HOOK' ? 'block' : 'none';
+    const sel = document.getElementById('claimDestType');
+    if (sel) sel.value = type;
+}
+// "My Card" resolves instantly (fetching your own card if not already
+// loaded); "Another" swaps this same modal to a small card-number/QR
+// step, then returns to the claim form with the target filled in —
+// same single-modal pattern used everywhere else in the app.
+async function chooseClaimHookTarget(which) {
+    if (which === 'my') {
+        if (!myCard) {
+            const result = await callApiGet(CONFIG.API_BASE + '/api/v1/cards/My.php');
+            if (!result.ok) { showMessage("Couldn't load your card: " + friendlyApiError(result.error), 'error'); return; }
+            myCard = result.body.data;
+        }
+        if (!myCard.is_active) { showMessage('Your VouchMorph Card is not active yet — activate it first from the Card view.', 'warning'); return; }
+        claimHookCardSuffix = myCard.card_suffix;
+        claimHookCardLabel = `your card •••• ${myCard.card_suffix}`;
+        openClaimForm(pendingClaimIdxForHook);
+        return;
+    }
+    openModal('Enter the other card', `
+        <div class="field-group"><label>Card number or suffix</label><input id="claimOtherCardNumber" placeholder="e.g. last 4 digits or full number"></div>
+        <div class="cta-row"><button class="btn btn-primary" onclick="resolveClaimOtherCard()">Continue</button></div>
+        <div style="text-align:center;margin:16px 0;font-size:11px;color:var(--text-dim);">or</div>
+        <button class="btn btn-secondary" onclick="openScanForClaimHook()">Scan their QR code instead</button>
+        <div class="cta-row" style="margin-top:14px;"><button class="btn secondary" onclick="openClaimForm(pendingClaimIdxForHook)">Back</button></div>`);
+}
+async function resolveClaimOtherCard() {
+    const raw = document.getElementById('claimOtherCardNumber').value.trim();
+    if (!raw) { showMessage('Enter a card number.', 'warning'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/LookupBySuffix.php', { card_suffix: raw });
+    if (!result.ok) { showMessage("Couldn't find that card: " + friendlyApiError(result.error), 'error'); return; }
+    finishClaimHookTarget(result.body.data.card_suffix, result.body.data.display_name);
+}
+function openScanForClaimHook() {
+    openModal('Scan a card', `
+        <div id="qrScannerRegion" style="width:100%;"></div>
+        <div style="text-align:center;margin:12px 0;font-size:11px;color:var(--text-dim);">or paste the code manually above</div>`);
+    try {
+        html5QrScanner = new Html5Qrcode('qrScannerRegion');
+        html5QrScanner.start({ facingMode: 'environment' }, { fps: 10, qrbox: 220 }, async (decodedText) => {
+            html5QrScanner.stop().catch(() => {});
+            const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/Resolveqr.php', { raw: decodedText });
+            if (!result.ok) { showMessage("Couldn't read that code: " + friendlyApiError(result.error), 'error'); return; }
+            finishClaimHookTarget(result.body.data.card_suffix, result.body.data.display_name);
+        }, () => {}).catch((e) => console.warn('[claim-hook-qr] camera scan unavailable:', e));
+    } catch (e) { console.warn('[claim-hook-qr] Html5Qrcode not available:', e); }
+}
+function finishClaimHookTarget(cardSuffix, displayName) {
+    claimHookCardSuffix = cardSuffix;
+    claimHookCardLabel = `${displayName}'s card •••• ${cardSuffix}`;
+    openClaimForm(pendingClaimIdxForHook);
 }
 async function submitDirectClaim() {
     const swapRef = document.getElementById('directClaimRef').value.trim();
@@ -2938,26 +3030,52 @@ async function submitDirectClaim() {
     if (!result.ok) { showMessage('That claim didn\'t go through: ' + friendlyApiError(result.error), 'error'); return; }
     closeModal(); showMessage('Funds claimed successfully! 🎉', 'success'); checkPendingClaims(); loadToolboxView();
 }
-function openClaimForm(idx) {
-    const claim = pendingClaims[idx]; if (!claim) return;
-    const pinHint = claim.claim_type === 'otp_pin' ? 'Use the one-time PIN sent by SMS when this money was sent.' : 'Use your VouchMorph transaction PIN.';
-    const body = `<div style="background:var(--accent-soft);padding:14px;margin-bottom:14px;"><div style="font-size:20px;font-weight:600;color:var(--accent);font-family:var(--font-mono);">${formatMoney(claim.amount, claim.currency)}</div><div style="font-size:12px;color:var(--text-muted);">From ${escapeHtml(claim.source_institution || 'Unknown')}</div></div><div class="field-group"><label>Claim PIN</label><input type="password" id="claimPin" inputmode="numeric" maxlength="6" placeholder="••••"><div class="help">${pinHint}</div></div><div class="field-group"><label>Receive as</label><select id="claimDestType" onchange="toggleClaimDestFields(this.value)"><option value="CASHOUT">Cashout (ATM / Agent code)</option><option value="DEPOSIT">Deposit to an account/wallet</option></select></div><div id="claimDepositFields" style="display:none;"><div class="field-group"><label>Destination institution</label><select id="claimDestInst"><option value="">Select institution</option>${Object.keys(PARTICIPANTS).map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('')}</select></div><div class="field-group"><label>Account / wallet number</label><input id="claimDestIdentifier" placeholder="Account number or phone"></div></div><div class="cta-row"><button class="btn btn-secondary" onclick="openFinalizeIdentityModal()">Back</button><button class="btn btn-primary" onclick="submitClaim('${claim.swap_reference}')">Finalize</button></div>`;
-    openModal('Finalize identity swap', body);
-}
-function toggleClaimDestFields(type) { document.getElementById('claimDepositFields').style.display = type === 'DEPOSIT' ? 'block' : 'none'; }
 async function submitClaim(swapReference) {
     const pin = document.getElementById('claimPin').value.trim();
     const destType = document.getElementById('claimDestType').value;
     if (!pin) { showMessage('Enter your claim PIN.', 'warning'); return; }
     const payload = { swap_reference: swapReference, pin, destination_type: destType };
+    let destInst = null, destIdentifier = null;
     if (destType === 'DEPOSIT') {
-        payload.destination_institution = document.getElementById('claimDestInst').value;
-        payload.destination_identifier = document.getElementById('claimDestIdentifier').value.trim();
-        if (!payload.destination_institution || !payload.destination_identifier) { showMessage('Select a destination institution and enter an account/wallet number.', 'warning'); return; }
+        destInst = document.getElementById('claimDestInst').value;
+        destIdentifier = document.getElementById('claimDestIdentifier').value.trim();
+        payload.destination_institution = destInst;
+        payload.destination_identifier = destIdentifier;
+        if (!destInst || !destIdentifier) { showMessage('Select a destination institution and enter an account/wallet number.', 'warning'); return; }
+    } else if (destType === 'HOOK') {
+        // NOTE: 'HOOK' is not a confirmed destination_type on the real
+        // claim_identity.php — this needs backend support added before
+        // it will actually work. Frontend is ready for it either way.
+        if (!claimHookCardSuffix) { showMessage('Choose which card to hook this to first.', 'warning'); return; }
+        payload.card_suffix = claimHookCardSuffix;
     }
     const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/claim_identity.php', payload);
     if (!result.ok) { showMessage('That claim didn\'t go through: ' + friendlyApiError(result.error), 'error'); return; }
-    closeModal(); showMessage('Funds claimed successfully! 🎉', 'success'); checkPendingClaims(); loadToolboxView();
+    checkPendingClaims();
+    if (destType === 'HOOK') {
+        closeModal();
+        showMessage(`Claimed and hooked to ${claimHookCardLabel || 'the card'}. 🎉`, 'success');
+        claimHookCardSuffix = null; claimHookCardLabel = null; pendingClaimIdxForHook = null;
+        loadToolboxView();
+        return;
+    }
+    if (destType === 'DEPOSIT' && destInst && destIdentifier) {
+        // The claimed money just landed in a real account/wallet — offer
+        // to hook it right away instead of making the person go find it
+        // again later under My sources.
+        openModal('Claimed', `
+            <div style="text-align:center;padding:10px 0 4px;">
+                <div style="font-size:36px;margin-bottom:8px;">✓</div>
+                <div style="font-size:16px;font-weight:700;margin-bottom:6px;">Funds claimed successfully! 🎉</div>
+                <div style="font-size:12px;color:var(--text-muted);margin-bottom:20px;">Deposited to ${escapeHtml(PARTICIPANTS[destInst]?.name || destInst)} — ${escapeHtml(destIdentifier)}</div>
+                <div class="cta-row" style="flex-direction:column;gap:10px;">
+                    <button class="btn btn-primary" onclick="closeModal(); promptHookThisSource({instName: '${escapeHtml(PARTICIPANTS[destInst]?.name || destInst)}', institution: '${escapeHtml(destInst)}', assetType: 'ACCOUNT', identifier: '${escapeHtml(destIdentifier)}'});">Hook this to a card</button>
+                    <button class="btn secondary" onclick="closeModal(); loadToolboxView();">Done</button>
+                </div>
+            </div>`);
+    } else {
+        closeModal(); showMessage('Funds claimed successfully! 🎉', 'success'); loadToolboxView();
+    }
 }
 function openAddIdentityModal() {
     openModal('Register identity', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading...</div>');
@@ -3353,7 +3471,7 @@ async function loadCardView() {
         myCard = result.body.data;
         body.innerHTML = renderCardViewBody();
         if (myCard.is_active && myCard.qr_payload) renderCardQr(myCard.qr_payload);
-        if (myCard.active_session) startSessionPolling(myCard.active_session.session_id);
+        if (myCard.active_session) { lastKnownSession = myCard.active_session; startSessionPolling(myCard.active_session.session_id); }
     } catch (e) {
         console.error('[card] loadCardView threw:', e);
         body.innerHTML = `<div style="color:var(--danger);padding:12px;text-align:center;"><div style="font-weight:700;margin-bottom:6px;">Something went wrong loading your card</div><div style="font-size:12px;">${escapeHtml(e.message || String(e))}</div><button class="btn btn-secondary btn-sm" onclick="loadCardView()" style="margin-top:12px;width:auto;">Retry</button></div>`;
@@ -3404,7 +3522,7 @@ function renderCardViewBody() {
                     ${hook && hook.contributors.length ? `<button class="btn btn-primary" onclick="openCreateSessionModal(myCard.card_suffix)">Start a swap</button>` : ''}
                 </div>
                 ${hook && hook.contributors.length ? `<button class="btn secondary" style="margin-top:10px;" onclick="goView('swap'); setTimeout(()=>setSwapSourceMode('VMCARD'), 30);">Use this card as a Swap source</button>` : ''}
-                <div style="margin-top:14px;"><span class="quick-link muted" onclick="openScanToHookModal()">Hook to someone else's card (scan their QR)</span></div>
+                <div style="margin-top:14px;"><span class="quick-link muted" onclick="pendingHookPrefill=null; openScanToHookModal()">Hook to someone else's card (scan their QR)</span></div>
             </div>
             <div>
                 <div class="myc-panel">
@@ -3486,7 +3604,13 @@ const HOOK_ASSET_TYPES = [
     { key: 'WALLET', label: 'Wallet', icon: '📱' },
     { key: 'CARD', label: 'Card (Visa/Mastercard)', icon: '🪪' },
     { key: 'VOUCHER', label: 'Cashout voucher', icon: '🎟️' },
-    { key: 'IDENTITY', label: 'Identity claim', icon: '🆔', note: 'Needs a claimed swap' },
+    // Identity claims are hooked via their own dedicated flow now —
+    // Toolbox → Finalize identity swap → Finalize → "Hook to a
+    // VouchMorph Card" — which knows exactly which claim it's for and
+    // carries the claim PIN. The old version here just grabbed
+    // pendingClaims[0] blindly with no way to track which claim it
+    // actually referred to, so it's been removed rather than left as
+    // a second, broken path to the same thing.
 ];
 let hookMode = 'single';
 let hookRows = [];
@@ -3535,9 +3659,7 @@ function removeHookRow(id) { hookRows = hookRows.filter(r => r.id !== id); rende
 function setHookRowAssetType(id, type) {
     const row = hookRows.find(r => r.id === id);
     if (!row) return;
-    if (type === 'IDENTITY' && pendingClaims.length === 0) return;
     row.assetType = type;
-    if (type === 'IDENTITY' && pendingClaims.length > 0) row.identifier = formatMoney(pendingClaims[0].amount, pendingClaims[0].currency) + ' available';
     renderHookRows();
 }
 function renderHookRows() {
@@ -3546,17 +3668,14 @@ function renderHookRows() {
         if (row.locked) {
             return `<div class="hook-row-card"><div class="hook-row-head"><span class="hook-row-label">Source ${idx + 1} — from My sources</span></div><div style="font-size:13px;font-weight:700;">${escapeHtml(row.instName)}</div><div style="font-size:11px;color:var(--text-dim);margin-bottom:10px;">${escapeHtml(row.identifier)}</div><div class="field-group"><label>Amount to authorize</label><input type="number" placeholder="0.00" value="${row.amount}" oninput="hookRows.find(r=>r.id===${row.id}).amount=this.value"></div></div>`;
         }
-        const typeOptions = HOOK_ASSET_TYPES.map(t => {
-            const disabled = t.key === 'IDENTITY' && pendingClaims.length === 0;
-            return `<div class="source-type-opt ${row.assetType === t.key ? 'active' : ''} ${disabled ? 'disabled' : ''}" onclick="${disabled ? '' : `setHookRowAssetType(${row.id}, '${t.key}')`}"><span class="icon">${t.icon}</span>${t.label}${t.note ? `<span class="note">${disabled ? t.note : 'Available now'}</span>` : ''}</div>`;
-        }).join('');
+        const typeOptions = HOOK_ASSET_TYPES.map(t => `<div class="source-type-opt ${row.assetType === t.key ? 'active' : ''}" onclick="setHookRowAssetType(${row.id}, '${t.key}')"><span class="icon">${t.icon}</span>${t.label}</div>`).join('');
         let extraFields = '';
         let institutionField = '';
-        if (row.assetType && row.assetType !== 'IDENTITY') {
-            // Every non-identity source belongs to a specific
-            // institution — without this, confirmHookBuilder() has no
-            // way to know whether "•••• 4471" is at Zuru Bank or
-            // Saccussalis, and the hook request would be ambiguous.
+        if (row.assetType) {
+            // Every source belongs to a specific institution — without
+            // this, confirmHookBuilder() has no way to know whether
+            // "•••• 4471" is at Zuru Bank or Saccussalis, and the hook
+            // request would be ambiguous.
             const eligibleCodes = Object.keys(PARTICIPANTS).filter(code => (PARTICIPANTS[code].asset_types || []).map(t => String(t).toUpperCase()).includes(row.assetType === 'VOUCHER' ? 'VOUCHER' : row.assetType));
             const options = eligibleCodes.map(code => `<option value="${code}" ${row.institution === code ? 'selected' : ''}>${PARTICIPANTS[code]?.name || code}</option>`).join('');
             institutionField = `<div class="field-group"><label>Institution</label><select onchange="hookRows.find(r=>r.id===${row.id}).institution=this.value; renderHookRows();"><option value="">Select institution</option>${options}</select></div>`;
@@ -3569,7 +3688,7 @@ function renderHookRows() {
             <div class="source-type-picker">${typeOptions}</div>
             ${row.assetType ? `
                 ${institutionField}
-                <div class="field-group"><label>${row.assetType === 'IDENTITY' ? 'Claimed identity balance' : 'Identifier'}</label><input placeholder="${row.assetType === 'IDENTITY' ? '' : 'Account, phone, or voucher number'}" value="${escapeHtml(row.identifier)}" ${row.assetType === 'IDENTITY' ? 'disabled' : ''} oninput="hookRows.find(r=>r.id===${row.id}).identifier=this.value"></div>
+                <div class="field-group"><label>Identifier</label><input placeholder="Account, phone, or voucher number" value="${escapeHtml(row.identifier)}" oninput="hookRows.find(r=>r.id===${row.id}).identifier=this.value"></div>
                 ${extraFields}
                 <div class="field-group"><label>Amount to authorize</label><input type="number" placeholder="0.00" value="${row.amount}" oninput="hookRows.find(r=>r.id===${row.id}).amount=this.value"></div>
             ` : ''}
@@ -3577,16 +3696,15 @@ function renderHookRows() {
     }).join('');
 }
 async function confirmHookBuilder() {
-    const valid = hookRows.length > 0 && hookRows.every(r => (r.locked || r.assetType) && r.amount && parseFloat(r.amount) > 0 && (r.assetType === 'IDENTITY' || r.identifier) && (r.locked || r.assetType === 'IDENTITY' || r.institution));
+    const valid = hookRows.length > 0 && hookRows.every(r => (r.locked || r.assetType) && r.amount && parseFloat(r.amount) > 0 && r.identifier && (r.locked || r.institution));
     if (!valid) { showMessage('Fill in each source completely — institution, identifier, and amount — before hooking.', 'warning'); return; }
     const sources = hookRows.map(r => ({
         institution: r.institution || undefined,
         asset_type: r.assetType,
-        identifier: r.assetType === 'IDENTITY' ? undefined : r.identifier,
+        identifier: r.identifier,
         authorized_amount: parseFloat(r.amount),
         pin: r.pin || undefined,
         wallet_pin: r.pin || undefined,
-        source: r.assetType === 'IDENTITY' ? 'identity_claim' : undefined,
     }));
     const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/hook.php', { card_suffix: hookEntry.targetCardSuffix, sources });
     if (!result.ok) { showMessage('That hook didn\'t go through: ' + friendlyApiError(result.error), 'error'); return; }
@@ -3645,7 +3763,70 @@ async function resolveScannedQr(raw) {
     const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/Resolveqr.php', { raw });
     if (!result.ok) { showMessage('Couldn\'t read that code: ' + friendlyApiError(result.error), 'error'); return; }
     const { card_suffix, display_name } = result.body.data;
-    openModal('Confirm', `<div style="text-align:center;padding:16px;"><div style="font-size:14px;margin-bottom:16px;">You're about to hook a source to <strong>${escapeHtml(display_name)}'s</strong> VouchMorph Card.</div><div class="cta-row"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="closeModal(); hookEntry={source:'card', targetCardSuffix:'${escapeHtml(card_suffix)}'}; hookRows=[]; hookRowSeq=0; addHookRow(); setHookMode('single'); document.getElementById('hookEyebrow').textContent='Hook to ${escapeHtml(display_name)}\\'s Card'; document.getElementById('hookEntryNote').textContent='Hooking a source to someone else\\'s card via their QR.'; pushView('hook');">Continue</button></div></div>`);
+    confirmHookTargetCard(card_suffix, display_name);
+}
+
+// ============================================================
+// UNIVERSAL "Hook this source" — reachable from every source-
+// filling point (a saved Wallet pick, a manually-entered Card or
+// Voucher, or a just-claimed identity swap), not just from the
+// Card view. The card's QR/number is a public identifier — safe
+// to scan or type — never the contributor's own credentials,
+// which stay on the contributor's own device and are sent only
+// via their own authenticated hook.php call.
+// ============================================================
+let pendingHookPrefill = null;
+function promptHookThisSource(prefill) {
+    pendingHookPrefill = prefill;
+    openModal('Hook this source', `
+        <div style="text-align:center;padding:10px 0 20px;">
+            <div style="font-size:13px;color:var(--text-muted);margin-bottom:18px;">Where should this source be hooked?</div>
+            <div class="cta-row" style="flex-direction:column;gap:10px;">
+                <button class="btn btn-primary" onclick="closeModal(); openHookBuilder('source', pendingHookPrefill);">My VouchMorph Card</button>
+                <button class="btn btn-secondary" onclick="openAnotherCardChooser()">Another VouchMorph Card</button>
+            </div>
+        </div>`);
+}
+function openAnotherCardChooser() {
+    openModal('Hook to another card', `
+        <div style="padding:10px 0 4px;">
+            <div class="field-group"><label>Card number or suffix</label><input id="manualCardNumber" placeholder="e.g. last 4 digits or full number"></div>
+            <div class="cta-row"><button class="btn btn-primary" onclick="submitManualCardNumberForHook()">Continue</button></div>
+            <div style="text-align:center;margin:16px 0;font-size:11px;color:var(--text-dim);">or</div>
+            <button class="btn btn-secondary" onclick="openScanToHookModal()">Scan their QR code instead</button>
+        </div>`);
+}
+async function submitManualCardNumberForHook() {
+    const raw = document.getElementById('manualCardNumber').value.trim();
+    if (!raw) { showMessage('Enter a card number.', 'warning'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/LookupBySuffix.php', { card_suffix: raw });
+    if (!result.ok) { showMessage('Couldn\'t find that card: ' + friendlyApiError(result.error), 'error'); return; }
+    const { card_suffix, display_name } = result.body.data;
+    confirmHookTargetCard(card_suffix, display_name);
+}
+function confirmHookTargetCard(card_suffix, display_name) {
+    openModal('Confirm', `
+        <div style="text-align:center;padding:16px;">
+            <div style="font-size:14px;margin-bottom:16px;">You're about to hook this source to <strong>${escapeHtml(display_name)}'s</strong> VouchMorph Card.</div>
+            <div class="cta-row">
+                <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="beginHookToOtherCard('${escapeHtml(card_suffix)}', '${escapeHtml(display_name)}')">Continue</button>
+            </div>
+        </div>`);
+}
+function beginHookToOtherCard(cardSuffix, displayName) {
+    closeModal();
+    hookEntry = { source: 'source', targetCardSuffix: cardSuffix };
+    hookRows = []; hookRowSeq = 0; hookMode = 'single';
+    addHookRow(pendingHookPrefill);
+    setHookMode('single');
+    document.getElementById('hookEyebrow').textContent = `Hook to ${displayName}'s Card`;
+    document.getElementById('hookEntryNote').textContent = "Started from your source — hooking it to someone else's card.";
+    document.getElementById('hookModeRow').style.display = 'flex';
+    document.getElementById('addHookRowBtn').style.display = 'none';
+    document.getElementById('hookSubmitBtn').style.display = 'block';
+    document.getElementById('hookFinePrint').style.display = 'block';
+    pushView('hook');
 }
 
 // ============================================================
@@ -3680,7 +3861,7 @@ async function confirmUnhook() {
 function openCreateSessionModal(cardSuffix) {
     const instOptions = Object.keys(PARTICIPANTS).map(c => `<option value="${c}">${PARTICIPANTS[c]?.name || c}</option>`).join('');
     openModal('Start a swap', `
-        <div class="field-group"><label>Amount needed at destination</label><input type="number" id="sessTarget" min="0.01" step="0.01" placeholder="0.00"></div>
+        <div class="field-group"><label>Amount to pay</label><input type="number" id="sessTarget" min="0.01" step="0.01" placeholder="0.00"></div>
         <div class="field-group"><label>Currency</label><select id="sessCurrency">${[...new Set(Object.values(PARTICIPANTS).map(p => p?.limits?.currency).filter(Boolean))].map(c => `<option value="${c}" ${c === (myCard.hook?.currency || myCard.currency) ? 'selected' : ''}>${c}</option>`).join('') || `<option value="${myCard.hook?.currency || myCard.currency || 'BWP'}">${myCard.hook?.currency || myCard.currency || 'BWP'}</option>`}</select></div>
         <div class="field-group"><label>Destination institution</label><select id="sessToInst"><option value="">Select</option>${instOptions}</select></div>
         <div class="field-group"><label>Destination account/wallet number</label><input id="sessToIdentifier" placeholder="Account number or phone"></div>
@@ -3692,7 +3873,7 @@ function openCreateSessionModal(cardSuffix) {
                 <option value="MANUAL">Manual — each person enters their own amount</option>
             </select>
         </div>
-        <div style="font-size:11px;color:var(--text-dim);margin-bottom:12px;">Everyone currently hooked will see this in real time.</div>
+        <div style="font-size:11px;color:var(--text-dim);margin-bottom:12px;">Everyone currently hooked will see this in real time. A small VouchMorph fee applies on top of the amount to pay, the same way it does for Combine Sources — the exact fee shows on the preview before you swipe.</div>
         <div class="cta-row"><button class="btn btn-primary" onclick="submitCreateSession('${cardSuffix}')">Start swap</button></div>`);
 }
 async function submitCreateSession(cardSuffix) {
@@ -3701,7 +3882,7 @@ async function submitCreateSession(cardSuffix) {
     const toInst = document.getElementById('sessToInst').value;
     const toIdentifier = document.getElementById('sessToIdentifier').value.trim();
     const strategy = document.getElementById('sessStrategy').value;
-    if (!(target > 0)) { showMessage('Enter the amount needed.', 'warning'); return; }
+    if (!(target > 0)) { showMessage('Enter the amount to pay.', 'warning'); return; }
     if (!toInst || !toIdentifier) { showMessage('Select a destination institution and enter an account/wallet number.', 'warning'); return; }
     const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/Create.php', { card_suffix: cardSuffix, target_amount: target, currency, strategy, to_institution: toInst, destination_identifier: toIdentifier });
     if (!result.ok) { showMessage('Couldn\'t start that swap: ' + friendlyApiError(result.error), 'error'); return; }
@@ -3719,7 +3900,7 @@ function renderSessionStatus(session) {
     const contributedCount = contributors.filter(c => (c.amount || 0) > 0).length;
     const rowsHtml = contributors.map(c => `<div class="myc-contributor-row"><div class="myc-contributor-tile">${escapeHtml(institutionInitials(c.institution))}</div><span class="myc-contributor-name">${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)} · ${escapeHtml(c.source_identifier)}${c.below_minimum ? ' <span style="color:var(--warning);">(below minimum — won\'t be included)</span>' : ''}</span><span class="myc-contributor-amt">${formatMoney(c.amount, session.currency)}</span></div>`).join('');
     const manualInput = session.strategy === 'MANUAL' ? `<div class="field-group" style="margin-top:10px;"><label>Your contribution</label><div style="display:flex;gap:8px;"><input type="number" id="myManualAmount" min="0" step="0.01" placeholder="0.00" style="flex:1;"><button class="btn btn-secondary btn-sm" onclick="submitMyManualAmount(${session.session_id})">Set</button></div></div>` : '';
-    return `<div class="myc-panel"><div class="myc-panel-head"><span class="myc-panel-title">Swap in progress — ${escapeHtml(session.strategy)}</span></div><div class="myc-swap-strip">${avatarsHtml}<span class="myc-swap-strip-label">${contributors.length} hooked, ${contributedCount} have contributed</span></div><div class="comp-bar-track"><div class="comp-bar-seg" style="width:${pct}%;background:var(--accent);"></div></div><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:14px;"><span style="font-weight:700;font-family:var(--font-mono);">${formatMoney(preview.total_covered, session.currency)} of ${formatMoney(preview.total_target, session.currency)}</span><span style="color:var(--text-dim);">${preview.remaining > 0 ? formatMoney(preview.remaining, session.currency) + ' remaining' : 'Fully covered — ready to go! 🎉'}</span></div>${rowsHtml}${manualInput}<div class="cta-row" style="margin-top:14px;"><button class="btn btn-secondary" onclick="cancelSession(${session.session_id})">Cancel</button><button class="btn btn-primary" ${session.can_execute ? '' : 'disabled'} onclick="executeSession(${session.session_id})">${session.can_execute ? 'Execute swap' : 'Waiting for full coverage…'}</button></div></div>`;
+    return `<div class="myc-panel"><div class="myc-panel-head"><span class="myc-panel-title">Swap in progress — ${escapeHtml(session.strategy)}</span></div><div class="myc-swap-strip">${avatarsHtml}<span class="myc-swap-strip-label">${contributors.length} hooked, ${contributedCount} have contributed</span></div><div class="comp-bar-track"><div class="comp-bar-seg" style="width:${pct}%;background:var(--accent);"></div></div><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:14px;"><span style="font-weight:700;font-family:var(--font-mono);">${formatMoney(preview.total_covered, session.currency)} of ${formatMoney(preview.total_target, session.currency)}</span><span style="color:var(--text-dim);">${preview.remaining > 0 ? formatMoney(preview.remaining, session.currency) + ' remaining' : 'Fully covered — ready to go! 🎉'}</span></div>${rowsHtml}${manualInput}<div class="cta-row" style="margin-top:14px;"><button class="btn btn-secondary" onclick="cancelSession(${session.session_id})">Cancel</button><button class="btn btn-primary" ${session.can_execute ? '' : 'disabled'} onclick="openSwipePreview(${session.session_id})">${session.can_execute ? 'Ready to swipe' : 'Waiting for full coverage…'}</button></div></div>`;
 }
 function startSessionPolling(sessionId) {
     stopSessionPolling();
@@ -3727,6 +3908,7 @@ function startSessionPolling(sessionId) {
         const result = await callApiGet(CONFIG.API_BASE + '/api/v1/cards/ContributionStatus.php?session_id=' + sessionId);
         if (!result.ok) return;
         const session = result.body.data;
+        lastKnownSession = session;
         const area = document.getElementById('sessionStatusArea');
         if (area) area.innerHTML = renderSessionStatus(session);
         if (['COMPLETED', 'CANCELLED', 'EXPIRED', 'FAILED'].includes(session.status)) stopSessionPolling();
@@ -3738,17 +3920,68 @@ async function submitMyManualAmount(sessionId) {
     if (isNaN(amount) || amount < 0) { showMessage('Enter a valid amount.', 'warning'); return; }
     const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/Contribute.php', { session_id: sessionId, amount });
     if (!result.ok) { showMessage('Couldn\'t set that contribution: ' + friendlyApiError(result.error), 'error'); return; }
+    lastKnownSession = result.body.data;
     const area = document.getElementById('sessionStatusArea');
     if (area) area.innerHTML = renderSessionStatus(result.body.data);
 }
+
+// ============================================================
+// Swipe preview + transaction report — "ready to swipe" doesn't
+// execute immediately; it shows exactly who's paying what and
+// what VouchMorph's fee comes to first, matching the same
+// preview-before-confirm pattern the rest of the app uses for
+// every other swap. Note: the exact fee figure shown here is
+// whatever the session/preview response already carries (if the
+// real API includes one) — this doesn't invent a number were
+// none is returned.
+// ============================================================
+let lastKnownSession = null;
+function openSwipePreview(sessionId) {
+    const session = lastKnownSession;
+    const preview = session?.preview || {};
+    const contributors = preview.contributors || [];
+    const fee = preview.total_fee ?? preview.fee ?? null;
+    const rows = contributors.map(c => `<div class="preview-row"><span>${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)}</span><span class="value">${formatMoney(c.amount, session.currency)}</span></div>`).join('');
+    openModal('Ready to swipe', `
+        <div class="review-hero">
+            <div class="review-hero-label">Total being paid</div>
+            <div class="review-hero-amount">${formatMoney(preview.total_target, session.currency)}</div>
+            ${fee !== null ? `<div class="review-hero-note" style="color:var(--text-dim);">includes ${formatMoney(fee, session.currency)} VouchMorph fee</div>` : `<div class="review-hero-note" style="color:var(--text-dim);">VouchMorph's fee, if any, applies the same way it does for Combine Sources</div>`}
+        </div>
+        <div class="preview-box">${rows}</div>
+        <div class="preview-reassure">This is the last step — swiping executes the swap immediately.</div>
+        <div class="modal-actions">
+            <button class="btn btn-secondary" onclick="renderSessionModalFallback(${sessionId})">Back</button>
+            <button class="btn btn-primary" onclick="confirmSwipe(${sessionId})">Swipe</button>
+        </div>`);
+}
+function renderSessionModalFallback(sessionId) { closeModal(); }
+async function confirmSwipe(sessionId) {
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/execute.php', { session_id: sessionId });
+    if (!result.ok) { showMessage('Execution didn\'t go through: ' + friendlyApiError(result.error), 'error'); return; }
+    stopSessionPolling();
+    showTransactionReport(result.body, lastKnownSession);
+}
+function showTransactionReport(response, session) {
+    const data = response.data || {};
+    const preview = session?.preview || {};
+    const contributors = preview.contributors || [];
+    const rows = contributors.map(c => `<div class="preview-row"><span>${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)} · ${escapeHtml(c.source_identifier || '')}</span><span class="value">${formatMoney(c.amount, session?.currency)}</span></div>`).join('');
+    openModal('Transaction report', `
+        <div class="result-box" id="resultBoxRoot">
+            <div class="icon">✓</div>
+            <div class="result-title">Swipe complete</div>
+            <div class="result-sub">Reference: ${escapeHtml(data.reference || response.swap_reference || '—')}</div>
+            <div style="font-size:22px;font-weight:600;font-family:var(--font-mono);margin:12px 0;">${formatMoney(preview.total_target ?? data.amount, session?.currency)}</div>
+        </div>
+        <div class="myc-panel-title" style="margin-bottom:8px;">Paid using</div>
+        <div class="preview-box">${rows || '<div style="font-size:12px;color:var(--text-dim);">Breakdown unavailable.</div>'}</div>
+        <div class="cta-row" style="margin-top:16px;"><button class="btn btn-primary" onclick="closeModal(); loadCardView();">Done</button></div>`);
+    setTimeout(() => fireConfetti(document.getElementById('resultBoxRoot')), 150);
+}
 async function executeSession(sessionId) {
-    showConfirm('Execute this swap now?', async () => {
-        const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/execute.php', { session_id: sessionId });
-        if (!result.ok) { showMessage('Execution didn\'t go through: ' + friendlyApiError(result.error), 'error'); return; }
-        stopSessionPolling();
-        showMessage('Swap executed successfully. 🎉', 'success');
-        loadCardView();
-    });
+    // Kept for any older callers — routes to the same preview-first flow.
+    openSwipePreview(sessionId);
 }
 async function cancelSession(sessionId) {
     showConfirm('Cancel this swap session? The hooked sources stay held for a new swap — this only cancels the swap attempt itself, not the holds.', async () => {
