@@ -47,7 +47,8 @@ class ContributionCalculator
         array $sources,
         string $strategy, // 'EQUAL', 'RATIO', 'SMART', 'PRIORITY', 'USER_SPECIFIED'
         ?array $userSpecified = null,
-        ?array $priorityOrder = null
+        ?array $priorityOrder = null,
+        ?float $minContribution = null   // NEW — e.g. CASHOUT's F1 (+ smallest note)
     ): array {
         // Separate fixed and flexible sources
         $fixedSources = [];
@@ -136,7 +137,8 @@ class ContributionCalculator
             $flexibleSources,
             $strategy,
             $userSpecified,
-            $priorityOrder
+            $priorityOrder,
+            $minContribution   // NEW
         );
         
         // Combine fixed and flexible contributions
@@ -181,7 +183,8 @@ class ContributionCalculator
         array $flexibleSources,
         string $strategy,
         ?array $userSpecified = null,
-        ?array $priorityOrder = null
+        ?array $priorityOrder = null,
+        ?float $minContribution = null   // NEW
     ): array {
         // If no flexible sources, throw error
         if (empty($flexibleSources)) {
@@ -201,7 +204,7 @@ class ContributionCalculator
         }
         
         // Apply strategy
-        return match($strategy) {
+        $contributions = match($strategy) {
             'EQUAL' => $this->calculateEqualFlexible($targetAmount, $flexibleSources),
             'RATIO' => $this->calculateRatioBasedFlexible($targetAmount, $flexibleSources),
             'SMART' => $this->calculateSmartFlexible($targetAmount, $flexibleSources),
@@ -209,6 +212,88 @@ class ContributionCalculator
             'USER_SPECIFIED' => $this->calculateUserSpecifiedFlexible($targetAmount, $flexibleSources, $userSpecified),
             default => $this->calculateSmartFlexible($targetAmount, $flexibleSources) // Default to SMART
         };
+
+        // NEW — applied AFTER any strategy, regardless of which one ran.
+        // This is the one place that has to catch every path, since
+        // distributeRemaining() is shared by EQUAL/SMART and could still
+        // sprinkle a sub-floor sliver onto a source that started clean.
+        if ($minContribution !== null && $minContribution > 0) {
+            $contributions = $this->enforceMinimumContribution(
+                $targetAmount, 
+                $contributions, 
+                $flexibleSources, 
+                $minContribution
+            );
+        }
+
+        return $contributions;
+    }
+
+    /**
+     * Drops any contribution below the floor (its amount would be worse
+     * than useless — dust that can't cover the swipe's own fee) and
+     * redistributes that amount across the remaining sources that still
+     * clear the floor themselves. If nobody's left standing, the swipe
+     * genuinely can't happen with this source set and it should fail
+     * loudly rather than silently ship a source under the fee.
+     */
+    private function enforceMinimumContribution(
+        float $targetAmount,
+        array $contributions,
+        array $flexibleSources,
+        float $minContribution
+    ): array {
+        $survivors = [];
+        $dropped = 0.0;
+
+        foreach ($contributions as $c) {
+            if ($c['actual_amount'] < $minContribution - 0.005) {
+                $dropped += $c['actual_amount'];
+                error_log("[ContributionCalculator] Dropping source below minimum contribution floor ({$minContribution}): {$c['asset_type']} allocated {$c['actual_amount']}");
+                continue;
+            }
+            $survivors[] = $c;
+        }
+
+        if ($dropped <= 0.005) {
+            return $contributions; // nothing to redistribute, floor already satisfied everywhere
+        }
+
+        if (empty($survivors)) {
+            throw new \RuntimeException(sprintf(
+                "No source can individually cover the minimum contribution (%.2f) required for this swap. Reduce the number of sources or increase the amount.",
+                $minContribution
+            ));
+        }
+
+        // Re-run the same source set through RATIO for just the survivors,
+        // now that the floor-failing ones are gone — simplest correct way
+        // to redistribute without re-implementing every strategy's math.
+        $survivorSources = array_filter($flexibleSources, function($fs) use ($survivors) {
+            foreach ($survivors as $s) {
+                if (($s['source']['institution'] ?? null) === ($fs['source']['institution'] ?? null)
+                    && ($s['source']['identifier'] ?? $s['source']['source_identifier'] ?? null) === ($fs['source']['identifier'] ?? $fs['source']['source_identifier'] ?? null)) {
+                    return true;
+                }
+            }
+            return false;
+        });
+
+        $newTotal = array_sum(array_column($survivors, 'actual_amount')) + $dropped;
+        $totalSurvivorBalance = array_sum(array_column($survivorSources, 'available_balance'));
+
+        if ($totalSurvivorBalance < $newTotal - 0.01) {
+            throw new \RuntimeException(sprintf(
+                "Removing sources below the minimum contribution (%.2f) leaves insufficient balance to reach the target (%.2f).",
+                $minContribution, $newTotal
+            ));
+        }
+
+        // Recurse once with the reduced source set — if a survivor now
+        // drops below the floor after taking on the redistributed share,
+        // this correctly excludes it too on the next pass instead of
+        // silently allowing a second sub-floor result.
+        return $this->calculateRatioBasedFlexible($newTotal, array_values($survivorSources));
     }
     
     /**
