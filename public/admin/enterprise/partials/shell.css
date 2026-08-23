@@ -21,19 +21,42 @@
    See .stage / .stage-view / .stage-view.active below, and
    partials/shell-head.php + shell-foot.php for the markup and
    the two-line JS that drives it.
+
+   SKINS — added later. "--sky" is the historical name for the
+   ONE accent slot every clickable thing uses; it no longer has
+   to be blue. A skin is `[data-skin="..."]` on <html>, entirely
+   separate from light/dark mode (`[data-theme="dark"]`), and it
+   overrides exactly five variables: --ink, --paper, --paper-dim,
+   --line, and the --sky trio. Nothing else in this file has to
+   know a skin exists — every component below (.tile, .card,
+   .btn, .status, table rows) already reads those five variables,
+   so a skin is a five-line block, not a rewrite.
+
+   Four skins ship:
+     control-room (default) — flat, no glow, works in light or dark
+     warroom      — amber-on-near-black, CRT scoreboard glow
+     alpha        — near-black + crimson, sharper and colder
+     gala         — deep bordeaux + rose-gold, same darkness and
+                    glow as warroom/alpha, deliberately not coded
+                    military — proof that "intense" doesn't have
+                    to mean "amber War Room" for every audience
+   Intensity components (.marquee, the numeral glow, the curtain
+   wipe) are gated to these three dark skins via attribute
+   selectors — control-room stays flat by its own design rule.
    ============================================================ */
 
 :root {
-    /* ---- Two inks. One working color. ---- */
+    /* ---- Two inks. One working color. (control-room defaults) ---- */
     --ink:          #000000;
     --paper:        #FFFFFF;
     --paper-dim:    #F4F4F4;   /* recessed surfaces only — never a "third color" */
-    --line:         #000000;  /* borders are always full black — never gray */
-    --sky:          #38BDF8;  /* the ONLY color anything clickable is allowed to be */
-    --sky-deep:     #0284C7;  /* sky, pressed */
-    --sky-tint:     #E4F7FF;  /* sky, as a background wash (badges, active rows) */
+    --line:         #000000;  /* borders are always full-strength --ink — never gray */
+    --sky:          #38BDF8;  /* the ONE accent slot anything clickable is allowed to use */
+    --sky-deep:     #0284C7;  /* accent, pressed */
+    --sky-tint:     #E4F7FF;  /* accent, as a background wash (badges, active rows) */
     --danger:       #000000;  /* danger is communicated with a seal/stripe, not red */
     --danger-tint:  #F4F4F4;
+    --glow: none;              /* control-room: flat, no glow — skins below turn this on */
 
     /* ---- The unit. Every measurement below is n × 8px. ---- */
     --u1:  8px;
@@ -58,9 +81,11 @@
     --f-mono:    'IBM Plex Mono', monospace;
 }
 
-/* Dark mode — same two inks, inverted, same sky blue (it reads fine
+/* Dark mode — same two inks, inverted, same accent (it reads fine
    on either). One override block; nothing else in this file needs
-   to know dark mode exists. */
+   to know dark mode exists. Only meaningful on the control-room
+   skin — the three intensity skins below are dark by identity and
+   ignore this toggle entirely (see the note on each skin block). */
 :root[data-theme="dark"] {
     --ink: #FFFFFF; --paper: #0A0A0A; --paper-dim: #161616; --line: #FFFFFF;
     --sky-tint: #062733; --danger-tint: #161616;
@@ -68,6 +93,47 @@
 :root[data-theme="dark"] th { background: var(--ink); color: var(--paper); }
 :root[data-theme="dark"] .status-completed { color: var(--paper); }
 :root[data-theme="dark"] .ftr { background: #FFFFFF; color: #0A0A0A; border-top-color: #FFFFFF; }
+
+/* ============================================================
+   SKIN: WAR ROOM — amber-on-near-black, CRT scoreboard energy.
+   Dark by identity, not by the light/dark toggle — the toggle
+   is hidden whenever a non-control-room skin is active (see
+   shell-head.php's skin picker JS).
+   ============================================================ */
+:root[data-skin="warroom"] {
+    --ink: #EDEAE1; --paper: #050607; --paper-dim: #0C0F12; --line: #24272A;
+    --sky: #E8B84B; --sky-deep: #B8901F; --sky-tint: #241C08;
+    --danger: #C4483F; --danger-tint: #1E0F0D;
+    --glow: 0 0 20px rgba(232,184,75,.35);
+}
+:root[data-skin="warroom"] th { background: var(--paper-dim); color: var(--ink); }
+
+/* ============================================================
+   SKIN: ALPHA — near-black + crimson. Colder and sharper than
+   War Room; less "control room," more "red-line alert."
+   ============================================================ */
+:root[data-skin="alpha"] {
+    --ink: #F2F2F2; --paper: #0A0A0A; --paper-dim: #151515; --line: #2A2A2A;
+    --sky: #D6242C; --sky-deep: #9C1A20; --sky-tint: #240D0F;
+    --danger: #D6242C; --danger-tint: #1E0D0E;
+    --glow: 0 0 20px rgba(214,36,44,.35);
+}
+:root[data-skin="alpha"] th { background: var(--paper-dim); color: var(--ink); }
+
+/* ============================================================
+   SKIN: GALA — deep bordeaux + rose-gold. Same darkness, same
+   glow, same "center stage" drama as War Room and Alpha — the
+   difference is entirely in what the drama is coded as. Built
+   for anyone who wants the intensity without the militarism,
+   not as a lighter or quieter option.
+   ============================================================ */
+:root[data-skin="gala"] {
+    --ink: #F3E6E4; --paper: #1B0F14; --paper-dim: #241318; --line: #3E232B;
+    --sky: #D9A0A6; --sky-deep: #B06E77; --sky-tint: #2A1418;
+    --danger: #C4483F; --danger-tint: #241318;
+    --glow: 0 0 20px rgba(217,160,166,.4);
+}
+:root[data-skin="gala"] th { background: var(--paper-dim); color: var(--ink); }
 
 .pill-critical { display: inline-flex; align-items: center; gap: 6px; background: var(--ink); color: var(--sky); border: var(--border) solid var(--ink); padding: 2px var(--u2); font-family: var(--f-mono); font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
 .row-dot.tone-amber { background: var(--sky-tint); }
@@ -140,6 +206,19 @@ input, select, textarea, .table-wrap, .tag { border-radius: var(--radius); }
 svg.i { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.8; }
 
 /* ============================================================
+   SKIN PICKER — lives in the header. Four square swatches, no
+   labels beyond a title attribute — the color itself is the
+   affordance, same philosophy as the tiles below.
+   ============================================================ */
+.skin-picker { display: flex; gap: 4px; }
+.skin-chip { width: 22px; height: 22px; border: var(--border) solid var(--ink); cursor: pointer; padding: 0; flex-shrink: 0; }
+.skin-chip.active { outline: 2px solid var(--sky); outline-offset: 2px; }
+.skin-chip[data-chip="control-room"] { background: linear-gradient(135deg, #fff 50%, #000 50%); }
+.skin-chip[data-chip="warroom"] { background: linear-gradient(135deg, #050607 50%, #E8B84B 50%); }
+.skin-chip[data-chip="alpha"] { background: linear-gradient(135deg, #0A0A0A 50%, #D6242C 50%); }
+.skin-chip[data-chip="gala"] { background: linear-gradient(135deg, #1B0F14 50%, #D9A0A6 50%); }
+
+/* ============================================================
    STAGE — the single scrollable region between header + footer.
    Content is always pinned to a centered column so every page
    shares one left/right measure — "well aligned" means every
@@ -157,12 +236,45 @@ svg.i { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-widt
 .stage-view { display: none; }
 .stage-view.active { display: block; animation: stageIn 0.18s ease; }
 @keyframes stageIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+/* Intensity skins get a curtain wipe instead of the plain fade —
+   the "concert" moment, reserved for the three dark skins so
+   control-room stays true to its flat, no-motion-flourish rule. */
+:root[data-skin="warroom"] .stage-view.active,
+:root[data-skin="alpha"] .stage-view.active,
+:root[data-skin="gala"] .stage-view.active {
+    animation: curtainIn 0.32s cubic-bezier(.2,.8,.3,1);
+}
+@keyframes curtainIn { from { opacity: 0; transform: translateY(14px) scaleY(0.98); transform-origin: top; } to { opacity: 1; transform: translateY(0) scaleY(1); } }
 
 .stage-head { display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: var(--u2); margin-bottom: var(--u4); padding-bottom: var(--u3); border-bottom: var(--border) solid var(--ink); }
 .stage-eyebrow { font-family: var(--f-mono); font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink); opacity: 0.55; margin-bottom: var(--u1); }
 .stage-title { font-family: var(--f-display); font-size: 30px; font-weight: 700; letter-spacing: 0.01em; text-transform: uppercase; }
 .stage-meta { font-family: var(--f-mono); font-size: 11.5px; color: var(--ink); opacity: 0.6; margin-top: var(--u1); }
 .stage-actions { display: flex; gap: var(--u2); flex-wrap: wrap; }
+
+/* ============================================================
+   MARQUEE — the War Room scoreboard numeral, folded into the
+   base system as an optional hero component any stage can use
+   for its single headline figure. Flat by default (control-room);
+   the three intensity skins turn on the glow and a faint scanline
+   texture via --glow, so this is one component, not four.
+   ============================================================ */
+.marquee { border: var(--border) solid var(--ink); padding: var(--u4) var(--u3); margin-bottom: var(--u4); position: relative; overflow: hidden; }
+:root[data-skin="warroom"] .marquee,
+:root[data-skin="alpha"] .marquee,
+:root[data-skin="gala"] .marquee {
+    background: var(--paper-dim);
+}
+:root[data-skin="warroom"] .marquee::before,
+:root[data-skin="alpha"] .marquee::before,
+:root[data-skin="gala"] .marquee::before {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: repeating-linear-gradient(180deg, transparent 0, transparent 3px, rgba(255,255,255,.02) 3px, rgba(255,255,255,.02) 4px);
+}
+.marquee-label { font-family: var(--f-mono); font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; opacity: 0.6; margin-bottom: var(--u1); }
+.marquee-num { font-family: var(--f-mono); font-weight: 700; font-size: clamp(40px, 6vw, 84px); line-height: 1; color: var(--sky); font-variant-numeric: tabular-nums; text-shadow: var(--glow); }
+.marquee-num .u { font-size: 22px; opacity: 0.55; margin-left: var(--u2); font-weight: 400; }
+.marquee-sub { font-family: var(--f-mono); font-size: 12px; opacity: 0.65; margin-top: var(--u2); }
 
 /* ============================================================
    FIXED FOOTER — always visible, never scrolls away. A single
@@ -186,8 +298,8 @@ svg.i { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-widt
 
 /* ============================================================
    HUB TILES — the only navigation surface. Each tile is a full
-   press target, sky-blue on hover/press so the affordance never
-   needs a caption ("tap here").
+   press target, accent-colored on hover/press so the affordance
+   never needs a caption ("tap here").
    ============================================================ */
 .tile-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--u3); margin-bottom: var(--u5); }
 @media (max-width: 1000px) { .tile-grid { grid-template-columns: repeat(2, 1fr); } }
@@ -199,6 +311,7 @@ svg.i { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-widt
     position: relative; min-height: 152px;
 }
 .tile:hover, .tile:focus-visible { background: var(--sky); }
+:root[data-skin="warroom"] .tile:hover, :root[data-skin="alpha"] .tile:hover, :root[data-skin="gala"] .tile:hover { color: var(--paper); }
 .tile-icon { width: var(--u5); height: var(--u5); border: var(--border) solid var(--ink); display: flex; align-items: center; justify-content: center; background: var(--paper); }
 .tile:hover .tile-icon { background: var(--ink); color: var(--sky); }
 .tile-label { font-family: var(--f-display); font-weight: 700; font-size: 17px; text-transform: uppercase; letter-spacing: 0.01em; }
@@ -208,7 +321,7 @@ svg.i { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-widt
 .tile-arrow { margin-top: auto; font-family: var(--f-mono); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; }
 
 /* ============================================================
-   STAT CARDS — top-of-hub numbers. Sky blue is spent only on
+   STAT CARDS — top-of-hub numbers. Accent is spent only on
    the figure that matters most, never on the label.
    ============================================================ */
 .stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--u3); margin-bottom: var(--u4); }
@@ -246,8 +359,8 @@ tr:last-child td { border-bottom: none; }
 tr:hover td { background: var(--sky-tint); }
 
 /* ============================================================
-   STATUS TAGS — square, black-bordered; sky = in motion,
-   black-fill = settled, outline = waiting.
+   STATUS TAGS — square, ink-bordered; accent = in motion,
+   ink-fill = settled, outline = waiting.
    ============================================================ */
 .status { display: inline-flex; align-items: center; gap: 6px; padding: 2px var(--u2); border: var(--border) solid var(--ink); font-family: var(--f-mono); font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; background: var(--paper); }
 .status-draft { opacity: 0.6; }
@@ -257,9 +370,9 @@ tr:hover td { background: var(--sky-tint); }
 .status-rejected { background: repeating-linear-gradient(135deg, var(--paper), var(--paper) 4px, var(--paper-dim) 4px, var(--paper-dim) 8px); text-decoration: line-through; }
 
 /* ============================================================
-   BUTTONS — sky blue with black bonds. One family, three
-   weights: primary (filled sky), secondary (outline), quiet
-   (text only, for "cancel"/"back" actions inside a stage).
+   BUTTONS — accent with ink bonds. One family, three weights:
+   primary (filled accent), secondary (outline), quiet (text
+   only, for "cancel"/"back" actions inside a stage).
    ============================================================ */
 .btn {
     display: inline-flex; align-items: center; justify-content: center; gap: var(--u1);
@@ -270,6 +383,7 @@ tr:hover td { background: var(--sky-tint); }
     line-height: 1;
 }
 .btn-primary { background: var(--sky); color: var(--ink); }
+:root[data-skin="warroom"] .btn-primary, :root[data-skin="alpha"] .btn-primary, :root[data-skin="gala"] .btn-primary { color: var(--paper); }
 .btn-primary:hover { background: var(--ink); color: var(--sky); }
 .btn-secondary { background: var(--paper); color: var(--ink); }
 .btn-secondary:hover { background: var(--ink); color: var(--paper); }
@@ -279,7 +393,7 @@ tr:hover td { background: var(--sky-tint); }
 .btn:disabled, .btn.disabled { opacity: 0.35; cursor: not-allowed; }
 
 /* ============================================================
-   FORMS — visible borders on every field, sky focus ring.
+   FORMS — visible borders on every field, accent focus ring.
    ============================================================ */
 .field { margin-bottom: var(--u3); }
 .field label { display: block; font-family: var(--f-mono); font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: var(--u1); }
