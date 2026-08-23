@@ -886,16 +886,30 @@ function goStage(name) {
     if (name === 'attention') renderAttentionDetailFromSelected();
     window.scrollTo(0, 0);
 }
-(function initStage() {
+// ------------------------------------------------------------
+// FIX: the sidebar's Attention/Batches/Activity/Trace/Reports links
+// are plain <a href="index.php#stage-x">. When you're already ON
+// index.php, a browser treats that as same-document navigation —
+// it updates the URL bar WITHOUT reloading the page, which means
+// this script never re-ran and nothing ever told the page to hide
+// the Hub. Result: the Hub stayed visible and whatever stage the
+// browser silently "navigated" to could end up rendered underneath
+// it — the "I see things twice" bug. Same-document fragment
+// navigation DOES fire a real 'hashchange' event even without a
+// reload, so listening for that (not just checking the hash once
+// at load) is the actual fix — not a click-handler workaround.
+// ------------------------------------------------------------
+function routeFromLocation() {
     const hash = (location.hash || '').replace('#stage-', '');
     const hasTrace = new URLSearchParams(location.search).get('trace');
     const hasReport = new URLSearchParams(location.search).get('report');
     if (hasTrace && document.getElementById('stage-trace')) { goStage('trace'); return; }
     if (hasReport && document.getElementById('stage-reports')) { goStage('reports'); return; }
     if (hash && document.getElementById('stage-' + hash)) { goStage(hash); return; }
-    const remembered = sessionStorage.getItem('vm_stage');
-    if (remembered === 'attention' && !hasTrace) { /* only restore lightweight stages, never a stale search */ }
-})();
+    goStage('hub');
+}
+routeFromLocation();
+window.addEventListener('hashchange', routeFromLocation);
 function filterRows(bodyId, query) {
     const q = query.trim().toLowerCase();
     document.querySelectorAll('#' + bodyId + ' tr[data-search]').forEach(row => {
