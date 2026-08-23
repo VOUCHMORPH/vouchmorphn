@@ -1,67 +1,73 @@
 <?php
 /**
- * partials/permissions.php — the ONE authorization matrix. Both
- * index.php and departments/index.php used to carry their own copy
- * of this (index.php's was complete; departments/index.php's was a
- * two-line stub that was about to grow into "show everything" just
- * to build its sidebar). That duplication was flagged as a risk
- * from the first version of this matrix and it took exactly one
- * more page for the risk to become a real bug. This file is the fix.
+ * partials/permissions.php — NOW A WRAPPER, NOT A SOURCE OF TRUTH.
+ * ------------------------------------------------------------
+ * Previous version of this file: a hardcoded $ROLE_CAPS array,
+ * hand-maintained in PHP, completely disconnected from auth.php's
+ * REAL permission system — hasPermission(), which already checks
+ * (1) owner bypass, (2) a per-user JSONB override on
+ * organization_users.permissions, (3) a DB-backed default set in
+ * organization_role_permissions. That array could drift from the
+ * real system the moment anyone edited a role's permissions in the
+ * database without also remembering to edit this file — a classic
+ * "two sources of truth" bug, caught before it caused real damage,
+ * but only because it was pointed out, not because it was found here.
  *
- * Contract — before requiring this file, the including page must
- * set $userRole. This file then defines $ROLE_CAPS, can(), and every
- * PURE role-based boolean flag (no database calls, no $metrics
- * dependency) that any page's nav array or stage gating needs:
+ * Every capability flag below now resolves through can(), which
+ * calls the real hasPermission($code) from auth.php. auth.php MUST
+ * be require_once'd by the including page before this file runs —
+ * every page in this codebase already does that for requireEnterpriseAuth().
  *
- *   canCreate, canApprove, canDisburse, isSupervisor, canConfirmSource,
- *   canTrace, canManageDepartments, isDepartmentHead,
- *   canSeeSourceAccountsArea, canManageUsers, canSeeFinancialStats,
- *   canViewBatchesTile, canViewActivityTile, canViewReports,
- *   canExportFilings, canViewBeneficiariesTile, canViewAttentionTile,
- *   isReadOnly, isApprover, isLoader, isTopRole
+ * ⚠️ GUESSED PERMISSION CODES — flagged, not hidden: I do not have
+ * your organization_role_permissions table's actual seeded rows, so
+ * the string passed to each can() call below (e.g. 'view_batches')
+ * is my best guess at a plausible permission_code, matching the
+ * naming style already used elsewhere in your code. If your real
+ * codes differ (e.g. 'batches.view', 'BATCH_VIEW'), every one of
+ * these will resolve to false — nobody sees anything — until either
+ * the codes here are corrected to match your table, or your table is
+ * seeded with these exact strings. Please send me the real
+ * permission_code values from organization_role_permissions and I
+ * will fix this file in one pass rather than guess twice.
  *
- * What stays OUT of this file, on purpose: $userDeptScopeIds and
- * departmentScopeSql() (need a live DepartmentService instance per
- * page), and anything that depends on $metrics/$actionItems (needs a
- * DB round trip a page may not want to pay for just to draw its
- * sidebar). Those remain page-specific.
- *
- * SEGREGATION-OF-DUTIES NOTE, carried over unchanged from the first
- * version of this matrix: it_manager_enterprise holds BOTH
- * administrative capability (users, source accounts) AND financial
- * approval capability (act_approve, act_confirm_source). That is
- * usually a finding in a government compliance review. Still not
- * silently changed here — it's a financial-control policy decision,
- * not a display bug.
+ * DEPARTMENT SCOPING — now uses auth.php's getUserDepartmentScope(),
+ * which returns a single ?int (null = org-wide, only for owner and
+ * auditor; every other role gets exactly their own department_id).
+ * This REPLACES the previous $userDeptScopeIds array-of-many-
+ * departments model, which came from a DepartmentService method
+ * whose source I've never seen. If DepartmentService::getDepartmentScopeIds()
+ * is still authoritative elsewhere in this codebase (e.g. a batch
+ * approval page), that page and this dashboard may now disagree
+ * about what a department-scoped role can see — reconcile which one
+ * is actually correct before treating either as final.
  */
 
-$ROLE_CAPS = [
-    'owner'                 => ['view_stats','view_attention','view_batches','view_activity','view_reports','export_filings','view_beneficiaries','manage_departments','manage_sources','manage_users','create_batch','act_approve','act_disburse','act_confirm_source'],
-    'it_manager_enterprise' => ['view_stats','view_attention','view_batches','view_activity','view_reports','view_beneficiaries','manage_departments','manage_sources','manage_users','create_batch','act_approve','act_confirm_source'],
-    'it_officer_enterprise' => ['manage_users','manage_sources'],
-    'it_support'            => [],
-    'finance_officer'       => ['view_stats','view_batches','view_activity','view_reports','view_beneficiaries','manage_sources','act_confirm_source'],
-    'senior_approver'       => ['view_stats','view_attention','view_batches','view_activity','view_reports','act_approve'],
-    'approver'              => ['view_stats','view_attention','view_batches','act_approve'],
-    'department_head'       => ['view_stats','view_attention','view_batches','view_beneficiaries','create_batch'],
-    'program_officer'       => ['view_batches','view_beneficiaries','create_batch'],
-    'beneficiary_registrar' => ['view_beneficiaries'],
-    'auditor'               => ['view_stats','view_batches','view_activity','view_reports','export_filings','view_beneficiaries'],
-    'supervisor'            => ['view_stats','view_batches'],
-    'viewer'                => [],
-];
-$myCaps = $ROLE_CAPS[$userRole] ?? [];
-function can(string $cap): bool { global $myCaps; return in_array($cap, $myCaps, true); }
+// Lightweight per-request memoization — hasPermission() does a real
+// DB round trip every call; without this, rendering one page's worth
+// of sidebar + stage gating (a dozen-plus can() calls) would fire a
+// dozen-plus near-identical SELECTs against organization_role_permissions.
+$__permCache = [];
+function can(string $permissionCode): bool {
+    global $__permCache;
+    if (!array_key_exists($permissionCode, $__permCache)) {
+        $__permCache[$permissionCode] = hasPermission($permissionCode);
+    }
+    return $__permCache[$permissionCode];
+}
 
 $isTopRole = in_array($userRole, ['owner', 'it_manager_enterprise'], true);
+$isSupervisor = ($userRole === 'owner');
+$isDepartmentHead = ($userRole === 'department_head');
+$isReadOnly = in_array($userRole, ['auditor', 'viewer']);
+$isApprover = in_array($userRole, ['approver', 'senior_approver']);
+$isLoader = in_array($userRole, ['program_officer', 'department_head']);
+
 $canCreate = can('create_batch');
 $canApprove = can('act_approve');
 $canDisburse = can('act_disburse');
-$isSupervisor = ($userRole === 'owner');
 $canConfirmSource = can('act_confirm_source');
-$canTrace = in_array($userRole, ['owner', 'it_manager_enterprise', 'auditor', 'senior_approver', 'approver', 'finance_officer']);
+$canTrace = can('trace_payment');
 $canManageDepartments = can('manage_departments');
-$isDepartmentHead = ($userRole === 'department_head');
 $canSeeSourceAccountsArea = can('manage_sources');
 $canManageUsers = can('manage_users');
 $canSeeFinancialStats = can('view_stats');
@@ -70,10 +76,27 @@ $canViewActivityTile = can('view_activity');
 $canViewReports = can('view_reports');
 $canExportFilings = can('export_filings');
 $canViewBeneficiariesTile = can('view_beneficiaries');
-$isReadOnly = in_array($userRole, ['auditor', 'viewer']);
-$isApprover = in_array($userRole, ['approver', 'senior_approver']);
-$isLoader = in_array($userRole, ['program_officer', 'department_head']);
-// Pure role logic (no $metrics needed) — a role only gets the action
-// inbox if it can act on something in it at all; a pure oversight
-// role uses Reports instead of an inbox with nothing to press.
+// Pure role logic layered on top of the real permission check — a
+// role only gets the action inbox if it holds at least one of the
+// permissions that would put something IN that inbox.
 $canViewAttentionTile = $canApprove || $canDisburse || $canConfirmSource || $canCreate || $isSupervisor;
+
+// ============================================================
+// DEPARTMENT SCOPE — real helper, not a guessed multi-department
+// service call. $userDeptScope is a single ?int: null = org-wide,
+// otherwise the one department_id this user is confined to.
+// ============================================================
+$userDeptScope = getUserDepartmentScope();
+
+/**
+ * Appends a single-department filter to a query, or nothing at all
+ * for an org-wide scope (null). Replaces the old departmentScopeSql()
+ * (which handled an ARRAY of department ids from the never-seen
+ * DepartmentService method) — every call site that used the old
+ * multi-id version needs updating to this single-id version.
+ */
+function departmentScopeSqlSingle(?int $deptScope, array &$params, string $paramName = ':dept_scope'): string {
+    if ($deptScope === null) return '';
+    $params[$paramName] = $deptScope;
+    return " AND department_id = {$paramName}";
+}
