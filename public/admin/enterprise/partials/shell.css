@@ -58,6 +58,22 @@
     --f-mono:    'IBM Plex Mono', monospace;
 }
 
+/* Dark mode — same two inks, inverted, same sky blue (it reads fine
+   on either). One override block; nothing else in this file needs
+   to know dark mode exists. */
+:root[data-theme="dark"] {
+    --ink: #FFFFFF; --paper: #0A0A0A; --paper-dim: #161616; --line: #FFFFFF;
+    --sky-tint: #062733; --danger-tint: #161616;
+}
+:root[data-theme="dark"] th { background: var(--ink); color: var(--paper); }
+:root[data-theme="dark"] .status-completed { color: var(--paper); }
+:root[data-theme="dark"] .ftr { background: #FFFFFF; color: #0A0A0A; border-top-color: #FFFFFF; }
+
+.pill-critical { display: inline-flex; align-items: center; gap: 6px; background: var(--ink); color: var(--sky); border: var(--border) solid var(--ink); padding: 2px var(--u2); font-family: var(--f-mono); font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
+.row-dot.tone-amber { background: var(--sky-tint); }
+.row-dot.tone-green { background: var(--sky); }
+.row-dot.tone-danger { background: var(--ink); }
+
 /* ============================================================
    RESET / BASE
    ============================================================ */
