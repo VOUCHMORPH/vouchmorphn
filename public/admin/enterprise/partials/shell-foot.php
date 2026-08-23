@@ -17,7 +17,27 @@
 
 <footer class="ftr">
     <div class="ftr-inner">
-        <div class="ftr-status"><span class="chip"></span><?php echo safeHtml($footerNote ?? 'VOUCHMORPH ENTERPRISE'); ?></div>
+        <div class="ftr-status"><span class="chip"></span><?php echo safeHtml($footerNote ?? 'VouchMorph Enterprise'); ?></div>
         <div class="ftr-right"><?php echo safeHtml($orgName); ?> &middot; <?php echo safeHtml(getRoleLabel($userRole)); ?> &middot; <?php echo safeHtml($fullName); ?> &middot; <span title="<?php echo safeHtml(date('Y-m-d H:i:s') . ' ' . date('T')); ?>"><?php echo date('H:i'); ?> <?php echo date('T'); ?></span></div>
     </div>
 </footer>
+<script>
+(function () {
+    var btn = document.getElementById('themeToggleBtn');
+    var icon = document.getElementById('themeToggleIcon');
+    if (!btn || !icon) return;
+    var moonSvg = icon.innerHTML;
+    var sunSvg = <?php echo json_encode(svgIcon('sun')); ?>;
+    function sync() {
+        var dark = document.documentElement.getAttribute('data-theme') === 'dark';
+        icon.innerHTML = dark ? sunSvg : moonSvg;
+    }
+    btn.addEventListener('click', function () {
+        var next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', next);
+        localStorage.setItem('vm_theme', next);
+        sync();
+    });
+    sync();
+})();
+</script>
