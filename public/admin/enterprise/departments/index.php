@@ -79,19 +79,19 @@ if (!$isTopRole && !$isDepartmentHead) {
 }
 
 $deptService = new DepartmentService($pdo);
-function logDepartmentAudit(PDO $pdo, int $orgId, ?int $actorId, string $action, ?int $entityId, array $values): void {
+function logDepartmentAudit(PDO $pdo, int $orgId, ?int $actorId, string $action, ?int $entityId, array $values, string $entityType = 'department'): void {
     try {
         $stmt = $pdo->prepare("
             INSERT INTO organization_audit_logs (
                 organization_id, user_id, action, entity_type, entity_id,
                 new_values, ip_address, user_agent, created_at
             ) VALUES (
-                :org_id, :user_id, :action, 'department', :entity_id,
+                :org_id, :user_id, :action, :entity_type, :entity_id,
                 :new_values, :ip, :ua, NOW()
             )
         ");
         $stmt->execute([
-            ':org_id' => $orgId, ':user_id' => $actorId, ':action' => $action,
+            ':org_id' => $orgId, ':user_id' => $actorId, ':action' => $action, ':entity_type' => $entityType,
             ':entity_id' => $entityId, ':new_values' => json_encode($values),
             ':ip' => $_SERVER['REMOTE_ADDR'] ?? null, ':ua' => $_SERVER['HTTP_USER_AGENT'] ?? null,
         ]);
@@ -172,6 +172,81 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'temp_password' => $result['temp_password'],
                 ];
                 $flashMessage = 'Staff account created.';
+                break;
+
+            // ============================================================
+            // NEW — real edit/deactivate for an EXISTING member, in either
+            // a department or Headquarters (department_id NULL). Both
+            // gated the same as quick_add_staff ($isTopRole = Owner or
+            // IT Manager), for consistency, not narrowed to Owner-only.
+            //
+            // Deliberately narrow to what's provably safe: full_name and
+            // department_id both live on organization_users itself (the
+            // org-scoped membership row), confirmed by the existing
+            // staff-listing query above. Role changes and anything on the
+            // global `users` row (email, password) are NOT handled here —
+            // those belong on the Team / Manage Users page, which this
+            // codebase's own quick_add_staff comment already points to
+            // ("use Manage Users for other roles") and which I have not
+            // seen the source of. Guessing that page's responsibilities
+            // from here would risk the exact kind of duplicated,
+            // drifting logic already found and fixed elsewhere.
+            // ============================================================
+            case 'edit_staff_member':
+                if (!$isTopRole) throw new RuntimeException('Not authorized.');
+                $orgUserId = (int)($_POST['org_user_id'] ?? 0);
+                $newName = trim($_POST['full_name'] ?? '');
+                $newDeptRaw = trim($_POST['department_id'] ?? '');
+                $newDeptId = ($newDeptRaw === '') ? null : (int)$newDeptRaw;
+                if ($newName === '') throw new RuntimeException('Name is required.');
+
+                $stmt = $pdo->prepare("SELECT id, full_name, department_id FROM organization_users WHERE id = :id AND organization_id = :org_id");
+                $stmt->execute([':id' => $orgUserId, ':org_id' => $orgId]);
+                $existingStaff = $stmt->fetch(PDO::FETCH_ASSOC);
+                if (!$existingStaff) throw new RuntimeException('Staff member not found.');
+
+                if ($newDeptId !== null) {
+                    $stmt = $pdo->prepare("SELECT id FROM departments WHERE id = :id AND organization_id = :org_id");
+                    $stmt->execute([':id' => $newDeptId, ':org_id' => $orgId]);
+                    if (!$stmt->fetch()) throw new RuntimeException('Selected department not found.');
+                }
+
+                $stmt = $pdo->prepare("UPDATE organization_users SET full_name = :name, department_id = :dept_id WHERE id = :id AND organization_id = :org_id");
+                $stmt->execute([':name' => $newName, ':dept_id' => $newDeptId, ':id' => $orgUserId, ':org_id' => $orgId]);
+
+                logDepartmentAudit($pdo, $orgId, (int)$userId, 'STAFF_EDITED', $orgUserId, [
+                    'before' => ['full_name' => $existingStaff['full_name'], 'department_id' => $existingStaff['department_id']],
+                    'after' => ['full_name' => $newName, 'department_id' => $newDeptId],
+                ], 'organization_user');
+                $newDepartmentId = $newDeptId;
+                $flashMessage = 'Staff member updated.';
+                break;
+
+            case 'set_staff_status':
+                if (!$isTopRole) throw new RuntimeException('Not authorized.');
+                $orgUserId = (int)($_POST['org_user_id'] ?? 0);
+                $newActive = ($_POST['new_status'] ?? '') === 'active';
+
+                $stmt = $pdo->prepare("SELECT full_name, is_active, department_id FROM organization_users WHERE id = :id AND organization_id = :org_id");
+                $stmt->execute([':id' => $orgUserId, ':org_id' => $orgId]);
+                $existingStaff = $stmt->fetch(PDO::FETCH_ASSOC);
+                if (!$existingStaff) throw new RuntimeException('Staff member not found.');
+
+                // Same self-lockout guard the login/auth layer already
+                // relies on elsewhere: never let someone deactivate their
+                // own membership row from this screen.
+                if ($orgUserId === (int)($user['org_user_id'] ?? 0)) {
+                    throw new RuntimeException('You cannot deactivate your own account from here.');
+                }
+
+                $stmt = $pdo->prepare("UPDATE organization_users SET is_active = :active WHERE id = :id AND organization_id = :org_id");
+                $stmt->execute([':active' => $newActive ? 't' : 'f', ':id' => $orgUserId, ':org_id' => $orgId]);
+
+                logDepartmentAudit($pdo, $orgId, (int)$userId, $newActive ? 'STAFF_REACTIVATED' : 'STAFF_DEACTIVATED', $orgUserId, [
+                    'full_name' => $existingStaff['full_name'], 'department_id' => $existingStaff['department_id'],
+                ], 'organization_user');
+                $newDepartmentId = $existingStaff['department_id'];
+                $flashMessage = 'Staff member ' . ($newActive ? 'reactivated' : 'deactivated') . '.';
                 break;
 
             case 'request_sub_department':
@@ -336,7 +411,7 @@ $hqStaff = [];
 $sourceAccountSummary = ['confirmed' => 0, 'pending' => 0, 'names' => []];
 if ($isTopRole) {
     $stmt = $pdo->prepare("
-        SELECT department_id, user_id, full_name, role, is_active
+        SELECT id, department_id, user_id, full_name, role, is_active
         FROM organization_users
         WHERE organization_id = :org_id AND department_id IS NOT NULL
         ORDER BY role ASC, full_name ASC
@@ -347,9 +422,9 @@ if ($isTopRole) {
     }
 
     $stmt = $pdo->prepare("
-        SELECT user_id, full_name, role, is_active
+        SELECT id, user_id, full_name, role, is_active
         FROM organization_users
-        WHERE organization_id = :org_id AND department_id IS NULL AND is_active = true
+        WHERE organization_id = :org_id AND department_id IS NULL
         ORDER BY role ASC, full_name ASC
     ");
     $stmt->execute([':org_id' => $orgId]);
@@ -409,6 +484,60 @@ function resolveDepartmentHead(int $deptId, array $staffByDepartment): ?string {
     return null;
 }
 
+/**
+ * One staff member row: name, role, an inline "Edit" toggle (name +
+ * department reassignment — the only two fields proven to live on
+ * organization_users itself, see the case 'edit_staff_member' comment),
+ * and a Deactivate/Reactivate button. This is THE ONE implementation —
+ * used for department staff and for Headquarters staff, so "I don't
+ * see where to edit a member in Headquarters" can't happen again by
+ * one of the two call sites drifting out of sync with the other.
+ * $isYou disables the deactivate control (self-lockout guard, matches
+ * the same check the POST handler enforces server-side).
+ */
+function renderStaffMemberRow(array $person, array $flatDepartments, string $csrfToken, array $quickAddSlots, bool $isYou): string {
+    $orgUserId = (int)$person['id'];
+    $roleLabel = $quickAddSlots[$person['role']]['label'] ?? ucfirst(str_replace('_', ' ', $person['role']));
+    $statusClass = $person['is_active'] ? 'status-approved' : 'status-draft';
+
+    $html = '<div class="staff-row" id="staff-row-' . $orgUserId . '">';
+    $html .= '<div class="staff-row-main">';
+    $html .= '<span class="status ' . $statusClass . '" style="text-transform:none;">' . safeHtml($roleLabel) . ': ' . safeHtml($person['full_name']) . ($person['is_active'] ? '' : ' (inactive)') . ($isYou ? ' — YOU' : '') . '</span>';
+    $html .= '<div class="staff-row-actions">';
+    $html .= '<button type="button" class="btn-mini outline" onclick="document.getElementById(\'staff-edit-' . $orgUserId . '\').classList.toggle(\'open-row\')">Edit</button>';
+    if ($isYou) {
+        $html .= '<button type="button" class="btn-mini locked-btn" disabled title="You cannot deactivate your own account here">' . svgIcon('lock') . ' Deactivate</button>';
+    } else {
+        $html .= '<form method="post" style="display:inline;" onsubmit="return confirm(\'' . ($person['is_active'] ? 'Deactivate' : 'Reactivate') . ' ' . safeHtml(addslashes($person['full_name'])) . '?\')">';
+        $html .= '<input type="hidden" name="csrf_token" value="' . safeHtml($csrfToken) . '">';
+        $html .= '<input type="hidden" name="action" value="set_staff_status">';
+        $html .= '<input type="hidden" name="org_user_id" value="' . $orgUserId . '">';
+        $html .= '<input type="hidden" name="new_status" value="' . ($person['is_active'] ? 'inactive' : 'active') . '">';
+        $html .= '<button type="submit" class="btn-mini ' . ($person['is_active'] ? 'danger' : '') . '">' . ($person['is_active'] ? 'Deactivate' : 'Reactivate') . '</button>';
+        $html .= '</form>';
+    }
+    $html .= '</div></div>';
+
+    // Inline edit form — closed by default, same open/close JS pattern
+    // the department "Manage" row already uses.
+    $html .= '<form method="post" class="staff-edit-form" id="staff-edit-' . $orgUserId . '">';
+    $html .= '<input type="hidden" name="csrf_token" value="' . safeHtml($csrfToken) . '">';
+    $html .= '<input type="hidden" name="action" value="edit_staff_member">';
+    $html .= '<input type="hidden" name="org_user_id" value="' . $orgUserId . '">';
+    $html .= '<div class="form-group"><label>Full name</label><input type="text" name="full_name" value="' . safeHtml($person['full_name']) . '" required></div>';
+    $html .= '<div class="form-group"><label>Department</label><select name="department_id"><option value="">Headquarters (no department)</option>';
+    foreach ($flatDepartments as $d) {
+        $selected = (isset($person['department_id']) && (int)$person['department_id'] === (int)$d['id']) ? ' selected' : '';
+        $html .= '<option value="' . (int)$d['id'] . '"' . $selected . '>' . safeHtml($d['name']) . '</option>';
+    }
+    $html .= '</select></div>';
+    $html .= '<div class="form-group" style="align-self:end;"><button type="submit" class="btn btn-outline btn-sm">Save</button></div>';
+    $html .= '</form>';
+
+    $html .= '</div>';
+    return $html;
+}
+
 // Unified Pending Approvals feed — sub-department requests and ration
 // borrow requests merged into one list, newest first.
 $unifiedApprovals = [];
@@ -465,7 +594,7 @@ function getRoleLabel($role) {
  * adaptation — every class/var name here is legacy and resolved via
  * the compatibility aliases in this page's <style> block.
  */
-function renderDeptRow(array $node, bool $isTopRole, array $staffByDepartment, array $quickAddSlots, ?int $newDepartmentId, string $csrfToken, int $depth = 0): string {
+function renderDeptRow(array $node, bool $isTopRole, array $staffByDepartment, array $quickAddSlots, ?int $newDepartmentId, string $csrfToken, array $flatDepartments, int $currentUserId, int $depth = 0): string {
     $deptId = (int)$node['id'];
     $indent = $depth * 22;
     $pct = $node['utilization_percent'];
@@ -535,10 +664,10 @@ function renderDeptRow(array $node, bool $isTopRole, array $staffByDepartment, a
         $html .= '<div>';
         $html .= '<div style="font-family:var(--f-cond); font-weight:700; font-size:11.5px; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-500); margin-bottom:8px;">Staffing (' . $staffCount . ')</div>';
         if ($staffCount > 0) {
-            $html .= '<div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px;">';
+            $html .= '<div style="margin-bottom:12px;">';
             foreach ($staffByDepartment[$deptId] as $person) {
-                $roleLabel = $quickAddSlots[$person['role']]['label'] ?? ucfirst(str_replace('_', ' ', $person['role']));
-                $html .= '<div class="status ' . ($person['is_active'] ? 'status-approved' : 'status-draft') . '" style="text-transform:none;">' . safeHtml($roleLabel) . ': ' . safeHtml($person['full_name']) . ($person['is_active'] ? '' : ' (inactive)') . '</div>';
+                $isYou = isset($person['user_id']) && (int)$person['user_id'] === $currentUserId;
+                $html .= renderStaffMemberRow($person, $flatDepartments, $csrfToken, $quickAddSlots, $isYou);
             }
             $html .= '</div>';
         } else {
@@ -563,7 +692,7 @@ function renderDeptRow(array $node, bool $isTopRole, array $staffByDepartment, a
     }
 
     foreach ($node['children'] as $child) {
-        $html .= renderDeptRow($child, $isTopRole, $staffByDepartment, $quickAddSlots, $newDepartmentId, $csrfToken, $depth + 1);
+        $html .= renderDeptRow($child, $isTopRole, $staffByDepartment, $quickAddSlots, $newDepartmentId, $csrfToken, $flatDepartments, $currentUserId, $depth + 1);
     }
     return $html;
 }
@@ -769,6 +898,14 @@ if ($searchQuery !== '') {
         .alloc-table th, .alloc-table td { vertical-align: top; }
         .accent-brass .stat-value, .stat-value.brass { color: var(--sky-deep); }
         .accent-danger { border-left: var(--u1) solid var(--danger); }
+        /* NEW — real editable staff rows, used both inside a department's
+           Manage panel and in the standalone Headquarters Staff card. */
+        .staff-row { padding: var(--u2) 0; border-bottom: 1px dashed var(--ink); }
+        .staff-row:last-child { border-bottom: none; }
+        .staff-row-main { display: flex; justify-content: space-between; align-items: center; gap: var(--u2); flex-wrap: wrap; }
+        .staff-row-actions { display: flex; gap: 6px; flex-shrink: 0; }
+        .staff-edit-form { display: none; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: var(--u2); margin: var(--u2) 0; padding: var(--u2) var(--u3); background: var(--paper-dim); border: var(--border) solid var(--ink); }
+        .staff-edit-form.open-row { display: grid; }
 
         /* ============================================================
            ORG-CHART HIERARCHY DIAGRAM — pure CSS, unchanged logic,
@@ -1003,6 +1140,32 @@ if ($searchQuery !== '') {
             </div><!-- /dept-tab-chart -->
 
             <div class="dept-tab" id="dept-tab-approvals">
+
+            <!-- ============================================================
+                 HEADQUARTERS STAFF — this genuinely did not exist before.
+                 Department staff had a "Manage" panel with real edit/
+                 deactivate controls; HQ staff (department_id IS NULL) had
+                 none anywhere in this page. Same renderStaffMemberRow()
+                 as every department uses — one implementation, not a
+                 second copy that can drift.
+                 ============================================================ -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title"><?php echo svgIcon('idcard'); ?> Headquarters Staff</span>
+                    <span class="card-badge"><?php echo count($hqStaff); ?> ON RECORD</span>
+                </div>
+                <?php if (empty($hqStaff)): ?>
+                <div class="empty-row">No staff assigned directly to Headquarters.</div>
+                <?php else: ?>
+                <div>
+                    <?php foreach ($hqStaff as $person):
+                        $isYou = isset($person['user_id']) && (int)$person['user_id'] === (int)$userId;
+                        echo renderStaffMemberRow($person, $flatDepartments, $csrfToken, $quickAddSlots, $isYou);
+                    endforeach; ?>
+                </div>
+                <?php endif; ?>
+            </div>
+
             <div class="panel-grid" id="approvals">
                 <div class="panel">
                     <div class="panel-head">
@@ -1017,7 +1180,7 @@ if ($searchQuery !== '') {
                             <table class="alloc-table">
                                 <thead><tr><th>Department</th><th>Budget Ceiling</th><th>Current Spend</th><th>Utilization</th><th></th></tr></thead>
                                 <tbody>
-                                <?php foreach ($tree as $node) { echo renderDeptRow($node, $isTopRole, $staffByDepartment, $quickAddSlots, $newDepartmentId, $csrfToken); } ?>
+                                <?php foreach ($tree as $node) { echo renderDeptRow($node, $isTopRole, $staffByDepartment, $quickAddSlots, $newDepartmentId, $csrfToken, $flatDepartments, (int)$userId); } ?>
                                 </tbody>
                             </table>
                         </div>
