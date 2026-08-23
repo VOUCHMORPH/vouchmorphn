@@ -14,6 +14,8 @@
 ?>
     </div><!-- /.stage -->
 </div><!-- /.stage-outer -->
+    </div><!-- /.main-col -->
+</div><!-- /.app-shell -->
 
 <footer class="ftr">
     <div class="ftr-inner">
@@ -68,5 +70,47 @@
         syncChips();
     };
     syncChips();
+})();
+(function () {
+    // Sidebar collapse — persisted, same mechanism as the theme/skin
+    // choices above. Collapsed width still shows icons (title=""
+    // tooltips carry the label), never hides navigation entirely.
+    var sideNav = document.getElementById('sideNav');
+    var btn = document.getElementById('sideNavCollapseBtn');
+    var label = document.getElementById('collapseBtnLabel');
+    if (!sideNav || !btn) return;
+    function apply(collapsed) {
+        sideNav.classList.toggle('collapsed', collapsed);
+        if (label) label.innerHTML = collapsed ? '&rarr;' : '&larr; Collapse';
+    }
+    apply(localStorage.getItem('vm_sidebar_collapsed') === '1');
+    btn.addEventListener('click', function () {
+        var next = !sideNav.classList.contains('collapsed');
+        apply(next);
+        localStorage.setItem('vm_sidebar_collapsed', next ? '1' : '0');
+    });
+    // Mobile: hamburger opens/closes the off-canvas sidebar instead.
+    var mobileBtn = document.getElementById('mobileNavBtn');
+    if (mobileBtn) {
+        if (window.matchMedia('(max-width: 760px)').matches) mobileBtn.style.display = '';
+        mobileBtn.addEventListener('click', function () { sideNav.classList.toggle('mobile-open'); });
+    }
+})();
+(function () {
+    // Notification popout — one at a time, click-outside closes it.
+    // This is the "locks and can be hidden with a button" behavior
+    // from the reference: opening it doesn't navigate anywhere, it
+    // just answers "what needs me right now" without leaving the page.
+    var popout = document.getElementById('notifPopout');
+    if (!popout) return;
+    window.toggleNotifPopout = function (force) {
+        var open = typeof force === 'boolean' ? force : !popout.classList.contains('open');
+        popout.classList.toggle('open', open);
+    };
+    document.addEventListener('click', function (e) {
+        if (!popout.classList.contains('open')) return;
+        if (popout.contains(e.target) || e.target.closest('#notifBellBtn')) return;
+        popout.classList.remove('open');
+    });
 })();
 </script>
