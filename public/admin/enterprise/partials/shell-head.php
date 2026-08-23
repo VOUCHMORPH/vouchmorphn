@@ -30,6 +30,9 @@ if (!function_exists('svgIcon')) {
             'bell' => '<path d="M6 9a6 6 0 1 1 12 0c0 4.5 1.5 6 1.5 6h-15S6 13.5 6 9Z"/><path d="M10 19a2 2 0 0 0 4 0"/>',
             'arrow-left' => '<path d="M19 12H5M11 6l-6 6 6 6"/>',
             'logout' => '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5M21 12H9"/>',
+            'moon' => '<path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5Z"/>',
+            'sun' => '<circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M3 12h2M19 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"/>',
+            'search' => '<circle cx="10.5" cy="10.5" r="6.5"/><path d="M20 20l-4.8-4.8"/>',
         ];
         $path = $icons[$name] ?? $icons['mark'];
         return '<svg class="i" viewBox="0 0 24 24">' . $path . '</svg>';
@@ -41,7 +44,13 @@ $backHref = $backHref ?? null;
 $backLabel = $backLabel ?? 'Home';
 $attentionHref = $attentionHref ?? ($basePath . 'index.php#attention');
 $attentionActive = $attentionActive ?? false;
+// $canTrace is optional — only index.php's Trace stage needs the
+// header shortcut; every other page simply omits it.
+$showTraceShortcut = !empty($canTrace);
 ?>
+<script>
+(function () { var t = localStorage.getItem('vm_theme'); if (t === 'dark' || t === 'light') document.documentElement.setAttribute('data-theme', t); })();
+</script>
 <header class="hdr">
     <div class="hdr-inner">
         <div class="hdr-left">
@@ -57,6 +66,10 @@ $attentionActive = $attentionActive ?? false;
             </a>
         </div>
         <div class="hdr-right">
+            <?php if ($showTraceShortcut): ?>
+            <a href="<?php echo safeHtml($basePath . 'index.php#stage-trace'); ?>" class="hdr-icon-btn" title="Trace a payment"><?php echo svgIcon('search'); ?></a>
+            <?php endif; ?>
+            <button type="button" class="hdr-icon-btn" id="themeToggleBtn" title="Toggle dark mode"><span id="themeToggleIcon"><?php echo svgIcon('moon'); ?></span></button>
             <a href="<?php echo safeHtml($attentionHref); ?>" class="hdr-icon-btn" title="Needs your attention">
                 <?php echo svgIcon('bell'); ?>
                 <?php if ($attentionActive): ?><span class="dot">!</span><?php endif; ?>
