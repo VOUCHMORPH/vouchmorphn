@@ -336,7 +336,7 @@ $hqStaff = [];
 $sourceAccountSummary = ['confirmed' => 0, 'pending' => 0, 'names' => []];
 if ($isTopRole) {
     $stmt = $pdo->prepare("
-        SELECT department_id, full_name, role, is_active
+        SELECT department_id, user_id, full_name, role, is_active
         FROM organization_users
         WHERE organization_id = :org_id AND department_id IS NOT NULL
         ORDER BY role ASC, full_name ASC
@@ -347,7 +347,7 @@ if ($isTopRole) {
     }
 
     $stmt = $pdo->prepare("
-        SELECT full_name, role, is_active
+        SELECT user_id, full_name, role, is_active
         FROM organization_users
         WHERE organization_id = :org_id AND department_id IS NULL AND is_active = true
         ORDER BY role ASC, full_name ASC
@@ -569,9 +569,15 @@ function renderDeptRow(array $node, bool $isTopRole, array $staffByDepartment, a
 }
 
 /**
- * One box + its children in the org-chart hierarchy diagram. UNCHANGED.
+ * One box + its children in the org-chart hierarchy diagram.
+ * UPDATED: now shows the actual people in the department (role +
+ * name, from the same $staffByDepartment the Allocations table
+ * already uses — no new query), not just the budget ceiling. This
+ * is what makes it a real organogram instead of a budget tree that
+ * happens to be shaped like one.
  */
-function renderHierarchyNode(array $node, bool $isRoot = false): string {
+function renderHierarchyNode(array $node, array $staffByDepartment, int $currentUserId, bool $isRoot = false): string {
+    $deptId = (int)$node['id'];
     $classes = 'org-node';
     if ($isRoot) $classes .= ' is-root';
     if ($node['status'] !== 'active') $classes .= ' is-inactive';
@@ -587,11 +593,30 @@ function renderHierarchyNode(array $node, bool $isRoot = false): string {
     if ($node['status'] !== 'active') {
         $html .= '<span class="org-meta" style="color:var(--seal-red);">Inactive</span>';
     }
+    $people = $staffByDepartment[$deptId] ?? [];
+    if (!empty($people)) {
+        $html .= '<div class="org-people">';
+        foreach ($people as $person) {
+            $roleAbbrev = match($person['role']) {
+                'department_head' => 'HEAD', 'program_officer' => 'UPL', 'approver' => 'APR', 'owner' => 'DIS',
+                default => strtoupper(substr($person['role'], 0, 3)),
+            };
+            // FIX: this is the actual answer to "how does the person
+            // currently logged in fit into this chart" — a real
+            // comparison against organization_users.user_id, not a
+            // guess based on name matching.
+            $isYou = isset($person['user_id']) && (int)$person['user_id'] === $currentUserId;
+            $html .= '<span class="org-person' . ($person['is_active'] ? '' : ' is-inactive') . ($isYou ? ' is-you' : '') . '"><b>' . $roleAbbrev . '</b> ' . safeHtml($person['full_name']) . '</span>';
+        }
+        $html .= '</div>';
+    } else {
+        $html .= '<div class="org-people org-people-empty">No staff assigned</div>';
+    }
     $html .= '</div>';
     if (!empty($node['children'])) {
         $html .= '<ul>';
         foreach ($node['children'] as $child) {
-            $html .= renderHierarchyNode($child, false);
+            $html .= renderHierarchyNode($child, $staffByDepartment, $currentUserId, false);
         }
         $html .= '</ul>';
     }
@@ -779,8 +804,35 @@ if ($searchQuery !== '') {
         .org-node.is-root .org-meta { color: var(--paper); opacity: .75; }
         .org-node.is-inactive { opacity: 0.55; border-style: dashed; }
         .org-node.is-over { border-color: var(--danger); }
+        .org-node.is-hq { background: var(--sky); border-color: var(--ink); }
+        .org-node.is-hq .org-name, .org-node.is-hq .org-meta { color: var(--ink); }
+        .org-people { margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--ink); display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
+        .org-person { font-family: var(--f-mono); font-size: 10px; white-space: normal; text-align: left; }
+        .org-person b { font-weight: 700; margin-right: 3px; }
+        .org-person.is-inactive { opacity: 0.5; text-decoration: line-through; }
+        .org-people-empty { margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--ink); font-size: 10px; font-style: italic; opacity: 0.55; }
+        .org-person.is-you { background: var(--sky); color: var(--ink); padding: 1px 5px; margin: -1px -5px; font-weight: 700; }
+        .org-person.is-you::after { content: ' — YOU'; font-weight: 700; }
 
-        .dept-search-form { max-width: 380px; margin-bottom: var(--u4); }
+        /* ============================================================
+           STANDALONE SECTIONS — this page used to be one long scroll:
+           search, flashes, department-head card, stats, the org chart,
+           the allocations table, pending approvals, and every create/
+           adjust form, all stacked on top of each other. The org chart
+           in particular was "in the middle of other things" instead of
+           standing on its own. Same center-stage principle as the rest
+           of the dashboard, applied locally to this one page: one
+           section visible at a time, tabs to move between them.
+           ============================================================ */
+        .dept-tabs { display: flex; border: var(--border) solid var(--ink); margin-bottom: var(--u4); }
+        .dept-tabs button { flex: 1; height: var(--u6); background: var(--paper); border: none; border-right: var(--border) solid var(--ink); font-family: var(--f-display); font-weight: 700; font-size: 12.5px; text-transform: uppercase; letter-spacing: .03em; cursor: pointer; color: var(--ink); }
+        .dept-tabs button:last-child { border-right: none; }
+        .dept-tabs button.active { background: var(--sky); }
+        .dept-tabs button:hover:not(.active) { background: var(--paper-dim); }
+        .dept-tab { display: none; }
+        .dept-tab.active { display: block; animation: stageIn 0.18s ease; }
+
+        .dept-search-form { margin-bottom: var(--u4); }
     </style>
 </head>
 <body>
@@ -794,15 +846,10 @@ if ($searchQuery !== '') {
                 <div class="page-header-actions">
                     <button type="button" class="btn btn-secondary" disabled title="Ledger export isn't built yet"><?php echo svgIcon('download'); ?> Export Ledger</button>
                     <?php if ($isTopRole): ?>
-                    <a href="#dept-create" class="btn btn-primary"><?php echo svgIcon('plus'); ?> New Department</a>
+                    <button type="button" class="btn btn-primary" onclick="showDeptTab('create')"><?php echo svgIcon('plus'); ?> New Department</button>
                     <?php endif; ?>
                 </div>
             </div>
-
-            <form method="get" class="dept-search-form field" style="display:flex;gap:var(--u2);align-items:flex-end;">
-                <div style="flex:1;"><input type="text" name="q" placeholder="Search departments, codes&hellip;" value="<?php echo safeHtml($searchQuery); ?>"></div>
-                <button type="submit" class="btn btn-secondary btn-sm"><?php echo svgIcon('search'); ?></button>
-            </form>
 
             <?php if ($newStaffCredentials): ?>
             <div class="card" style="border-left:var(--u1) solid var(--sky);">
@@ -820,6 +867,26 @@ if ($searchQuery !== '') {
                 <div class="desc"><?php echo safeHtml($flashMessage); ?></div>
             </div>
             <?php endif; ?>
+
+            <?php if ($isTopRole): ?>
+            <!-- ============================================================
+                 Real tabs, not an accident of scrolling. Each section
+                 below now stands alone — pressed, it takes the full
+                 width of the page; nothing else competes with it.
+                 ============================================================ -->
+            <div class="dept-tabs" id="deptTabs">
+                <button type="button" class="active" onclick="showDeptTab('overview',this)">Overview</button>
+                <button type="button" onclick="showDeptTab('chart',this)">Organization Chart</button>
+                <button type="button" onclick="showDeptTab('approvals',this)">Allocations &amp; Approvals<?php echo !empty($unifiedApprovals) ? ' (' . count($unifiedApprovals) . ')' : ''; ?></button>
+                <button type="button" onclick="showDeptTab('create',this)">Create &amp; Adjust</button>
+            </div>
+            <?php endif; ?>
+
+            <div class="dept-tab<?php echo $isTopRole ? ' active' : ''; ?>" id="dept-tab-overview">
+            <form method="get" class="dept-search-form field" style="display:flex;gap:var(--u2);align-items:flex-end;">
+                <div style="flex:1;"><input type="text" name="q" placeholder="Search departments, codes&hellip;" value="<?php echo safeHtml($searchQuery); ?>"></div>
+                <button type="submit" class="btn btn-secondary btn-sm"><?php echo svgIcon('search'); ?></button>
+            </form>
 
             <?php if ($searchQuery !== ''): ?>
             <div class="card">
@@ -886,23 +953,56 @@ if ($searchQuery !== '') {
                 <div class="stat-card"><div class="stat-label">Total Allocated</div><div class="stat-value"><?php echo formatCurrency($totalAllocated); ?></div><div class="stat-sub">Carved out to (sub-)departments</div></div>
                 <div class="stat-card"><div class="stat-label">Unallocated Reserve</div><div class="stat-value" style="color:var(--sky-deep);"><?php echo formatCurrency($unallocatedReserve); ?></div><div class="stat-sub">Still available to allocate</div></div>
             </div>
+            <?php endif; ?>
+            </div><!-- /dept-tab-overview -->
 
+            <?php if ($isTopRole): ?>
+            <!-- ============================================================
+                 ORGANIZATION CHART — stands alone now, full width, its
+                 own tab. Shows Headquarters (staff with no department)
+                 as its own box alongside the department tree, and every
+                 department box now lists the actual people in it
+                 (renderHierarchyNode, updated above) — a real "who is
+                 where," not just a budget hierarchy shaped like one.
+                 ============================================================ -->
+            <div class="dept-tab" id="dept-tab-chart">
             <div class="card">
                 <div class="card-header">
                     <span class="card-title"><?php echo svgIcon('building'); ?> Organizational Hierarchy</span>
-                    <span style="font-size:11.5px; opacity:.6;">Top-down reporting structure &middot; ceiling &amp; utilization per box</span>
+                    <span style="font-size:11.5px; opacity:.6;">Top-down reporting structure &middot; ceiling, utilization, and staff per box</span>
                 </div>
-                <?php if (empty($tree)): ?>
-                <div class="empty-row">No departments yet — create the first one below.</div>
+                <?php if (empty($tree) && empty($hqStaff)): ?>
+                <div class="empty-row">No departments yet — create the first one in Create &amp; Adjust.</div>
                 <?php else: ?>
                 <div class="org-chart-wrap">
                     <ul class="org-chart">
-                        <?php foreach ($tree as $rootNode) { echo renderHierarchyNode($rootNode, true); } ?>
+                        <li><div class="org-node is-root is-hq">
+                            <span class="org-name">Headquarters</span>
+                            <span class="org-meta"><?php echo count($hqStaff); ?> staff, unassigned to any department</span>
+                            <?php if (!empty($hqStaff)): ?>
+                            <div class="org-people">
+                                <?php foreach ($hqStaff as $person):
+                                    $roleAbbrev = match($person['role']) {
+                                        'department_head' => 'HEAD', 'program_officer' => 'UPL', 'approver' => 'APR', 'owner' => 'DIS',
+                                        default => strtoupper(substr($person['role'], 0, 3)),
+                                    };
+                                    $isYou = isset($person['user_id']) && (int)$person['user_id'] === (int)$userId;
+                                ?>
+                                <span class="org-person<?php echo $person['is_active'] ? '' : ' is-inactive'; ?><?php echo $isYou ? ' is-you' : ''; ?>"><b><?php echo $roleAbbrev; ?></b> <?php echo safeHtml($person['full_name']); ?></span>
+                                <?php endforeach; ?>
+                            </div>
+                            <?php else: ?>
+                            <div class="org-people-empty">No unassigned staff</div>
+                            <?php endif; ?>
+                        </div></li>
+                        <?php foreach ($tree as $rootNode) { echo renderHierarchyNode($rootNode, $staffByDepartment, (int)$userId, true); } ?>
                     </ul>
                 </div>
                 <?php endif; ?>
             </div>
+            </div><!-- /dept-tab-chart -->
 
+            <div class="dept-tab" id="dept-tab-approvals">
             <div class="panel-grid" id="approvals">
                 <div class="panel">
                     <div class="panel-head">
@@ -962,7 +1062,9 @@ if ($searchQuery !== '') {
                     </div>
                 </div>
             </div>
+            </div><!-- /dept-tab-approvals -->
 
+            <div class="dept-tab" id="dept-tab-create">
             <div class="card" id="dept-create">
                 <div class="card-header"><span class="card-title"><?php echo svgIcon('plus'); ?> Create &amp; Adjust</span></div>
 
@@ -993,6 +1095,7 @@ if ($searchQuery !== '') {
                     <p class="hint">Must fit within the parent's remaining (unallocated) ceiling.</p>
                 </details>
             </div>
+            </div><!-- /dept-tab-create -->
             <?php endif; ?>
     </div>
     <?php
@@ -1004,5 +1107,37 @@ if ($searchQuery !== '') {
     $footerNote = 'Ledger sync: ' . ($dbHealthy ? 'OK' : 'DEGRADED');
     require __DIR__ . '/../partials/shell-foot.php';
     ?>
+    <script>
+    // ------------------------------------------------------------
+    // Tab switcher, page-local — separate from index.php's goStage()
+    // since this page's sections are NOT sidebar destinations, just
+    // sub-views of this one page.
+    // ------------------------------------------------------------
+    function showDeptTab(name, btn) {
+        document.querySelectorAll('.dept-tab').forEach(function (t) { t.classList.remove('active'); });
+        var target = document.getElementById('dept-tab-' + name);
+        if (target) target.classList.add('active');
+        document.querySelectorAll('#deptTabs button').forEach(function (b) { b.classList.remove('active'); });
+        if (btn) { btn.classList.add('active'); }
+        else {
+            var idx = ['overview', 'chart', 'approvals', 'create'].indexOf(name);
+            var btns = document.querySelectorAll('#deptTabs button');
+            if (idx >= 0 && btns[idx]) btns[idx].classList.add('active');
+        }
+        window.scrollTo(0, 0);
+    }
+    // FIX applied proactively: the header bell's popout links to
+    // "#approvals", and — same bug class as the sidebar hashchange
+    // issue on the main dashboard — a plain href to a fragment inside
+    // a now-hidden tab does nothing on its own. Route the hash the
+    // same way, including on same-document navigation.
+    function routeDeptHash() {
+        if (location.hash === '#approvals' && document.getElementById('dept-tab-approvals')) {
+            showDeptTab('approvals');
+        }
+    }
+    routeDeptHash();
+    window.addEventListener('hashchange', routeDeptHash);
+    </script>
 </body>
 </html>
