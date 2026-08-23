@@ -28,9 +28,19 @@
     if (!btn || !icon) return;
     var moonSvg = icon.innerHTML;
     var sunSvg = <?php echo json_encode(svgIcon('sun')); ?>;
+    function syncThemeBtnVisibility() {
+        // The light/dark toggle only means something on Control
+        // Room — the three intensity skins are dark by identity,
+        // and letting the toggle fight that would just produce a
+        // washed-out warroom/alpha/gala rather than a real light
+        // mode for them (they don't have one).
+        var skin = document.documentElement.getAttribute('data-skin');
+        btn.style.display = (!skin || skin === 'control-room') ? '' : 'none';
+    }
     function sync() {
         var dark = document.documentElement.getAttribute('data-theme') === 'dark';
         icon.innerHTML = dark ? sunSvg : moonSvg;
+        syncThemeBtnVisibility();
     }
     btn.addEventListener('click', function () {
         var next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
@@ -39,5 +49,24 @@
         sync();
     });
     sync();
+})();
+(function () {
+    var picker = document.getElementById('skinPicker');
+    if (!picker) return;
+    function syncChips() {
+        var current = document.documentElement.getAttribute('data-skin') || 'control-room';
+        picker.querySelectorAll('.skin-chip').forEach(function (chip) {
+            chip.classList.toggle('active', chip.dataset.chip === current);
+        });
+        var themeBtn = document.getElementById('themeToggleBtn');
+        if (themeBtn) themeBtn.style.display = (current === 'control-room') ? '' : 'none';
+    }
+    window.setSkin = function (name) {
+        if (name === 'control-room') { document.documentElement.removeAttribute('data-skin'); }
+        else { document.documentElement.setAttribute('data-skin', name); }
+        localStorage.setItem('vm_skin', name);
+        syncChips();
+    };
+    syncChips();
 })();
 </script>
