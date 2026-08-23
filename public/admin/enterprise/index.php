@@ -136,76 +136,31 @@ function renderSetupWizard(string $orgName, string $fullName, string $userRole, 
 }
 
 // ============================================================
-// ROLE PERMISSIONS — deny-by-default.
+// ROLE PERMISSIONS
 // ------------------------------------------------------------
-// One matrix, read top to bottom. If a role is not listed for a
-// capability, that role does NOT get it — nothing in this file
-// falls back to "show it anyway." This is the authorization
-// policy for what the DASHBOARD DISPLAYS; it is not, by itself,
-// enough for a government deployment — see the two notes below
-// the matrix before you treat this as done.
+// This used to be a hardcoded $ROLE_CAPS matrix living in this file
+// (and duplicated again in departments/index.php). That was a shadow
+// permission system disconnected from the REAL one already built in
+// auth.php — hasPermission(), which checks owner bypass, then a
+// per-user JSONB override, then the organization_role_permissions
+// table. Two sources of truth that could silently disagree is a bad
+// place to be for a system that produces audit filings. Fixed: see
+// partials/permissions.php, which now wraps the real hasPermission()
+// instead of re-deciding access itself.
 //
-//   view_stats          — org-wide financial totals (MTD, active
-//                          batches, pending approvals count)
-//   view_attention       — the "needs your action" inbox. Gated
-//                          on having an action to take, not just
-//                          on rank — a pure oversight role should
-//                          use Reports, not an action inbox.
-//   view_batches         — the batch ledger tile (rows themselves
-//                          are further scoped by $statusFilter /
-//                          $userDeptScopeIds below, per role)
-//   view_activity        — the organization audit-log feed
-//   view_reports         — the Reports & Filings stage (exports,
-//                          the accountability tooling below)
-//   export_filings       — the "generate a signed export" action
-//                          inside Reports, narrower than view
-//   view_beneficiaries   — the Beneficiaries tile
-//   manage_departments   — the Departments tile
-//   manage_sources       — the Source Accounts tile
-//   manage_users         — the Team tile
-//   create_batch         — the "+ New batch" action (also needs
-//                          $setupReady)
-//   act_approve / act_disburse / act_confirm_source — the actual
-//                          financial actions behind those tiles
+// NOTE 1 — this is still UI visibility, not database-level access
+// control. can() returning true means "show this," not "this write
+// is safe." Every target page and every mutating query must still
+// enforce the same check server-side on its own.
 //
-// NOTE 1 — this is UI visibility, not access control. Hiding a
-// tile stops a role from finding the door; it does not lock it.
-// Every target page (batches/index.php, reports.php, imports/*,
-// settings/*) must independently re-check the role server-side,
-// and the database layer should not trust the application layer
-// alone for anything that could end up in a public inquiry.
-//
-// NOTE 2 — segregation of duties: as received, this codebase lets
-// it_manager_enterprise both administer the system (users, source
-// accounts) AND approve/confirm the movement of money
-// ($canApprove and $canConfirmSource both include it). In a
-// government context that's usually a finding on its own — the
-// person who can create/modify accounts generally shouldn't also
-// be the person who approves what moves through them. I have NOT
-// silently changed that here, since it's your financial-control
-// policy, not a display bug — flag it to whoever owns compliance
-// sign-off before this goes live.
-// ============================================================
-// ============================================================
-// PERMISSIONS — now the single shared file, see its own header
-// for the full explanation of what moved and why.
+// NOTE 2 — segregation of duties: it_manager_enterprise can still
+// hold both administrative permissions and act_approve/act_confirm_source
+// if your organization_role_permissions table grants it that combination.
+// That's now a database configuration question, not something baked
+// into this file — which is the correct place for that decision to
+// live, but it means fixing it means editing the database, not this code.
 // ============================================================
 require __DIR__ . '/partials/permissions.php';
-
-$scopableOversightRoles = ['owner', 'approver', 'senior_approver'];
-$userDeptScopeIds = in_array($userRole, $scopableOversightRoles, true)
-    ? $deptService->getDepartmentScopeIds($departmentId)
-    : null;
-
-function departmentScopeSql(?array $scopeIds, array &$params, string $prefix = 'sdep'): string {
-    if ($scopeIds === null) return '';
-    if (empty($scopeIds)) return ' AND 1=0';
-    $placeholders = [];
-    foreach (array_values($scopeIds) as $i => $id) {
-        $key = ":{$prefix}{$i}"; $placeholders[] = $key; $params[$key] = $id;
-    }
-    return ' AND department_id IN (' . implode(',', $placeholders) . ')';
-}
 
 // ============================================================
 // FETCH DASHBOARD DATA  (unchanged business logic)
@@ -235,14 +190,14 @@ try {
 
     if ($canDisburse) {
         $adfParams = [':org_id' => $orgId];
-        $adfScopeSql = departmentScopeSql($userDeptScopeIds, $adfParams, 'adf');
+        $adfScopeSql = departmentScopeSqlSingle($userDeptScope, $adfParams, ':dept_adf');
         $stmt = $pdo->prepare("SELECT COUNT(*) as total FROM disbursement_batches WHERE organization_id = :org_id AND status = 'approved' $adfScopeSql");
         $stmt->execute($adfParams);
         $metrics['approved_for_disbursement'] = (int)$stmt->fetchColumn();
     }
 
     $papParams = [':org_id' => $orgId];
-    $papScopeSql = departmentScopeSql($userDeptScopeIds, $papParams, 'pap');
+    $papScopeSql = departmentScopeSqlSingle($userDeptScope, $papParams, ':dept_pap');
     $stmt = $pdo->prepare("SELECT COUNT(*) as total FROM disbursement_batches WHERE organization_id = :org_id AND status IN ('pending', 'pending_approval', 'PENDING', 'PENDING_APPROVAL') $papScopeSql");
     $stmt->execute($papParams);
     $metrics['pending_approvals'] = (int)$stmt->fetchColumn();
@@ -255,15 +210,29 @@ try {
         } catch (PDOException $e) { $metrics['pending_source_confirmations'] = 0; }
     }
 
+    // ============================================================
+    // FIX: every branch below now applies departmentScopeSqlSingle()
+    // when $userDeptScope is non-null, matching auth.php's real
+    // getUserDepartmentScope() rule (only owner/auditor are org-wide).
+    // The previous version left 'viewer' and 'finance_officer'
+    // completely unscoped — an org-wide read of batch data for two
+    // roles auth.php says should be confined to one department each.
+    // That's fixed here, not just noted.
+    // ============================================================
     $statusFilter = ""; $statusParams = [':org_id' => $orgId];
     if ($isTopRole) {
-        $statusFilter = ($userRole === 'it_manager_enterprise' || $userDeptScopeIds === null) ? "AND 1=1" : "AND 1=1" . departmentScopeSql($userDeptScopeIds, $statusParams, 'own');
+        // Naturally resolves correctly without special-casing
+        // it_manager_enterprise by name: getUserDepartmentScope()
+        // only forces org-wide (null) for owner/auditor, but an
+        // IT manager with no department_id of their own already
+        // comes back null from that function too.
+        $statusFilter = "AND 1=1" . departmentScopeSqlSingle($userDeptScope, $statusParams, ':dept_own');
     } elseif ($isReadOnly) {
-        $statusFilter = "AND status IN ('completed', 'executed', 'COMPLETED', 'EXECUTED')";
+        $statusFilter = "AND status IN ('completed', 'executed', 'COMPLETED', 'EXECUTED')" . departmentScopeSqlSingle($userDeptScope, $statusParams, ':dept_ro');
     } elseif ($isApprover) {
-        $statusFilter = "AND status IN ('pending', 'pending_approval', 'approved', 'draft', 'PENDING', 'PENDING_APPROVAL', 'APPROVED')" . departmentScopeSql($userDeptScopeIds, $statusParams, 'apr');
+        $statusFilter = "AND status IN ('pending', 'pending_approval', 'approved', 'draft', 'PENDING', 'PENDING_APPROVAL', 'APPROVED')" . departmentScopeSqlSingle($userDeptScope, $statusParams, ':dept_apr');
     } elseif ($userRole === 'finance_officer') {
-        $statusFilter = "AND status IN ('pending', 'pending_approval', 'approved', 'completed', 'executed', 'PENDING', 'PENDING_APPROVAL', 'APPROVED', 'COMPLETED', 'EXECUTED')";
+        $statusFilter = "AND status IN ('pending', 'pending_approval', 'approved', 'completed', 'executed', 'PENDING', 'PENDING_APPROVAL', 'APPROVED', 'COMPLETED', 'EXECUTED')" . departmentScopeSqlSingle($userDeptScope, $statusParams, ':dept_fin');
     } elseif ($isLoader) {
         $statusFilter = "AND (created_by = :user_id OR (department_id = :department_id AND status IN ('pending', 'pending_approval', 'approved', 'draft')))";
         $statusParams[':user_id'] = $userId; $statusParams[':department_id'] = $departmentId;
@@ -375,7 +344,7 @@ if ($canTrace && $traceQuery !== '') {
 // REPORTS & FILINGS — accountability data.
 // ------------------------------------------------------------
 // Only queried at all when the role can see it. Report rows are
-// scoped the same way batch rows are ($userDeptScopeIds) for any
+// scoped the same way batch rows are ($userDeptScope) for any
 // role that carries a department scope — a Senior Approver's
 // filing export covers their own department, not the whole
 // organization, exactly like their Batches view already does.
@@ -404,7 +373,7 @@ $reportDeptSummary = [];
 if ($canViewReports) {
     try {
         $rParams = [':org_id' => $orgId, ':from' => $reportFrom, ':to' => $reportTo . ' 23:59:59'];
-        $rScope = departmentScopeSql($userDeptScopeIds, $rParams, 'rep');
+        $rScope = departmentScopeSqlSingle($userDeptScope, $rParams, ':dept_rep');
 
         if ($reportType === 'register') {
             $stmt = $pdo->prepare("
@@ -805,7 +774,7 @@ require __DIR__ . '/partials/shell-head.php';
     <?php if ($canViewReports): ?>
     <div class="stage-view" id="stage-reports">
         <div class="stage-head">
-            <div><div class="stage-eyebrow">Center stage &middot; Accountability</div><div class="stage-title">Reports &amp; Filings</div><div class="stage-meta">Scope: <?php echo $userDeptScopeIds === null ? 'organization-wide' : (empty($userDeptScopeIds) ? 'no departments assigned' : count($userDeptScopeIds) . ' department(s)'); ?></div></div>
+            <div><div class="stage-eyebrow">Center stage &middot; Accountability</div><div class="stage-title">Reports &amp; Filings</div><div class="stage-meta">Scope: <?php echo $userDeptScope === null ? 'organization-wide' : 'department #' . (int)$userDeptScope . ' only'; ?></div></div>
             <div class="stage-actions"><button type="button" class="btn btn-secondary" onclick="goStage('hub')">&larr; Hub</button></div>
         </div>
 
@@ -832,7 +801,7 @@ require __DIR__ . '/partials/shell-head.php';
 
         <?php if ($reportType === 'register'): ?>
             <div class="card-head" style="border:none;padding:0;"><span class="card-title">Disbursement register &mdash; <?php echo count($reportRegister); ?> batch(es)</span><?php if ($canExportFilings): ?><button type="button" class="btn btn-primary btn-sm" onclick="exportTableCsv('reportTable', 'disbursement-register_<?php echo safeHtml($reportFrom); ?>_to_<?php echo safeHtml($reportTo); ?>.csv')">Export CSV</button><?php endif; ?></div>
-            <?php if (empty($reportRegister)): ?><div class="empty">No batches in this range<?php echo $userDeptScopeIds !== null ? ' for your department scope' : ''; ?>.</div><?php else: ?>
+            <?php if (empty($reportRegister)): ?><div class="empty">No batches in this range<?php echo $userDeptScope !== null ? ' for your department scope' : ''; ?>.</div><?php else: ?>
             <div class="table-wrap"><table id="reportTable"><thead><tr><th>Reference</th><th>Name</th><th>Source</th><th>Amount</th><th>Destinations</th><th>Status</th><th>Created</th><th>Created by</th></tr></thead><tbody>
                 <?php foreach ($reportRegister as $r): ?>
                 <tr><td><?php echo safeHtml($r['batch_reference']); ?></td><td><?php echo safeHtml($r['batch_name'] ?? ''); ?></td><td><?php echo safeHtml($r['source_institution'] ?? ''); ?></td><td><?php echo formatCurrency($r['total_amount'] ?? 0, $orgCurrency); ?></td><td><?php echo (int)($r['total_destinations'] ?? 0); ?></td><td><?php echo safeHtml(getStatusLabel($r['status'])); ?></td><td><?php echo date('Y-m-d H:i', strtotime($r['created_at'])); ?></td><td><?php echo safeHtml($r['created_by'] ?? ''); ?></td></tr>
@@ -850,7 +819,7 @@ require __DIR__ . '/partials/shell-head.php';
             <?php endif; ?>
         <?php elseif ($reportType === 'exceptions'): ?>
             <div class="card-head" style="border:none;padding:0;"><span class="card-title">Rejected / exception batches &mdash; <?php echo count($reportExceptions); ?></span><?php if ($canExportFilings): ?><button type="button" class="btn btn-primary btn-sm" onclick="exportTableCsv('reportTable', 'exceptions_<?php echo safeHtml($reportFrom); ?>_to_<?php echo safeHtml($reportTo); ?>.csv')">Export CSV</button><?php endif; ?></div>
-            <?php if (empty($reportExceptions)): ?><div class="empty">No rejected or failed batches in this range<?php echo $userDeptScopeIds !== null ? ' for your department scope' : ''; ?>.</div><?php else: ?>
+            <?php if (empty($reportExceptions)): ?><div class="empty">No rejected or failed batches in this range<?php echo $userDeptScope !== null ? ' for your department scope' : ''; ?>.</div><?php else: ?>
             <div class="table-wrap"><table id="reportTable"><thead><tr><th>Reference</th><th>Name</th><th>Source</th><th>Amount</th><th>Status</th><th>Created</th></tr></thead><tbody>
                 <?php foreach ($reportExceptions as $r): ?>
                 <tr><td><?php echo safeHtml($r['batch_reference']); ?></td><td><?php echo safeHtml($r['batch_name'] ?? ''); ?></td><td><?php echo safeHtml($r['source_institution'] ?? ''); ?></td><td><?php echo formatCurrency($r['total_amount'] ?? 0, $orgCurrency); ?></td><td><?php echo safeHtml(getStatusLabel($r['status'])); ?></td><td><?php echo date('Y-m-d H:i', strtotime($r['created_at'])); ?></td></tr>
@@ -859,7 +828,7 @@ require __DIR__ . '/partials/shell-head.php';
             <?php endif; ?>
         <?php elseif ($reportType === 'departments'): ?>
             <div class="card-head" style="border:none;padding:0;"><span class="card-title">Department spend summary</span><?php if ($canExportFilings): ?><button type="button" class="btn btn-primary btn-sm" onclick="exportTableCsv('reportTable', 'department-summary_<?php echo safeHtml($reportFrom); ?>_to_<?php echo safeHtml($reportTo); ?>.csv')">Export CSV</button><?php endif; ?></div>
-            <?php if (empty($reportDeptSummary)): ?><div class="empty">No batches in this range<?php echo $userDeptScopeIds !== null ? ' for your department scope' : ''; ?>.</div><?php else: ?>
+            <?php if (empty($reportDeptSummary)): ?><div class="empty">No batches in this range<?php echo $userDeptScope !== null ? ' for your department scope' : ''; ?>.</div><?php else: ?>
             <div class="table-wrap"><table id="reportTable"><thead><tr><th>Department</th><th>Batches</th><th>Total amount</th></tr></thead><tbody>
                 <?php foreach ($reportDeptSummary as $d): ?>
                 <tr><td><?php echo safeHtml($d['department_name']); ?></td><td><?php echo (int)$d['batch_count']; ?></td><td><?php echo formatCurrency($d['total_amount'], $orgCurrency); ?></td></tr>
