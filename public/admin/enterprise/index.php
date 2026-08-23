@@ -136,8 +136,74 @@ function renderSetupWizard(string $orgName, string $fullName, string $userRole, 
 }
 
 // ============================================================
-// ROLE PERMISSIONS
+// ROLE PERMISSIONS — deny-by-default.
+// ------------------------------------------------------------
+// One matrix, read top to bottom. If a role is not listed for a
+// capability, that role does NOT get it — nothing in this file
+// falls back to "show it anyway." This is the authorization
+// policy for what the DASHBOARD DISPLAYS; it is not, by itself,
+// enough for a government deployment — see the two notes below
+// the matrix before you treat this as done.
+//
+//   view_stats          — org-wide financial totals (MTD, active
+//                          batches, pending approvals count)
+//   view_attention       — the "needs your action" inbox. Gated
+//                          on having an action to take, not just
+//                          on rank — a pure oversight role should
+//                          use Reports, not an action inbox.
+//   view_batches         — the batch ledger tile (rows themselves
+//                          are further scoped by $statusFilter /
+//                          $userDeptScopeIds below, per role)
+//   view_activity        — the organization audit-log feed
+//   view_reports         — the Reports & Filings stage (exports,
+//                          the accountability tooling below)
+//   export_filings       — the "generate a signed export" action
+//                          inside Reports, narrower than view
+//   view_beneficiaries   — the Beneficiaries tile
+//   manage_departments   — the Departments tile
+//   manage_sources       — the Source Accounts tile
+//   manage_users         — the Team tile
+//   create_batch         — the "+ New batch" action (also needs
+//                          $setupReady)
+//   act_approve / act_disburse / act_confirm_source — the actual
+//                          financial actions behind those tiles
+//
+// NOTE 1 — this is UI visibility, not access control. Hiding a
+// tile stops a role from finding the door; it does not lock it.
+// Every target page (batches/index.php, reports.php, imports/*,
+// settings/*) must independently re-check the role server-side,
+// and the database layer should not trust the application layer
+// alone for anything that could end up in a public inquiry.
+//
+// NOTE 2 — segregation of duties: as received, this codebase lets
+// it_manager_enterprise both administer the system (users, source
+// accounts) AND approve/confirm the movement of money
+// ($canApprove and $canConfirmSource both include it). In a
+// government context that's usually a finding on its own — the
+// person who can create/modify accounts generally shouldn't also
+// be the person who approves what moves through them. I have NOT
+// silently changed that here, since it's your financial-control
+// policy, not a display bug — flag it to whoever owns compliance
+// sign-off before this goes live.
 // ============================================================
+$ROLE_CAPS = [
+    'owner'                 => ['view_stats','view_attention','view_batches','view_activity','view_reports','export_filings','view_beneficiaries','manage_departments','manage_sources','manage_users','create_batch','act_approve','act_disburse','act_confirm_source'],
+    'it_manager_enterprise' => ['view_stats','view_attention','view_batches','view_activity','view_reports','view_beneficiaries','manage_departments','manage_sources','manage_users','create_batch','act_approve','act_confirm_source'],
+    'it_officer_enterprise' => ['manage_users','manage_sources'],
+    'it_support'            => [],
+    'finance_officer'       => ['view_stats','view_batches','view_activity','view_reports','view_beneficiaries','manage_sources','act_confirm_source'],
+    'senior_approver'       => ['view_stats','view_attention','view_batches','view_activity','view_reports','act_approve'],
+    'approver'              => ['view_stats','view_attention','view_batches','act_approve'],
+    'department_head'       => ['view_stats','view_attention','view_batches','view_beneficiaries','create_batch'],
+    'program_officer'       => ['view_batches','view_beneficiaries','create_batch'],
+    'beneficiary_registrar' => ['view_beneficiaries'],
+    'auditor'               => ['view_stats','view_batches','view_activity','view_reports','export_filings','view_beneficiaries'],
+    'supervisor'            => ['view_stats','view_batches'],
+    'viewer'                => [],
+];
+$myCaps = $ROLE_CAPS[$userRole] ?? [];
+function can(string $cap): bool { global $myCaps; return in_array($cap, $myCaps, true); }
+
 $scopableOversightRoles = ['owner', 'approver', 'senior_approver'];
 $userDeptScopeIds = in_array($userRole, $scopableOversightRoles, true)
     ? $deptService->getDepartmentScopeIds($departmentId)
@@ -154,12 +220,22 @@ function departmentScopeSql(?array $scopeIds, array &$params, string $prefix = '
 }
 
 $isTopRole = in_array($userRole, ['owner', 'it_manager_enterprise'], true);
-$canCreate = in_array($userRole, ['owner', 'it_manager_enterprise', 'program_officer', 'department_head']);
-$canApprove = in_array($userRole, ['owner', 'approver', 'senior_approver', 'it_manager_enterprise']);
-$canDisburse = ($userRole === 'owner');
+$canCreate = can('create_batch');
+$canApprove = can('act_approve');
+$canDisburse = can('act_disburse');
 $isSupervisor = ($userRole === 'owner');
-$canConfirmSource = in_array($userRole, ['owner', 'it_manager_enterprise']);
-$canTrace = in_array($userRole, ['owner', 'it_manager_enterprise', 'it_officer_enterprise', 'auditor', 'senior_approver', 'approver', 'finance_officer']);
+$canConfirmSource = can('act_confirm_source');
+$canTrace = in_array($userRole, ['owner', 'it_manager_enterprise', 'auditor', 'senior_approver', 'approver', 'finance_officer']);
+$canManageDepartments = can('manage_departments');
+$isDepartmentHead = ($userRole === 'department_head');
+$canSeeSourceAccountsArea = can('manage_sources');
+$canManageUsers = can('manage_users');
+$canSeeFinancialStats = can('view_stats');
+$canViewBatchesTile = can('view_batches');
+$canViewActivityTile = can('view_activity');
+$canViewReports = can('view_reports');
+$canExportFilings = can('export_filings');
+$canViewBeneficiariesTile = can('view_beneficiaries');
 $isReadOnly = in_array($userRole, ['auditor', 'viewer']);
 $isApprover = in_array($userRole, ['approver', 'senior_approver']);
 $isLoader = in_array($userRole, ['program_officer', 'department_head']);
@@ -267,6 +343,23 @@ try {
     $metrics['executing_batches'] = (int)$activeRow['executing'];
 } catch (PDOException $e) { error_log("[ENTERPRISE DASHBOARD] Active batch metrics error: " . $e->getMessage()); }
 
+// Restored — present in the original, silently dropped in the first
+// center-stage pass.
+$avgClearanceHours = null;
+if ($canApprove || $canDisburse) {
+    try {
+        $stmt = $pdo->prepare("
+            SELECT AVG(EXTRACT(EPOCH FROM (approved_at - submitted_at)) / 3600.0) AS avg_hours
+            FROM disbursement_batches
+            WHERE organization_id = :org_id AND approved_at IS NOT NULL AND submitted_at IS NOT NULL
+              AND approved_at >= NOW() - INTERVAL '30 days'
+        ");
+        $stmt->execute([':org_id' => $orgId]);
+        $avgHoursRaw = $stmt->fetchColumn();
+        $avgClearanceHours = ($avgHoursRaw !== null && $avgHoursRaw !== false) ? round((float)$avgHoursRaw, 1) : null;
+    } catch (PDOException $e) { error_log("[ENTERPRISE DASHBOARD] Avg clearance metrics error: " . $e->getMessage()); }
+}
+
 $recentActivity = [];
 try {
     $stmt = $pdo->prepare("
@@ -286,6 +379,7 @@ function getActivityLabel(string $action): string {
 
 $traceQuery = trim($_GET['trace'] ?? '');
 $traceBatches = [];
+$traceBeneficiaries = [];
 if ($canTrace && $traceQuery !== '') {
     $likeQ = '%' . $traceQuery . '%';
     try {
@@ -297,16 +391,117 @@ if ($canTrace && $traceQuery !== '') {
         $stmt->execute([':org_id' => $orgId, ':q' => $likeQ]);
         $traceBatches = $stmt->fetchAll(PDO::FETCH_ASSOC);
     } catch (PDOException $e) { error_log("[ENTERPRISE DASHBOARD] Trace batch error: " . $e->getMessage()); }
+    // Restored — the original searched beneficiaries too, not just
+    // batches. Dropped by mistake in the first center-stage pass.
+    try {
+        $stmt = $pdo->prepare("
+            SELECT * FROM organization_beneficiaries
+            WHERE organization_id = :org_id AND is_active = true AND to_jsonb(organization_beneficiaries.*)::text ILIKE :q
+            ORDER BY id DESC LIMIT 10
+        ");
+        $stmt->execute([':org_id' => $orgId, ':q' => $likeQ]);
+        $traceBeneficiaries = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) { error_log("[ENTERPRISE DASHBOARD] Trace beneficiary error: " . $e->getMessage()); }
+}
+
+// ============================================================
+// REPORTS & FILINGS — accountability data.
+// ------------------------------------------------------------
+// Only queried at all when the role can see it. Report rows are
+// scoped the same way batch rows are ($userDeptScopeIds) for any
+// role that carries a department scope — a Senior Approver's
+// filing export covers their own department, not the whole
+// organization, exactly like their Batches view already does.
+//
+// KNOWN GAP, flag this to your backend team: this queries
+// organization_audit_logs on the ENTERPRISE database ($pdo) —
+// the lightweight admin-action log this dashboard already used.
+// It is a different table from the hash-chained financial ledger
+// (audit_logs, with entry_hash/prev_hash chaining and an
+// audit_log_failures fallback table) that lives on the swap
+// engine's own connection. For a filing that needs to survive a
+// public inquiry, you almost certainly want BOTH: this table for
+// who-clicked-what in the back office, and that one for the
+// tamper-evident record of money actually moving. I have not
+// wired them together here since I don't know whether they share
+// a database connection in your infrastructure — that's a real
+// integration task, not something to fake with a UI label.
+// ============================================================
+$reportType = $_GET['report'] ?? 'register';
+$reportFrom = $_GET['report_from'] ?? date('Y-m-01');
+$reportTo = $_GET['report_to'] ?? date('Y-m-d');
+$reportRegister = [];
+$reportAuditTrail = [];
+$reportExceptions = [];
+$reportDeptSummary = [];
+if ($canViewReports) {
+    try {
+        $rParams = [':org_id' => $orgId, ':from' => $reportFrom, ':to' => $reportTo . ' 23:59:59'];
+        $rScope = departmentScopeSql($userDeptScopeIds, $rParams, 'rep');
+
+        if ($reportType === 'register') {
+            $stmt = $pdo->prepare("
+                SELECT batch_reference, batch_name, source_institution, total_amount, total_destinations, status, created_at, created_by
+                FROM disbursement_batches
+                WHERE organization_id = :org_id AND created_at BETWEEN :from AND :to $rScope
+                ORDER BY created_at DESC
+            ");
+            $stmt->execute($rParams);
+            $reportRegister = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } elseif ($reportType === 'audit') {
+            $stmt = $pdo->prepare("
+                SELECT al.action, al.entity_type, al.entity_id, al.created_at, u.full_name AS actor_name
+                FROM organization_audit_logs al LEFT JOIN users u ON al.user_id = u.user_id
+                WHERE al.organization_id = :org_id AND al.created_at BETWEEN :from AND :to
+                ORDER BY al.created_at DESC LIMIT 2000
+            ");
+            $stmt->execute([':org_id' => $orgId, ':from' => $reportFrom, ':to' => $reportTo . ' 23:59:59']);
+            $reportAuditTrail = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } elseif ($reportType === 'exceptions') {
+            $stmt = $pdo->prepare("
+                SELECT batch_reference, batch_name, source_institution, total_amount, status, created_at
+                FROM disbursement_batches
+                WHERE organization_id = :org_id AND LOWER(status) IN ('rejected','cancelled','failed')
+                  AND created_at BETWEEN :from AND :to $rScope
+                ORDER BY created_at DESC
+            ");
+            $stmt->execute($rParams);
+            $reportExceptions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } elseif ($reportType === 'departments') {
+            $stmt = $pdo->prepare("
+                SELECT COALESCE(d.name, 'Unassigned') AS department_name, COUNT(*) AS batch_count, COALESCE(SUM(b.total_amount), 0) AS total_amount
+                FROM disbursement_batches b LEFT JOIN departments d ON d.id = b.department_id
+                WHERE b.organization_id = :org_id AND b.created_at BETWEEN :from AND :to $rScope
+                GROUP BY d.name ORDER BY total_amount DESC
+            ");
+            $stmt->execute($rParams);
+            $reportDeptSummary = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        }
+    } catch (PDOException $e) {
+        error_log("[ENTERPRISE DASHBOARD] Report query error ({$reportType}): " . $e->getMessage());
+    }
 }
 
 // Action items feeding the Attention stage
+// tone restored from the original ($item['tone']) — amber = waiting on
+// you, green = good news / ready to act, danger = needs correction.
+// Dropped by mistake in the first center-stage pass, which flattened
+// every item to the same dot.
 $actionItems = [];
-if ($canApprove && ($metrics['pending_approvals'] ?? 0) > 0) $actionItems[] = ['label' => 'Batches awaiting your approval', 'count' => $metrics['pending_approvals'], 'href' => 'batches/index.php?status=pending_approval', 'cta' => 'Review now'];
-if ($canDisburse && ($metrics['approved_for_disbursement'] ?? 0) > 0) $actionItems[] = ['label' => 'Approved batches ready to disburse', 'count' => $metrics['approved_for_disbursement'], 'href' => 'batches/index.php?status=approved', 'cta' => 'Disburse now'];
-if ($canConfirmSource && ($metrics['pending_source_confirmations'] ?? 0) > 0) $actionItems[] = ['label' => 'Source accounts awaiting confirmation', 'count' => $metrics['pending_source_confirmations'], 'href' => 'imports/add_source.php', 'cta' => 'Confirm now'];
-if (($metrics['rejected_batches'] ?? 0) > 0 && ($canCreate || $isSupervisor)) $actionItems[] = ['label' => 'Rejected batches needing correction', 'count' => $metrics['rejected_batches'], 'href' => 'batches/index.php?status=rejected', 'cta' => 'Review'];
+if ($canApprove && ($metrics['pending_approvals'] ?? 0) > 0) $actionItems[] = ['label' => 'Batches awaiting your approval', 'count' => $metrics['pending_approvals'], 'href' => 'batches/index.php?status=pending_approval', 'cta' => 'Review now', 'tone' => 'amber'];
+if ($canDisburse && ($metrics['approved_for_disbursement'] ?? 0) > 0) $actionItems[] = ['label' => 'Approved batches ready to disburse', 'count' => $metrics['approved_for_disbursement'], 'href' => 'batches/index.php?status=approved', 'cta' => 'Disburse now', 'tone' => 'green'];
+if ($canConfirmSource && ($metrics['pending_source_confirmations'] ?? 0) > 0) $actionItems[] = ['label' => 'Source accounts awaiting confirmation', 'count' => $metrics['pending_source_confirmations'], 'href' => 'imports/add_source.php', 'cta' => 'Confirm now', 'tone' => 'amber'];
+if (($metrics['rejected_batches'] ?? 0) > 0 && ($canCreate || $isSupervisor)) $actionItems[] = ['label' => 'Rejected batches needing correction', 'count' => $metrics['rejected_batches'], 'href' => 'batches/index.php?status=rejected', 'cta' => 'Review', 'tone' => 'danger'];
 $attentionCount = array_sum(array_column($actionItems, 'count'));
 $attentionActive = $attentionCount > 0;
+$criticalActionCount = count(array_filter($actionItems, fn($i) => $i['tone'] === 'danger'));
+// A role only gets the action inbox if it can actually act on
+// something in it — a pure oversight role (auditor/viewer) uses
+// Reports instead, never an inbox with nothing it's allowed to press.
+$canViewAttentionTile = $canApprove || $canDisburse || $canConfirmSource || $canCreate || $isSupervisor;
+$hubHasAnyTile = $canViewAttentionTile || $canViewBatchesTile || $canViewActivityTile || $canTrace
+    || $canViewBeneficiariesTile || $canManageDepartments || $isDepartmentHead || $canSeeSourceAccountsArea
+    || $canManageUsers || $canViewReports;
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -344,6 +539,7 @@ require __DIR__ . '/partials/shell-head.php';
             <?php endif; ?>
         </div>
 
+        <?php if ($canSeeFinancialStats): ?>
         <div class="stat-grid">
             <div class="stat-card">
                 <div class="stat-label">Total disbursed (MTD)</div>
@@ -358,11 +554,20 @@ require __DIR__ . '/partials/shell-head.php';
             <div class="stat-card">
                 <div class="stat-label">Pending approvals</div>
                 <div class="stat-value"><?php echo number_format($metrics['pending_approvals'] ?? 0); ?></div>
-                <div class="stat-sub">Every one needs a decision</div>
+                <div class="stat-sub"><?php echo $avgClearanceHours !== null ? 'Avg clearance: ' . $avgClearanceHours . ' hrs' : 'Every one needs a decision'; ?></div>
             </div>
         </div>
+        <?php endif; ?>
+
+        <?php if (!$hubHasAnyTile): ?>
+        <div class="banner">
+            <div class="lbl">Your role has no dashboard sections</div>
+            <div class="desc">The <?php echo safeHtml(getRoleLabel($userRole)); ?> role is not assigned any view on this dashboard. If that's wrong, ask an Owner or IT Manager to review your role — not this screen.</div>
+        </div>
+        <?php endif; ?>
 
         <div class="tile-grid">
+            <?php if ($canViewAttentionTile): ?>
             <button type="button" class="tile" onclick="goStage('attention')">
                 <div class="tile-icon"><?php echo svgIcon('bell'); ?></div>
                 <?php if ($attentionCount > 0): ?><span class="tile-badge"><?php echo $attentionCount; ?></span><?php endif; ?>
@@ -370,18 +575,23 @@ require __DIR__ . '/partials/shell-head.php';
                 <div class="tile-sub">Approvals, disbursements, and source confirmations waiting on you.</div>
                 <div class="tile-arrow">Open &rsaquo;</div>
             </button>
+            <?php endif; ?>
+            <?php if ($canViewBatchesTile): ?>
             <button type="button" class="tile" onclick="goStage('batches')">
                 <div class="tile-icon"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="13"/><path d="M3 10h18"/></svg></div>
                 <div class="tile-label">Batches</div>
-                <div class="tile-sub">Every disbursement batch — drafts through completed.</div>
+                <div class="tile-sub">Disbursement batches within your role's scope.</div>
                 <div class="tile-arrow">Open &rsaquo;</div>
             </button>
+            <?php endif; ?>
+            <?php if ($canViewActivityTile): ?>
             <button type="button" class="tile" onclick="goStage('activity')">
                 <div class="tile-icon"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg></div>
                 <div class="tile-label">Activity</div>
                 <div class="tile-sub">The organization's audit trail, most recent first.</div>
                 <div class="tile-arrow">Open &rsaquo;</div>
             </button>
+            <?php endif; ?>
             <?php if ($canTrace): ?>
             <button type="button" class="tile" onclick="goStage('trace')">
                 <div class="tile-icon"><svg class="i" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M20 20l-4.8-4.8"/></svg></div>
@@ -390,30 +600,52 @@ require __DIR__ . '/partials/shell-head.php';
                 <div class="tile-arrow">Open &rsaquo;</div>
             </button>
             <?php endif; ?>
+            <?php if ($canViewReports): ?>
+            <button type="button" class="tile" onclick="goStage('reports')">
+                <div class="tile-icon"><svg class="i" viewBox="0 0 24 24"><path d="M6 3h9l5 5v13H6z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg></div>
+                <div class="tile-label">Reports &amp; Filings</div>
+                <div class="tile-sub">Accountability exports for oversight, audit, and official filings.</div>
+                <div class="tile-arrow">Open &rsaquo;</div>
+            </button>
+            <?php endif; ?>
         </div>
 
-        <div class="tile-grid" style="grid-template-columns:repeat(4,1fr);">
+        <?php if ($canViewBeneficiariesTile || $canManageDepartments || $isDepartmentHead || $canSeeSourceAccountsArea || $canManageUsers): ?>
+        <div class="tile-grid" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr));">
+            <?php if ($canViewBeneficiariesTile): ?>
             <a href="beneficiaries.php" class="tile" style="min-height:96px;"><div class="tile-label" style="font-size:14px;">Beneficiaries</div><div class="tile-arrow">Open &rsaquo;</div></a>
+            <?php endif; ?>
+            <?php if ($canManageDepartments || $isDepartmentHead): ?>
             <a href="departments/index.php" class="tile" style="min-height:96px;"><div class="tile-label" style="font-size:14px;">Departments</div><div class="tile-arrow">Open &rsaquo;</div></a>
-            <a href="imports/add_source.php" class="tile" style="min-height:96px;"><div class="tile-label" style="font-size:14px;">Source accounts</div><div class="tile-arrow">Open &rsaquo;</div></a>
+            <?php endif; ?>
+            <?php if ($canSeeSourceAccountsArea): ?>
+            <a href="imports/add_source.php" class="tile" style="min-height:96px;"><div class="tile-label" style="font-size:14px;">Source accounts</div><?php if (($metrics['pending_source_confirmations'] ?? 0) > 0): ?><span class="tile-badge" style="top:var(--u1);right:var(--u1);min-width:20px;height:20px;font-size:10px;"><?php echo (int)$metrics['pending_source_confirmations']; ?></span><?php endif; ?><div class="tile-arrow">Open &rsaquo;</div></a>
+            <?php endif; ?>
+            <?php if ($canManageUsers): ?>
             <a href="settings/users.php" class="tile" style="min-height:96px;"><div class="tile-label" style="font-size:14px;">Team</div><div class="tile-arrow">Open &rsaquo;</div></a>
+            <?php endif; ?>
         </div>
+        <?php endif; ?>
     </div>
 
     <!-- ============================================================
-         STAGE — NEEDS ATTENTION
+         STAGE — NEEDS ATTENTION (server-side gated, not just hidden)
          ============================================================ -->
+    <?php if ($canViewAttentionTile): ?>
     <div class="stage-view" id="stage-attention">
         <div class="stage-head">
             <div><div class="stage-eyebrow">Center stage</div><div class="stage-title">Needs Attention</div><div class="stage-meta"><?php echo count($actionItems); ?> item type(s) &middot; <?php echo $attentionCount; ?> total</div></div>
-            <div class="stage-actions"><button type="button" class="btn btn-secondary" onclick="goStage('hub')">&larr; Hub</button></div>
+            <div class="stage-actions">
+                <?php if ($criticalActionCount > 0): ?><span class="pill-critical"><?php echo $criticalActionCount; ?> Critical</span><?php endif; ?>
+                <button type="button" class="btn btn-secondary" onclick="goStage('hub')">&larr; Hub</button>
+            </div>
         </div>
         <?php if (empty($actionItems)): ?>
             <div class="empty">All clear — nothing needs your attention right now.</div>
         <?php else: foreach ($actionItems as $item): ?>
             <div class="card">
                 <div class="row" style="border:none;">
-                    <span class="row-dot"></span>
+                    <span class="row-dot tone-<?php echo safeHtml($item['tone']); ?>"></span>
                     <div class="row-body">
                         <div class="row-title"><?php echo safeHtml($item['label']); ?></div>
                         <div class="row-sub"><?php echo (int)$item['count']; ?> item(s)</div>
@@ -423,10 +655,12 @@ require __DIR__ . '/partials/shell-head.php';
             </div>
         <?php endforeach; endif; ?>
     </div>
+    <?php endif; ?>
 
     <!-- ============================================================
-         STAGE — BATCHES
+         STAGE — BATCHES (server-side gated)
          ============================================================ -->
+    <?php if ($canViewBatchesTile): ?>
     <div class="stage-view" id="stage-batches">
         <div class="stage-head">
             <div><div class="stage-eyebrow">Center stage</div><div class="stage-title">Batches</div><div class="stage-meta"><?php echo count($recentBatches); ?> shown</div></div>
@@ -461,10 +695,12 @@ require __DIR__ . '/partials/shell-head.php';
         <?php endif; ?>
         <div style="text-align:center;margin-top:var(--u3);"><a href="batches/index.php?status=all" class="btn btn-quiet">View the full batch ledger &rsaquo;</a></div>
     </div>
+    <?php endif; ?>
 
     <!-- ============================================================
-         STAGE — ACTIVITY
+         STAGE — ACTIVITY (server-side gated)
          ============================================================ -->
+    <?php if ($canViewActivityTile): ?>
     <div class="stage-view" id="stage-activity">
         <div class="stage-head">
             <div><div class="stage-eyebrow">Center stage</div><div class="stage-title">Activity</div><div class="stage-meta"><?php echo count($recentActivity); ?> entries</div></div>
@@ -490,9 +726,10 @@ require __DIR__ . '/partials/shell-head.php';
         <?php endif; ?>
         <div style="text-align:center;margin-top:var(--u3);"><a href="audit_log.php" class="btn btn-quiet">View the full audit log &rsaquo;</a></div>
     </div>
+    <?php endif; ?>
 
     <!-- ============================================================
-         STAGE — TRACE A PAYMENT
+         STAGE — TRACE A PAYMENT (server-side gated)
          ============================================================ -->
     <?php if ($canTrace): ?>
     <div class="stage-view" id="stage-trace">
@@ -532,7 +769,112 @@ require __DIR__ . '/partials/shell-head.php';
             </div>
             <?php endif; ?>
         </div>
+        <?php if (!empty($traceBeneficiaries)): ?>
+        <div style="margin-top:var(--u4);">
+            <div class="card-title" style="border:none;padding:0;margin-bottom:var(--u2);">Matching beneficiaries</div>
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><?php foreach (array_keys($traceBeneficiaries[0]) as $col): if ($col === 'organization_id') continue; ?><th><?php echo safeHtml($col); ?></th><?php endforeach; ?></tr></thead>
+                    <tbody>
+                    <?php foreach ($traceBeneficiaries as $row): ?>
+                    <tr><?php foreach ($row as $col => $val): if ($col === 'organization_id') continue; $s = is_array($val) ? json_encode($val) : (string)$val; ?><td><?php echo safeHtml(strlen($s) > 40 ? substr($s, 0, 40) . '&hellip;' : $s); ?></td><?php endforeach; ?></tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
         <?php endif; ?>
+        <?php endif; ?>
+    </div>
+    <?php endif; ?>
+
+    <!-- ============================================================
+         STAGE — REPORTS & FILINGS (server-side gated)
+         The accountability surface: every report a role can pull is
+         exportable as CSV right now (client-side, no backend needed
+         — it reads the table already rendered from real query
+         results). "Generate signed filing" calls a backend endpoint
+         that does NOT exist yet in this codebase — see the banner.
+         ============================================================ -->
+    <?php if ($canViewReports): ?>
+    <div class="stage-view" id="stage-reports">
+        <div class="stage-head">
+            <div><div class="stage-eyebrow">Center stage &middot; Accountability</div><div class="stage-title">Reports &amp; Filings</div><div class="stage-meta">Scope: <?php echo $userDeptScopeIds === null ? 'organization-wide' : (empty($userDeptScopeIds) ? 'no departments assigned' : count($userDeptScopeIds) . ' department(s)'); ?></div></div>
+            <div class="stage-actions"><button type="button" class="btn btn-secondary" onclick="goStage('hub')">&larr; Hub</button></div>
+        </div>
+
+        <?php if (!$canExportFilings): ?>
+        <div class="banner"><div class="lbl">View only</div><div class="desc">Your role can review these reports but cannot generate an official export. Ask an Owner or Auditor to file it.</div></div>
+        <?php endif; ?>
+
+        <form method="get" action="index.php#stage-reports" style="margin-bottom:var(--u4);" onsubmit="sessionStorage.setItem('vm_stage','reports');">
+            <div style="display:flex;gap:var(--u2);flex-wrap:wrap;align-items:flex-end;">
+                <div class="field" style="margin:0;min-width:200px;">
+                    <label>Report</label>
+                    <select name="report" onchange="this.form.submit()">
+                        <option value="register" <?php echo $reportType === 'register' ? 'selected' : ''; ?>>Disbursement register</option>
+                        <option value="audit" <?php echo $reportType === 'audit' ? 'selected' : ''; ?>>Audit trail (who did what)</option>
+                        <option value="exceptions" <?php echo $reportType === 'exceptions' ? 'selected' : ''; ?>>Rejected / exception batches</option>
+                        <option value="departments" <?php echo $reportType === 'departments' ? 'selected' : ''; ?>>Department spend summary</option>
+                    </select>
+                </div>
+                <div class="field" style="margin:0;"><label>From</label><input type="date" name="report_from" value="<?php echo safeHtml($reportFrom); ?>"></div>
+                <div class="field" style="margin:0;"><label>To</label><input type="date" name="report_to" value="<?php echo safeHtml($reportTo); ?>"></div>
+                <button type="submit" class="btn btn-secondary">Apply</button>
+            </div>
+        </form>
+
+        <?php if ($reportType === 'register'): ?>
+            <div class="card-head" style="border:none;padding:0;"><span class="card-title">Disbursement register &mdash; <?php echo count($reportRegister); ?> batch(es)</span><?php if ($canExportFilings): ?><button type="button" class="btn btn-primary btn-sm" onclick="exportTableCsv('reportTable', 'disbursement-register_<?php echo safeHtml($reportFrom); ?>_to_<?php echo safeHtml($reportTo); ?>.csv')">Export CSV</button><?php endif; ?></div>
+            <?php if (empty($reportRegister)): ?><div class="empty">No batches in this range<?php echo $userDeptScopeIds !== null ? ' for your department scope' : ''; ?>.</div><?php else: ?>
+            <div class="table-wrap"><table id="reportTable"><thead><tr><th>Reference</th><th>Name</th><th>Source</th><th>Amount</th><th>Destinations</th><th>Status</th><th>Created</th><th>Created by</th></tr></thead><tbody>
+                <?php foreach ($reportRegister as $r): ?>
+                <tr><td><?php echo safeHtml($r['batch_reference']); ?></td><td><?php echo safeHtml($r['batch_name'] ?? ''); ?></td><td><?php echo safeHtml($r['source_institution'] ?? ''); ?></td><td><?php echo formatCurrency($r['total_amount'] ?? 0, $orgCurrency); ?></td><td><?php echo (int)($r['total_destinations'] ?? 0); ?></td><td><?php echo safeHtml(getStatusLabel($r['status'])); ?></td><td><?php echo date('Y-m-d H:i', strtotime($r['created_at'])); ?></td><td><?php echo safeHtml($r['created_by'] ?? ''); ?></td></tr>
+                <?php endforeach; ?>
+            </tbody></table></div>
+            <?php endif; ?>
+        <?php elseif ($reportType === 'audit'): ?>
+            <div class="card-head" style="border:none;padding:0;"><span class="card-title">Audit trail &mdash; <?php echo count($reportAuditTrail); ?> entries</span><?php if ($canExportFilings): ?><button type="button" class="btn btn-primary btn-sm" onclick="exportTableCsv('reportTable', 'audit-trail_<?php echo safeHtml($reportFrom); ?>_to_<?php echo safeHtml($reportTo); ?>.csv')">Export CSV</button><?php endif; ?></div>
+            <?php if (empty($reportAuditTrail)): ?><div class="empty">No audit entries in this range.</div><?php else: ?>
+            <div class="table-wrap"><table id="reportTable"><thead><tr><th>Action</th><th>Entity</th><th>Actor</th><th>When</th></tr></thead><tbody>
+                <?php foreach ($reportAuditTrail as $e): ?>
+                <tr><td><?php echo safeHtml(getActivityLabel($e['action'])); ?></td><td><?php echo safeHtml(($e['entity_type'] ?? '') . ' #' . ($e['entity_id'] ?? '')); ?></td><td><?php echo $e['actor_name'] ? safeHtml($e['actor_name']) : 'System'; ?></td><td><?php echo date('Y-m-d H:i:s', strtotime($e['created_at'])); ?></td></tr>
+                <?php endforeach; ?>
+            </tbody></table></div>
+            <?php endif; ?>
+        <?php elseif ($reportType === 'exceptions'): ?>
+            <div class="card-head" style="border:none;padding:0;"><span class="card-title">Rejected / exception batches &mdash; <?php echo count($reportExceptions); ?></span><?php if ($canExportFilings): ?><button type="button" class="btn btn-primary btn-sm" onclick="exportTableCsv('reportTable', 'exceptions_<?php echo safeHtml($reportFrom); ?>_to_<?php echo safeHtml($reportTo); ?>.csv')">Export CSV</button><?php endif; ?></div>
+            <?php if (empty($reportExceptions)): ?><div class="empty">No rejected or failed batches in this range<?php echo $userDeptScopeIds !== null ? ' for your department scope' : ''; ?>.</div><?php else: ?>
+            <div class="table-wrap"><table id="reportTable"><thead><tr><th>Reference</th><th>Name</th><th>Source</th><th>Amount</th><th>Status</th><th>Created</th></tr></thead><tbody>
+                <?php foreach ($reportExceptions as $r): ?>
+                <tr><td><?php echo safeHtml($r['batch_reference']); ?></td><td><?php echo safeHtml($r['batch_name'] ?? ''); ?></td><td><?php echo safeHtml($r['source_institution'] ?? ''); ?></td><td><?php echo formatCurrency($r['total_amount'] ?? 0, $orgCurrency); ?></td><td><?php echo safeHtml(getStatusLabel($r['status'])); ?></td><td><?php echo date('Y-m-d H:i', strtotime($r['created_at'])); ?></td></tr>
+                <?php endforeach; ?>
+            </tbody></table></div>
+            <?php endif; ?>
+        <?php elseif ($reportType === 'departments'): ?>
+            <div class="card-head" style="border:none;padding:0;"><span class="card-title">Department spend summary</span><?php if ($canExportFilings): ?><button type="button" class="btn btn-primary btn-sm" onclick="exportTableCsv('reportTable', 'department-summary_<?php echo safeHtml($reportFrom); ?>_to_<?php echo safeHtml($reportTo); ?>.csv')">Export CSV</button><?php endif; ?></div>
+            <?php if (empty($reportDeptSummary)): ?><div class="empty">No batches in this range<?php echo $userDeptScopeIds !== null ? ' for your department scope' : ''; ?>.</div><?php else: ?>
+            <div class="table-wrap"><table id="reportTable"><thead><tr><th>Department</th><th>Batches</th><th>Total amount</th></tr></thead><tbody>
+                <?php foreach ($reportDeptSummary as $d): ?>
+                <tr><td><?php echo safeHtml($d['department_name']); ?></td><td><?php echo (int)$d['batch_count']; ?></td><td><?php echo formatCurrency($d['total_amount'], $orgCurrency); ?></td></tr>
+                <?php endforeach; ?>
+            </tbody></table></div>
+            <?php endif; ?>
+        <?php endif; ?>
+
+        <?php if ($canExportFilings): ?>
+        <div class="card" style="margin-top:var(--u4);">
+            <div class="card-title" style="border:none;padding:0;margin-bottom:var(--u2);">Generate a signed filing</div>
+            <div style="font-size:12.5px;opacity:0.75;margin-bottom:var(--u2);">Produces a dated, attributable PDF suitable for an office filing or a public-inquiry submission — separate from the CSV above, which is a working export, not a formal record.</div>
+            <button type="button" class="btn btn-secondary" onclick="requestSignedFiling('<?php echo safeHtml($reportType); ?>', '<?php echo safeHtml($reportFrom); ?>', '<?php echo safeHtml($reportTo); ?>')">Generate signed filing (PDF)</button>
+            <div id="filingStatusMsg" style="font-size:12px;margin-top:var(--u2);"></div>
+        </div>
+        <?php endif; ?>
+
+        <div class="banner" style="margin-top:var(--u4);">
+            <div class="lbl">Chain-of-custody note</div>
+            <div class="desc">This report is drawn from the organization's action log. It does not yet include the financial ledger's own tamper-evident record (hash-chained entries with a documented fallback path for failed writes). Confirm with your backend team whether that ledger needs to be joined into filings before this is relied on for a court or public inquiry.</div>
+        </div>
     </div>
     <?php endif; ?>
 
@@ -549,7 +891,7 @@ require __DIR__ . '/partials/shell-foot.php';
 // the browser's own Back button both resolve to a stage name so
 // a bookmark or a refresh always lands on the right screen.
 // ============================================================
-const STAGE_LABELS = { hub: 'Home', attention: 'Attention', batches: 'Batches', activity: 'Activity', trace: 'Trace a Payment' };
+const STAGE_LABELS = { hub: 'Home', attention: 'Attention', batches: 'Batches', activity: 'Activity', trace: 'Trace a Payment', reports: 'Reports & Filings' };
 function goStage(name) {
     document.querySelectorAll('.stage-view').forEach(v => v.classList.remove('active'));
     const el = document.getElementById('stage-' + name);
@@ -563,7 +905,9 @@ function goStage(name) {
 (function initStage() {
     const hash = (location.hash || '').replace('#stage-', '');
     const hasTrace = new URLSearchParams(location.search).get('trace');
+    const hasReport = new URLSearchParams(location.search).get('report');
     if (hasTrace && document.getElementById('stage-trace')) { goStage('trace'); return; }
+    if (hasReport && document.getElementById('stage-reports')) { goStage('reports'); return; }
     if (hash && document.getElementById('stage-' + hash)) { goStage(hash); return; }
     const remembered = sessionStorage.getItem('vm_stage');
     if (remembered === 'attention' && !hasTrace) { /* only restore lightweight stages, never a stale search */ }
@@ -573,6 +917,53 @@ function filterRows(bodyId, query) {
     document.querySelectorAll('#' + bodyId + ' tr[data-search]').forEach(row => {
         row.style.display = (!q || row.dataset.search.includes(q)) ? '' : 'none';
     });
+}
+
+// ------------------------------------------------------------
+// Real, working export — reads the table already rendered from
+// the server's query results and turns it into a CSV the browser
+// downloads directly. No backend round-trip, nothing invented:
+// exactly the rows a human can already see on screen.
+// ------------------------------------------------------------
+function exportTableCsv(tableId, filename) {
+    const table = document.getElementById(tableId);
+    if (!table) return;
+    const rows = Array.from(table.querySelectorAll('tr'));
+    const csv = rows.map(row =>
+        Array.from(row.querySelectorAll('th,td')).map(cell => {
+            const text = cell.textContent.trim().replace(/"/g, '""');
+            return /[",\n]/.test(text) ? `"${text}"` : text;
+        }).join(',')
+    ).join('\r\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    document.body.appendChild(link); link.click(); link.remove();
+}
+
+// ------------------------------------------------------------
+// STUB — there is no /api/enterprise/reports/filing.php in this
+// codebase. This calls it anyway and reports honestly that it
+// isn't wired up yet, rather than pretending a PDF exists. Point
+// this at a real document-generation endpoint before relying on
+// it for an actual filing.
+// ------------------------------------------------------------
+async function requestSignedFiling(reportType, from, to) {
+    const msg = document.getElementById('filingStatusMsg');
+    msg.textContent = 'Requesting signed filing…';
+    try {
+        const res = await fetch('api/v1/enterprise/reports/filing.php', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ report: reportType, from, to }),
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        if (data.pdf_url) { msg.textContent = 'Filing ready.'; window.location = data.pdf_url; }
+        else { msg.textContent = data.message || 'Backend did not return a filing.'; }
+    } catch (e) {
+        msg.textContent = 'This endpoint is not implemented yet (api/v1/enterprise/reports/filing.php). Use CSV export for now, and wire a document-generation backend before this button is relied on for a real filing.';
+    }
 }
 </script>
 </body>
