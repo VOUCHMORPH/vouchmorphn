@@ -223,11 +223,29 @@ input[type=number] { -moz-appearance: textfield; }
 @keyframes confettiFall { 0% { transform: translateY(-10px) rotate(0deg); opacity: 1; } 100% { transform: translateY(140px) rotate(280deg); opacity: 0; } }
 
 /* ============================================================
-   APP SHELL — one sticky header, one view slot. Only one of
-   #hubView / #swapView / #cardView / #activityView / #toolboxView
-   / #qrFullView / #hookView / #unhookView is visible at a time.
-   Everything the person is NOT using is fully out of the DOM's
-   visible area, not just behind a modal overlay.
+   MODAL ANIMATIONS — subtle pop on every modal
+   ============================================================ */
+.modal-overlay.active .modal {
+    animation: modalPop 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.confirm-overlay.active .confirm-box {
+    animation: modalPop 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes modalPop {
+    0% { 
+        transform: scale(0.92) translateY(8px); 
+        opacity: 0;
+    }
+    100% { 
+        transform: scale(1) translateY(0); 
+        opacity: 1;
+    }
+}
+
+/* ============================================================
+   APP SHELL — one sticky header, one view slot.
    ============================================================ */
 .shell-header { position: sticky; top: 0; z-index: 100; background: var(--surface); border-bottom: 1px solid var(--border); }
 .shell-header-inner { max-width: var(--max-w); margin: 0 auto; padding: 0 24px; height: var(--header-h); display: flex; align-items: center; justify-content: space-between; gap: 16px; }
@@ -259,7 +277,7 @@ input[type=number] { -moz-appearance: textfield; }
 .message.warning { background: rgba(184,134,11,0.08); border-left: 3px solid var(--warning); color: #8a6508; }
 
 /* ------------------------------------------------------------
-   HUB — the only screen with more than one product visible.
+   HUB
    ------------------------------------------------------------ */
 #hubView { max-width: 760px; margin: 0 auto; padding: 48px 24px 60px; }
 .hub-eyebrow { text-align: center; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-dim); font-family: var(--font-mono); margin-bottom: 8px; }
@@ -317,7 +335,6 @@ input[type=number] { -moz-appearance: textfield; }
 .ledger-link:hover { color: var(--accent); }
 .balance-link-wrap { text-align: center; margin-top: 18px; }
 
-/* Swap source-type row now includes "My Card" as a fourth option */
 .swap-source-types { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 18px 0 4px; }
 .swap-source-type-opt { border: 1px solid var(--border-strong); padding: 12px 6px; text-align: center; cursor: pointer; font-size: 10px; font-weight: 700; }
 .swap-source-type-opt:hover { background: var(--surface-muted); }
@@ -332,20 +349,12 @@ input[type=number] { -moz-appearance: textfield; }
 .strategy-row button:last-child { border-right: none; }
 .strategy-row button.active { background: var(--primary); color: #fff; }
 
-/* Destination is the deliberate "next step" after a source is picked —
-   it gets its own bordered section that visually lights up (accent
-   border + soft tint) once the source step is actually satisfied, so
-   the person's attention is drawn to what to do next instead of
-   everything on the page looking equally important all the time. */
 .swap-destination-section { border: 1px solid var(--border); padding: 18px 16px; margin: 20px 0 4px; transition: all 0.2s ease; display: none; }
 .swap-destination-section.ready { display: block; border-color: var(--accent); background: var(--accent-soft); animation: fadeInUp 0.3s ease; }
 .swap-destination-heading { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); margin-bottom: 12px; transition: color 0.2s ease; }
 .swap-destination-section.ready .swap-destination-heading { color: var(--accent); }
 .swap-dest-types { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 
-/* Phones: source then destination, stacked. Laptops/desktops: side by
-   side, so the wide viewport is actually used instead of leaving a
-   480px phone-shaped column stranded in the middle of the screen. */
 .swap-layout { display: block; }
 .swap-col-source, .swap-col-dest { width: 100%; }
 
@@ -374,9 +383,12 @@ input[type=number] { -moz-appearance: textfield; }
 .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid rgba(255,255,255,0.4); border-top-color: #fff; border-radius: 50%; animation: spin 0.7s linear infinite; margin-right: 6px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ============================================================
+   MODAL OVERLAY
+   ============================================================ */
 .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(4,18,14,0.5); z-index: 1000; align-items: center; justify-content: center; padding: 20px; }
 .modal-overlay.active { display: flex; }
-.modal { background: var(--surface); max-width: 480px; width: 100%; max-height: 90vh; overflow-y: auto; border: 1px solid var(--border-strong); animation: popIn 0.22s ease; }
+.modal { background: var(--surface); max-width: 480px; width: 100%; max-height: 90vh; overflow-y: auto; border: 1px solid var(--border-strong); }
 .modal-header { display: flex; justify-content: space-between; align-items: center; padding: 16px 22px; background: var(--surface-muted); border-bottom: 1px solid var(--border); }
 .modal-header h2 { font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text); font-family: var(--font-mono); }
 .modal-close { background: none; border: none; color: var(--text-muted); font-size: 20px; cursor: pointer; line-height: 1; padding: 4px; }
@@ -388,6 +400,49 @@ input[type=number] { -moz-appearance: textfield; }
 .confirm-box p { font-size: 13px; color: var(--text); margin-bottom: 16px; line-height: 1.5; }
 .confirm-box .cta-row { margin-top: 0; }
 
+/* ============================================================
+   PREVIEW STYLES — shared across all modals
+   ============================================================ */
+.review-hero { text-align: center; padding: 6px 0 18px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+.review-hero-label { font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-dim); margin-bottom: 8px; font-family: var(--font-mono); }
+.review-hero-amount { font-size: 42px; font-weight: 600; color: var(--text); font-family: var(--font-mono); }
+.review-hero-note { font-size: 11px; color: var(--success); font-weight: 600; margin-top: 8px; }
+.review-hero-note.muted { color: var(--text-dim); }
+
+.preview-box { margin: 0; }
+.preview-row { display: flex; justify-content: space-between; align-items: center; padding: 13px 0; gap: 12px; font-size: 13px; border-bottom: 1px solid var(--border); }
+.preview-row:last-child { border-bottom: none; }
+.preview-row span:first-child { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-dim); }
+.preview-row .value { font-weight: 600; color: var(--text); text-align: right; font-family: var(--font-mono); }
+.preview-row .value.highlight { color: var(--accent); font-size: 20px; }
+
+.preview-security { display: flex; gap: 14px; align-items: flex-start; padding: 14px; background: var(--surface-muted); margin: 16px 0; border: 1px solid var(--border); }
+.preview-security-icon { width: 34px; height: 34px; background: var(--primary); display: flex; align-items: center; justify-content: center; color: #fff; font-size: 15px; flex-shrink: 0; }
+.preview-security-text strong { display: block; font-size: 12px; margin-bottom: 4px; }
+.preview-security-text p { font-size: 11px; color: var(--text-muted); line-height: 1.5; }
+
+.preview-reassure { text-align: center; font-size: 11px; color: var(--text-dim); margin-top: 10px; }
+
+.modal-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 20px; }
+.modal-actions .btn-secondary { flex: 0 0 auto; text-transform: none; border: none; background: transparent; color: var(--text-muted); font-size: 12px; width: auto; }
+.modal-actions .btn-primary { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+
+/* Result box */
+.result-box { text-align: center; padding: 10px 0; position: relative; overflow: visible; }
+.result-box .icon { font-size: 42px; color: var(--success); margin-bottom: 8px; }
+.result-box .result-title { font-size: 20px; font-weight: 600; margin-bottom: 8px; }
+.result-box .result-sub { font-size: 12px; color: var(--text-muted); margin-bottom: 16px; font-family: var(--font-mono); }
+.result-box .atm-code { margin: 16px 0; padding: 18px; background: var(--surface-muted); border: 1px solid var(--border); }
+.result-box .atm-code .code { font-size: 24px; font-weight: 700; font-family: var(--font-mono); letter-spacing: 4px; color: var(--accent); }
+.result-stat { background: var(--accent-soft); border-left: 3px solid var(--accent); padding: 10px 14px; margin-top: 14px; font-size: 12px; color: var(--primary); text-align: left; }
+
+/* Unhook summary */
+.unhook-summary { border: 1px solid var(--border); padding: 20px; text-align: center; margin-bottom: 18px; }
+.unhook-summary .icon { font-size: 36px; margin-bottom: 8px; }
+
+/* ============================================================
+   REST OF THE STYLES (unchanged from original)
+   ============================================================ */
 .tab-hero { text-align: center; padding: 6px 0 14px; border-bottom: 1px solid var(--border); margin-bottom: 14px; }
 .tab-hero-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 700; color: var(--text-dim); font-family: var(--font-mono); }
 .tab-hero-input { background: transparent; border: none; text-align: center; font-size: 40px; font-weight: 600; width: 100%; color: var(--text); font-family: var(--font-mono); }
@@ -415,33 +470,6 @@ input[type=number] { -moz-appearance: textfield; }
 .tab-invite-sub { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 .vm-card-note { font-size: 12px; color: var(--text-muted); background: var(--accent-soft); border-left: 3px solid var(--accent); padding: 12px 14px; margin-top: 10px; }
 
-.review-hero { text-align: center; padding: 6px 0 18px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
-.review-hero-label { font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-dim); margin-bottom: 8px; font-family: var(--font-mono); }
-.review-hero-amount { font-size: 42px; font-weight: 600; color: var(--text); font-family: var(--font-mono); }
-.review-hero-note { font-size: 11px; color: var(--success); font-weight: 600; margin-top: 8px; }
-.preview-box { margin: 0; }
-.preview-row { display: flex; justify-content: space-between; align-items: center; padding: 13px 0; gap: 12px; font-size: 13px; border-bottom: 1px solid var(--border); }
-.preview-row span:first-child { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-dim); }
-.preview-row .value { font-weight: 600; color: var(--text); text-align: right; font-family: var(--font-mono); }
-.preview-row .value.highlight { color: var(--accent); font-size: 20px; }
-.preview-security { display: flex; gap: 14px; align-items: flex-start; padding: 14px; background: var(--surface-muted); margin: 16px 0; border: 1px solid var(--border); }
-.preview-security-icon { width: 34px; height: 34px; background: var(--primary); display: flex; align-items: center; justify-content: center; color: #fff; font-size: 15px; flex-shrink: 0; }
-.preview-security-text strong { display: block; font-size: 12px; margin-bottom: 4px; }
-.preview-security-text p { font-size: 11px; color: var(--text-muted); line-height: 1.5; }
-.preview-reassure { text-align: center; font-size: 11px; color: var(--text-dim); margin-top: 10px; }
-.modal-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 20px; }
-.modal-actions .btn-secondary { flex: 0 0 auto; text-transform: none; border: none; background: transparent; color: var(--text-muted); font-size: 12px; width: auto; }
-.modal-actions .btn-primary { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
-
-.result-box { text-align: center; padding: 10px 0; position: relative; overflow: visible; }
-.result-box .icon { font-size: 42px; color: var(--success); margin-bottom: 8px; }
-.result-box .result-title { font-size: 20px; font-weight: 600; margin-bottom: 8px; }
-.result-box .result-sub { font-size: 12px; color: var(--text-muted); margin-bottom: 16px; font-family: var(--font-mono); }
-.result-box .atm-code { margin: 16px 0; padding: 18px; background: var(--surface-muted); border: 1px solid var(--border); }
-.result-box .atm-code .code { font-size: 24px; font-weight: 700; font-family: var(--font-mono); letter-spacing: 4px; color: var(--accent); }
-.result-stat { background: var(--accent-soft); border-left: 3px solid var(--accent); padding: 10px 14px; margin-top: 14px; font-size: 12px; color: var(--primary); text-align: left; }
-.confetti-piece { position: absolute; top: 10%; width: 6px; height: 6px; background: var(--accent); animation: confettiFall 1.1s ease-in forwards; }
-
 .field-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; display: block; margin-bottom: 6px; font-weight: 700; letter-spacing: 0.05em; }
 .field-group { margin-bottom: 14px; }
 .field-group label { display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); margin-bottom: 6px; letter-spacing: 0.05em; }
@@ -449,8 +477,6 @@ input[type=number] { -moz-appearance: textfield; }
 .field-group input:focus, .field-group select:focus { outline: none; border-color: var(--accent); }
 .field-group .help { font-size: 11px; color: var(--text-dim); margin-top: 5px; }
 .field-group .help.error-help { color: var(--danger); font-weight: 600; }
-.asset-fields { margin: 8px 0 14px; padding: 14px; background: var(--surface-muted); border: 1px solid var(--border); }
-.identity-field { margin: 8px 0 14px; padding: 14px; background: var(--accent-soft); border: 1px dashed var(--accent); }
 
 .source-type-buttons { display: flex; flex-direction: column; gap: 0; border: 1px solid var(--border-strong); margin-bottom: 8px; }
 .source-type-btn { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 13px 15px; font-size: 14px; font-weight: 600; text-align: left; background: var(--surface); color: var(--text); border: none; border-bottom: 1px solid var(--border-strong); cursor: pointer; font-family: var(--font); }
@@ -460,6 +486,7 @@ input[type=number] { -moz-appearance: textfield; }
 .source-type-btn .btn-label { display: flex; align-items: center; gap: 10px; }
 .source-type-btn .count { background: var(--accent-2); color: #fff; font-size: 10px; font-weight: 800; padding: 2px 7px; }
 .source-type-btn.active .count { background: rgba(255,255,255,0.25); }
+
 .source-panel-wrap { margin-bottom: 8px; margin-top: 4px; }
 .source-panel { margin-bottom: 4px; }
 .empty-source-box { text-align: center; padding: 32px 20px; border: 1px dashed var(--border-strong); background: var(--surface-muted); }
@@ -476,17 +503,6 @@ input[type=number] { -moz-appearance: textfield; }
 .otp-input-group { display: flex; gap: 8px; margin: 12px 0; }
 .otp-input-group input { flex: 1; }
 
-.saved-source-list { border: 1px solid var(--border-strong); background: var(--surface); }
-
-/* ============================================================
-   COLLAPSIBLE DROPDOWN SELECT — the reusable pattern for every
-   "pick one from a list of sources" moment in the app (saved
-   wallet sources, Combine-sources' saved-source picker, etc).
-   Closed by default; opens to a scrollable option list; picking
-   an option closes it again and shows the pick as the button
-   label — so a list of 10 sources never just sits open forever
-   taking up the page.
-   ============================================================ */
 .dropdown-select { border: 1px solid var(--border-strong); background: var(--surface); position: relative; }
 .dropdown-select-trigger { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 14px 16px; cursor: pointer; font-size: 14px; }
 .dropdown-select-trigger .placeholder { color: var(--text-dim); }
@@ -506,6 +522,7 @@ input[type=number] { -moz-appearance: textfield; }
 .saved-source-row .row-check { font-size: 13px; opacity: 0; }
 .saved-source-row.active .row-check { opacity: 1; }
 
+/* Toolbox */
 .toolbox-group { margin-bottom: 22px; }
 .toolbox-group:last-child { margin-bottom: 0; }
 .toolbox-group-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); margin-bottom: 8px; font-family: var(--font-mono); }
@@ -517,36 +534,14 @@ input[type=number] { -moz-appearance: textfield; }
 .toolbox-row-label { flex: 1; font-size: 15px; font-weight: 600; color: var(--text); }
 .toolbox-badge { min-width: 20px; height: 20px; padding: 0 6px; background: var(--accent-2); color: #fff; font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
 
-/* Accordion — collapses each Toolbox section so a long list of
-   sources/tools/theme doesn't force an endless scroll. Native
-   <details>/<summary> so open/close needs no extra JS state. */
 .toolbox-accordion { border: 1px solid var(--border); margin-bottom: 12px; background: var(--surface); }
 .toolbox-accordion-summary { list-style: none; cursor: pointer; display: flex; align-items: center; justify-content: space-between; padding: 16px 18px; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text); font-family: var(--font-mono); }
 .toolbox-accordion-summary::-webkit-details-marker { display: none; }
 .toolbox-accordion-arrow { color: var(--text-dim); transition: transform 0.15s ease; font-size: 16px; }
 .toolbox-accordion[open] > .toolbox-accordion-summary .toolbox-accordion-arrow { transform: rotate(90deg); }
 .toolbox-accordion > .toolbox-list, .toolbox-accordion > .myc-panel { border-top: 1px solid var(--border); border-left: none; border-right: none; border-bottom: none; }
-#toolboxSearchInput { font-family: var(--font); }
 
-#identitySwapHint { display: none; background: var(--accent-soft); border-left: 3px solid var(--accent); padding: 12px 14px; font-size: 12px; margin-top: 8px; color: var(--text-muted); }
-#swapReadinessHint { text-align: center; font-size: 12px; color: var(--text-muted); margin-top: 12px; display: none; }
-#swapReadinessHint.show { display: block; }
-#swapReadinessHint.warning { background: rgba(184,134,11,0.08); border-left: 3px solid var(--warning); padding: 12px 16px; }
-#swapReadinessHint.success { background: rgba(31,138,84,0.08); border-left: 3px solid var(--success); padding: 12px 16px; color: var(--success); }
-
-.page-footer { max-width: var(--max-w); width: 100%; margin: 0 auto; padding: 24px 24px 32px; border-top: 1px solid var(--border); display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
-.page-footer .footer-copy { font-size: 11px; color: var(--text-dim); font-family: var(--font-mono); }
-.page-footer .footer-links { display: flex; gap: 20px; font-size: 12px; }
-.page-footer .footer-links span { color: var(--text-muted); font-weight: 600; cursor: pointer; }
-.page-footer .footer-links span:hover { color: var(--accent); text-decoration: underline; }
-
-/* ============================================================
-   MY VOUCHMORPH CARD — persistent view (not a modal). QR block
-   styled after Coinbase's centered/aligned receive screen; the
-   contribution-swap strip styled after split-pay apps. Square
-   tiles throughout — never circles — to stay inside the app's
-   sharp-edged (--radius: 0) system.
-   ============================================================ */
+/* MYC Card */
 .myc-layout { display: grid; grid-template-columns: 320px 1fr; gap: 18px; align-items: start; }
 @media (max-width: 860px) { .myc-layout { grid-template-columns: 1fr; } }
 
@@ -567,8 +562,6 @@ input[type=number] { -moz-appearance: textfield; }
 .myc-qr-frame { background: #fff; padding: 18px; border: 1px solid var(--border-strong); display: inline-flex; align-items: center; justify-content: center; }
 .myc-qr-caption { font-size: 11px; color: var(--text-dim); margin-top: 12px; }
 .myc-qr-tap-hint { font-size: 10px; color: var(--accent); font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; margin-top: 4px; }
-.myc-qr-suffix-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 8px 14px; background: var(--surface-muted); border: 1px solid var(--border); }
-.myc-qr-suffix { font-family: var(--font-mono); font-size: 13px; font-weight: 700; letter-spacing: 0.04em; }
 
 .myc-panel { background: var(--surface); border: 1px solid var(--border); padding: 18px 20px; margin-bottom: 14px; }
 .myc-panel-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
@@ -582,7 +575,6 @@ input[type=number] { -moz-appearance: textfield; }
 .myc-source-inst { font-size: 13px; font-weight: 700; }
 .myc-source-ident { font-size: 11px; color: var(--text-dim); }
 .myc-source-amt { font-size: 16px; font-weight: 700; font-family: var(--font-mono); color: var(--accent); }
-.myc-source-status-row { display: flex; align-items: center; gap: 6px; margin-top: 4px; justify-content: flex-end; }
 .source-status-badge { font-size: 8px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; padding: 2px 6px; border: 1px solid; }
 .source-status-badge.open { color: var(--accent); border-color: var(--accent); }
 .source-status-badge.expired { color: var(--text-dim); border-color: var(--border-strong); }
@@ -601,17 +593,14 @@ input[type=number] { -moz-appearance: textfield; }
 .myc-contributor-name { flex: 1; color: var(--text); font-weight: 600; }
 .myc-contributor-amt { font-family: var(--font-mono); font-weight: 700; }
 
-/* Full-screen QR takeover */
+/* QR Full */
 .qr-full-wrap { max-width: 460px; margin: 0 auto; padding: 56px 24px; text-align: center; }
 .qr-frame-lg { background: #fff; padding: 30px; border: 1px solid var(--border-strong); display: inline-block; margin-bottom: 24px; }
 .qr-full-suffix { font-family: var(--font-mono); font-size: 20px; font-weight: 700; letter-spacing: 0.08em; margin-bottom: 6px; }
 .qr-full-name { font-size: 13px; color: var(--text-muted); }
 .qr-full-hint { font-size: 12px; color: var(--text-muted); margin-top: 20px; }
 
-/* Hook builder — dual entry: from Card ("Hook a source") or from
-   a row in My Sources ("Hook to card"). Supports one or many
-   sources per hook: Account, Wallet, Cashout Voucher, or Identity
-   claim (only enabled once a claimed identity balance exists). */
+/* Hook builder */
 .entry-point-note { font-size: 11px; color: var(--text-dim); text-align: center; margin-bottom: 18px; }
 .hook-mode-row { display: flex; border: 1px solid var(--border-strong); margin-bottom: 18px; }
 .hook-mode-row button { flex: 1; padding: 11px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; background: transparent; border: none; color: var(--text-muted); cursor: pointer; border-right: 1px solid var(--border-strong); font-family: var(--font); }
@@ -625,6 +614,7 @@ input[type=number] { -moz-appearance: textfield; }
 .source-type-opt .icon { font-size: 18px; display: block; margin-bottom: 6px; }
 .source-type-opt .note { font-size: 9px; font-weight: 500; text-transform: none; color: var(--text-dim); margin-top: 4px; display: block; }
 .source-type-opt.active .note { color: rgba(255,255,255,0.7); }
+
 .hook-row-card { border: 1px solid var(--border); padding: 14px; margin-bottom: 10px; position: relative; }
 .hook-row-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .hook-row-label { font-size: 11px; font-weight: 700; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; }
@@ -632,10 +622,6 @@ input[type=number] { -moz-appearance: textfield; }
 .add-row-btn { width: 100%; padding: 12px; border: 1px dashed var(--border-strong); background: transparent; color: var(--text-muted); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; cursor: pointer; margin-bottom: 16px; font-family: var(--font); }
 .add-row-btn:hover { border-color: var(--accent); color: var(--accent); }
 
-/* Unhook confirm */
-.unhook-summary { border: 1px solid var(--border); padding: 20px; text-align: center; margin-bottom: 18px; }
-
-/* Theme picker */
 .theme-picker { display: flex; gap: 8px; flex-wrap: wrap; }
 .theme-chip { flex: 1; min-width: 100px; border: 2px solid var(--border-strong); padding: 14px 10px; text-align: center; cursor: pointer; font-size: 11px; font-weight: 700; background: var(--surface); color: var(--text); }
 .theme-chip.active { border-color: var(--accent); }
@@ -648,26 +634,19 @@ input[type=number] { -moz-appearance: textfield; }
     .product-view-inner { padding: 32px 16px 48px; }
 }
 
-/* ============================================================
-   WIDE SCREENS — laptops and desktops. Everything above this is
-   phone-first by design (tall, single narrow column), which is
-   correct for a phone but leaves a stranded 480px-wide strip in
-   the middle of a 1440px monitor. From here up, layouts widen and,
-   where it genuinely helps (Swap, the Card), split into columns
-   instead of just centering a taller version of the phone layout.
-   ============================================================ */
 @media (min-width: 900px) {
     .product-view-inner { max-width: 640px; }
     .product-view-inner.wide { max-width: 960px; }
-
     .swap-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; align-items: start; }
-    /* A vertical divider between the two halves makes the "source,
-       then destination" relationship readable even though they now
-       sit side by side instead of one after another. */
     .swap-col-source { border-right: 1px solid var(--border); padding-right: 28px; }
-
     .myc-qr-panel { position: sticky; top: 88px; }
 }
+
+.page-footer { max-width: var(--max-w); width: 100%; margin: 0 auto; padding: 24px 24px 32px; border-top: 1px solid var(--border); display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.page-footer .footer-copy { font-size: 11px; color: var(--text-dim); font-family: var(--font-mono); }
+.page-footer .footer-links { display: flex; gap: 20px; font-size: 12px; }
+.page-footer .footer-links span { color: var(--text-muted); font-weight: 600; cursor: pointer; }
+.page-footer .footer-links span:hover { color: var(--accent); text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -694,7 +673,7 @@ input[type=number] { -moz-appearance: textfield; }
 <div id="mainMessage" class="message"></div>
 
 <!-- ============================================================
-     HUB — the only screen where more than one product is visible.
+     HUB
      ============================================================ -->
 <div class="view active" id="hubView">
     <div class="hub-eyebrow">VouchMorph</div>
@@ -729,7 +708,7 @@ input[type=number] { -moz-appearance: textfield; }
 </div>
 
 <!-- ============================================================
-     SWAP — full takeover.
+     SWAP
      ============================================================ -->
 <div class="view" id="swapView">
     <div class="product-view-inner">
@@ -737,9 +716,7 @@ input[type=number] { -moz-appearance: textfield; }
             <div class="product-view-eyebrow">Move money</div>
             <div class="product-view-title">Swap <button class="info-btn" onclick="openHowItWorks('swap')" title="How Swap works" aria-label="How Swap works">?</button></div>
         </div>
-
         <div id="repeatCardHolder"></div>
-
         <div class="ledger-card fade-in-up">
             <div class="ledger-eyebrow">Move money</div>
             <div class="ledger-sentence">
@@ -750,10 +727,6 @@ input[type=number] { -moz-appearance: textfield; }
             </div>
             <div style="text-align:center;font-size:12px;color:var(--text-muted);margin-top:8px;">You'll swap <strong id="amountPreview" style="font-family:var(--font-mono);color:var(--text);">0.00</strong></div>
 
-            <!-- Two logical halves — source (left) and destination
-                 (right) — stack on phones but sit side by side on wider
-                 screens instead of leaving a narrow phone-width column
-                 stranded in the middle of a laptop screen. -->
             <div class="swap-layout">
                 <div class="swap-col-source">
                     <div class="swap-source-types">
@@ -763,17 +736,12 @@ input[type=number] { -moz-appearance: textfield; }
                         <div class="swap-source-type-opt" id="swapSrcVmcard" onclick="setSwapSourceMode('VMCARD')"><span class="icon">🧩</span>My Card</div>
                         <div class="swap-source-type-opt" id="swapSrcCombine" onclick="setSwapSourceMode('COMBINE')"><span class="icon">➕</span>Combine</div>
                     </div>
-
                     <div id="swapSingleSourceHolder"></div>
                     <div id="swapCardSourceHolder" style="display:none;"></div>
                     <div id="swapCombineSourceHolder" style="display:none;"></div>
                 </div>
 
                 <div class="swap-col-dest">
-                    <!-- The next step, given its own weight so it's obviously a
-                         real choice rather than an afterthought — Identity and
-                         Combine are just as valid a destination path as a plain
-                         deposit or cashout, not buried as small text links. -->
                     <div class="swap-destination-section" id="swapDestinationSection">
                         <div class="swap-destination-heading">Where's this going?</div>
                         <div class="swap-dest-types">
@@ -788,7 +756,6 @@ input[type=number] { -moz-appearance: textfield; }
                             </div>
                         </div>
                     </div>
-
                     <div class="cta-row">
                         <button class="btn btn-primary" id="reviewBtn" onclick="previewSwap()">Review swap</button>
                     </div>
@@ -796,7 +763,6 @@ input[type=number] { -moz-appearance: textfield; }
                 </div>
             </div>
         </div>
-
         <div class="balance-link-wrap">
             <button type="button" class="ledger-link" onclick="viewWalletBalance()">View balance</button>
         </div>
@@ -804,7 +770,7 @@ input[type=number] { -moz-appearance: textfield; }
 </div>
 
 <!-- ============================================================
-     CARD — persistent full-page view (not a modal).
+     CARD
      ============================================================ -->
 <div class="view" id="cardView">
     <div class="product-view-inner wide">
@@ -817,7 +783,7 @@ input[type=number] { -moz-appearance: textfield; }
 </div>
 
 <!-- ============================================================
-     FULL-SCREEN QR — takes over when the QR on Card is tapped.
+     QR FULL
      ============================================================ -->
 <div class="view" id="qrfullView">
     <div class="qr-full-wrap">
@@ -829,8 +795,7 @@ input[type=number] { -moz-appearance: textfield; }
 </div>
 
 <!-- ============================================================
-     HOOK BUILDER — reachable from Card ("Hook a source") or from
-     any row in My Sources ("Hook to card"). Same UI either way.
+     HOOK BUILDER
      ============================================================ -->
 <div class="view" id="hookView">
     <div class="product-view-inner">
@@ -851,7 +816,7 @@ input[type=number] { -moz-appearance: textfield; }
 </div>
 
 <!-- ============================================================
-     UNHOOK — reachable from any hooked-source row on Card.
+     UNHOOK
      ============================================================ -->
 <div class="view" id="unhookView">
     <div class="product-view-inner">
@@ -859,20 +824,14 @@ input[type=number] { -moz-appearance: textfield; }
             <div class="product-view-eyebrow">Release this hook</div>
             <div class="product-view-title">Unhook everything</div>
         </div>
-        <div class="unhook-summary">
-            <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;" id="unhookInstLine"></div>
-            <div style="font-size:24px;font-weight:600;font-family:var(--font-mono);color:var(--accent);" id="unhookAmountLine"></div>
-        </div>
-        <div class="myc-panel" style="font-size:12px;color:var(--text-muted);">
-            This releases every source currently hooked to this card, all together — there's no way to release just one source out of the group. Anything already spent (e.g. in a swap) can't be unhooked.
-        </div>
-        <button class="btn" style="background:var(--danger);" onclick="confirmUnhook()">Unhook everything</button>
+        <div id="unhookPreviewHolder"></div>
+        <button class="btn" style="background:var(--danger);" id="unhookConfirmBtn" onclick="executeUnhook()">Unhook everything</button>
         <button class="btn secondary" style="margin-top:10px;" onclick="goBack()">Keep it hooked</button>
     </div>
 </div>
 
 <!-- ============================================================
-     ACTIVITY — full takeover, swap history rendered inline.
+     ACTIVITY
      ============================================================ -->
 <div class="view" id="activityView">
     <div class="product-view-inner wide">
@@ -885,8 +844,7 @@ input[type=number] { -moz-appearance: textfield; }
 </div>
 
 <!-- ============================================================
-     TOOLBOX — My sources (dual hook entry), identity, agent,
-     profile, help/terms, and the theme picker.
+     TOOLBOX
      ============================================================ -->
 <div class="view" id="toolboxView">
     <div class="product-view-inner">
@@ -907,9 +865,7 @@ input[type=number] { -moz-appearance: textfield; }
 </footer>
 
 <!-- ============================================================
-     Off-screen source nodes reused by both Swap (single-source
-     path) and the modal-based Add-source / Activate-card flows —
-     same pattern as before, just re-homed under the shell.
+     OFFSCREEN NODES
      ============================================================ -->
 <div id="offscreenNodes" style="display:none;">
     <div id="fromSection">
@@ -1032,10 +988,13 @@ input[type=number] { -moz-appearance: textfield; }
     </div>
 </div>
 
+<!-- ============================================================
+     MODALS
+     ============================================================ -->
 <div class="modal-overlay" id="modal" onclick="if(event.target===this)closeModal()">
     <div class="modal" id="modalContent">
         <div class="modal-header">
-            <h2 id="modalTitle">Swap preview</h2>
+            <h2 id="modalTitle">Preview</h2>
             <button class="modal-close" onclick="closeModal()" aria-label="Close">&times;</button>
         </div>
         <div id="modalBody"></div>
@@ -1127,8 +1086,8 @@ let state = {
     toIdentityType: 'national_id', toIdentityValue: '', toIdentitySms: '',
     multiSources: [], lastPreview: null, swapPayload: null,
     tabTotalAmount: 0, tabAllocationMode: 'even', contributionStrategy: 'SMART',
-    swapSourceMode: 'WALLET', // WALLET | CARD | VOUCHER | VMCARD — which of the 4 Swap source tiles is active
-    vmCardStrategy: 'SMART',  // strategy used when swapSourceMode === 'VMCARD'
+    swapSourceMode: 'WALLET',
+    vmCardStrategy: 'SMART',
 };
 let savedIdentities = [];
 let userSources = [];
@@ -1141,9 +1100,18 @@ let sourcePanelOpenCat = null;
 let SessionUser = null;
 let regIdentityState = { attemptId: null, identityType: null, identityValue: null };
 let myCard = null;
-let vmCardSources = null; // flat list from GetCardSources.php — the real source-of-truth for "My Card" as a Swap source, aggregated across all active hooks (unlike My.php's single most-recent hook)
+let vmCardSources = null;
 let activeSessionPollTimer = null;
 let html5QrScanner = null;
+
+// ============================================================
+// PENDING EXECUTION STORE — holds data until preview is confirmed
+// ============================================================
+let pendingExecution = {
+    type: null, // 'swap' | 'hook' | 'unhook' | 'claim' | 'activate' | 'swipe'
+    payload: null,
+    callback: null,
+};
 
 function formatMoney(amount, currency) {
     const num = parseFloat(amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -1160,9 +1128,7 @@ function maskIdentifier(value) {
 function escapeHtml(str) { const div = document.createElement('div'); div.textContent = str == null ? '' : String(str); return div.innerHTML; }
 
 // ============================================================
-// NAVIGATION SHELL — one product visible at a time. viewStack
-// always starts at 'hub'; every other entry pushes on top so
-// Back always returns to exactly where you were, in order.
+// NAVIGATION
 // ============================================================
 const VIEW_LABELS = {
     swap: 'Swap', card: 'Card', activity: 'Activity', toolbox: 'Toolbox',
@@ -1176,11 +1142,6 @@ function goView(name) {
     if (name === 'card') loadCardView();
     if (name === 'activity') loadActivityView();
     if (name === 'toolbox') loadToolboxView();
-    // Swap must actively initialize its source picker — without this,
-    // the view renders with the "Wallet" tile marked active but an
-    // empty picker underneath, since nothing has told it to populate
-    // #swapSingleSourceHolder yet (that only happens inside
-    // setSwapSourceMode()/toggleSourcePanelInline()).
     if (name === 'swap') { restoreSwapSourceUI(); }
 }
 function pushView(name) { viewStack.push(name); renderView(); }
@@ -1203,10 +1164,6 @@ function renderView() {
         document.getElementById('brandLabel').innerHTML = 'VouchMorph<sup>TM</sup>';
     } else {
         backBtn.classList.add('show');
-        // Home is always reachable in one tap from anywhere, separate
-        // from Back (which only steps up one level) — addresses not
-        // having any way to jump straight to the hub from deep views
-        // like the hook builder or full-screen QR.
         homeBtn.classList.add('show');
         const prev = viewStack[viewStack.length - 2];
         document.getElementById('backLabel').textContent = (!prev || prev === 'hub') ? 'All products' : (VIEW_LABELS[prev] || 'Back');
@@ -1216,9 +1173,7 @@ function renderView() {
 }
 
 // ============================================================
-// THEME — pure color-token swap; every theme keeps the same
-// sharp-edged (--radius: 0) shapes and layout, just different
-// palettes, so switching never feels like a different app.
+// THEME
 // ============================================================
 const THEMES = {
     classic: { '--bg':'#FAF9F6', '--surface':'#FFFFFF', '--surface-muted':'#F4F3EF', '--text':'#10201C', '--text-muted':'#63706A', '--text-dim':'#8A968F', '--primary':'#10201C', '--primary-dark':'#04120E', '--accent':'#00A878', '--accent-2':'#FF7A59', '--border':'rgba(16,30,27,0.12)', '--border-strong':'rgba(16,30,27,0.22)' },
@@ -1239,6 +1194,9 @@ function loadSavedTheme() {
     setTheme(saved);
 }
 
+// ============================================================
+// HELPERS
+// ============================================================
 const Journey = {
     KEY: 'vm_journey_v1',
     read() {
@@ -1325,30 +1283,6 @@ async function repeatLastSwap() {
     showPreviewModal(result.body);
 }
 
-function showConfirm(message, onConfirm) {
-    const overlay = document.getElementById('confirmOverlay');
-    document.getElementById('confirmBoxText').textContent = message;
-    overlay.classList.add('active');
-    const okBtn = document.getElementById('confirmBoxOk');
-    const cancelBtn = document.getElementById('confirmBoxCancel');
-    const cleanup = () => { overlay.classList.remove('active'); okBtn.onclick = null; cancelBtn.onclick = null; };
-    okBtn.onclick = () => { cleanup(); onConfirm(); };
-    cancelBtn.onclick = () => { cleanup(); };
-}
-function fireConfetti(container) {
-    if (!container) return;
-    const colors = ['var(--accent)', 'var(--accent-2)', 'var(--primary)'];
-    for (let i = 0; i < 14; i++) {
-        const piece = document.createElement('div');
-        piece.className = 'confetti-piece';
-        piece.style.left = (10 + Math.random() * 80) + '%';
-        piece.style.background = colors[i % colors.length];
-        piece.style.animationDelay = (Math.random() * 0.2) + 's';
-        container.appendChild(piece);
-        setTimeout(() => piece.remove(), 1400);
-    }
-}
-
 function buildHeaders() {
     const headers = { 'Content-Type': 'application/json' };
     if (CONFIG.COUNTRY_CODE) headers['X-Country-Code'] = CONFIG.COUNTRY_CODE;
@@ -1376,17 +1310,610 @@ async function callApiGet(endpoint) {
     return { ok: true, body };
 }
 
+function showConfirm(message, onConfirm) {
+    const overlay = document.getElementById('confirmOverlay');
+    document.getElementById('confirmBoxText').textContent = message;
+    overlay.classList.add('active');
+    const okBtn = document.getElementById('confirmBoxOk');
+    const cancelBtn = document.getElementById('confirmBoxCancel');
+    const cleanup = () => { overlay.classList.remove('active'); okBtn.onclick = null; cancelBtn.onclick = null; };
+    okBtn.onclick = () => { cleanup(); onConfirm(); };
+    cancelBtn.onclick = () => { cleanup(); };
+}
+function fireConfetti(container) {
+    if (!container) return;
+    const colors = ['var(--accent)', 'var(--accent-2)', 'var(--primary)'];
+    for (let i = 0; i < 14; i++) {
+        const piece = document.createElement('div');
+        piece.className = 'confetti-piece';
+        piece.style.left = (10 + Math.random() * 80) + '%';
+        piece.style.background = colors[i % colors.length];
+        piece.style.animationDelay = (Math.random() * 0.2) + 's';
+        container.appendChild(piece);
+        setTimeout(() => piece.remove(), 1400);
+    }
+}
+
 // ============================================================
-// SWAP — source-type row now has 4 tiles: Wallet, Card, Voucher
-// (all three route to the existing single-source flow, just with
-// state.fromCategory pre-set) and "My Card" (VMCARD), which draws
-// from whatever is hooked to your VouchMorph Card using the same
-// Smart/Equal/Ratio/Manual strategy as Combine Sources.
+// MODAL HELPERS
 // ============================================================
-// Re-entering Swap (e.g. after navigating away mid-flow) must not
-// force the Combine builder back open if sources were already
-// confirmed — it should just redisplay the summary, same as any
-// other already-filled-in source.
+function returnMovableNodesHome() {
+    const offscreen = document.getElementById('offscreenNodes');
+    const toInstSlot = document.getElementById('toInstAssetGroupSlot');
+    const toInstGroup = document.getElementById('toInstAssetGroup');
+    if (toInstGroup && toInstSlot && toInstGroup.parentElement !== toInstSlot) toInstSlot.appendChild(toInstGroup);
+    ['fromSection', 'toSection', 'identityFields'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el && offscreen && el.parentElement !== offscreen) offscreen.appendChild(el);
+    });
+    if (state.swapSourceMode !== 'VMCARD') {
+        const singleHolder = document.getElementById('swapSingleSourceHolder');
+        const fromSectionEl = document.getElementById('fromSection');
+        if (singleHolder && fromSectionEl && fromSectionEl.parentElement !== singleHolder) singleHolder.appendChild(fromSectionEl);
+    }
+}
+function openModal(title, bodyHtml) {
+    const modalTitle = document.getElementById('modalTitle'), modalBody = document.getElementById('modalBody'), modal = document.getElementById('modal');
+    if (modalTitle) modalTitle.textContent = title;
+    if (modalBody) modalBody.innerHTML = bodyHtml;
+    if (modal) modal.classList.add('active');
+}
+function closeModal() {
+    document.getElementById('modal').classList.remove('active');
+    returnMovableNodesHome();
+    stopSessionPolling();
+    refreshUI();
+}
+function showMessage(text, type = 'info') {
+    const el = document.getElementById('mainMessage');
+    el.textContent = text; el.className = `message show ${type}`;
+    clearTimeout(showMessage._t);
+    showMessage._t = setTimeout(() => el.classList.remove('show'), 6000);
+}
+
+// ============================================================
+// INLINE MODAL PREVIEWS — every action shows preview first
+// ============================================================
+
+/**
+ * showPreviewModal - Generic preview modal with cancel/confirm
+ * @param {string} title - Modal title
+ * @param {string} bodyHtml - Preview content HTML
+ * @param {Function} onConfirm - Function to execute when confirmed
+ * @param {string} confirmText - Text for confirm button (default: 'Confirm')
+ * @param {string} confirmStyle - Button style (default: 'btn-primary')
+ */
+function showPreviewModal(title, bodyHtml, onConfirm, confirmText = 'Confirm', confirmStyle = 'btn-primary') {
+    const actions = `
+        <div class="modal-actions">
+            <button class="btn btn-secondary" onclick="closeModal(); pendingExecution = { type: null, payload: null, callback: null };">Cancel</button>
+            <button class="btn ${confirmStyle}" onclick="executePendingAction()">${confirmText}</button>
+        </div>
+    `;
+    const fullHtml = bodyHtml + actions;
+    openModal(title, fullHtml);
+}
+
+function executePendingAction() {
+    if (!pendingExecution.callback) {
+        closeModal();
+        return;
+    }
+    const cb = pendingExecution.callback;
+    pendingExecution = { type: null, payload: null, callback: null };
+    closeModal();
+    cb();
+}
+
+// ============================================================
+// 1. SWAP PREVIEW
+// ============================================================
+async function previewSwap() {
+    const readiness = getSwapReadiness();
+    if (!readiness.ready) {
+        let msg = 'Before reviewing: ' + ((readiness.missingFields && readiness.missingFields.length > 0) ? readiness.missingFields.join('; ') : readiness.reasons.join(', '));
+        showMessage(msg + '.', 'warning');
+        return;
+    }
+
+    if (state.swapSourceMode === 'VMCARD') {
+        await startVmCardSwap();
+        return;
+    }
+
+    const payload = buildPayload();
+    state.swapPayload = payload;
+    const btn = document.getElementById('reviewBtn');
+    const original = btn.innerHTML;
+    btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Calculating…';
+    const result = await callApi(CONFIG.PREVIEW_ENDPOINT, payload);
+    btn.disabled = false; btn.innerHTML = original;
+    refreshUI();
+    if (!result.ok) { showMessage('Preview failed: ' + friendlyApiError(result.error), 'error'); return; }
+    
+    const data = result.body.preview || {};
+    const swapType = payload.swap_type;
+    const netAmount = data.net_amount_destination_currency || data.net_amount;
+    const destCurrency = data.destination_currency || data.source_currency;
+    const swapTypeLabel = { DEPOSIT: 'Deposit', CASHOUT: 'Cashout', IDENTITY: 'To an identity', MULTI_SOURCE: 'Combined sources' }[swapType] || swapType.replace(/_/g, ' ');
+
+    const bodyHtml = `
+        <div class="review-hero">
+            <div class="review-hero-label">You'll receive</div>
+            <div class="review-hero-amount">${formatMoney(netAmount, destCurrency)}</div>
+            <div class="review-hero-note">Live quote — locked in for a few minutes</div>
+        </div>
+        <div class="preview-box">
+            <div class="preview-row"><span>Swap type</span><span class="value">${escapeHtml(swapTypeLabel)}</span></div>
+            <div class="preview-row"><span>From</span><span class="value">${escapeHtml(data.source_institution || '—')}</span></div>
+            <div class="preview-row"><span>To</span><span class="value">${escapeHtml(data.destination_institution || '—')}</span></div>
+            <div class="preview-row"><span>Amount</span><span class="value">${formatMoney(data.amount_requested, data.source_currency)}</span></div>
+            <div class="preview-row"><span>Fee</span><span class="value">${formatMoney(data.total_fee, data.source_currency)}</span></div>
+        </div>
+        <div class="preview-security">
+            <div class="preview-security-icon">🔒</div>
+            <div class="preview-security-text">
+                <strong>Your money is protected</strong>
+                <p>This swap is encrypted end-to-end and only moves once you tap Confirm below. Nothing happens until then.</p>
+            </div>
+        </div>
+        <div class="preview-reassure">Nothing is final until you confirm — you can still back out.</div>`;
+
+    pendingExecution = {
+        type: 'swap',
+        payload: { payload, previewData: result.body },
+        callback: () => confirmSwapExecution()
+    };
+    showPreviewModal('Review swap', bodyHtml, null, 'Confirm and swap');
+}
+
+async function confirmSwapExecution() {
+    const payload = state.swapPayload;
+    if (!payload) { showMessage('No swap payload to execute', 'error'); return; }
+    const btn = document.getElementById('reviewBtn');
+    const original = btn.innerHTML;
+    btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Executing…';
+    const result = await callApi(CONFIG.EXECUTE_ENDPOINT, payload);
+    btn.disabled = false; btn.innerHTML = original;
+    refreshUI();
+    if (!result.ok) { showMessage('Swap failed: ' + friendlyApiError(result.error), 'error'); return; }
+    const journeyData = Journey.recordSwap(payload, state.lastPreview);
+    renderRepeatCard(); renderProgressCard();
+    showResultModal(result.body, journeyData);
+}
+
+// ============================================================
+// 2. HOOK PREVIEW
+// ============================================================
+async function confirmHookBuilder() {
+    const valid = hookRows.length > 0 && hookRows.every(r => (r.locked || r.assetType) && r.amount && parseFloat(r.amount) > 0 && r.identifier && (r.locked || r.institution));
+    if (!valid) { showMessage('Fill in each source completely — institution, identifier, and amount — before hooking.', 'warning'); return; }
+
+    const sources = hookRows.map(r => ({
+        institution: r.institution || undefined,
+        asset_type: r.assetType,
+        identifier: r.identifier,
+        authorized_amount: parseFloat(r.amount),
+        pin: r.pin || undefined,
+        wallet_pin: r.pin || undefined,
+    }));
+
+    const totalAmount = sources.reduce((sum, s) => sum + s.authorized_amount, 0);
+    const currency = sources.length ? (PARTICIPANTS[sources[0].institution]?.limits?.currency || 'BWP') : 'BWP';
+    
+    const bodyHtml = `
+        <div class="review-hero">
+            <div class="review-hero-label">You're about to hook</div>
+            <div class="review-hero-amount">${formatMoney(totalAmount, currency)}</div>
+            <div class="review-hero-note">${sources.length} source${sources.length > 1 ? 's' : ''} will be hooked for 24 hours</div>
+        </div>
+        <div class="preview-box">
+            ${sources.map(s => `
+                <div class="preview-row">
+                    <span>${escapeHtml(PARTICIPANTS[s.institution]?.name || s.institution)}</span>
+                    <span class="value">${formatMoney(s.authorized_amount, currency)}</span>
+                </div>
+            `).join('')}
+            <div class="preview-row" style="border-bottom:none;font-weight:700;">
+                <span>Total held</span>
+                <span class="value highlight">${formatMoney(totalAmount, currency)}</span>
+            </div>
+        </div>
+        <div class="preview-reassure">These sources will be held for up to 24 hours. Nothing moves until you spend them.</div>`;
+
+    pendingExecution = {
+        type: 'hook',
+        payload: { sources, cardSuffix: hookEntry.targetCardSuffix },
+        callback: () => executeHook()
+    };
+    showPreviewModal('Preview hook', bodyHtml, null, 'Confirm hook');
+}
+
+async function executeHook() {
+    const { sources, cardSuffix } = pendingExecution.payload;
+    if (!sources || !cardSuffix) return;
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/hook.php', { card_suffix: cardSuffix, sources });
+    if (!result.ok) { showMessage('That hook didn\'t go through: ' + friendlyApiError(result.error), 'error'); return; }
+    showHookSuccess(sources.length);
+}
+
+// ============================================================
+// 3. UNHOOK PREVIEW
+// ============================================================
+function openUnhook(target) {
+    unhookTarget = target;
+    const bodyHtml = `
+        <div class="unhook-summary" style="border-color: var(--warning);">
+            <div class="icon">🔓</div>
+            <div style="font-size:16px; font-weight:700; margin-bottom:4px;">Release this hook?</div>
+            <div style="font-size:12px; color:var(--text-muted);">${target.count} source${target.count > 1 ? 's' : ''} · ${target.amount}</div>
+            <div style="font-size:11px; color:var(--warning); margin-top:8px;">This releases every source in this hook — all together, not one at a time.</div>
+        </div>
+        <div style="font-size:12px; color:var(--text-muted); margin-bottom:16px;">
+            Anything already spent (e.g. in a swap) can't be unhooked. Unhooked sources go back to being normal, spendable sources in your Toolbox.
+        </div>`;
+
+    pendingExecution = {
+        type: 'unhook',
+        payload: { hookReference: target.hookReference, cardSuffix: myCard?.card_suffix },
+        callback: () => executeUnhook()
+    };
+    showPreviewModal('Unhook preview', bodyHtml, null, 'Unhook everything', 'btn-danger');
+}
+
+async function executeUnhook() {
+    const { hookReference, cardSuffix } = pendingExecution.payload;
+    if (!hookReference) { goBack(); return; }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/unhook.php', { hook_reference: hookReference, card_suffix: cardSuffix });
+    if (!result.ok) { showMessage('Couldn\'t unhook: ' + friendlyApiError(result.error), 'error'); return; }
+    const data = result.body || {};
+    if (data.status === 'UNHOOK_PARTIAL') showMessage('Some sources released — others could not be released automatically and remain held. See Help for what to do next.', 'warning');
+    else showMessage('All hooked sources released. 🎉', 'success');
+    goBack();
+    loadCardView();
+}
+
+// ============================================================
+// 4. CLAIM PREVIEW
+// ============================================================
+async function submitClaim(swapReference) {
+    const pin = document.getElementById('claimPin').value.trim();
+    const destType = document.getElementById('claimDestType').value;
+    if (!pin) { showMessage('Enter your claim PIN.', 'warning'); return; }
+
+    const payload = { swap_reference: swapReference, pin, destination_type: destType };
+    let destInst = null, destIdentifier = null;
+
+    if (destType === 'DEPOSIT') {
+        destInst = document.getElementById('claimDestInst').value;
+        destIdentifier = document.getElementById('claimDestIdentifier').value.trim();
+        payload.destination_institution = destInst;
+        payload.destination_identifier = destIdentifier;
+        if (!destInst || !destIdentifier) { showMessage('Select a destination institution and enter an account/wallet number.', 'warning'); return; }
+    } else if (destType === 'HOOK') {
+        if (!claimHookCardSuffix) { showMessage('Choose which card to hook this to first.', 'warning'); return; }
+        payload.card_suffix = claimHookCardSuffix;
+    }
+
+    const claim = pendingClaims.find(c => c.swap_reference === swapReference);
+    const amount = claim?.amount || 0;
+    const currency = claim?.currency || 'BWP';
+    const sourceInst = claim?.source_institution || 'Unknown';
+
+    let destLabel = '';
+    if (destType === 'HOOK') {
+        destLabel = `Hook to ${claimHookCardLabel || '•••• ' + claimHookCardSuffix}`;
+    } else if (destType === 'DEPOSIT') {
+        destLabel = `Deposit to ${PARTICIPANTS[destInst]?.name || destInst} — ${destIdentifier}`;
+    } else {
+        destLabel = 'Cashout';
+    }
+
+    const bodyHtml = `
+        <div class="review-hero">
+            <div class="review-hero-label">You're claiming</div>
+            <div class="review-hero-amount">${formatMoney(amount, currency)}</div>
+            <div class="review-hero-note">From ${escapeHtml(sourceInst)}</div>
+        </div>
+        <div class="preview-box">
+            <div class="preview-row">
+                <span>Destination</span>
+                <span class="value">${escapeHtml(destLabel)}</span>
+            </div>
+        </div>
+        <div class="preview-reassure">This is final — confirm to complete the claim.</div>`;
+
+    pendingExecution = {
+        type: 'claim',
+        payload: payload,
+        callback: () => executeClaim()
+    };
+    showPreviewModal('Claim preview', bodyHtml, null, 'Confirm claim');
+}
+
+async function executeClaim() {
+    const payload = pendingExecution.payload;
+    if (!payload) return;
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/claim_identity.php', payload);
+    if (!result.ok) { showMessage('That claim didn\'t go through: ' + friendlyApiError(result.error), 'error'); return; }
+    checkPendingClaims();
+
+    if (payload.destination_type === 'HOOK') {
+        showMessage(`Claimed and hooked to ${claimHookCardLabel || 'the card'}. 🎉`, 'success');
+        claimHookCardSuffix = null; claimHookCardLabel = null; pendingClaimIdxForHook = null;
+        loadToolboxView();
+        return;
+    }
+
+    const bodyHtml = `
+        <div class="result-box" id="resultBoxRoot">
+            <div class="icon">✓</div>
+            <div class="result-title">Claim complete! 🎉</div>
+            <div class="result-sub">The money is now yours.</div>
+        </div>
+        <div class="cta-row" style="margin-top:16px;">
+            <button class="btn btn-primary" onclick="closeModal(); loadToolboxView();">Done</button>
+        </div>`;
+    openModal('Claim complete', bodyHtml);
+    setTimeout(() => fireConfetti(document.getElementById('resultBoxRoot')), 150);
+}
+
+// ============================================================
+// 5. ACTIVATE CARD PREVIEW
+// ============================================================
+async function confirmActivateCard(cardSuffix) {
+    const hasSource = !!(state.fromInst && state.fromAsset && fieldsValidForAsset(state.fromAsset, state.fromFields, true).valid);
+    if (!hasSource) { showMessage('Finish selecting the source — institution, asset type, and required fields.', 'warning'); return; }
+
+    const idField = (getAssetConfig(state.fromAsset)?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+    const identifier = idField ? state.fromFields[idField.name] : null;
+    const pin = extractPinFromFields(state.fromAsset, state.fromFields);
+    const instName = PARTICIPANTS[state.fromInst]?.name || state.fromInst;
+
+    const bodyHtml = `
+        <div class="review-hero">
+            <div class="review-hero-label">Activate your VouchMorph Card</div>
+            <div class="review-hero-amount">${formatMoney(myCard.activation_fee, myCard.currency)}</div>
+            <div class="review-hero-note">One-time fee</div>
+        </div>
+        <div class="preview-box">
+            <div class="preview-row">
+                <span>From</span>
+                <span class="value">${escapeHtml(instName)}</span>
+            </div>
+            <div class="preview-row" style="border-bottom:none;">
+                <span>Identifier</span>
+                <span class="value">${escapeHtml(identifier)}</span>
+            </div>
+        </div>
+        <div class="preview-reassure">This fee activates your card immediately.</div>`;
+
+    pendingExecution = {
+        type: 'activate',
+        payload: { cardSuffix, institution: state.fromInst, asset_type: state.fromAsset, identifier, pin },
+        callback: () => executeActivateCard()
+    };
+    showPreviewModal('Activation preview', bodyHtml, null, 'Pay and activate');
+}
+
+async function executeActivateCard() {
+    const payload = pendingExecution.payload;
+    if (!payload) return;
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/Activate.php', payload);
+    if (!result.ok) { showMessage('Activation didn\'t go through: ' + friendlyApiError(result.error), 'error'); return; }
+    showMessage('Card activated! 🎉', 'success');
+    loadCardView();
+}
+
+// ============================================================
+// 6. SWIPE (SESSION) PREVIEW
+// ============================================================
+function openSwipePreview(sessionId) {
+    const session = lastKnownSession;
+    const preview = session?.preview || {};
+    const contributors = preview.contributors || [];
+    const fee = preview.total_fee ?? preview.fee ?? null;
+    const rows = contributors.map(c => `
+        <div class="preview-row">
+            <span>${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)}</span>
+            <span class="value">${formatMoney(c.amount, session.currency)}</span>
+        </div>
+    `).join('');
+
+    const bodyHtml = `
+        <div class="review-hero">
+            <div class="review-hero-label">Total being paid</div>
+            <div class="review-hero-amount">${formatMoney(preview.total_target, session.currency)}</div>
+            ${fee !== null ? `<div class="review-hero-note muted">includes ${formatMoney(fee, session.currency)} VouchMorph fee</div>` : `<div class="review-hero-note muted">VouchMorph's fee, if any, applies the same way it does for Combine Sources</div>`}
+        </div>
+        <div class="preview-box">${rows || '<div style="font-size:12px;color:var(--text-dim);">Breakdown unavailable.</div>'}</div>
+        <div class="preview-reassure">This is the last step — swiping executes the swap immediately.</div>`;
+
+    pendingExecution = {
+        type: 'swipe',
+        payload: { sessionId },
+        callback: () => executeSwipe()
+    };
+    showPreviewModal('Ready to swipe', bodyHtml, null, 'Swipe');
+}
+
+async function executeSwipe() {
+    const { sessionId } = pendingExecution.payload;
+    if (!sessionId) return;
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/execute.php', { session_id: sessionId });
+    if (!result.ok) { showMessage('Execution didn\'t go through: ' + friendlyApiError(result.error), 'error'); return; }
+    stopSessionPolling();
+    showTransactionReport(result.body, lastKnownSession);
+}
+
+// ============================================================
+// 7. RESULT MODALS
+// ============================================================
+function showResultModal(response, journeyData) {
+    const data = response.data || {};
+    const swapType = state.swapPayload.swap_type;
+    const reference = response.swap_reference || data.reference || '—';
+    let inner = '';
+
+    if (swapType === 'CASHOUT') {
+        inner = `<div class="result-box" id="resultBoxRoot">
+            <div class="icon">✓</div>
+            <div class="result-title">Nice! Your cashout code is ready</div>
+            <div class="result-sub">Reference: ${escapeHtml(reference)}</div>
+            ${data.atm_code || data.voucher_number ? `<div class="atm-code"><div class="code">${escapeHtml(data.atm_code || data.voucher_number || '')}</div></div>` : ''}
+            <div style="margin-top:12px;"><div style="font-size:22px;font-weight:600;font-family:var(--font-mono);">${formatMoney(data.amount ?? state.swapPayload.amount, state.swapPayload.currency)}</div></div>
+        </div>`;
+    } else if (swapType === 'IDENTITY') {
+        const claimPinBox = data.claim_pin ? `<div class="atm-code" style="margin-top:12px;">
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Backup PIN — only share this if the recipient doesn't get the SMS</div>
+            <div class="code">${escapeHtml(data.claim_pin)}</div>
+        </div>` : '';
+        inner = `<div class="result-box" id="resultBoxRoot">
+            <div class="icon">✓</div>
+            <div class="result-title">Sent! They'll be notified now</div>
+            <div class="result-sub">Reference: ${escapeHtml(reference)}</div>
+            <div style="margin:12px 0;font-size:13px;"><strong>${escapeHtml(data.identity_type || state.swapPayload.identity_type)}: ${escapeHtml(data.identity_value || state.swapPayload.identity_value)}</strong></div>
+            <div style="font-size:22px;font-weight:600;font-family:var(--font-mono);">${formatMoney(data.amount ?? state.swapPayload.amount, data.currency || state.swapPayload.currency)}</div>${claimPinBox}
+        </div>`;
+    } else {
+        inner = `<div class="result-box" id="resultBoxRoot">
+            <div class="icon">✓</div>
+            <div class="result-title">Nice! Your money's on its way</div>
+            <div class="result-sub">Reference: ${escapeHtml(reference)}</div>
+            <div style="font-size:22px;font-weight:600;font-family:var(--font-mono);margin-top:12px;">${formatMoney(data.amount ?? state.swapPayload.amount, data.currency || data.destination_currency || state.swapPayload.destination_currency || state.swapPayload.currency)}</div>
+        </div>`;
+    }
+
+    const swapCount = journeyData?.swapsThisMonth || 1;
+    const statLine = swapCount > 1 
+        ? `<div class="result-stat">You've made ${swapCount} swaps this month. You've got the hang of this. 🎉</div>` 
+        : `<div class="result-stat">That's your swap — nicely done. It'll show up in Activity any time you want to check on it.</div>`;
+
+    const fullHtml = `${inner}${statLine}
+        <div class="cta-row" style="margin-top:16px;"><button class="btn btn-primary" onclick="closeModal(); resetSwapState(); goView('hub');">Done</button></div>
+        <div style="display:flex;justify-content:center;gap:20px;margin-top:12px;">
+            <button type="button" class="ledger-link" onclick="closeModal(); resetSwapState(); goView('activity');">View in Activity</button>
+            <button type="button" class="ledger-link" onclick="closeModal(); resetSwapState(); goView('swap');">Make another swap</button>
+        </div>`;
+
+    openModal('Swap result', fullHtml);
+    setTimeout(() => {
+        const root = document.getElementById('resultBoxRoot');
+        if (root) fireConfetti(root);
+    }, 150);
+}
+
+function showTransactionReport(response, session) {
+    const data = response.data || {};
+    const preview = session?.preview || {};
+    const contributors = preview.contributors || [];
+    const rows = contributors.map(c => `
+        <div class="preview-row">
+            <span>${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)} · ${escapeHtml(c.source_identifier || '')}</span>
+            <span class="value">${formatMoney(c.amount, session?.currency)}</span>
+        </div>
+    `).join('');
+
+    const bodyHtml = `
+        <div class="result-box" id="resultBoxRoot">
+            <div class="icon">✓</div>
+            <div class="result-title">Swipe complete</div>
+            <div class="result-sub">Reference: ${escapeHtml(data.reference || response.swap_reference || '—')}</div>
+            <div style="font-size:22px;font-weight:600;font-family:var(--font-mono);margin:12px 0;">${formatMoney(preview.total_target ?? data.amount, session?.currency)}</div>
+        </div>
+        <div class="myc-panel-title" style="margin-bottom:8px;">Paid using</div>
+        <div class="preview-box">${rows || '<div style="font-size:12px;color:var(--text-dim);">Breakdown unavailable.</div>'}</div>
+        <div class="cta-row" style="margin-top:16px;"><button class="btn btn-primary" onclick="closeModal(); loadCardView();">Done</button></div>`;
+
+    openModal('Transaction report', bodyHtml);
+    setTimeout(() => {
+        const root = document.getElementById('resultBoxRoot');
+        if (root) fireConfetti(root);
+    }, 150);
+}
+
+// ============================================================
+// HOOK SUCCESS
+// ============================================================
+function showHookSuccess(count) {
+    const cameFromLabel = hookEntry.source === 'source' ? 'My sources' : 'Card';
+    const cameFromAction = hookEntry.source === 'source' ? "goView('toolbox')" : "goView('card')";
+
+    document.getElementById('hookEyebrow').textContent = 'Done';
+    document.getElementById('hookViewTitle').textContent = 'Hooked!';
+    document.getElementById('hookEntryNote').textContent = '';
+    document.getElementById('hookModeRow').style.display = 'none';
+    document.getElementById('addHookRowBtn').style.display = 'none';
+    document.getElementById('hookSubmitBtn').style.display = 'none';
+    document.getElementById('hookFinePrint').style.display = 'none';
+    document.getElementById('hookRowsHolder').innerHTML = `
+        <div class="unhook-summary" style="border-color:var(--accent);">
+            <div style="font-size:36px;margin-bottom:8px;">✓</div>
+            <div style="font-size:16px;font-weight:700;color:var(--text);">${count} source${count > 1 ? 's' : ''} hooked for 24 hours</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-top:6px;">It's ready to use as a Swap source right away.</div>
+        </div>
+        <div class="cta-row" style="flex-direction:column;gap:10px;">
+            <button class="btn btn-primary" onclick="viewStack=['hub']; ${cameFromAction};">&larr; Back to ${cameFromLabel}</button>
+            <button class="btn secondary" onclick="goView('hub')">Go to Home</button>
+        </div>`;
+}
+
+// ============================================================
+// HELP / INFO
+// ============================================================
+const HOW_IT_WORKS = {
+    swap: {
+        title: 'How Swap works',
+        body: `<div style="font-size:13px;line-height:1.7;color:var(--text);">
+            <p style="margin-bottom:12px;">Pick a source (Wallet, Card, Voucher, or My Card), pick a destination, enter an amount, and review the fee before anything moves.</p>
+            <p style="margin-bottom:12px;"><strong>My Card</strong> draws from whatever's hooked to your VouchMorph Card instead of one single source — it splits automatically using Smart, Equal, Ratio, or Manual, the same as Combine sources.</p>
+            <p>Nothing is final until you tap Confirm on the review screen — you can back out any time before that.</p>
+        </div>`,
+    },
+    card: {
+        title: 'How the Card works',
+        body: `<div style="font-size:13px;line-height:1.7;color:var(--text);">
+            <p style="margin-bottom:12px;">Every account gets a VouchMorph Card automatically. It starts inactive — a small one-time fee from any linked source turns it on.</p>
+            <p style="margin-bottom:12px;">Once active, <strong>hook</strong> sources to it — accounts, wallets, cashout vouchers, or a claimed identity balance. Each hook holds that amount for up to 24 hours.</p>
+            <p style="margin-bottom:12px;">You can hook one source or several at once, and start from either side: the Card view's "Hook a source," or any source's "Hook to card" in Toolbox.</p>
+            <p>Anything hooked becomes spendable right away as a Swap source ("My Card"), and can be released early via Unhook if it hasn't been spent yet.</p>
+        </div>`,
+    },
+};
+function openHowItWorks(key) {
+    const info = HOW_IT_WORKS[key];
+    if (!info) return;
+    openModal(info.title, info.body);
+}
+function openHelpModal() {
+    openModal('Help', `<div style="font-size:13px;line-height:1.7;color:var(--text);">
+        <p style="font-weight:700;margin-bottom:6px;">Swapping money</p>
+        <ol style="padding-left:18px;margin-bottom:16px;"><li>From the hub, tap Swap.</li><li>Pick a source tile: Wallet, Card, Voucher, or My Card (draws from whatever's hooked to your VouchMorph Card).</li><li>Choose "Where's this going?" — Deposit, Cashout, or Identity.</li><li>Enter the amount, review the fee, and confirm. Nothing moves until you tap Confirm.</li></ol>
+        <p style="font-weight:700;margin-bottom:6px;">Swapping to an identity</p>
+        <ol style="padding-left:18px;margin-bottom:16px;"><li>Under "Where's this going?", tap Identity.</li><li>Enter their national ID, phone, or email.</li></ol>
+        <p style="font-weight:700;margin-bottom:6px;">Combining multiple sources</p>
+        <ol style="padding-left:18px;margin-bottom:16px;"><li>Tap the "Combine" tile alongside the other source options.</li><li>Type the total amount — "Smart" (recommended) balances it across your sources for you automatically.</li><li>Tap "Use these sources," then choose where it's going — Deposit, Cashout, or Identity — exactly like any other swap.</li></ol>
+        <p style="font-weight:700;margin-bottom:6px;">Your VouchMorph Card</p>
+        <ol style="padding-left:18px;margin-bottom:16px;"><li>From the hub, tap Card. Every account gets one automatically.</li><li>It starts inactive — activate it once with a small one-time fee from any linked source.</li><li>Hook one or many sources — from the Card view ("Hook a source"), or from any row in Toolbox → My sources ("Hook to card"). Each hooked source is held for up to 24 hours per its own authorized amount.</li><li>Once something is hooked, you can spend it directly: go to Swap and pick "My Card" as your source — it draws from everything hooked, using the same Smart/Equal/Ratio/Manual split as Combine sources.</li><li>Each hooked source shows an Unhook option if you want to release it before you spend it.</li></ol>
+        <p style="font-weight:700;margin-bottom:6px;">Claiming money sent to you</p>
+        <ol style="padding-left:18px;margin-bottom:16px;"><li>Toolbox → Finalize identity swap.</li><li>Enter your claim PIN and choose how to receive it.</li></ol>
+        <p style="font-weight:700;margin-bottom:6px;">Agent access</p>
+        <ol style="padding-left:18px;"><li>Agent access is granted by VouchMorph admin staff to your account.</li><li>Once granted, open Toolbox → Agent destinations to register a business account, then use Agent tools to search and finalize client claims.</li></ol>
+    </div>`);
+}
+function openTermsModal() {
+    openModal('Terms and conditions', `<div style="font-size:13px;line-height:1.7;color:var(--text);">
+        <p style="font-weight:700;margin-bottom:6px;">1. The service</p><p style="margin-bottom:14px;">VouchMorph facilitates transfers, cashouts, and identity-based payments between participating institutions on your instruction. We act as an intermediary; the underlying funds remain with the institutions holding your linked sources until a swap completes.</p>
+        <p style="font-weight:700;margin-bottom:6px;">2. Your responsibilities</p><p style="margin-bottom:14px;">You are responsible for keeping your PIN, claim codes, and linked source credentials confidential. VouchMorph staff will never ask for your PIN.</p>
+        <p style="font-weight:700;margin-bottom:6px;">3. Fees</p><p style="margin-bottom:14px;">Applicable fees are shown before you confirm any swap. Fees vary by swap type, delivery method, and destination institution.</p>
+        <p style="font-weight:700;margin-bottom:6px;">4. Identity swaps</p><p style="margin-bottom:14px;">Money sent to an identity (national ID, phone, email, etc.) is held for the recipient for a limited window and requires verification to claim.</p>
+        <p style="margin-top:16px;color:var(--danger);font-size:11px;font-weight:700;">⚠ Placeholder — replace with reviewed legal terms and a recorded consent flow before this goes live with real funds.</p>
+    </div>`);
+}
+
+// ============================================================
+// SWAP UI HELPERS (abridged - keep existing functions)
+// ============================================================
 function restoreSwapSourceUI() {
     if (state.swapSourceMode === 'COMBINE' && multiSourcesValid()) {
         ['Wallet', 'Card', 'Voucher', 'Vmcard', 'Combine'].forEach(suffix => document.getElementById('swapSrc' + suffix)?.classList.remove('active'));
@@ -1401,135 +1928,64 @@ function restoreSwapSourceUI() {
 }
 
 function setSwapSourceMode(mode) {
-    // COMBINE is entered/edited through its own builder modal, never by
-    // just toggling in place — there's real multi-row state to fill in
-    // first, so clicking the tile opens the builder instead of clearing
-    // straight to an empty combined state.
     if (mode === 'COMBINE') { openCombineSources(); return; }
-
     state.swapSourceMode = mode;
     ['Wallet', 'Card', 'Voucher', 'Vmcard', 'Combine'].forEach(suffix => document.getElementById('swapSrc' + suffix)?.classList.remove('active'));
     const idMap = { WALLET: 'swapSrcWallet', CARD: 'swapSrcCard', VOUCHER: 'swapSrcVoucher', VMCARD: 'swapSrcVmcard' };
-    document.getElementById(idMap[mode]).classList.add('active');
-
+    document.getElementById(idMap[mode])?.classList.add('active');
     const singleHolder = document.getElementById('swapSingleSourceHolder');
     const cardHolder = document.getElementById('swapCardSourceHolder');
     const combineHolder = document.getElementById('swapCombineSourceHolder');
-    combineHolder.style.display = 'none';
-
+    if (combineHolder) combineHolder.style.display = 'none';
     if (mode === 'VMCARD') {
-        singleHolder.style.display = 'none';
-        cardHolder.style.display = 'block';
+        if (singleHolder) singleHolder.style.display = 'none';
+        if (cardHolder) cardHolder.style.display = 'block';
         state.fromInst = null; state.fromAsset = null; state.fromFields = {};
         renderVmCardBreakdown();
     } else {
-        cardHolder.style.display = 'none';
-        singleHolder.style.display = 'block';
-        if (singleHolder.children.length === 0) singleHolder.appendChild(document.getElementById('fromSection'));
+        if (cardHolder) cardHolder.style.display = 'none';
+        if (singleHolder) { singleHolder.style.display = 'block'; if (singleHolder.children.length === 0) singleHolder.appendChild(document.getElementById('fromSection')); }
         state.fromCategory = mode;
         toggleSourcePanelInline(mode);
     }
     refreshUI();
 }
 
-// Renders the single-source picker inline in Swap (not a modal) —
-// same underlying state/logic as before, just always-visible now.
 function toggleSourcePanelInline(cat) {
-    document.getElementById('sourcePanelWrap').style.display = 'block';
+    const wrap = document.getElementById('sourcePanelWrap');
+    if (wrap) wrap.style.display = 'block';
     document.querySelectorAll('.source-type-btn').forEach(b => b.style.display = 'none');
     state.fromInst = null; state.fromAsset = null; state.fromFields = {};
     selectedSourceId = null;
     const fieldsBox = document.getElementById('fromFields');
-    fieldsBox.innerHTML = ''; fieldsBox.style.display = 'none';
+    if (fieldsBox) { fieldsBox.innerHTML = ''; fieldsBox.style.display = 'none'; }
     const helpEl = document.getElementById('sourceSelectedHelp');
     if (helpEl) helpEl.style.display = 'none';
-    document.getElementById('hookToCardEntryPoint')?.remove(); // clear any leftover trigger from the previous mode/source
+    document.getElementById('hookToCardEntryPoint')?.remove();
 
     const walletPanel = document.getElementById('walletPanel');
     const instAssetPanel = document.getElementById('instAssetPanel');
     if (cat === 'WALLET') {
-        walletPanel.style.display = 'block';
-        instAssetPanel.style.display = 'none';
+        if (walletPanel) walletPanel.style.display = 'block';
+        if (instAssetPanel) instAssetPanel.style.display = 'none';
         renderSavedSourceChips();
     } else {
-        walletPanel.style.display = 'none';
-        instAssetPanel.style.display = 'block';
+        if (walletPanel) walletPanel.style.display = 'none';
+        if (instAssetPanel) instAssetPanel.style.display = 'block';
         state.fromAsset = cat;
         populateInstitutionsForAsset(cat);
-        document.getElementById('fromInstSelect').value = '';
+        const sel = document.getElementById('fromInstSelect');
+        if (sel) sel.value = '';
     }
     updateCurrencyDisplay();
 }
 
-// ------------------------------------------------------------
-// VMCARD breakdown — mirrors renderTabBuilder()'s strategy row,
-// applied to myCard.hook.contributors instead of user-picked rows.
-// ------------------------------------------------------------
-async function renderVmCardBreakdown() {
-    const holder = document.getElementById('swapCardSourceHolder');
-    holder.innerHTML = `<div style="text-align:center;padding:16px 0;"><div class="spinner" style="border-color:rgba(16,30,27,0.15);border-top-color:var(--primary);"></div> Loading your card…</div>`;
-
-    if (!myCard) {
-        const result = await callApiGet(CONFIG.API_BASE + '/api/v1/cards/My.php');
-        if (!result.ok) {
-            holder.innerHTML = `<div class="tab-status-line bad">Couldn't load your card: ${escapeHtml(friendlyApiError(result.error))}</div>`;
-            return;
-        }
-        myCard = result.body.data;
-    }
-
-    if (!myCard.is_active) {
-        holder.innerHTML = `<div class="tab-status-line warn">Your VouchMorph Card isn't active yet. <span class="quick-link muted" style="text-decoration:underline;" onclick="goView('card')">Activate it →</span></div>`;
-        return;
-    }
-
-    // GetCardSources.php (not My.php's embedded "hook") is the real
-    // resolver for spending purposes — it aggregates every currently
-    // HOOKED source across ALL of this card's active hooks, capped by
-    // live balance. My.php only shows the single most-recently-created
-    // hook for display, which would under-count what's actually
-    // spendable if more than one hook is active at once.
-    const sourcesResult = await callApi(CONFIG.API_BASE + '/api/v1/cards/GetCardSources.php', { card_suffix: myCard.card_suffix });
-    if (!sourcesResult.ok) {
-        holder.innerHTML = `<div class="tab-status-line warn">${escapeHtml(friendlyApiError(sourcesResult.error))} <span class="quick-link muted" style="text-decoration:underline;" onclick="goView('card')">Hook a source →</span></div>`;
-        vmCardSources = null;
-        return;
-    }
-    const sources = sourcesResult.body.data?.sources || sourcesResult.body.data || [];
-    if (!sources.length) {
-        holder.innerHTML = `<div class="tab-status-line warn">Nothing is hooked to your card yet. <span class="quick-link muted" style="text-decoration:underline;" onclick="goView('card')">Hook a source →</span></div>`;
-        vmCardSources = null;
-        return;
-    }
-    vmCardSources = sources;
-
-    const currency = myCard.hook?.currency || myCard.currency;
-    const total = sources.reduce((s, c) => s + (c.available_balance ?? c.authorized_amount ?? 0), 0);
-    const rows = sources.map(c => `
-        <div class="card-source-breakdown-row">
-            <span>${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)} · ${escapeHtml(c.identifier)}</span>
-            <span style="font-family:var(--font-mono);font-weight:700;">${formatMoney(c.available_balance ?? c.authorized_amount, currency)}</span>
-        </div>`).join('');
-
-    holder.innerHTML = `
-        <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Drawing from everything hooked to your card, up to what's typed in "Swap ___ from" above — behaves exactly like Combine sources.</div>
-        <div class="strategy-row">
-            <button class="${state.vmCardStrategy==='SMART'?'active':''}" onclick="setVmCardStrategy('SMART')">Smart</button>
-            <button class="${state.vmCardStrategy==='EQUAL'?'active':''}" onclick="setVmCardStrategy('EQUAL')">Equal</button>
-            <button class="${state.vmCardStrategy==='RATIO'?'active':''}" onclick="setVmCardStrategy('RATIO')">Ratio</button>
-            <button class="${state.vmCardStrategy==='MANUAL'?'active':''}" onclick="setVmCardStrategy('MANUAL')">Manual</button>
-        </div>
-        <div class="card-source-breakdown">
-            ${rows}
-            <div class="card-source-breakdown-row" style="border-bottom:none;padding-top:10px;font-weight:700;">
-                <span>Max available to swap</span><span style="font-family:var(--font-mono);color:var(--accent);">${formatMoney(total, currency)}</span>
-            </div>
-        </div>`;
-}
-function setVmCardStrategy(s) { state.vmCardStrategy = s; renderVmCardBreakdown(); }
-
+// ============================================================
+// ABRIDGED FUNCTIONS (keep existing implementations)
+// ============================================================
 function populateInstitutionsForAsset(assetType) {
     const sel = document.getElementById('fromInstSelect');
+    if (!sel) return;
     const codes = Object.keys(PARTICIPANTS).filter(code => (PARTICIPANTS[code].asset_types || []).map(t => String(t).toUpperCase()).includes(assetType));
     if (codes.length === 0) { sel.innerHTML = `<option value="">No institutions support ${assetType.toLowerCase()} right now</option>`; return; }
     sel.innerHTML = '<option value="">Select institution</option>' + codes.map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('');
@@ -1539,36 +1995,36 @@ function selectFromInst(code) {
     state.fromInst = code || null;
     state.fromFields = {};
     const box = document.getElementById('fromFields');
+    if (!box) return;
     if (!code) { box.innerHTML = ''; box.style.display = 'none'; updateCurrencyDisplay(); refreshUI(); return; }
     const inst = PARTICIPANTS[code];
     if (!inst) { showMessage('Institution not found: ' + code, 'error'); return; }
-    document.getElementById('fromLimitsHelp').textContent = inst.limits ? `Limits: ${inst.limits.min_amount} – ${inst.limits.max_amount} ${inst.limits.currency}` : '';
+    const limitsEl = document.getElementById('fromLimitsHelp');
+    if (limitsEl) limitsEl.textContent = inst.limits ? `Limits: ${inst.limits.min_amount} – ${inst.limits.max_amount} ${inst.limits.currency}` : '';
     box.style.display = 'block';
     renderDynamicFields('fromFields', state.fromAsset, 'fromField_', updateFromField, true);
     updateCurrencyDisplay();
     refreshUI();
 }
+
 function updateFromField(name, value) {
     state.fromFields[name] = value;
     refreshUI();
-    // Card and Voucher sources are filled in manually (no saved-source
-    // step to hang the hook-trigger off), so it has to appear here
-    // instead, the moment the fields actually validate — matching the
-    // same "hook this source instead" moment Wallet gets after picking
-    // a saved source.
     if (['CARD', 'VOUCHER'].includes(state.swapSourceMode) && state.fromInst && state.fromAsset) {
         const existing = document.getElementById('hookToCardEntryPoint');
         const valid = fieldsValidForAsset(state.fromAsset, state.fromFields, true).valid;
-        if (valid && !existing) {
-            document.getElementById('fromFields')?.insertAdjacentHTML('afterend', `<div id="hookToCardEntryPoint" style="margin-top:8px;"><span class="quick-link muted" onclick="hookSelectedSourceToCard()">Hook this source to a card instead →</span></div>`);
+        const fieldsEl = document.getElementById('fromFields');
+        if (valid && !existing && fieldsEl) {
+            fieldsEl.insertAdjacentHTML('afterend', `<div id="hookToCardEntryPoint" style="margin-top:8px;"><span class="quick-link muted" onclick="hookSelectedSourceToCard()">Hook this source to a card instead →</span></div>`);
         } else if (!valid && existing) {
             existing.remove();
         }
     }
 }
-function assetHasAmountField(assetType) { return (getAssetConfig(assetType)?.fields || []).some(f => f.name === 'amount'); }
+
 function renderDynamicFields(containerId, assetType, prefix, onChange, includePin) {
     const container = document.getElementById(containerId);
+    if (!container) return;
     const config = getAssetConfig(assetType);
     if (!config) { container.innerHTML = `<div class="help" style="color:var(--danger);">This account type isn't supported yet.</div>`; return; }
     let fields = config.fields || [];
@@ -1591,9 +2047,10 @@ function renderDynamicFields(containerId, assetType, prefix, onChange, includePi
         return `<div class="field-group"><label>${f.label} ${f.required ? '*' : ''}</label><input type="${inputType}" id="${prefix}${f.name}" placeholder="${f.placeholder || ''}" ${attrs.join(' ')} oninput="window['${onChange.name}']('${f.name}', this.value)">${f.help_text ? `<div class="help">${f.help_text}</div>` : ''}</div>`;
     }).join('');
 }
+
 function fieldsValidForAsset(assetType, values, includePin) {
     const config = getAssetConfig(assetType);
-    if (!config) { console.warn('No config found for asset type:', assetType); return { valid: false, reason: 'not_supported', friendlyMessage: "That account type isn't supported yet." }; }
+    if (!config) return { valid: false, reason: 'not_supported', friendlyMessage: "That account type isn't supported yet." };
     let fields = config.fields || [];
     fields = fields.filter(f => f.name !== 'amount');
     fields = fields.filter(f => f.vault_field !== 'pin');
@@ -1619,40 +2076,43 @@ function fieldsValidForAsset(assetType, values, includePin) {
     if (!result) return { valid: false, field: failedField, reason: failedReason, friendlyMessage: friendlyFieldMessage(assetType, failedField, failedReason) };
     return { valid: true };
 }
+
 function extractPinFromFields(assetType, values) {
     const pinField = (getAssetConfig(assetType)?.fields || []).find(f => f.vault_field === 'pin');
     return pinField ? (values[pinField.name] || '') : '';
 }
-function amountWithinLimits(instCode, amount) {
-    const limits = PARTICIPANTS[instCode]?.limits;
-    if (!limits) return true;
-    return amount >= limits.min_amount && amount <= limits.max_amount;
-}
+
+function assetHasAmountField(assetType) { return (getAssetConfig(assetType)?.fields || []).some(f => f.name === 'amount'); }
+
 function selectToInst(code) {
     state.toInst = code || null; state.toAsset = null; state.toFields = {};
     if (state.swapType === 'DEPOSIT') {
         const sel = document.getElementById('toAssetSelect');
         const group = document.getElementById('toAssetSection');
-        if (!code) { group.style.display = 'none'; document.getElementById('toFields').style.display = 'none'; refreshUI(); return; }
+        if (!code) { if (group) group.style.display = 'none'; const fields = document.getElementById('toFields'); if (fields) fields.style.display = 'none'; refreshUI(); return; }
         const inst = PARTICIPANTS[code];
         if (!inst) { showMessage('Institution not found: ' + code, 'error'); return; }
         const assetTypes = inst.asset_types || [];
-        sel.innerHTML = '<option value="">Select asset type</option>' + assetTypes.map(t => `<option value="${t}">${getAssetConfig(t)?.label || t}</option>`).join('');
-        group.style.display = 'block';
-        if (assetTypes.length === 1) { sel.value = assetTypes[0]; selectToAsset(assetTypes[0]); } else { document.getElementById('toFields').style.display = 'none'; }
+        if (sel) { sel.innerHTML = '<option value="">Select asset type</option>' + assetTypes.map(t => `<option value="${t}">${getAssetConfig(t)?.label || t}</option>`).join(''); }
+        if (group) group.style.display = 'block';
+        if (assetTypes.length === 1) { if (sel) sel.value = assetTypes[0]; selectToAsset(assetTypes[0]); } else { const fields = document.getElementById('toFields'); if (fields) fields.style.display = 'none'; }
         updateCurrencyDisplay();
     }
     refreshUI();
 }
+
 function selectToAsset(type) {
     state.toAsset = type || null; state.toFields = {};
     const box = document.getElementById('toFields');
+    if (!box) return;
     if (!type) { box.style.display = 'none'; box.innerHTML = ''; refreshUI(); return; }
     box.style.display = 'block';
     renderDynamicFields('toFields', type, 'toField_', updateToField, false);
     refreshUI();
 }
+
 function updateToField(name, value) { state.toFields[name] = value; refreshUI(); }
+
 function setDeliveryMethod(method) {
     state.deliveryMethod = method;
     const help = document.getElementById('deliveryMethodHelp');
@@ -1684,6 +2144,7 @@ function setSwapType(type) {
     updateCurrencyDisplay();
     refreshUI();
 }
+
 function updateIdentityHelp() {
     const type = document.getElementById('identityType')?.value;
     const hint = document.getElementById('identityHint');
@@ -1692,363 +2153,71 @@ function updateIdentityHelp() {
     if (documentTypes.includes(type)) hint.textContent = `This is a physical document that can be verified by an agent in person. The recipient will also receive a notification and can claim via dashboard within 24 hours.`;
     else hint.textContent = `The recipient will be notified via ${type === 'phone' ? 'SMS' : 'email'} and can claim the funds within 24 hours.`;
 }
-// Combine Sources is purely a SOURCE-side alternative — same standing
-// as Wallet/Card/Voucher/My Card. It never touches destination at all;
-// once you confirm the source list, control returns to the ordinary
-// Swap "Where's this going?" step, same as every other source mode.
-function openCombineSources() {
-    if (state.multiSources.length === 0) { addMultiSourceRow(); addMultiSourceRow(); }
-    openTabBuilder();
+
+function setSwapDestCategory(cat) {
+    document.getElementById('destTypeDeposit')?.classList.toggle('active', cat === 'DEPOSIT');
+    document.getElementById('destTypeCashout')?.classList.toggle('active', cat === 'CASHOUT');
+    document.getElementById('destTypeIdentity')?.classList.toggle('active', cat === 'IDENTITY');
+    if (cat === 'IDENTITY') { openIdentitySendModal(); return; }
+    setSwapType(cat);
+    document.getElementById('destDetailRow').style.display = 'block';
+    openDestinationModal();
 }
 
-let multiSourceSeq = 0;
-function addMultiSourceRow() { state.multiSources.push({ id: ++multiSourceSeq, institution: null, assetType: null, fields: {}, amount: 0 }); updateMultiTotal(); refreshTabBuilderIfOpen(); refreshUI(); }
-function removeMultiSourceRow(id) { state.multiSources = state.multiSources.filter(s => s.id !== id); updateMultiTotal(); refreshTabBuilderIfOpen(); refreshUI(); }
-function setMultiSourceInst(id, code) { const src = state.multiSources.find(s => s.id === id); src.institution = code || null; src.assetType = null; src.fields = {}; updateMultiTotal(); refreshTabBuilderIfOpen(); }
-function setMultiSourceAsset(id, type) { const src = state.multiSources.find(s => s.id === id); src.assetType = type || null; src.fields = {}; updateMultiTotal(); refreshTabBuilderIfOpen(); }
-function setMultiSourceField(id, name, value) { state.multiSources.find(s => s.id === id).fields[name] = value; refreshUI(); }
-function setMultiSourceAmount(id, value) { state.multiSources.find(s => s.id === id).amount = parseFloat(value) || 0; updateMultiTotal(); refreshUI(); }
-function updateMultiTotal() {
-    const total = state.tabTotalAmount || state.multiSources.reduce((sum, s) => sum + (s.amount || 0), 0);
-    const cur = PARTICIPANTS[state.toInst]?.limits?.currency || null;
-    const el = document.getElementById('multiTotal');
-    if (el) el.textContent = formatMoney(total, cur);
-    updateSelectionChips();
-}
-function isFixedAssetType(assetType) { return ['VOUCHER', 'CASHOUT-VOUCHER'].includes(String(assetType).toUpperCase()); }
-function voucherTotalExceedsTarget() {
-    const voucherTotal = state.multiSources.filter(s => isFixedAssetType(s.assetType)).reduce((sum, s) => sum + (s.amount || 0), 0);
-    return state.tabTotalAmount > 0 && voucherTotal > state.tabTotalAmount + 0.01;
-}
-function fixVoucherOverflow() {
-    const voucherTotal = state.multiSources.filter(s => isFixedAssetType(s.assetType)).reduce((sum, s) => sum + (s.amount || 0), 0);
-    state.tabTotalAmount = voucherTotal;
-    if (state.contributionStrategy === 'EQUAL') autoSplitEven();
-    reopenTabBuilder();
-}
-function hasDuplicateInstitution() { const insts = state.multiSources.filter(s => s.institution).map(s => s.institution); return new Set(insts).size !== insts.length; }
-function buildUserAmountsPayload() { const amounts = {}; state.multiSources.forEach(s => { if (s.institution && !isFixedAssetType(s.assetType)) amounts[s.institution] = s.amount; }); return amounts; }
-function round2(n) { return Math.round(n * 100) / 100; }
-function setTabTotalAmount(value) {
-    state.tabTotalAmount = parseFloat(value) || 0;
-    // SMART is the default, recommended, first-listed strategy — its
-    // amount field is shown disabled (the whole point is "you don't
-    // need to touch this"), but without actually filling in a value,
-    // multiSourcesValid() would never pass and "Use these sources"
-    // would stay permanently disabled with no way for the person to
-    // fix it themselves. An even split is a safe client-side stand-in;
-    // the backend still does the real optimal balancing at execution
-    // time regardless of what's sent here.
-    if (state.contributionStrategy === 'EQUAL' || state.contributionStrategy === 'SMART') autoSplitEven();
-    if (state.contributionStrategy === 'RATIO') previewRatioSplit();
-    reopenTabBuilder();
-}
-function autoSplitEven() {
-    const rows = state.multiSources.filter(s => s.institution && !isFixedAssetType(s.assetType));
-    const voucherTotal = state.multiSources.filter(s => isFixedAssetType(s.assetType)).reduce((sum, s) => sum + (s.amount || 0), 0);
-    const toSplit = Math.max(0, state.tabTotalAmount - voucherTotal);
-    if (rows.length === 0) return;
-    const share = Math.floor((toSplit / rows.length) * 100) / 100;
-    let allocated = 0;
-    rows.forEach((s, i) => { s.amount = (i === rows.length - 1) ? round2(toSplit - allocated) : share; allocated += s.amount; });
-}
-function resetToEvenSplit() { state.contributionStrategy = 'EQUAL'; autoSplitEven(); reopenTabBuilder(); }
-function tabAllocatedTotal() { return round2(state.multiSources.reduce((sum, s) => sum + (s.amount || 0), 0)); }
-function tabRemaining() { return round2(state.tabTotalAmount - tabAllocatedTotal()); }
-function tabSourceAmountEdited(rowId, value) { state.contributionStrategy = 'USER_SPECIFIED'; setMultiSourceAmount(rowId, value); reopenTabBuilder(); }
-async function previewRatioSplit() {
-    const rows = state.multiSources.filter(s => s.institution && s.assetType && !isFixedAssetType(s.assetType));
-    if (rows.length === 0) return;
-    const balances = await Promise.all(rows.map(s => {
-        const idField = (getAssetConfig(s.assetType)?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
-        const identifier = idField ? s.fields[idField.name] : null;
-        return identifier ? fetchBalance(s.institution, identifier) : Promise.resolve({ success: false });
-    }));
-    const voucherTotal = state.multiSources.filter(s => isFixedAssetType(s.assetType)).reduce((sum, s) => sum + (s.amount || 0), 0);
-    const toSplit = Math.max(0, state.tabTotalAmount - voucherTotal);
-    const totalBalance = balances.reduce((sum, b) => sum + (b.success ? (b.data?.balance || 0) : 0), 0);
-    rows.forEach((s, i) => { const bal = balances[i].success ? (balances[i].data?.balance || 0) : 0; s.amount = totalBalance > 0 ? round2(toSplit * (bal / totalBalance)) : 0; s._estimated = true; });
-    reopenTabBuilder();
-}
-function setContributionStrategy(strategy) {
-    state.contributionStrategy = strategy;
-    // Same "don't leave amount at 0 under Smart" fix as setTabTotalAmount()
-    // above — needed here too since switching strategy re-triggers
-    // validation immediately, before the person types anything else.
-    if (strategy === 'EQUAL' || strategy === 'SMART') autoSplitEven();
-    if (strategy === 'RATIO') { previewRatioSplit(); return; }
-    reopenTabBuilder();
-}
-
-// Combine Sources builds ONLY the source list — total amount, strategy,
-// and the rows themselves. It never asks about destination at all;
-// confirming it hands off straight to the normal Swap "Where's this
-// going?" step, exactly like finishing any other source mode.
-function openTabBuilder() {
-    if (state.multiSources.length === 0) { addMultiSourceRow(); addMultiSourceRow(); }
+function openDestinationModal() {
+    if (state.swapType !== 'DEPOSIT' && state.swapType !== 'CASHOUT') setSwapType('DEPOSIT');
     returnMovableNodesHome();
     const modalBody = document.getElementById('modalBody');
-    modalBody.innerHTML = `<div id="tabBuilderGenerated"></div>`;
-    document.getElementById('modalTitle').textContent = 'Combine sources';
+    if (!modalBody) return;
+    modalBody.innerHTML = '';
+    modalBody.appendChild(document.getElementById('toSection'));
+    const btnRow = document.createElement('div');
+    btnRow.className = 'cta-row'; btnRow.style.marginTop = '20px';
+    btnRow.innerHTML = '<button type="button" class="btn btn-primary" onclick="confirmDestinationSelection()">Use this destination</button>';
+    modalBody.appendChild(btnRow);
+    document.getElementById('modalTitle').textContent = 'Select a destination';
     document.getElementById('modal').classList.add('active');
-    document.getElementById('tabBuilderGenerated').innerHTML = renderTabBuilder();
-    animateTabBuilderIn();
-}
-function reopenTabBuilder() {
-    const gen = document.getElementById('tabBuilderGenerated');
-    if (!gen) { openTabBuilder(); return; }
-    gen.innerHTML = renderTabBuilder();
-    updateMultiTotal();
-    animateTabBuilderIn();
 }
 
-// Validates the source list, marks Combine as the active source mode,
-// closes the builder, and returns control to the ordinary Swap screen —
-// the destination section lights up exactly as it does for any other
-// source, since nothing about "where's this going" was ever touched here.
-function confirmCombineSources() {
-    if (!multiSourcesValid()) { showMessage('Finish your combined sources first — see what\'s missing above.', 'warning'); return; }
-    state.swapSourceMode = 'COMBINE';
-    ['Wallet', 'Card', 'Voucher', 'Vmcard', 'Combine'].forEach(suffix => document.getElementById('swapSrc' + suffix)?.classList.remove('active'));
-    document.getElementById('swapSrcCombine')?.classList.add('active');
-    document.getElementById('swapSingleSourceHolder').style.display = 'none';
-    document.getElementById('swapCardSourceHolder').style.display = 'none';
-    renderCombineSourceSummary();
+function confirmDestinationSelection() {
+    if (!state.toInst) { showMessage('Select a destination institution first.', 'warning'); return; }
+    if (state.swapType === 'CASHOUT') {
+        const beneficiaryPhone = state.beneficiaryPhone || state.toFields?.phone || state.toFields?.recipient_phone;
+        if (!beneficiaryPhone) { showMessage('Enter the beneficiary phone number for cashout.', 'warning'); return; }
+    } else if (!state.toAsset || !fieldsValidForAsset(state.toAsset, state.toFields, false).valid) {
+        showMessage('Finish selecting the destination asset type and required fields.', 'warning'); return;
+    }
     closeModal();
-    showMessage('Sources combined — now pick where this goes.', 'success');
-}
-function renderCombineSourceSummary() {
-    const holder = document.getElementById('swapCombineSourceHolder');
-    if (!holder) return;
-    holder.style.display = 'block';
-    const total = state.tabTotalAmount || state.multiSources.reduce((s, r) => s + (r.amount || 0), 0);
-    const cur = getInstitutionCurrency(state.multiSources.find(s => s.institution)?.institution);
-    const rows = state.multiSources.filter(s => s.institution).map(s => `
-        <div class="card-source-breakdown-row">
-            <span>${escapeHtml(PARTICIPANTS[s.institution]?.name || s.institution)}</span>
-            <span style="font-family:var(--font-mono);font-weight:700;">${formatMoney(s.amount, cur)}</span>
-        </div>`).join('');
-    holder.innerHTML = `
-        <div class="card-source-breakdown">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-                <span style="font-size:11px;font-weight:700;text-transform:uppercase;color:var(--text-dim);">Combined — ${state.multiSources.filter(s=>s.institution).length} source(s)</span>
-                <button class="quick-link muted" onclick="openTabBuilder()">Edit &rsaquo;</button>
-            </div>
-            ${rows}
-            <div class="card-source-breakdown-row" style="border-bottom:none;padding-top:10px;font-weight:700;">
-                <span>Total</span><span style="font-family:var(--font-mono);color:var(--accent);">${formatMoney(total, cur)}</span>
-            </div>
-        </div>`;
-}
-function animateTabBuilderIn() {
-    const list = document.getElementById('tabSourceList');
-    if (list) { list.style.opacity = '0'; requestAnimationFrame(() => { list.style.opacity = '1'; }); }
-}
-function refreshTabBuilderIfOpen() { if (document.getElementById('tabBuilderGenerated')) reopenTabBuilder(); }
-function institutionInitials(code) {
-    const name = PARTICIPANTS[code]?.name || code || '';
-    const parts = name.trim().split(/\s+/).filter(Boolean);
-    if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
-    return name.slice(0, 2).toUpperCase() || '??';
 }
 
-function renderCircuitDiagram() {
-    const total = state.tabTotalAmount || state.multiSources.reduce((s, r) => s + (r.amount || 0), 0);
-    const maxAmt = Math.max(...state.multiSources.map(s => s.amount || 0), 1);
-    const n = state.multiSources.length || 1;
-    const hubX = 230, hubY = 60, hubW = 100, hubH = 90;
-    const chipX = 20, chipH = 26;
-    const destX = 420, destW = 46, destH = 36;
-    function layoutY(count, r0, r1) { const usable = r1 - r0; return Array.from({ length: count }, (_, i) => r0 + ((i + 0.5) * usable) / count); }
-    const srcYs = layoutY(n, 12, 228);
-    const pinYs = layoutY(n, hubY + 12, hubY + hubH - 12);
-    let html = '';
-    state.multiSources.forEach((s, i) => {
-        const has = !!s.institution;
-        const amt = s.amount || 0;
-        const w = has ? 34 + Math.round((amt / maxAmt) * 40) : 30;
-        const y = srcYs[i], pinY = pinYs[i], midX = 145 + i * 7;
-        if (has) html += `<path d="M${chipX + w},${y} H${midX} V${pinY} H${hubX}" fill="none" stroke="var(--border-strong)" stroke-width="1.5" opacity="0.75" stroke-dasharray="400" stroke-dashoffset="400" id="bcTrace${i}"><animate attributeName="stroke-dashoffset" from="400" to="0" dur="0.5s" begin="${i * 0.08}s" fill="freeze" /></path>`;
-        html += `<rect x="${hubX - 4}" y="${pinY - 2}" width="4" height="4" fill="var(--border-strong)" />`;
-    });
-    state.multiSources.forEach((s, i) => {
-        const has = !!s.institution;
-        const amt = s.amount || 0;
-        const w = has ? 34 + Math.round((amt / maxAmt) * 40) : 30;
-        const y = srcYs[i];
-        const pct = total > 0 ? amt / total : 0;
-        if (has) {
-            const label = institutionInitials(s.institution);
-            html += `
-                <rect x="${chipX}" y="${y - chipH / 2}" width="0" height="${chipH}" fill="var(--primary)"><animate attributeName="width" from="0" to="${w}" dur="0.35s" begin="${0.25 + i * 0.08}s" fill="freeze" /></rect>
-                <text x="${chipX + w / 2}" y="${y - 3}" text-anchor="middle" font-size="10" fill="var(--surface)" font-weight="700" font-family="var(--font-mono)">${escapeHtml(label)}</text>
-                <text x="${chipX + w / 2}" y="${y + 10}" text-anchor="middle" font-size="8" fill="var(--surface)" opacity="0.75">${amt.toFixed(0)}</text>
-                <rect x="${chipX}" y="${y + chipH / 2 + 3}" width="${w}" height="3" fill="var(--surface-muted)" />
-                <rect x="${chipX}" y="${y + chipH / 2 + 3}" width="0" height="3" fill="var(--primary)"><animate attributeName="width" from="0" to="${(w * pct).toFixed(1)}" dur="0.4s" begin="${0.5 + i * 0.08}s" fill="freeze" /></rect>
-                <rect width="5" height="5" fill="var(--primary)"><animateMotion dur="${1.6 + i * 0.3}s" repeatCount="indefinite" begin="${1 + i * 0.15}s"><mpath href="#bcTrace${i}" /></animateMotion></rect>`;
-        } else {
-            html += `<rect x="${chipX}" y="${y - chipH / 2}" width="${w}" height="${chipH}" fill="none" stroke="var(--border-strong)" stroke-width="1.5" stroke-dasharray="4 3" /><text x="${chipX + w / 2}" y="${y + 4}" text-anchor="middle" font-size="12" fill="var(--text-dim)">?</text>`;
-        }
-    });
-    html += `
-        <rect x="${hubX}" y="${hubY}" width="${hubW}" height="${hubH}" fill="var(--surface)" stroke="var(--border-strong)" stroke-width="1.5" />
-        <rect x="${hubX + 6}" y="${hubY + 6}" width="${hubW - 12}" height="2" fill="var(--border)"><animate attributeName="opacity" values="1;0.2;1" dur="2.2s" repeatCount="indefinite" /></rect>
-        <text x="${hubX + hubW / 2}" y="${hubY + hubH / 2 - 2}" text-anchor="middle" font-size="17" font-weight="700" fill="var(--text)" font-family="var(--font-mono)">${total.toFixed(0)}</text>
-        <text x="${hubX + hubW / 2}" y="${hubY + hubH / 2 + 15}" text-anchor="middle" font-size="8" fill="var(--text-dim)">total</text>`;
-    const hubPinY = hubY + hubH / 2;
-    let destLabel = null;
-    if (state.swapType === 'IDENTITY' && state.toIdentityValue) destLabel = maskIdentifier(state.toIdentityValue).replace(/[^A-Za-z0-9]/g, '').slice(0, 2).toUpperCase() || 'ID';
-    else if (state.swapType !== 'IDENTITY' && state.toInst) destLabel = institutionInitials(state.toInst);
-    if (destLabel) {
-        const midX = hubX + hubW + 60;
-        html += `
-            <rect x="${hubX + hubW}" y="${hubPinY - 2}" width="4" height="4" fill="var(--border-strong)" />
-            <path d="M${hubX + hubW},${hubPinY} H${midX} V${hubPinY} H${destX}" fill="none" stroke="var(--border-strong)" stroke-width="1.5" opacity="0.75" stroke-dasharray="260" stroke-dashoffset="260" id="bcDestTrace"><animate attributeName="stroke-dashoffset" from="260" to="0" dur="0.5s" fill="freeze" /></path>
-            <rect x="${destX}" y="${hubPinY - destH / 2}" width="${destW}" height="${destH}" fill="var(--primary)" />
-            <text x="${destX + destW / 2}" y="${hubPinY - 2}" text-anchor="middle" font-size="10" fill="var(--surface)" font-weight="700" font-family="var(--font-mono)">${escapeHtml(destLabel)}</text>
-            <text x="${destX + destW / 2}" y="${hubPinY + 12}" text-anchor="middle" font-size="7" fill="var(--surface)" opacity="0.75">dest</text>
-            <rect width="5" height="5" fill="var(--text-dim)"><animateMotion dur="1.3s" repeatCount="indefinite" begin="1.5s"><mpath href="#bcDestTrace" /></animateMotion></rect>`;
-    } else {
-        html += `<rect x="${destX}" y="${hubPinY - destH / 2}" width="${destW}" height="${destH}" fill="none" stroke="var(--border-strong)" stroke-width="1.5" stroke-dasharray="4 3" /><text x="${destX + destW / 2}" y="${hubPinY + 4}" text-anchor="middle" font-size="14" fill="var(--text-dim)">?</text>`;
+function openIdentitySendModal() {
+    setSwapType('IDENTITY');
+    returnMovableNodesHome();
+    const modalBody = document.getElementById('modalBody');
+    if (!modalBody) return;
+    modalBody.innerHTML = '';
+    const identityFieldsEl = document.getElementById('identityFields');
+    if (identityFieldsEl) {
+        modalBody.appendChild(identityFieldsEl);
+        identityFieldsEl.style.display = 'block';
     }
-    return `<svg width="100%" height="240" viewBox="0 0 480 240" style="margin-bottom:14px;overflow:visible;">${html}</svg>`;
+    const btnRow = document.createElement('div');
+    btnRow.className = 'cta-row'; btnRow.style.marginTop = '20px';
+    btnRow.innerHTML = '<button type="button" class="btn btn-primary" onclick="confirmIdentitySelection()">Use this identity</button>';
+    modalBody.appendChild(btnRow);
+    document.getElementById('modalTitle').textContent = 'Swap to identity';
+    document.getElementById('modal').classList.add('active');
 }
 
-function renderTabBuilder() {
-    const remaining = tabRemaining();
-    const strategy = state.contributionStrategy;
-    // Currency for allocation status lines comes from whichever
-    // sources are already picked — there's no destination institution
-    // to borrow it from anymore, since this builder never touches
-    // destination at all.
-    const cur = getInstitutionCurrency(state.multiSources.find(s => s.institution)?.institution) || '';
-    let statusHtml = '';
-    if (voucherTotalExceedsTarget()) {
-        statusHtml = `<div class="tab-status-line bad">Your voucher is bigger than the tab amount. <span class="quick-link muted" style="text-decoration:underline;" onclick="fixVoucherOverflow()">Fix it for me →</span></div>`;
-    } else if (strategy === 'USER_SPECIFIED' && state.tabTotalAmount > 0) {
-        if (remaining === 0) statusHtml = `<div class="tab-status-line ok">Fully allocated across ${state.multiSources.filter(s => s.institution).length} source(s)</div>`;
-        else statusHtml = `<div class="tab-status-line ${remaining > 0 ? 'warn' : 'bad'}">${remaining > 0 ? formatMoney(remaining, cur) + ' left to allocate' : 'Over by ' + formatMoney(Math.abs(remaining), cur)}</div>`;
-    } else if (strategy === 'RATIO') {
-        statusHtml = `<div class="tab-status-line warn">Estimated split — recalculated from live balances when you swap</div>`;
-    } else if (strategy === 'SMART') {
-        statusHtml = `<div class="tab-status-line ok">✓ You don't need to do anything — we'll balance this across your sources automatically</div>`;
-    }
-    if (hasDuplicateInstitution() && strategy === 'USER_SPECIFIED') statusHtml += `<div class="tab-status-line bad">Manual mode needs one source per institution — remove the duplicate</div>`;
-    const activeCount = state.multiSources.filter(s => s.institution && s.amount > 0).length;
-    const cards = state.multiSources.map((s, i) => renderTabSourceCard(s, i)).join('');
-    const isValid = multiSourcesValid();
-    return `
-        <div style="font-size:12px;color:var(--text-dim);text-align:center;margin-bottom:14px;">Build your combined sources here — where this lands is chosen back on the Swap screen once you're done.</div>
-        <div class="tab-hero">
-            <div class="tab-hero-label">Amount to swap</div>
-            <input type="number" step="0.01" class="tab-hero-input" value="${state.tabTotalAmount || ''}" placeholder="0.00" oninput="setTabTotalAmount(this.value)">
-            <div class="tab-hero-sub">${activeCount} source(s) added</div>
-        </div>
-        ${renderCircuitDiagram()}
-        <div class="tab-strategy-row">
-            <button class="quick-link ${strategy==='SMART'?'selected':''} recommended" onclick="setContributionStrategy('SMART')">Smart<span class="recommended-badge">Best</span></button>
-            <button class="quick-link ${strategy==='EQUAL'?'selected':''}" onclick="setContributionStrategy('EQUAL')">Equal</button>
-            <button class="quick-link ${strategy==='RATIO'?'selected':''}" onclick="setContributionStrategy('RATIO')">Ratio</button>
-            <button class="quick-link ${strategy==='USER_SPECIFIED'?'selected':''}" onclick="setContributionStrategy('USER_SPECIFIED')">Manual</button>
-        </div>
-        <div class="tab-strategy-hint">Not sure? Smart is recommended — we'll balance it for you.</div>
-        ${statusHtml}
-        <div id="tabSourceList" class="tab-source-list" style="opacity:0;">${cards}</div>
-        <button class="quick-link" style="width:100%;justify-content:center;padding:12px;margin-top:4px;" onclick="addMultiSourceRow(); reopenTabBuilder();">+ Add another source</button>
-        ${strategy === 'USER_SPECIFIED' ? `<button class="quick-link muted" style="width:100%;justify-content:center;padding:10px;margin-top:8px;">↻ <span onclick="resetToEvenSplit()">Reset to even split</span></button>` : ''}
-        <button class="btn btn-primary" style="margin-top:18px;" ${isValid ? '' : 'disabled'} onclick="confirmCombineSources()">${isValid ? `Use these ${activeCount} sources` : 'Finish adding sources'}</button>`;
-}
-
-function renderTabSourceCard(src, idx) {
-    if (!src.institution) {
-        return `<div class="tab-source-empty"><div style="font-size:12px;color:var(--text-dim);margin-bottom:8px;">Source ${idx + 1} — not set up yet</div><div class="quick-actions"><span class="quick-link" onclick="pickSavedSourceForTab(${src.id})">Use a saved source</span><span class="quick-link muted" onclick="tabSourceManual(${src.id}, 'ACCOUNT')">🏦 Account</span><span class="quick-link muted" onclick="tabSourceManual(${src.id}, 'CARD')">🪪 Card</span><span class="quick-link muted" onclick="tabSourceManual(${src.id}, 'VOUCHER')">🎟️ Voucher</span></div></div>`;
-    }
-    const instName = PARTICIPANTS[src.institution]?.name || src.institution;
-    const isFixed = isFixedAssetType(src.assetType);
-    const fieldsHtml = (getAssetConfig(src.assetType)?.fields || []).filter(f => f.name !== 'amount' && f.vault_field !== 'pin').map(f => `<div class="field-group" style="margin-top:8px;"><label>${f.label}</label><input value="${src.fields[f.name] || ''}" placeholder="${f.placeholder || ''}" oninput="setMultiSourceField(${src.id}, '${f.name}', this.value)"></div>`).join('');
-    const srcCurrency = PARTICIPANTS[src.institution]?.limits?.currency || '';
-    let amountHtml;
-    if (isFixed) amountHtml = `<div class="tab-fixed-note">Uses full voucher balance — not split (${formatMoney(src.amount || 0, srcCurrency)})</div>`;
-    else if (state.contributionStrategy === 'RATIO') amountHtml = `<div class="field-group" style="margin-top:8px;"><label>Estimated amount</label><input type="number" value="${src.amount || ''}" disabled style="background:var(--surface);color:var(--text-dim);"></div><div class="tab-estimated-note">Estimated from live balance — recalculated at execution time</div>`;
-    else if (state.contributionStrategy === 'SMART') amountHtml = `<div class="field-group" style="margin-top:8px;"><label>Amount</label><input type="number" value="${src.amount || ''}" disabled style="background:var(--surface);color:var(--text-dim);"></div><div class="tab-estimated-note">VouchMorph balances this automatically</div>`;
-    else amountHtml = `<div class="field-group" style="margin-top:8px;"><label>Amount from this source</label><input type="number" min="0.01" step="0.01" value="${src.amount || ''}" placeholder="0.00" oninput="tabSourceAmountEdited(${src.id}, this.value)"></div>`;
-    return `<div class="tab-source-card"><div style="display:flex;justify-content:space-between;align-items:center;"><div style="display:flex;align-items:center;gap:8px;"><span class="row-icon" style="font-size:16px;">${assetIcon(src.assetType)}</span><div><div style="font-weight:700;font-size:13px;">${escapeHtml(instName)}</div><div style="font-size:11px;color:var(--text-dim);">${escapeHtml(getAssetConfig(src.assetType)?.label || src.assetType || '')}</div></div></div>${state.multiSources.length > 2 ? `<button class="btn-danger-outline" onclick="removeMultiSourceRow(${src.id}); reopenTabBuilder();">Remove</button>` : ''}</div>${fieldsHtml}${amountHtml}</div>`;
-}
-function tabSourceManual(rowId, assetType) {
-    const eligible = Object.keys(PARTICIPANTS).filter(code => (PARTICIPANTS[code].asset_types || []).map(t => String(t).toUpperCase()).includes(assetType));
-    const options = eligible.map(c => `<option value="${c}">${PARTICIPANTS[c]?.name || c}</option>`).join('');
-    document.getElementById('tabBuilderGenerated').innerHTML = `<div style="font-weight:700;margin-bottom:10px;">Add a ${assetType.toLowerCase()} source</div><div class="field-group"><label>Institution</label><select id="tabPickInst"><option value="">Select</option>${options}</select></div><div class="cta-row"><button class="btn btn-secondary" onclick="reopenTabBuilder()">Cancel</button><button class="btn btn-primary" onclick="confirmTabSourceManual(${rowId}, '${assetType}')">Add</button></div>`;
-}
-function confirmTabSourceManual(rowId, assetType) {
-    const inst = document.getElementById('tabPickInst').value;
-    if (!inst) { showMessage('Select an institution.', 'warning'); return; }
-    if (state.contributionStrategy === 'USER_SPECIFIED' && state.multiSources.some(s => s.institution === inst)) { showMessage('Manual mode needs one source per institution — pick a different institution or switch strategy.', 'warning'); return; }
-    setMultiSourceInst(rowId, inst);
-    const src = state.multiSources.find(s => s.id === rowId);
-    src.assetType = assetType; src.fields = {};
-    reopenTabBuilder();
-}
-function pickSavedSourceForTab(rowId) {
-    const eligible = userSources.filter(s => s.status === 'active');
-    if (eligible.length === 0) { showMessage('No saved sources yet — add one from the toolbox first.', 'info'); return; }
-    const rows = eligible.map(s => `<div class="saved-source-row" onclick="applySavedSourceToTab(${rowId}, '${s.id}')"><div class="row-main"><div class="row-inst">${escapeHtml(PARTICIPANTS[s.institution]?.name || s.institution)}</div><div class="row-ident">${escapeHtml(s.identifier || '')}</div></div></div>`).join('');
-    document.getElementById('tabBuilderGenerated').innerHTML = `<div class="saved-source-list">${rows}</div><div class="cta-row" style="margin-top:14px;"><button class="btn btn-secondary" onclick="reopenTabBuilder()">Back</button></div>`;
-}
-function applySavedSourceToTab(rowId, sourceId) {
-    const source = userSources.find(s => s.id === sourceId);
-    if (!source) return;
-    if (state.contributionStrategy === 'USER_SPECIFIED' && state.multiSources.some(s => s.institution === source.institution)) { showMessage('Manual mode needs one source per institution — pick a different institution or switch strategy.', 'warning'); reopenTabBuilder(); return; }
-    setMultiSourceInst(rowId, source.institution);
-    const src = state.multiSources.find(s => s.id === rowId);
-    src.assetType = source.asset_type; src.fields = {};
-    const idField = (getAssetConfig(source.asset_type)?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
-    if (idField) src.fields[idField.name] = source.identifier;
-    reopenTabBuilder();
-}
-function openTabInvite() {
-    document.getElementById('tabBuilderGenerated').innerHTML = `<div style="text-align:center;padding:20px 10px;"><div style="font-weight:700;font-size:15px;margin:8px 0 4px;">Split this tab</div><div style="font-size:12px;color:var(--text-muted);max-width:320px;margin:0 auto 16px;">Soon you'll be able to share a code with friends — they hook their own account, wallet, card, or voucher onto this exact tab, and one swipe covers the whole bill.</div><div style="font-size:11px;color:var(--text-dim);">Not available in this build yet.</div></div><div class="cta-row"><button class="btn btn-primary" onclick="reopenTabBuilder()">Back to my tab</button></div>`;
-}
-
-function multiSourcesValid() {
-    const activeRows = state.multiSources.filter(s => s.institution);
-    if (activeRows.length < 2) return false;
-    if (voucherTotalExceedsTarget()) return false;
-    if (state.contributionStrategy === 'USER_SPECIFIED') {
-        if (state.tabTotalAmount > 0 && Math.abs(tabRemaining()) > 0.01) return false;
-        if (hasDuplicateInstitution()) return false;
-    }
-    return activeRows.every(s => { if (!s.assetType || !(s.amount > 0)) return false; return fieldsValidForAsset(s.assetType, s.fields, true); });
-}
-
-function destinationReadiness() {
-    const reasons = [];
-    if (state.swapType === 'IDENTITY') {
-        if (!state.toIdentityValue) reasons.push('enter the identity value to swap to');
-    } else if (state.swapType === 'CASHOUT') {
-        if (!state.toInst) reasons.push('select a destination institution for the cashout');
-        else if (state.toAsset) {
-            const validation = fieldsValidForAsset(state.toAsset, state.toFields, false);
-            if (!validation.valid) reasons.push('fill in the required destination fields');
-        }
-    } else {
-        if (!state.toInst) reasons.push('select a destination institution');
-        else if (!state.toAsset) reasons.push('select a destination asset type');
-        else { const validation = fieldsValidForAsset(state.toAsset, state.toFields, false); if (!validation.valid) reasons.push('fill in the required destination fields'); }
-    }
-    return reasons;
+function confirmIdentitySelection() {
+    if (!state.toIdentityValue) { showMessage('Enter the identity value to swap to.', 'warning'); return; }
+    closeModal();
 }
 
 function getSwapReadiness() {
     const reasons = [];
     const missingFields = [];
 
-    // ------------------------------------------------------------
-    // "My Card" source mode — needs an active card with at least
-    // one hooked contributor, plus a normal destination. This is
-    // the newest source path, so it gets its own explicit branch
-    // rather than being squeezed into the MULTI_SOURCE checks
-    // below, which assume state.multiSources (manually-picked rows).
-    // ------------------------------------------------------------
     if (state.swapSourceMode === 'VMCARD') {
         if (!myCard) reasons.push('load your VouchMorph Card first');
         else if (!myCard.is_active) reasons.push('activate your VouchMorph Card first');
@@ -2111,9 +2280,24 @@ function getSwapReadiness() {
     return { ready: reasons.length === 0, reasons, missingFields };
 }
 
-// Whether the SOURCE half of the swap is satisfied, independent of
-// destination — used to visually "light up" the destination section
-// as the obvious next step once it's actually relevant to fill in.
+function destinationReadiness() {
+    const reasons = [];
+    if (state.swapType === 'IDENTITY') {
+        if (!state.toIdentityValue) reasons.push('enter the identity value to swap to');
+    } else if (state.swapType === 'CASHOUT') {
+        if (!state.toInst) reasons.push('select a destination institution for the cashout');
+        else if (state.toAsset) {
+            const validation = fieldsValidForAsset(state.toAsset, state.toFields, false);
+            if (!validation.valid) reasons.push('fill in the required destination fields');
+        }
+    } else {
+        if (!state.toInst) reasons.push('select a destination institution');
+        else if (!state.toAsset) reasons.push('select a destination asset type');
+        else { const validation = fieldsValidForAsset(state.toAsset, state.toFields, false); if (!validation.valid) reasons.push('fill in the required destination fields'); }
+    }
+    return reasons;
+}
+
 function sourceReadyForCurrentMode() {
     if (state.swapSourceMode === 'VMCARD') {
         return !!(myCard && myCard.is_active && vmCardSources && vmCardSources.length > 0 && state.fromAmount > 0);
@@ -2127,31 +2311,17 @@ function sourceReadyForCurrentMode() {
     return fieldsValidForAsset(state.fromAsset, state.fromFields, true).valid;
 }
 
-// Three equally-weighted destination categories — Deposit and Cashout
-// still open the existing institution/asset picker modal; Identity
-// skips straight to the identity modal since it needs different
-// fields entirely, not an institution at all.
-function setSwapDestCategory(cat) {
-    document.getElementById('destTypeDeposit')?.classList.toggle('active', cat === 'DEPOSIT');
-    document.getElementById('destTypeCashout')?.classList.toggle('active', cat === 'CASHOUT');
-    document.getElementById('destTypeIdentity')?.classList.toggle('active', cat === 'IDENTITY');
-    if (cat === 'IDENTITY') { openIdentitySendModal(); return; }
-    setSwapType(cat);
-    document.getElementById('destDetailRow').style.display = 'block';
-    openDestinationModal();
+function amountWithinLimits(instCode, amount) {
+    const limits = PARTICIPANTS[instCode]?.limits;
+    if (!limits) return true;
+    return amount >= limits.min_amount && amount <= limits.max_amount;
 }
 
 function refreshUI() {
     const readiness = getSwapReadiness();
-    const btn = document.getElementById('reviewBtn');
-    if (btn) btn.disabled = false;
     const hint = document.getElementById('swapReadinessHint');
     if (hint) {
         if (readiness.ready) {
-            // Every other step in the journey tells you what's next —
-            // the final one shouldn't just go quiet. A short positive
-            // confirmation closes the loop: source done, destination
-            // done, here's the actual next tap.
             hint.textContent = "You're all set — tap Review swap below.";
             hint.className = 'show success'; hint.style.display = 'block';
         } else {
@@ -2164,6 +2334,7 @@ function refreshUI() {
     updateToolboxBadge();
     updateSelectionChips();
 }
+
 function updateSelectionChips() {
     const destEl = document.getElementById('destRowText');
     const destIcon = document.getElementById('destRowIcon');
@@ -2179,14 +2350,19 @@ function updateSelectionChips() {
     }
 }
 
+function updateCurrencyDisplay() {
+    const fromCurrency = state.swapSourceMode === 'VMCARD' ? (myCard?.hook?.currency || myCard?.currency) : getInstitutionCurrency(state.fromInst);
+    const fromLabel = document.getElementById('fromCurrencyLabel');
+    if (fromLabel) fromLabel.textContent = fromCurrency || '';
+    const preview = document.getElementById('amountPreview');
+    if (preview) preview.textContent = formatMoney(state.fromAmount, fromCurrency);
+}
+
+function getInstitutionCurrency(instCode) { if (!instCode) return null; return PARTICIPANTS[instCode]?.limits?.currency || null; }
+
 function buildPayload() {
     const reference = 'SWAP_' + Date.now();
     const idempotencyKey = 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-
-    // Note: "My Card" (VMCARD) never reaches buildPayload() — it's
-    // handled entirely by startVmCardSwap(), which creates a real
-    // contribution session (cards/Create.php) instead of a normal swap
-    // payload. See the comment above previewSwap() for why.
 
     if (state.swapSourceMode === 'COMBINE') {
         const activeRows = state.multiSources.filter(s => s.institution && s.assetType);
@@ -2290,52 +2466,77 @@ function buildPayload() {
     return payload;
 }
 
-async function previewSwap() {
-    const readiness = getSwapReadiness();
-    if (!readiness.ready) {
-        let msg = 'Before reviewing: ' + ((readiness.missingFields && readiness.missingFields.length > 0) ? readiness.missingFields.join('; ') : readiness.reasons.join(', '));
-        showMessage(msg + '.', 'warning');
-        return;
-    }
-    // ------------------------------------------------------------
-    // "My Card" is not a normal preview → confirm → execute swap.
-    // Verified against the real backend (PoolCoordinator::executeFromCardHook,
-    // called only by CardContributionSessionService): swapping from a
-    // card's hooked sources always goes through a CONTRIBUTION SESSION —
-    // Create.php → (Contribute.php for Manual) → execute.php — the same
-    // mechanism as the Card page's "Start a swap" button. There is no
-    // separate one-shot "swap now from card" endpoint, so this delegates
-    // to that real, already-working flow instead of a fictional preview.
-    // ------------------------------------------------------------
-    if (state.swapSourceMode === 'VMCARD') {
-        await startVmCardSwap();
-        return;
-    }
-    const payload = buildPayload();
-    state.swapPayload = payload;
-    const btn = document.getElementById('reviewBtn');
-    const original = btn.innerHTML;
-    btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Calculating…';
-    const result = await callApi(CONFIG.PREVIEW_ENDPOINT, payload);
-    btn.disabled = false; btn.innerHTML = original;
-    refreshUI();
-    if (!result.ok) { showMessage('Preview failed: ' + friendlyApiError(result.error), 'error'); return; }
-    showPreviewModal(result.body);
+function resetSwapState() {
+    state.fromAmount = 0; state.fromInst = null; state.fromAsset = null; state.fromFields = {};
+    state.toInst = null; state.toAsset = null; state.toFields = {};
+    state.toIdentityValue = ''; state.toIdentitySms = '';
+    state.multiSources = []; state.tabTotalAmount = 0; state.contributionStrategy = 'SMART';
+    state.swapSourceMode = 'WALLET'; state.swapType = 'DEPOSIT';
+    const amountField = document.getElementById('fromAmount');
+    if (amountField) amountField.value = '';
+    document.getElementById('destDetailRow').style.display = 'none';
+    document.getElementById('destTypeDeposit')?.classList.remove('active');
+    document.getElementById('destTypeCashout')?.classList.remove('active');
+    document.getElementById('destTypeIdentity')?.classList.remove('active');
 }
 
-// Builds a contribution session (Create.php) from what's already filled
-// in on the Swap screen, then jumps to the Card view where the existing
-// renderSessionStatus()/startSessionPolling() UI (built earlier against
-// the real API) tracks it through OPEN → READY → EXECUTING → COMPLETED.
-//
-// Payload verified directly against the real Create.php source: it
-// requires card_suffix, target_amount, currency, strategy, plus EITHER
-// (identity_type + identity_value, optional beneficiary_phone) OR
-// (to_institution + destination_identifier, with destination_asset_type/
-// destination_identifier_type/delivery_method defaulting server-side to
-// 'WALLET'/'account'/'DEPOSIT' if omitted — but a real Cashout needs
-// delivery_method explicitly set, or it would silently default to a
-// deposit instead).
+// ============================================================
+// VMCARD / COMBINE HELPERS (abridged)
+// ============================================================
+async function renderVmCardBreakdown() {
+    const holder = document.getElementById('swapCardSourceHolder');
+    if (!holder) return;
+    holder.innerHTML = `<div style="text-align:center;padding:16px 0;"><div class="spinner" style="border-color:rgba(16,30,27,0.15);border-top-color:var(--primary);"></div> Loading your card…</div>`;
+    if (!myCard) {
+        const result = await callApiGet(CONFIG.API_BASE + '/api/v1/cards/My.php');
+        if (!result.ok) {
+            holder.innerHTML = `<div class="tab-status-line bad">Couldn't load your card: ${escapeHtml(friendlyApiError(result.error))}</div>`;
+            return;
+        }
+        myCard = result.body.data;
+    }
+    if (!myCard.is_active) {
+        holder.innerHTML = `<div class="tab-status-line warn">Your VouchMorph Card isn't active yet. <span class="quick-link muted" style="text-decoration:underline;" onclick="goView('card')">Activate it →</span></div>`;
+        return;
+    }
+    const sourcesResult = await callApi(CONFIG.API_BASE + '/api/v1/cards/GetCardSources.php', { card_suffix: myCard.card_suffix });
+    if (!sourcesResult.ok) {
+        holder.innerHTML = `<div class="tab-status-line warn">${escapeHtml(friendlyApiError(sourcesResult.error))} <span class="quick-link muted" style="text-decoration:underline;" onclick="goView('card')">Hook a source →</span></div>`;
+        vmCardSources = null;
+        return;
+    }
+    const sources = sourcesResult.body.data?.sources || sourcesResult.body.data || [];
+    if (!sources.length) {
+        holder.innerHTML = `<div class="tab-status-line warn">Nothing is hooked to your card yet. <span class="quick-link muted" style="text-decoration:underline;" onclick="goView('card')">Hook a source →</span></div>`;
+        vmCardSources = null;
+        return;
+    }
+    vmCardSources = sources;
+    const currency = myCard.hook?.currency || myCard.currency;
+    const total = sources.reduce((s, c) => s + (c.available_balance ?? c.authorized_amount ?? 0), 0);
+    const rows = sources.map(c => `
+        <div class="card-source-breakdown-row">
+            <span>${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)} · ${escapeHtml(c.identifier)}</span>
+            <span style="font-family:var(--font-mono);font-weight:700;">${formatMoney(c.available_balance ?? c.authorized_amount, currency)}</span>
+        </div>`).join('');
+    holder.innerHTML = `
+        <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Drawing from everything hooked to your card, up to what's typed in "Swap ___ from" above — behaves exactly like Combine sources.</div>
+        <div class="strategy-row">
+            <button class="${state.vmCardStrategy==='SMART'?'active':''}" onclick="setVmCardStrategy('SMART')">Smart</button>
+            <button class="${state.vmCardStrategy==='EQUAL'?'active':''}" onclick="setVmCardStrategy('EQUAL')">Equal</button>
+            <button class="${state.vmCardStrategy==='RATIO'?'active':''}" onclick="setVmCardStrategy('RATIO')">Ratio</button>
+            <button class="${state.vmCardStrategy==='MANUAL'?'active':''}" onclick="setVmCardStrategy('MANUAL')">Manual</button>
+        </div>
+        <div class="card-source-breakdown">
+            ${rows}
+            <div class="card-source-breakdown-row" style="border-bottom:none;padding-top:10px;font-weight:700;">
+                <span>Max available to swap</span><span style="font-family:var(--font-mono);color:var(--accent);">${formatMoney(total, currency)}</span>
+            </div>
+        </div>`;
+}
+
+function setVmCardStrategy(s) { state.vmCardStrategy = s; renderVmCardBreakdown(); }
+
 async function startVmCardSwap() {
     const btn = document.getElementById('reviewBtn');
     const original = btn.innerHTML;
@@ -2374,225 +2575,346 @@ async function startVmCardSwap() {
     resetSwapState();
     goView('card');
 }
-function showPreviewModal(previewData) {
-    const data = previewData.preview || {};
-    const swapType = state.swapPayload.swap_type;
-    const netAmount = data.net_amount_destination_currency || data.net_amount;
-    const destCurrency = data.destination_currency || data.source_currency;
-    const swapTypeLabel = { DEPOSIT: 'Deposit', CASHOUT: 'Cashout', IDENTITY: 'To an identity', MULTI_SOURCE: 'Combined sources' }[swapType] || swapType.replace(/_/g, ' ');
-    const bodyHtml = `
-        <div class="review-hero"><div class="review-hero-label">You'll receive</div><div class="review-hero-amount">${formatMoney(netAmount, destCurrency)}</div><div class="review-hero-note">Live quote — locked in for a few minutes</div></div>
-        <div class="preview-box">
-            <div class="preview-row"><span>Swap type</span><span class="value">${escapeHtml(swapTypeLabel)}</span></div>
-            <div class="preview-row"><span>From</span><span class="value">${escapeHtml(data.source_institution || '—')}</span></div>
-            <div class="preview-row"><span>To</span><span class="value">${escapeHtml(data.destination_institution || '—')}</span></div>
-            <div class="preview-row"><span>Amount</span><span class="value">${formatMoney(data.amount_requested, data.source_currency)}</span></div>
-            <div class="preview-row"><span>Fee</span><span class="value">${formatMoney(data.total_fee, data.source_currency)}</span></div>
+
+// ============================================================
+// COMBINE SOURCES HELPERS (abridged)
+// ============================================================
+let multiSourceSeq = 0;
+
+function openCombineSources() {
+    if (state.multiSources.length === 0) { addMultiSourceRow(); addMultiSourceRow(); }
+    openTabBuilder();
+}
+
+function addMultiSourceRow() { state.multiSources.push({ id: ++multiSourceSeq, institution: null, assetType: null, fields: {}, amount: 0 }); updateMultiTotal(); refreshTabBuilderIfOpen(); refreshUI(); }
+
+function removeMultiSourceRow(id) { state.multiSources = state.multiSources.filter(s => s.id !== id); updateMultiTotal(); refreshTabBuilderIfOpen(); refreshUI(); }
+
+function setMultiSourceInst(id, code) { const src = state.multiSources.find(s => s.id === id); src.institution = code || null; src.assetType = null; src.fields = {}; updateMultiTotal(); refreshTabBuilderIfOpen(); }
+
+function setMultiSourceAsset(id, type) { const src = state.multiSources.find(s => s.id === id); src.assetType = type || null; src.fields = {}; updateMultiTotal(); refreshTabBuilderIfOpen(); }
+
+function setMultiSourceField(id, name, value) { state.multiSources.find(s => s.id === id).fields[name] = value; refreshUI(); }
+
+function setMultiSourceAmount(id, value) { state.multiSources.find(s => s.id === id).amount = parseFloat(value) || 0; updateMultiTotal(); refreshUI(); }
+
+function updateMultiTotal() {
+    const total = state.tabTotalAmount || state.multiSources.reduce((sum, s) => sum + (s.amount || 0), 0);
+    const cur = PARTICIPANTS[state.toInst]?.limits?.currency || null;
+    const el = document.getElementById('multiTotal');
+    if (el) el.textContent = formatMoney(total, cur);
+    updateSelectionChips();
+}
+
+function isFixedAssetType(assetType) { return ['VOUCHER', 'CASHOUT-VOUCHER'].includes(String(assetType).toUpperCase()); }
+
+function voucherTotalExceedsTarget() {
+    const voucherTotal = state.multiSources.filter(s => isFixedAssetType(s.assetType)).reduce((sum, s) => sum + (s.amount || 0), 0);
+    return state.tabTotalAmount > 0 && voucherTotal > state.tabTotalAmount + 0.01;
+}
+
+function fixVoucherOverflow() {
+    const voucherTotal = state.multiSources.filter(s => isFixedAssetType(s.assetType)).reduce((sum, s) => sum + (s.amount || 0), 0);
+    state.tabTotalAmount = voucherTotal;
+    if (state.contributionStrategy === 'EQUAL') autoSplitEven();
+    reopenTabBuilder();
+}
+
+function hasDuplicateInstitution() { const insts = state.multiSources.filter(s => s.institution).map(s => s.institution); return new Set(insts).size !== insts.length; }
+
+function buildUserAmountsPayload() { const amounts = {}; state.multiSources.forEach(s => { if (s.institution && !isFixedAssetType(s.assetType)) amounts[s.institution] = s.amount; }); return amounts; }
+
+function round2(n) { return Math.round(n * 100) / 100; }
+
+function setTabTotalAmount(value) {
+    state.tabTotalAmount = parseFloat(value) || 0;
+    if (state.contributionStrategy === 'EQUAL' || state.contributionStrategy === 'SMART') autoSplitEven();
+    if (state.contributionStrategy === 'RATIO') previewRatioSplit();
+    reopenTabBuilder();
+}
+
+function autoSplitEven() {
+    const rows = state.multiSources.filter(s => s.institution && !isFixedAssetType(s.assetType));
+    const voucherTotal = state.multiSources.filter(s => isFixedAssetType(s.assetType)).reduce((sum, s) => sum + (s.amount || 0), 0);
+    const toSplit = Math.max(0, state.tabTotalAmount - voucherTotal);
+    if (rows.length === 0) return;
+    const share = Math.floor((toSplit / rows.length) * 100) / 100;
+    let allocated = 0;
+    rows.forEach((s, i) => { s.amount = (i === rows.length - 1) ? round2(toSplit - allocated) : share; allocated += s.amount; });
+}
+
+function resetToEvenSplit() { state.contributionStrategy = 'EQUAL'; autoSplitEven(); reopenTabBuilder(); }
+
+function tabAllocatedTotal() { return round2(state.multiSources.reduce((sum, s) => sum + (s.amount || 0), 0)); }
+
+function tabRemaining() { return round2(state.tabTotalAmount - tabAllocatedTotal()); }
+
+function tabSourceAmountEdited(rowId, value) { state.contributionStrategy = 'USER_SPECIFIED'; setMultiSourceAmount(rowId, value); reopenTabBuilder(); }
+
+async function previewRatioSplit() {
+    const rows = state.multiSources.filter(s => s.institution && s.assetType && !isFixedAssetType(s.assetType));
+    if (rows.length === 0) return;
+    const balances = await Promise.all(rows.map(s => {
+        const idField = (getAssetConfig(s.assetType)?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+        const identifier = idField ? s.fields[idField.name] : null;
+        return identifier ? fetchBalance(s.institution, identifier) : Promise.resolve({ success: false });
+    }));
+    const voucherTotal = state.multiSources.filter(s => isFixedAssetType(s.assetType)).reduce((sum, s) => sum + (s.amount || 0), 0);
+    const toSplit = Math.max(0, state.tabTotalAmount - voucherTotal);
+    const totalBalance = balances.reduce((sum, b) => sum + (b.success ? (b.data?.balance || 0) : 0), 0);
+    rows.forEach((s, i) => { const bal = balances[i].success ? (balances[i].data?.balance || 0) : 0; s.amount = totalBalance > 0 ? round2(toSplit * (bal / totalBalance)) : 0; s._estimated = true; });
+    reopenTabBuilder();
+}
+
+function setContributionStrategy(strategy) {
+    state.contributionStrategy = strategy;
+    if (strategy === 'EQUAL' || strategy === 'SMART') autoSplitEven();
+    if (strategy === 'RATIO') { previewRatioSplit(); return; }
+    reopenTabBuilder();
+}
+
+function openTabBuilder() {
+    if (state.multiSources.length === 0) { addMultiSourceRow(); addMultiSourceRow(); }
+    returnMovableNodesHome();
+    const modalBody = document.getElementById('modalBody');
+    if (!modalBody) return;
+    modalBody.innerHTML = `<div id="tabBuilderGenerated"></div>`;
+    document.getElementById('modalTitle').textContent = 'Combine sources';
+    document.getElementById('modal').classList.add('active');
+    document.getElementById('tabBuilderGenerated').innerHTML = renderTabBuilder();
+    animateTabBuilderIn();
+}
+
+function reopenTabBuilder() {
+    const gen = document.getElementById('tabBuilderGenerated');
+    if (!gen) { openTabBuilder(); return; }
+    gen.innerHTML = renderTabBuilder();
+    updateMultiTotal();
+    animateTabBuilderIn();
+}
+
+function renderTabBuilder() {
+    const remaining = tabRemaining();
+    const strategy = state.contributionStrategy;
+    const cur = getInstitutionCurrency(state.multiSources.find(s => s.institution)?.institution) || '';
+    let statusHtml = '';
+    if (voucherTotalExceedsTarget()) {
+        statusHtml = `<div class="tab-status-line bad">Your voucher is bigger than the tab amount. <span class="quick-link muted" style="text-decoration:underline;" onclick="fixVoucherOverflow()">Fix it for me →</span></div>`;
+    } else if (strategy === 'USER_SPECIFIED' && state.tabTotalAmount > 0) {
+        if (remaining === 0) statusHtml = `<div class="tab-status-line ok">Fully allocated across ${state.multiSources.filter(s => s.institution).length} source(s)</div>`;
+        else statusHtml = `<div class="tab-status-line ${remaining > 0 ? 'warn' : 'bad'}">${remaining > 0 ? formatMoney(remaining, cur) + ' left to allocate' : 'Over by ' + formatMoney(Math.abs(remaining), cur)}</div>`;
+    } else if (strategy === 'RATIO') {
+        statusHtml = `<div class="tab-status-line warn">Estimated split — recalculated from live balances when you swap</div>`;
+    } else if (strategy === 'SMART') {
+        statusHtml = `<div class="tab-status-line ok">✓ You don't need to do anything — we'll balance this across your sources automatically</div>`;
+    }
+    if (hasDuplicateInstitution() && strategy === 'USER_SPECIFIED') statusHtml += `<div class="tab-status-line bad">Manual mode needs one source per institution — remove the duplicate</div>`;
+    const activeCount = state.multiSources.filter(s => s.institution && s.amount > 0).length;
+    const cards = state.multiSources.map((s, i) => renderTabSourceCard(s, i)).join('');
+    const isValid = multiSourcesValid();
+    return `
+        <div style="font-size:12px;color:var(--text-dim);text-align:center;margin-bottom:14px;">Build your combined sources here — where this lands is chosen back on the Swap screen once you're done.</div>
+        <div class="tab-hero">
+            <div class="tab-hero-label">Amount to swap</div>
+            <input type="number" step="0.01" class="tab-hero-input" value="${state.tabTotalAmount || ''}" placeholder="0.00" oninput="setTabTotalAmount(this.value)">
+            <div class="tab-hero-sub">${activeCount} source(s) added</div>
         </div>
-        <div class="preview-security"><div class="preview-security-icon">🔒</div><div class="preview-security-text"><strong>Your money is protected</strong><p>This swap is encrypted end-to-end and only moves once you tap Confirm below. Nothing happens until then.</p></div></div>
-        <div class="preview-reassure">Nothing is final until you confirm — you can still back out.</div>
-        <div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal()">Discard</button><button class="btn btn-primary" onclick="confirmSwap()">Confirm and swap</button></div>`;
-    state.lastPreview = previewData;
-    openModal('Review swap', bodyHtml);
-}
-async function confirmSwap() {
-    closeModal();
-    const payload = state.swapPayload;
-    if (!payload) { showMessage('No swap payload to execute', 'error'); return; }
-    const btn = document.getElementById('reviewBtn');
-    const original = btn.innerHTML;
-    btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Executing…';
-    const result = await callApi(CONFIG.EXECUTE_ENDPOINT, payload);
-    btn.disabled = false; btn.innerHTML = original;
-    refreshUI();
-    if (!result.ok) { showMessage('Swap failed: ' + friendlyApiError(result.error), 'error'); return; }
-    const journeyData = Journey.recordSwap(payload, state.lastPreview);
-    renderRepeatCard(); renderProgressCard();
-    showResultModal(result.body, journeyData);
-}
-function showResultModal(response, journeyData) {
-    const data = response.data || {};
-    const swapType = state.swapPayload.swap_type;
-    const reference = response.swap_reference || data.reference || '—';
-    let inner = '';
-    if (swapType === 'CASHOUT') {
-        inner = `<div class="result-box" id="resultBoxRoot"><div class="icon">✓</div><div class="result-title">Nice! Your cashout code is ready</div><div class="result-sub">Reference: ${escapeHtml(reference)}</div>${data.atm_code || data.voucher_number ? `<div class="atm-code"><div class="code">${escapeHtml(data.atm_code || data.voucher_number || '')}</div></div>` : ''}<div style="margin-top:12px;"><div style="font-size:22px;font-weight:600;font-family:var(--font-mono);">${formatMoney(data.amount ?? state.swapPayload.amount, state.swapPayload.currency)}</div></div>`;
-    } else if (swapType === 'IDENTITY') {
-        const claimPinBox = data.claim_pin ? `<div class="atm-code" style="margin-top:12px;"><div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Backup PIN — only share this if the recipient doesn't get the SMS</div><div class="code">${escapeHtml(data.claim_pin)}</div></div>` : '';
-        inner = `<div class="result-box" id="resultBoxRoot"><div class="icon">✓</div><div class="result-title">Sent! They'll be notified now</div><div class="result-sub">Reference: ${escapeHtml(reference)}</div><div style="margin:12px 0;font-size:13px;"><strong>${escapeHtml(data.identity_type || state.swapPayload.identity_type)}: ${escapeHtml(data.identity_value || state.swapPayload.identity_value)}</strong></div><div style="font-size:22px;font-weight:600;font-family:var(--font-mono);">${formatMoney(data.amount ?? state.swapPayload.amount, data.currency || state.swapPayload.currency)}</div>${claimPinBox}`;
-    } else {
-        inner = `<div class="result-box" id="resultBoxRoot"><div class="icon">✓</div><div class="result-title">Nice! Your money's on its way</div><div class="result-sub">Reference: ${escapeHtml(reference)}</div><div style="font-size:22px;font-weight:600;font-family:var(--font-mono);margin-top:12px;">${formatMoney(data.amount ?? state.swapPayload.amount, data.currency || data.destination_currency || state.swapPayload.destination_currency || state.swapPayload.currency)}</div>`;
-    }
-    const swapCount = journeyData?.swapsThisMonth || 1;
-    const statLine = swapCount > 1 ? `<div class="result-stat">You've made ${swapCount} swaps this month. You've got the hang of this. 🎉</div>` : `<div class="result-stat">That's your swap — nicely done. It'll show up in Activity any time you want to check on it.</div>`;
-    // The journey shouldn't just stop at a checkmark — offer the two
-    // genuinely likely next moves alongside the default "Done."
-    openModal('Swap result', `${inner}${statLine}
-        <div class="cta-row" style="margin-top:16px;"><button class="btn btn-primary" onclick="closeModal(); resetSwapState(); goView('hub');">Done</button></div>
-        <div style="display:flex;justify-content:center;gap:20px;margin-top:12px;">
-            <button type="button" class="ledger-link" onclick="closeModal(); resetSwapState(); goView('activity');">View in Activity</button>
-            <button type="button" class="ledger-link" onclick="closeModal(); resetSwapState(); goView('swap');">Make another swap</button>
-        </div></div>`);
-    setTimeout(() => fireConfetti(document.getElementById('resultBoxRoot')), 150);
+        ${renderCircuitDiagram()}
+        <div class="tab-strategy-row">
+            <button class="quick-link ${strategy==='SMART'?'selected':''} recommended" onclick="setContributionStrategy('SMART')">Smart<span class="recommended-badge">Best</span></button>
+            <button class="quick-link ${strategy==='EQUAL'?'selected':''}" onclick="setContributionStrategy('EQUAL')">Equal</button>
+            <button class="quick-link ${strategy==='RATIO'?'selected':''}" onclick="setContributionStrategy('RATIO')">Ratio</button>
+            <button class="quick-link ${strategy==='USER_SPECIFIED'?'selected':''}" onclick="setContributionStrategy('USER_SPECIFIED')">Manual</button>
+        </div>
+        <div class="tab-strategy-hint">Not sure? Smart is recommended — we'll balance it for you.</div>
+        ${statusHtml}
+        <div id="tabSourceList" class="tab-source-list" style="opacity:0;">${cards}</div>
+        <button class="quick-link" style="width:100%;justify-content:center;padding:12px;margin-top:4px;" onclick="addMultiSourceRow(); reopenTabBuilder();">+ Add another source</button>
+        ${strategy === 'USER_SPECIFIED' ? `<button class="quick-link muted" style="width:100%;justify-content:center;padding:10px;margin-top:8px;">↻ <span onclick="resetToEvenSplit()">Reset to even split</span></button>` : ''}
+        <button class="btn btn-primary" style="margin-top:18px;" ${isValid ? '' : 'disabled'} onclick="confirmCombineSources()">${isValid ? `Use these ${activeCount} sources` : 'Finish adding sources'}</button>`;
 }
 
-// Clears everything about the swap just completed so the next visit
-// to Swap starts clean — without this, "Make another swap" (or even
-// just returning to the hub and back) would silently reuse the old
-// amount, destination, and combined-source list.
-function resetSwapState() {
-    state.fromAmount = 0; state.fromInst = null; state.fromAsset = null; state.fromFields = {};
-    state.toInst = null; state.toAsset = null; state.toFields = {};
-    state.toIdentityValue = ''; state.toIdentitySms = '';
-    state.multiSources = []; state.tabTotalAmount = 0; state.contributionStrategy = 'SMART';
-    state.swapSourceMode = 'WALLET'; state.swapType = 'DEPOSIT';
-    const amountField = document.getElementById('fromAmount');
-    if (amountField) amountField.value = '';
-    document.getElementById('destDetailRow').style.display = 'none';
-    document.getElementById('destTypeDeposit')?.classList.remove('active');
-    document.getElementById('destTypeCashout')?.classList.remove('active');
-    document.getElementById('destTypeIdentity')?.classList.remove('active');
+function renderTabSourceCard(src, idx) {
+    if (!src.institution) {
+        return `<div class="tab-source-empty"><div style="font-size:12px;color:var(--text-dim);margin-bottom:8px;">Source ${idx + 1} — not set up yet</div><div class="quick-actions"><span class="quick-link" onclick="pickSavedSourceForTab(${src.id})">Use a saved source</span><span class="quick-link muted" onclick="tabSourceManual(${src.id}, 'ACCOUNT')">🏦 Account</span><span class="quick-link muted" onclick="tabSourceManual(${src.id}, 'CARD')">🪪 Card</span><span class="quick-link muted" onclick="tabSourceManual(${src.id}, 'VOUCHER')">🎟️ Voucher</span></div></div>`;
+    }
+    const instName = PARTICIPANTS[src.institution]?.name || src.institution;
+    const isFixed = isFixedAssetType(src.assetType);
+    const fieldsHtml = (getAssetConfig(src.assetType)?.fields || []).filter(f => f.name !== 'amount' && f.vault_field !== 'pin').map(f => `<div class="field-group" style="margin-top:8px;"><label>${f.label}</label><input value="${src.fields[f.name] || ''}" placeholder="${f.placeholder || ''}" oninput="setMultiSourceField(${src.id}, '${f.name}', this.value)"></div>`).join('');
+    const srcCurrency = PARTICIPANTS[src.institution]?.limits?.currency || '';
+    let amountHtml;
+    if (isFixed) amountHtml = `<div class="tab-fixed-note">Uses full voucher balance — not split (${formatMoney(src.amount || 0, srcCurrency)})</div>`;
+    else if (state.contributionStrategy === 'RATIO') amountHtml = `<div class="field-group" style="margin-top:8px;"><label>Estimated amount</label><input type="number" value="${src.amount || ''}" disabled style="background:var(--surface);color:var(--text-dim);"></div><div class="tab-estimated-note">Estimated from live balance — recalculated at execution time</div>`;
+    else if (state.contributionStrategy === 'SMART') amountHtml = `<div class="field-group" style="margin-top:8px;"><label>Amount</label><input type="number" value="${src.amount || ''}" disabled style="background:var(--surface);color:var(--text-dim);"></div><div class="tab-estimated-note">VouchMorph balances this automatically</div>`;
+    else amountHtml = `<div class="field-group" style="margin-top:8px;"><label>Amount from this source</label><input type="number" min="0.01" step="0.01" value="${src.amount || ''}" placeholder="0.00" oninput="tabSourceAmountEdited(${src.id}, this.value)"></div>`;
+    return `<div class="tab-source-card"><div style="display:flex;justify-content:space-between;align-items:center;"><div style="display:flex;align-items:center;gap:8px;"><span class="row-icon" style="font-size:16px;">${assetIcon(src.assetType)}</span><div><div style="font-weight:700;font-size:13px;">${escapeHtml(instName)}</div><div style="font-size:11px;color:var(--text-dim);">${escapeHtml(getAssetConfig(src.assetType)?.label || src.assetType || '')}</div></div></div>${state.multiSources.length > 2 ? `<button class="btn-danger-outline" onclick="removeMultiSourceRow(${src.id}); reopenTabBuilder();">Remove</button>` : ''}</div>${fieldsHtml}${amountHtml}</div>`;
 }
 
-const IDENTITY_TYPE_LABELS = { national_id: 'National ID', birth_certificate: 'Birth Certificate', voter_id: 'Voter ID', phone: 'Phone Number', email: 'Email' };
-function getInstitutionCurrency(instCode) { if (!instCode) return null; return PARTICIPANTS[instCode]?.limits?.currency || null; }
-function updateCurrencyDisplay() {
-    const fromCurrency = state.swapSourceMode === 'VMCARD' ? (myCard?.hook?.currency || myCard?.currency) : getInstitutionCurrency(state.fromInst);
-    const fromLabel = document.getElementById('fromCurrencyLabel');
-    if (fromLabel) fromLabel.textContent = fromCurrency || '';
-    const preview = document.getElementById('amountPreview');
-    if (preview) preview.textContent = formatMoney(state.fromAmount, fromCurrency);
-}
-function switchCountry(country) { if (country !== CONFIG.COUNTRY_CODE) window.location.href = '?country=' + encodeURIComponent(country); }
-
-function openDestinationModal() {
-    if (state.swapType !== 'DEPOSIT' && state.swapType !== 'CASHOUT') setSwapType('DEPOSIT');
-    // Defensive: guarantees #toSection is wherever this function expects
-    // it to be, even if a previous modal was never properly closed (e.g.
-    // triggered twice back to back through a non-click code path) —
-    // otherwise modalBody.innerHTML='' below would destroy it outright.
-    returnMovableNodesHome();
-    const modalBody = document.getElementById('modalBody');
-    modalBody.innerHTML = '';
-    modalBody.appendChild(document.getElementById('toSection'));
-    const btnRow = document.createElement('div');
-    btnRow.className = 'cta-row'; btnRow.style.marginTop = '20px';
-    btnRow.innerHTML = '<button type="button" class="btn btn-primary" onclick="confirmDestinationSelection()">Use this destination</button>';
-    modalBody.appendChild(btnRow);
-    document.getElementById('modalTitle').textContent = 'Select a destination';
-    document.getElementById('modal').classList.add('active');
-}
-function confirmDestinationSelection() {
-    if (!state.toInst) { showMessage('Select a destination institution first.', 'warning'); return; }
-    if (state.swapType === 'CASHOUT') {
-        const beneficiaryPhone = state.beneficiaryPhone || state.toFields?.phone || state.toFields?.recipient_phone;
-        if (!beneficiaryPhone) { showMessage('Enter the beneficiary phone number for cashout.', 'warning'); return; }
-    } else if (!state.toAsset || !fieldsValidForAsset(state.toAsset, state.toFields, false).valid) {
-        showMessage('Finish selecting the destination asset type and required fields.', 'warning'); return;
-    }
-    closeModal();
-}
-function openIdentitySendModal() {
-    setSwapType('IDENTITY');
-    returnMovableNodesHome();
-    const modalBody = document.getElementById('modalBody');
-    modalBody.innerHTML = '';
-    const identityFieldsEl = document.getElementById('identityFields');
-    modalBody.appendChild(identityFieldsEl);
-    identityFieldsEl.style.display = 'block';
-    const btnRow = document.createElement('div');
-    btnRow.className = 'cta-row'; btnRow.style.marginTop = '20px';
-    btnRow.innerHTML = '<button type="button" class="btn btn-primary" onclick="confirmIdentitySelection()">Use this identity</button>';
-    modalBody.appendChild(btnRow);
-    document.getElementById('modalTitle').textContent = 'Swap to identity';
-    document.getElementById('modal').classList.add('active');
-}
-function confirmIdentitySelection() {
-    if (!state.toIdentityValue) { showMessage('Enter the identity value to swap to.', 'warning'); return; }
-    closeModal();
+function tabSourceManual(rowId, assetType) {
+    const eligible = Object.keys(PARTICIPANTS).filter(code => (PARTICIPANTS[code].asset_types || []).map(t => String(t).toUpperCase()).includes(assetType));
+    const options = eligible.map(c => `<option value="${c}">${PARTICIPANTS[c]?.name || c}</option>`).join('');
+    const gen = document.getElementById('tabBuilderGenerated');
+    if (!gen) return;
+    gen.innerHTML = `<div style="font-weight:700;margin-bottom:10px;">Add a ${assetType.toLowerCase()} source</div><div class="field-group"><label>Institution</label><select id="tabPickInst"><option value="">Select</option>${options}</select></div><div class="cta-row"><button class="btn btn-secondary" onclick="reopenTabBuilder()">Cancel</button><button class="btn btn-primary" onclick="confirmTabSourceManual(${rowId}, '${assetType}')">Add</button></div>`;
 }
 
-async function viewWalletBalance() {
-    openModal('Balances', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading balances...</div>');
-    const result = await fetchAllBalances();
-    if (!result.success) {
-        document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);"><div style="font-weight:700;">Couldn't load your balances</div><div style="font-size:12px;color:var(--text-muted);margin-top:8px;">${escapeHtml(friendlyApiError(result.error))}</div><button class="btn btn-primary btn-sm" onclick="viewWalletBalance()" style="margin-top:12px;">Retry</button></div>`;
-        return;
-    }
-    const data = result.data || {}; const sources = data.sources || []; const totals = data.total || {};
-    if (sources.length === 0) {
-        document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:30px;color:var(--text-muted);"><div style="font-weight:700;">No sources linked yet</div><div style="font-size:12px;margin-top:8px;">Add a source to see your balance</div><button class="btn btn-primary btn-sm" onclick="closeModal();goView('toolbox');" style="margin-top:12px;">Add source</button></div>`;
-        return;
-    }
-    let html = `<div style="margin-bottom:16px;"><div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">Your total balance across all linked sources</div>`;
-    if (Object.keys(totals).length > 0) {
-        html += `<div style="background:var(--primary);color:#fff;padding:16px;margin-bottom:12px;">`;
-        Object.keys(totals).forEach(cur => { html += `<div style="display:flex;justify-content:space-between;align-items:center;"><span style="font-size:12px;opacity:0.7;">Total ${cur}</span><span style="font-size:22px;font-weight:600;font-family:var(--font-mono);">${formatMoney(totals[cur], cur)}</span></div>`; });
-        html += `</div>`;
-    }
-    html += `<div style="max-height:50vh;overflow-y:auto;">`;
-    sources.forEach(item => {
-        const source = item.source, balance = item.balance;
-        const instName = PARTICIPANTS[source.institution]?.name || source.institution;
-        const assetLabel = ASSETS[source.asset_type]?.label || source.asset_type;
-        let balanceDisplay = '—';
-        if (balance.success) balanceDisplay = formatMoney(balance.balance, balance.currency);
-        else balanceDisplay = `<span style="color:var(--text-muted);font-size:12px;">${escapeHtml(friendlyApiError(balance.error) || 'Unavailable')}</span>`;
-        html += `<div style="border:1px solid var(--border);padding:13px;margin-bottom:8px;background:#fff;"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;"><div style="display:flex;align-items:center;gap:10px;"><span class="row-icon" style="font-size:18px;">${assetIcon(source.asset_type)}</span><div><div style="font-weight:700;">${escapeHtml(instName)}</div><div style="font-size:12px;color:var(--text-muted);">${escapeHtml(assetLabel)} · ${escapeHtml(source.identifier)}${source.account_name ? ` · ${escapeHtml(source.account_name)}` : ''}</div></div></div><div style="text-align:right;"><div style="font-size:16px;font-weight:600;font-family:var(--font-mono);">${balanceDisplay}</div><div style="font-size:10px;color:var(--text-dim);text-transform:uppercase;">${source.status}</div></div></div><div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);display:flex;gap:8px;flex-wrap:wrap;"><button class="btn-primary btn-sm" onclick="refreshSourceBalance('${source.id}')">Refresh</button></div></div>`;
-    });
-    html += `</div><div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border);display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-primary btn-sm" onclick="refreshAllBalances()">Refresh all</button><button class="btn btn-secondary btn-sm" onclick="closeModal();goView('toolbox');">Add source</button><button class="btn btn-secondary btn-sm" onclick="closeModal()">Close</button></div>`;
-    document.getElementById('modalBody').innerHTML = html;
+function confirmTabSourceManual(rowId, assetType) {
+    const inst = document.getElementById('tabPickInst')?.value;
+    if (!inst) { showMessage('Select an institution.', 'warning'); return; }
+    if (state.contributionStrategy === 'USER_SPECIFIED' && state.multiSources.some(s => s.institution === inst)) { showMessage('Manual mode needs one source per institution — pick a different institution or switch strategy.', 'warning'); return; }
+    setMultiSourceInst(rowId, inst);
+    const src = state.multiSources.find(s => s.id === rowId);
+    if (src) { src.assetType = assetType; src.fields = {}; }
+    reopenTabBuilder();
 }
-async function refreshSourceBalance(sourceId) {
+
+function pickSavedSourceForTab(rowId) {
+    const eligible = userSources.filter(s => s.status === 'active');
+    if (eligible.length === 0) { showMessage('No saved sources yet — add one from the toolbox first.', 'info'); return; }
+    const rows = eligible.map(s => `<div class="saved-source-row" onclick="applySavedSourceToTab(${rowId}, '${s.id}')"><div class="row-main"><div class="row-inst">${escapeHtml(PARTICIPANTS[s.institution]?.name || s.institution)}</div><div class="row-ident">${escapeHtml(s.identifier || '')}</div></div></div>`).join('');
+    const gen = document.getElementById('tabBuilderGenerated');
+    if (!gen) return;
+    gen.innerHTML = `<div class="saved-source-list">${rows}</div><div class="cta-row" style="margin-top:14px;"><button class="btn btn-secondary" onclick="reopenTabBuilder()">Back</button></div>`;
+}
+
+function applySavedSourceToTab(rowId, sourceId) {
     const source = userSources.find(s => s.id === sourceId);
-    if (!source) { showMessage('Source not found', 'error'); return; }
-    showMessage(`Fetching balance for ${source.institution}...`, 'info');
-    const result = await fetchBalance(source.institution, source.identifier, source.identifier_type);
-    if (result.success) { showMessage(`Balance updated: ${formatMoney(result.data?.balance, result.data?.currency)}`, 'success'); viewWalletBalance(); }
-    else { showMessage(`Couldn't fetch that balance: ${friendlyApiError(result.error)}`, 'error'); viewWalletBalance(); }
-}
-async function refreshAllBalances() { showMessage('Refreshing all balances...', 'info'); await viewWalletBalance(); }
-async function fetchBalance(institution, identifier, identifierType = 'auto') {
-    try {
-        const response = await fetch(CONFIG.API_BASE + '/api/v1/user/balance.php', { method: 'POST', headers: buildHeaders(), body: JSON.stringify({ institution, identifier, identifier_type: identifierType }), credentials: 'include' });
-        return await response.json();
-    } catch (error) { console.error('Balance fetch error:', error); return { success: false, error: error.message }; }
-}
-async function fetchAllBalances() {
-    try {
-        const response = await fetch(CONFIG.API_BASE + '/api/v1/user/all_balances.php', { method: 'GET', headers: buildHeaders(), credentials: 'include' });
-        return await response.json();
-    } catch (error) { console.error('Fetch all balances error:', error); return { success: false, error: error.message }; }
+    if (!source) return;
+    if (state.contributionStrategy === 'USER_SPECIFIED' && state.multiSources.some(s => s.institution === source.institution)) { showMessage('Manual mode needs one source per institution — pick a different institution or switch strategy.', 'warning'); reopenTabBuilder(); return; }
+    setMultiSourceInst(rowId, source.institution);
+    const src = state.multiSources.find(s => s.id === rowId);
+    if (src) { src.assetType = source.asset_type; src.fields = {}; }
+    const idField = (getAssetConfig(source.asset_type)?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+    if (src && idField) src.fields[idField.name] = source.identifier;
+    reopenTabBuilder();
 }
 
-async function loadUserSources() {
-    if (!CONFIG.USER_ID) return;
-    const result = await callApi(CONFIG.API_BASE + '/user/sources.php', {});
-    if (result.ok) {
-        userSources = result.body.data?.sources || [];
-        if (sourcePanelOpenCat === 'WALLET' || state.fromCategory === 'WALLET') renderSavedSourceChips();
-        renderProgressCard();
-    }
-    const pendingResult = await callApi(CONFIG.API_BASE + '/api/v1/sources/pending.php', {});
-    if (pendingResult.ok) { pendingSources = pendingResult.body.data || []; updateToolboxBadge(); }
-}
-function walletEligibleSources() {
-    return userSources.filter(s => {
-        if (s.status !== 'active') return false;
-        const assetType = String(s.asset_type).toUpperCase();
-        const config = getAssetConfig(s.asset_type);
-        const category = config?.category || '';
-        return assetType === 'ACCOUNT' || assetType === 'WALLET' || assetType === 'MNO-WALLET' || assetType === 'BANK-WALLET' || assetType === 'MOBILE_WALLET' || category === 'MOBILE_MONEY' || category === 'BANK_WALLET' || category === 'BANK_ACCOUNT';
+function renderCircuitDiagram() {
+    const total = state.tabTotalAmount || state.multiSources.reduce((s, r) => s + (r.amount || 0), 0);
+    const maxAmt = Math.max(...state.multiSources.map(s => s.amount || 0), 1);
+    const n = state.multiSources.length || 1;
+    const hubX = 230, hubY = 60, hubW = 100, hubH = 90;
+    const chipX = 20, chipH = 26;
+    const destX = 420, destW = 46, destH = 36;
+    function layoutY(count, r0, r1) { const usable = r1 - r0; return Array.from({ length: count }, (_, i) => r0 + ((i + 0.5) * usable) / count); }
+    const srcYs = layoutY(n, 12, 228);
+    const pinYs = layoutY(n, hubY + 12, hubY + hubH - 12);
+    let html = '';
+    state.multiSources.forEach((s, i) => {
+        const has = !!s.institution;
+        const amt = s.amount || 0;
+        const w = has ? 34 + Math.round((amt / maxAmt) * 40) : 30;
+        const y = srcYs[i], pinY = pinYs[i], midX = 145 + i * 7;
+        if (has) html += `<path d="M${chipX + w},${y} H${midX} V${pinY} H${hubX}" fill="none" stroke="var(--border-strong)" stroke-width="1.5" opacity="0.75" stroke-dasharray="400" stroke-dashoffset="400" id="bcTrace${i}"><animate attributeName="stroke-dashoffset" from="400" to="0" dur="0.5s" begin="${i * 0.08}s" fill="freeze" /></path>`;
+        html += `<rect x="${hubX - 4}" y="${pinY - 2}" width="4" height="4" fill="var(--border-strong)" />`;
     });
+    state.multiSources.forEach((s, i) => {
+        const has = !!s.institution;
+        const amt = s.amount || 0;
+        const w = has ? 34 + Math.round((amt / maxAmt) * 40) : 30;
+        const y = srcYs[i];
+        const pct = total > 0 ? amt / total : 0;
+        if (has) {
+            const label = institutionInitials(s.institution);
+            html += `
+                <rect x="${chipX}" y="${y - chipH / 2}" width="0" height="${chipH}" fill="var(--primary)"><animate attributeName="width" from="0" to="${w}" dur="0.35s" begin="${0.25 + i * 0.08}s" fill="freeze" /></rect>
+                <text x="${chipX + w / 2}" y="${y - 3}" text-anchor="middle" font-size="10" fill="var(--surface)" font-weight="700" font-family="var(--font-mono)">${escapeHtml(label)}</text>
+                <text x="${chipX + w / 2}" y="${y + 10}" text-anchor="middle" font-size="8" fill="var(--surface)" opacity="0.75">${amt.toFixed(0)}</text>
+                <rect x="${chipX}" y="${y + chipH / 2 + 3}" width="${w}" height="3" fill="var(--surface-muted)" />
+                <rect x="${chipX}" y="${y + chipH / 2 + 3}" width="0" height="3" fill="var(--primary)"><animate attributeName="width" from="0" to="${(w * pct).toFixed(1)}" dur="0.4s" begin="${0.5 + i * 0.08}s" fill="freeze" /></rect>
+                <rect width="5" height="5" fill="var(--primary)"><animateMotion dur="${1.6 + i * 0.3}s" repeatCount="indefinite" begin="${1 + i * 0.15}s"><mpath href="#bcTrace${i}" /></animateMotion></rect>`;
+        } else {
+            html += `<rect x="${chipX}" y="${y - chipH / 2}" width="${w}" height="${chipH}" fill="none" stroke="var(--border-strong)" stroke-width="1.5" stroke-dasharray="4 3" /><text x="${chipX + w / 2}" y="${y + 4}" text-anchor="middle" font-size="12" fill="var(--text-dim)">?</text>`;
+        }
+    });
+    html += `
+        <rect x="${hubX}" y="${hubY}" width="${hubW}" height="${hubH}" fill="var(--surface)" stroke="var(--border-strong)" stroke-width="1.5" />
+        <rect x="${hubX + 6}" y="${hubY + 6}" width="${hubW - 12}" height="2" fill="var(--border)"><animate attributeName="opacity" values="1;0.2;1" dur="2.2s" repeatCount="indefinite" /></rect>
+        <text x="${hubX + hubW / 2}" y="${hubY + hubH / 2 - 2}" text-anchor="middle" font-size="17" font-weight="700" fill="var(--text)" font-family="var(--font-mono)">${total.toFixed(0)}</text>
+        <text x="${hubX + hubW / 2}" y="${hubY + hubH / 2 + 15}" text-anchor="middle" font-size="8" fill="var(--text-dim)">total</text>`;
+    const hubPinY = hubY + hubH / 2;
+    let destLabel = null;
+    if (state.swapType === 'IDENTITY' && state.toIdentityValue) destLabel = maskIdentifier(state.toIdentityValue).replace(/[^A-Za-z0-9]/g, '').slice(0, 2).toUpperCase() || 'ID';
+    else if (state.swapType !== 'IDENTITY' && state.toInst) destLabel = institutionInitials(state.toInst);
+    if (destLabel) {
+        const midX = hubX + hubW + 60;
+        html += `
+            <rect x="${hubX + hubW}" y="${hubPinY - 2}" width="4" height="4" fill="var(--border-strong)" />
+            <path d="M${hubX + hubW},${hubPinY} H${midX} V${hubPinY} H${destX}" fill="none" stroke="var(--border-strong)" stroke-width="1.5" opacity="0.75" stroke-dasharray="260" stroke-dashoffset="260" id="bcDestTrace"><animate attributeName="stroke-dashoffset" from="260" to="0" dur="0.5s" fill="freeze" /></path>
+            <rect x="${destX}" y="${hubPinY - destH / 2}" width="${destW}" height="${destH}" fill="var(--primary)" />
+            <text x="${destX + destW / 2}" y="${hubPinY - 2}" text-anchor="middle" font-size="10" fill="var(--surface)" font-weight="700" font-family="var(--font-mono)">${escapeHtml(destLabel)}</text>
+            <text x="${destX + destW / 2}" y="${hubPinY + 12}" text-anchor="middle" font-size="7" fill="var(--surface)" opacity="0.75">dest</text>
+            <rect width="5" height="5" fill="var(--text-dim)"><animateMotion dur="1.3s" repeatCount="indefinite" begin="1.5s"><mpath href="#bcDestTrace" /></animateMotion></rect>`;
+    } else {
+        html += `<rect x="${destX}" y="${hubPinY - destH / 2}" width="${destW}" height="${destH}" fill="none" stroke="var(--border-strong)" stroke-width="1.5" stroke-dasharray="4 3" /><text x="${destX + destW / 2}" y="${hubPinY + 4}" text-anchor="middle" font-size="14" fill="var(--text-dim)">?</text>`;
+    }
+    return `<svg width="100%" height="240" viewBox="0 0 480 240" style="margin-bottom:14px;overflow:visible;">${html}</svg>`;
 }
-// Collapsible dropdown behavior: closed by default, opens on tap,
-// closes itself the moment a source is picked (see selectSavedSource).
-function toggleSavedSourceDropdown() {
-    document.getElementById('savedSourcesDropdown')?.classList.toggle('open');
+
+function institutionInitials(code) {
+    const name = PARTICIPANTS[code]?.name || code || '';
+    const parts = name.trim().split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+    return name.slice(0, 2).toUpperCase() || '??';
 }
-function closeSavedSourceDropdown() {
-    document.getElementById('savedSourcesDropdown')?.classList.remove('open');
+
+function multiSourcesValid() {
+    const activeRows = state.multiSources.filter(s => s.institution);
+    if (activeRows.length < 2) return false;
+    if (voucherTotalExceedsTarget()) return false;
+    if (state.contributionStrategy === 'USER_SPECIFIED') {
+        if (state.tabTotalAmount > 0 && Math.abs(tabRemaining()) > 0.01) return false;
+        if (hasDuplicateInstitution()) return false;
+    }
+    return activeRows.every(s => { if (!s.assetType || !(s.amount > 0)) return false; return fieldsValidForAsset(s.assetType, s.fields, true); });
 }
+
+function confirmCombineSources() {
+    if (!multiSourcesValid()) { showMessage('Finish your combined sources first — see what\'s missing above.', 'warning'); return; }
+    state.swapSourceMode = 'COMBINE';
+    ['Wallet', 'Card', 'Voucher', 'Vmcard', 'Combine'].forEach(suffix => document.getElementById('swapSrc' + suffix)?.classList.remove('active'));
+    document.getElementById('swapSrcCombine')?.classList.add('active');
+    document.getElementById('swapSingleSourceHolder').style.display = 'none';
+    document.getElementById('swapCardSourceHolder').style.display = 'none';
+    renderCombineSourceSummary();
+    closeModal();
+    showMessage('Sources combined — now pick where this goes.', 'success');
+}
+
+function renderCombineSourceSummary() {
+    const holder = document.getElementById('swapCombineSourceHolder');
+    if (!holder) return;
+    holder.style.display = 'block';
+    const total = state.tabTotalAmount || state.multiSources.reduce((s, r) => s + (r.amount || 0), 0);
+    const cur = getInstitutionCurrency(state.multiSources.find(s => s.institution)?.institution);
+    const rows = state.multiSources.filter(s => s.institution).map(s => `
+        <div class="card-source-breakdown-row">
+            <span>${escapeHtml(PARTICIPANTS[s.institution]?.name || s.institution)}</span>
+            <span style="font-family:var(--font-mono);font-weight:700;">${formatMoney(s.amount, cur)}</span>
+        </div>`).join('');
+    holder.innerHTML = `
+        <div class="card-source-breakdown">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                <span style="font-size:11px;font-weight:700;text-transform:uppercase;color:var(--text-dim);">Combined — ${state.multiSources.filter(s=>s.institution).length} source(s)</span>
+                <button class="quick-link muted" onclick="openTabBuilder()">Edit &rsaquo;</button>
+            </div>
+            ${rows}
+            <div class="card-source-breakdown-row" style="border-bottom:none;padding-top:10px;font-weight:700;">
+                <span>Total</span><span style="font-family:var(--font-mono);color:var(--accent);">${formatMoney(total, cur)}</span>
+            </div>
+        </div>`;
+}
+
+function animateTabBuilderIn() {
+    const list = document.getElementById('tabSourceList');
+    if (list) { list.style.opacity = '0'; requestAnimationFrame(() => { list.style.opacity = '1'; }); }
+}
+
+function refreshTabBuilderIfOpen() { if (document.getElementById('tabBuilderGenerated')) reopenTabBuilder(); }
+
+// ============================================================
+// SOURCE HELPERS
+// ============================================================
 function renderSavedSourceChips() {
     const container = document.getElementById('savedSourcesContainer');
     const chipsContainer = document.getElementById('savedSourcesChips');
@@ -2601,15 +2923,15 @@ function renderSavedSourceChips() {
     const triggerLabel = document.getElementById('savedSourceTriggerLabel');
     if (!container || !chipsContainer) return;
     const activeSources = walletEligibleSources();
-    if (activeSources.length === 0) { container.style.display = 'none'; emptyPrompt.style.display = 'block'; return; }
-    emptyPrompt.style.display = 'none'; container.style.display = 'block';
+    if (activeSources.length === 0) { container.style.display = 'none'; if (emptyPrompt) emptyPrompt.style.display = 'block'; return; }
+    if (emptyPrompt) emptyPrompt.style.display = 'none'; container.style.display = 'block';
     chipsContainer.innerHTML = activeSources.map(source => {
         const instName = PARTICIPANTS[source.institution]?.name || source.institution;
         const identifier = source.identifier || source.source_identifier || '';
         const isSelected = selectedSourceId === source.id;
         return `<div class="saved-source-row ${isSelected ? 'active' : ''}" onclick="selectSavedSource('${source.id}')"><div class="row-main"><div class="row-inst">${assetIcon(source.asset_type)} ${escapeHtml(instName)}</div><div class="row-ident">${escapeHtml(identifier)}${source.account_name ? ' · ' + escapeHtml(source.account_name) : ''}</div></div><span class="row-check">✓</span></div>`;
     }).join('');
-    clearBtn.style.display = selectedSourceId ? 'inline-flex' : 'none';
+    if (clearBtn) clearBtn.style.display = selectedSourceId ? 'inline-flex' : 'none';
     const selectedSource = activeSources.find(s => s.id === selectedSourceId);
     if (triggerLabel) {
         if (selectedSource) {
@@ -2621,6 +2943,25 @@ function renderSavedSourceChips() {
         }
     }
 }
+
+function walletEligibleSources() {
+    return userSources.filter(s => {
+        if (s.status !== 'active') return false;
+        const assetType = String(s.asset_type).toUpperCase();
+        const config = getAssetConfig(s.asset_type);
+        const category = config?.category || '';
+        return assetType === 'ACCOUNT' || assetType === 'WALLET' || assetType === 'MNO-WALLET' || assetType === 'BANK-WALLET' || assetType === 'MOBILE_WALLET' || category === 'MOBILE_MONEY' || category === 'BANK_WALLET' || category === 'BANK_ACCOUNT';
+    });
+}
+
+function toggleSavedSourceDropdown() {
+    document.getElementById('savedSourcesDropdown')?.classList.toggle('open');
+}
+
+function closeSavedSourceDropdown() {
+    document.getElementById('savedSourcesDropdown')?.classList.remove('open');
+}
+
 function selectSavedSource(sourceId) {
     const source = userSources.find(s => s.id === sourceId);
     if (!source) { showMessage('Source not found.', 'error'); return; }
@@ -2628,9 +2969,10 @@ function selectSavedSource(sourceId) {
     closeSavedSourceDropdown();
     state.fromInst = source.institution; state.fromAsset = source.asset_type; state.fromFields = {};
     const inst = PARTICIPANTS[source.institution];
-    document.getElementById('fromLimitsHelp').textContent = inst?.limits ? `Limits: ${inst.limits.min_amount} – ${inst.limits.max_amount} ${inst.limits.currency}` : '';
+    const limitsEl = document.getElementById('fromLimitsHelp');
+    if (limitsEl) limitsEl.textContent = inst?.limits ? `Limits: ${inst.limits.min_amount} – ${inst.limits.max_amount} ${inst.limits.currency}` : '';
     const fieldsBox = document.getElementById('fromFields');
-    fieldsBox.style.display = 'block'; fieldsBox.innerHTML = '';
+    if (fieldsBox) { fieldsBox.style.display = 'block'; fieldsBox.innerHTML = ''; }
     renderDynamicFields('fromFields', source.asset_type, 'fromField_', updateFromField, true);
     setTimeout(() => {
         const assetConfig = getAssetConfig(source.asset_type);
@@ -2661,158 +3003,502 @@ function selectSavedSource(sourceId) {
         showMessage(`${getAssetConfig(source.asset_type)?.label || source.asset_type} selected: ${inst?.name || source.institution}`, 'success');
         const existingHookLink = document.getElementById('hookToCardEntryPoint');
         if (existingHookLink) existingHookLink.remove();
-        document.getElementById('sourceSelectedHelp')?.insertAdjacentHTML('afterend', `<div id="hookToCardEntryPoint" style="margin-top:8px;"><span class="quick-link muted" onclick="hookSelectedSourceToCard()">Hook this source to a card instead →</span></div>`);
+        const helpEl2 = document.getElementById('sourceSelectedHelp');
+        if (helpEl2) helpEl2.insertAdjacentHTML('afterend', `<div id="hookToCardEntryPoint" style="margin-top:8px;"><span class="quick-link muted" onclick="hookSelectedSourceToCard()">Hook this source to a card instead →</span></div>`);
         refreshUI();
     }, 300);
     updateCurrencyDisplay(); refreshUI();
 }
+
 function clearSourceSelection() {
     selectedSourceId = null; state.fromInst = null; state.fromAsset = null; state.fromFields = {};
-    document.getElementById('fromFields').innerHTML = ''; document.getElementById('fromFields').style.display = 'none';
+    const fieldsBox = document.getElementById('fromFields');
+    if (fieldsBox) { fieldsBox.innerHTML = ''; fieldsBox.style.display = 'none'; }
     const helpEl = document.getElementById('sourceSelectedHelp'); if (helpEl) helpEl.style.display = 'none';
     const amountField = document.getElementById('fromAmount'); if (amountField) { amountField.value = ''; amountField.focus(); }
     showMessage('Source selection cleared.', 'info');
     updateCurrencyDisplay(); renderSavedSourceChips(); refreshUI();
 }
+
 function useSourceForSwap(sourceId) {
     goView('swap');
     setSwapSourceMode('WALLET');
     setTimeout(() => { selectSavedSource(sourceId); }, 200);
 }
 
-function openAddSource() {
-    const instOptions = Object.keys(PARTICIPANTS).map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('');
-    const body = `
-        <div style="margin-bottom:16px;"><div style="font-size:13px;font-weight:700;margin-bottom:4px;">Link a new source</div><div style="font-size:12px;color:var(--text-muted);">Your bank will verify ownership via OTP or OAuth.</div></div>
-        <div class="field-group"><label>Institution</label><select id="addSourceInst" onchange="onAddSourceInstChange(this.value)"><option value="">Select institution</option>${instOptions}</select></div>
-        <div class="field-group" id="addSourceAssetGroup" style="display:none;"><label>Asset type</label><select id="addSourceAssetType" onchange="onAddSourceAssetTypeChange(this.value)"></select><div class="help">Users can only add Accounts, Wallets, or Cards.</div></div>
-        <div class="field-group"><label>Identifier</label><input id="addSourceIdentifier" placeholder="Account number, phone, or card number"><div class="help" id="addSourceIdentifierHelp">The number that identifies your account at this institution.</div></div>
-        <div class="field-group"><label>Account name (optional)</label><input id="addSourceAccountName" placeholder="e.g. My Main Account"></div>
-        <div style="background:var(--accent-soft);border-left:3px solid var(--accent);padding:10px 14px;font-size:12px;margin-bottom:14px;color:var(--primary);">🔒 Your details are encrypted and only used to verify you own this account — VouchMorph never stores your bank password.</div>
-        <div id="addSourceOtpFields" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);"><div style="font-size:12px;font-weight:700;margin-bottom:8px;">Verify with OTP</div><div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;" id="otpMessage">A verification code has been sent to your registered phone.</div><div class="otp-input-group"><input type="text" id="addSourceOtp" placeholder="Enter code" inputmode="numeric" maxlength="8"><button class="btn btn-primary btn-sm" onclick="completeSourceOtp()">Verify</button></div></div>
-        <div class="cta-row"><button class="btn btn-secondary" onclick="loadToolboxView()">Cancel</button><button class="btn btn-primary" id="addSourceSubmitBtn" onclick="submitAddSource()">Link source</button></div>`;
-    openModal('Add source — step 1 of 2: Link', body);
+function hookSelectedSourceToCard() {
+    const idField = (getAssetConfig(state.fromAsset)?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+    const identifier = idField ? state.fromFields[idField.name] : '';
+    promptHookThisSource({ instName: PARTICIPANTS[state.fromInst]?.name || state.fromInst, institution: state.fromInst, assetType: state.fromAsset, identifier });
 }
-let addSourceState = { attemptId: null, requiresOtp: false, requiresRedirect: false, redirectUrl: null, institution: null, assetType: null, identifier: null };
-function onAddSourceInstChange(code) {
-    const group = document.getElementById('addSourceAssetGroup'); const sel = document.getElementById('addSourceAssetType');
-    if (!code) { group.style.display = 'none'; sel.innerHTML = ''; return; }
-    const inst = PARTICIPANTS[code]; const allTypes = inst?.asset_types || [];
-    const eligible = allTypes.filter(t => ['ACCOUNT', 'WALLET', 'CARD', 'MNO-WALLET', 'BANK-WALLET'].includes(String(t).toUpperCase()));
-    if (eligible.length === 0) { sel.innerHTML = `<option value="">This institution doesn't support self-service linking yet</option>`; group.style.display = 'block'; return; }
-    sel.innerHTML = eligible.map(t => `<option value="${t}">${assetIcon(t)} ${getAssetConfig(t)?.label || t}</option>`).join('');
-    group.style.display = 'block'; onAddSourceAssetTypeChange(eligible[0]);
-}
-function onAddSourceAssetTypeChange(type) {
-    const idInput = document.getElementById('addSourceIdentifier'); const help = document.getElementById('addSourceIdentifierHelp');
-    if (!idInput) return;
-    const t = String(type).toUpperCase();
-    const copy = { 'ACCOUNT': ['e.g. 0011223344', 'Your bank account number.'], 'CARD': ['e.g. 16-digit card number', 'The number on the front of your card.'], 'WALLET': ['e.g. +267 71 234 567', 'The phone number your wallet is registered to.'], 'MNO-WALLET': ['e.g. +267 71 234 567', 'The phone number your mobile wallet is registered to.'], 'BANK-WALLET': ['e.g. 0011223344', 'Your bank wallet account number.'] };
-    const [ph, h] = copy[t] || ['Account number, phone, or card number', 'The number that identifies your account at this institution.'];
-    idInput.placeholder = ph; if (help) help.textContent = h;
-}
-async function submitAddSource() {
-    const institution = document.getElementById('addSourceInst').value;
-    const assetType = document.getElementById('addSourceAssetType').value;
-    const identifier = document.getElementById('addSourceIdentifier').value.trim();
-    const accountName = document.getElementById('addSourceAccountName').value.trim();
-    if (!institution) { showMessage('Select an institution.', 'warning'); return; }
-    if (!assetType) { showMessage('Select an asset type.', 'warning'); return; }
-    if (!identifier) { showMessage('Enter your account identifier.', 'warning'); return; }
-    const btn = document.getElementById('addSourceSubmitBtn'); const original = btn.textContent;
-    btn.disabled = true; btn.textContent = 'Registering...';
-    const result = await callApi(CONFIG.API_BASE + '/user/add_source.php', { institution, asset_type: assetType, identifier, account_name: accountName || undefined });
-    btn.disabled = false; btn.textContent = original;
-    if (!result.ok) { showMessage('Could not add that source: ' + friendlyApiError(result.error), 'error'); return; }
-    const data = result.body.data || {};
-    addSourceState = { attemptId: data.attempt_id || null, requiresOtp: data.requires_otp || false, requiresRedirect: data.requires_redirect || false, redirectUrl: data.redirect_url || null, institution, assetType, identifier };
-    if (data.requires_redirect) { showMessage('Redirecting to your bank for verification...', 'info'); setTimeout(() => { window.location.href = data.redirect_url; }, 1500); return; }
-    if (data.requires_otp) {
-        document.getElementById('modalTitle').textContent = 'Add source — step 2 of 2: Verify';
-        document.getElementById('addSourceOtpFields').style.display = 'block';
-        document.getElementById('otpMessage').textContent = data.message || 'A verification code has been sent to your registered phone.';
-        document.getElementById('addSourceSubmitBtn').style.display = 'none';
-        showMessage('OTP sent! Enter the code to verify.', 'success'); return;
+
+// ============================================================
+// HOOK BUILDER
+// ============================================================
+const HOOK_ASSET_TYPES = [
+    { key: 'ACCOUNT', label: 'Account', icon: '🏦' },
+    { key: 'WALLET', label: 'Wallet', icon: '📱' },
+    { key: 'CARD', label: 'Card (Visa/Mastercard)', icon: '🪪' },
+    { key: 'VOUCHER', label: 'Cashout voucher', icon: '🎟️' },
+];
+let hookMode = 'single';
+let hookRows = [];
+let hookRowSeq = 0;
+let hookEntry = { source: 'card', targetCardSuffix: null };
+let pendingHookPrefill = null;
+let unhookTarget = null;
+
+async function openHookBuilder(entryType, prefill) {
+    if (!myCard) {
+        const result = await callApiGet(CONFIG.API_BASE + '/api/v1/cards/My.php');
+        if (!result.ok) { showMessage("Couldn't load your card: " + friendlyApiError(result.error), 'error'); return; }
+        myCard = result.body.data;
     }
-    showMessage(data.message || 'Source added!', 'success');
-    setTimeout(() => { loadUserSources(); loadToolboxView(); }, 1500);
+    if (!myCard.is_active) { showMessage('Your VouchMorph Card is not active yet. Activate it first from the Card view.', 'warning'); return; }
+    hookEntry = { source: entryType, targetCardSuffix: myCard.card_suffix };
+    hookRows = []; hookRowSeq = 0; hookMode = 'single';
+    document.getElementById('hookViewTitle').textContent = 'Hook a source';
+    document.getElementById('hookModeRow').style.display = 'flex';
+    document.getElementById('addHookRowBtn').style.display = 'none';
+    document.getElementById('hookSubmitBtn').style.display = 'block';
+    document.getElementById('hookFinePrint').style.display = 'block';
+    document.getElementById('hookEyebrow').textContent = entryType === 'card' ? 'Hook to My VouchMorph Card' : 'Hook this source to a card';
+    document.getElementById('hookEntryNote').textContent = entryType === 'card'
+        ? 'Started from the Card view — building the list of sources to hook.'
+        : `Started from "${prefill?.instName}" in My sources — this source is pre-filled below.`;
+    if (entryType === 'source' && prefill) addHookRow(prefill);
+    else addHookRow();
+    setHookMode('single');
+    pushView('hook');
 }
-async function completeSourceOtp() {
-    const otp = document.getElementById('addSourceOtp').value.trim();
-    if (!otp) { showMessage('Enter the verification code.', 'warning'); return; }
-    if (!addSourceState.attemptId) { showMessage('No pending verification attempt.', 'error'); return; }
-    const btn = document.querySelector('#addSourceOtpFields .btn-primary'); const original = btn.textContent;
-    btn.disabled = true; btn.textContent = 'Verifying...';
-    const result = await callApi(CONFIG.API_BASE + '/user/verify_source.php', { attempt_id: addSourceState.attemptId, otp, user_id: CONFIG.USER_ID });
-    btn.disabled = false; btn.textContent = original;
-    if (!result.ok) { showMessage('That code didn\'t work: ' + friendlyApiError(result.error), 'error'); return; }
-    showMessage('Source verified and activated! 🎉', 'success');
-    setTimeout(() => { loadUserSources(); loadToolboxView(); }, 1500);
+
+function setHookMode(mode) {
+    hookMode = mode;
+    document.getElementById('hookModeSingleBtn').classList.toggle('active', mode === 'single');
+    document.getElementById('hookModeMultiBtn').classList.toggle('active', mode === 'multi');
+    document.getElementById('addHookRowBtn').style.display = mode === 'multi' ? 'block' : 'none';
+    if (mode === 'single' && hookRows.length > 1) hookRows = hookRows.slice(0, 1);
+    renderHookRows();
 }
-async function removeSource(sourceId) {
-    showConfirm('Remove this source? You can add it again later.', async () => {
-        const result = await callApi(CONFIG.API_BASE + '/api/v1/sources/delete.php', { source_id: sourceId });
-        if (!result.ok) { showMessage('Could not remove that source: ' + friendlyApiError(result.error), 'error'); return; }
-        showMessage('Source removed.', 'success');
-        loadUserSources(); loadToolboxView();
-    });
+
+function addHookRow(prefill) {
+    if (hookMode === 'single' && hookRows.length >= 1) return;
+    hookRows.push({ id: ++hookRowSeq, instName: prefill?.instName || null, institution: prefill?.institution || null, assetType: prefill?.assetType || null, identifier: prefill?.identifier || '', pin: '', amount: '', locked: !!prefill });
+    renderHookRows();
 }
-function openPendingSources() { openModal('Pending sources', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading pending sources...</div>'); loadPendingSources(); }
-async function loadPendingSources() {
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/sources/pending.php', {});
-    if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);"><div style="font-weight:700;">Couldn't load pending sources</div><div style="font-size:12px;color:var(--text-muted);margin-top:8px;">${escapeHtml(friendlyApiError(result.error))}</div><button class="btn btn-primary btn-sm" onclick="loadPendingSources()" style="margin-top:12px;">Retry</button></div>`; return; }
-    pendingSources = result.body.data || [];
-    renderPendingSources();
+
+function removeHookRow(id) { hookRows = hookRows.filter(r => r.id !== id); renderHookRows(); }
+
+function setHookRowAssetType(id, type) {
+    const row = hookRows.find(r => r.id === id);
+    if (!row) return;
+    row.assetType = type;
+    renderHookRows();
 }
-function renderPendingSources() {
-    const container = document.getElementById('modalBody');
-    if (!pendingSources || pendingSources.length === 0) { container.innerHTML = `<div style="text-align:center;padding:30px;color:var(--text-muted);"><div style="font-weight:700;font-size:16px;">No pending sources</div><div style="font-size:12px;margin-top:8px;">All your sources are active and verified.</div></div>`; return; }
-    let html = `<div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">${pendingSources.length} source(s) pending verification. Pending sources expire after 3 minutes if not completed.</div><div style="max-height:60vh;overflow-y:auto;">`;
-    pendingSources.forEach((source) => {
-        const statusLabel = getSourceStatusLabel(source), statusClass = getSourceStatusClass(source), sourceTypeLabel = getSourceTypeLabel(source);
-        const canDelete = ['pending_confirmation', 'pending', 'proposed', 'otp_pending', 'oauth_pending'].includes(source.status);
-        const canRetry = ['cancelled', 'rejected', 'failed'].includes(source.status);
-        const isExpiring = source.is_expiring || false;
-        html += `<div class="source-card" style="border-left: 3px solid ${isExpiring ? 'var(--warning)' : 'var(--border)'};"><div class="source-header"><div><div class="source-institution">${escapeHtml(source.institution_name || source.institution)}<span style="font-size:11px;color:var(--text-muted);font-weight:400;margin-left:6px;">(${sourceTypeLabel})</span></div><div class="source-details" style="margin-top:4px;"><span style="font-weight:600;">${escapeHtml(source.identifier)}</span>${source.account_name ? ` · ${escapeHtml(source.account_name)}` : ''}${source.asset_type ? ` · ${source.asset_type}` : ''}</div></div><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;"><span class="source-status ${statusClass}">${statusLabel}</span>${isExpiring ? `<span style="font-size:10px;color:var(--warning);font-weight:700;">Expiring soon</span>` : ''}${canDelete ? `<button class="btn-danger-outline" onclick="deletePendingSource('${source.type}', ${source.id})">Delete</button>` : ''}${canRetry ? `<button class="btn-primary btn-sm" onclick="retryPendingSource('${source.type}', ${source.id})">Retry</button>` : ''}</div></div>${source.error_message ? `<div style="font-size:11px;color:var(--danger);margin-top:4px;">${escapeHtml(friendlyApiError(source.error_message))}</div>` : ''}</div>`;
-    });
-    html += `</div>`;
-    container.innerHTML = html;
+
+function renderHookRows() {
+    const holder = document.getElementById('hookRowsHolder');
+    if (!holder) return;
+    holder.innerHTML = hookRows.map((row, idx) => {
+        if (row.locked) {
+            return `<div class="hook-row-card"><div class="hook-row-head"><span class="hook-row-label">Source ${idx + 1} — from My sources</span></div><div style="font-size:13px;font-weight:700;">${escapeHtml(row.instName)}</div><div style="font-size:11px;color:var(--text-dim);margin-bottom:10px;">${escapeHtml(row.identifier)}</div><div class="field-group"><label>Amount to authorize</label><input type="number" placeholder="0.00" value="${row.amount}" oninput="hookRows.find(r=>r.id===${row.id}).amount=this.value"></div></div>`;
+        }
+        const typeOptions = HOOK_ASSET_TYPES.map(t => `<div class="source-type-opt ${row.assetType === t.key ? 'active' : ''}" onclick="setHookRowAssetType(${row.id}, '${t.key}')"><span class="icon">${t.icon}</span>${t.label}</div>`).join('');
+        let extraFields = '';
+        let institutionField = '';
+        if (row.assetType) {
+            const eligibleCodes = Object.keys(PARTICIPANTS).filter(code => (PARTICIPANTS[code].asset_types || []).map(t => String(t).toUpperCase()).includes(row.assetType === 'VOUCHER' ? 'VOUCHER' : row.assetType));
+            const options = eligibleCodes.map(code => `<option value="${code}" ${row.institution === code ? 'selected' : ''}>${PARTICIPANTS[code]?.name || code}</option>`).join('');
+            institutionField = `<div class="field-group"><label>Institution</label><select onchange="hookRows.find(r=>r.id===${row.id}).institution=this.value; renderHookRows();"><option value="">Select institution</option>${options}</select></div>`;
+            const cfg = getAssetConfig(row.assetType);
+            const pinField = (cfg?.fields || []).find(f => f.vault_field === 'pin');
+            if (pinField) extraFields = `<div class="field-group"><label>${pinField.label}</label><input type="password" placeholder="${pinField.placeholder || ''}" value="${row.pin}" oninput="hookRows.find(r=>r.id===${row.id}).pin=this.value"></div>`;
+        }
+        return `<div class="hook-row-card">
+            <div class="hook-row-head"><span class="hook-row-label">Source ${idx + 1}</span>${hookMode === 'multi' && hookRows.length > 1 ? `<button class="hook-row-remove" onclick="removeHookRow(${row.id})">Remove</button>` : ''}</div>
+            <div class="source-type-picker">${typeOptions}</div>
+            ${row.assetType ? `
+                ${institutionField}
+                <div class="field-group"><label>Identifier</label><input placeholder="Account, phone, or voucher number" value="${escapeHtml(row.identifier)}" oninput="hookRows.find(r=>r.id===${row.id}).identifier=this.value"></div>
+                ${extraFields}
+                <div class="field-group"><label>Amount to authorize</label><input type="number" placeholder="0.00" value="${row.amount}" oninput="hookRows.find(r=>r.id===${row.id}).amount=this.value"></div>
+            ` : ''}
+        </div>`;
+    }).join('');
 }
-function getSourceStatusLabel(source) { return { pending_confirmation: 'Pending Confirmation', pending: 'Pending', proposed: 'Proposed', otp_pending: 'OTP Verification', oauth_pending: 'OAuth Verification', cancelled: 'Cancelled', rejected: 'Rejected', failed: 'Failed', expired: 'Expired' }[source.status] || source.status; }
-function getSourceStatusClass(source) { return { pending_confirmation: 'pending', pending: 'pending', proposed: 'pending', otp_pending: 'pending', oauth_pending: 'pending', cancelled: 'inactive', rejected: 'inactive', failed: 'inactive', expired: 'inactive' }[source.status] || 'pending'; }
-function getSourceTypeLabel(source) { return { user_source: 'Source', agent_destination: 'Agent Destination', registration_attempt: 'Verification Attempt', agent_attempt: 'Agent Verification' }[source.type] || source.type; }
-async function deletePendingSource(type, sourceId) {
-    showConfirm('Delete this pending source? It can be re-added later.', async () => {
-        const result = await callApi(CONFIG.API_BASE + '/api/v1/sources/delete.php', { type, source_id: sourceId });
-        if (!result.ok) { showMessage('Could not delete that source: ' + friendlyApiError(result.error), 'error'); return; }
-        showMessage(result.body.data?.message || 'Source deleted successfully.', 'success');
-        loadPendingSources();
-    });
+
+function promptHookThisSource(prefill) {
+    pendingHookPrefill = prefill;
+    const bodyHtml = `
+        <div style="text-align:center;padding:10px 0 20px;">
+            <div style="font-size:13px;color:var(--text-muted);margin-bottom:18px;">Where should this source be hooked?</div>
+            <div class="cta-row" style="flex-direction:column;gap:10px;">
+                <button class="btn btn-primary" onclick="closeModal(); openHookBuilder('source', pendingHookPrefill);">My VouchMorph Card</button>
+                <button class="btn btn-secondary" onclick="openAnotherCardChooser()">Another VouchMorph Card</button>
+            </div>
+        </div>`;
+    openModal('Hook this source', bodyHtml);
 }
-async function retryPendingSource(type, sourceId) {
-    showConfirm('Retry this source? This will start a new verification attempt.', async () => {
-        const result = await callApi(CONFIG.API_BASE + '/api/v1/sources/retry.php', { type, source_id: sourceId });
-        if (!result.ok) { showMessage('Could not retry that source: ' + friendlyApiError(result.error), 'error'); return; }
-        const data = result.body.data || {};
-        if (data.requires_redirect) { showMessage(data.message || 'Redirecting to bank...', 'info'); setTimeout(() => { window.location.href = data.redirect_url; }, 1500); return; }
-        if (data.requires_otp) { showMessage(data.message || 'OTP sent. Enter the code to verify.', 'success'); loadPendingSources(); return; }
-        showMessage(data.message || 'Source retry initiated successfully.', 'success');
-        loadPendingSources();
+
+function openAnotherCardChooser() {
+    const bodyHtml = `
+        <div style="padding:10px 0 4px;">
+            <div class="field-group"><label>Card number or suffix</label><input id="manualCardNumber" placeholder="e.g. last 4 digits or full number"></div>
+            <div class="cta-row"><button class="btn btn-primary" onclick="submitManualCardNumberForHook()">Continue</button></div>
+            <div style="text-align:center;margin:16px 0;font-size:11px;color:var(--text-dim);">or</div>
+            <button class="btn btn-secondary" onclick="openScanToHookModal()">Scan their QR code instead</button>
+        </div>`;
+    openModal('Hook to another card', bodyHtml);
+}
+
+async function submitManualCardNumberForHook() {
+    const raw = document.getElementById('manualCardNumber')?.value.trim();
+    if (!raw) { showMessage('Enter a card number.', 'warning'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/LookupBySuffix.php', { card_suffix: raw });
+    if (!result.ok) { showMessage('Couldn\'t find that card: ' + friendlyApiError(result.error), 'error'); return; }
+    const { card_suffix, display_name } = result.body.data;
+    confirmHookTargetCard(card_suffix, display_name);
+}
+
+function confirmHookTargetCard(card_suffix, display_name) {
+    const bodyHtml = `
+        <div style="text-align:center;padding:16px;">
+            <div style="font-size:14px;margin-bottom:16px;">You're about to hook this source to <strong>${escapeHtml(display_name)}'s</strong> VouchMorph Card.</div>
+            <div class="cta-row">
+                <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="beginHookToOtherCard('${escapeHtml(card_suffix)}', '${escapeHtml(display_name)}')">Continue</button>
+            </div>
+        </div>`;
+    openModal('Confirm', bodyHtml);
+}
+
+function beginHookToOtherCard(cardSuffix, displayName) {
+    closeModal();
+    hookEntry = { source: 'source', targetCardSuffix: cardSuffix };
+    hookRows = []; hookRowSeq = 0; hookMode = 'single';
+    addHookRow(pendingHookPrefill);
+    setHookMode('single');
+    document.getElementById('hookEyebrow').textContent = `Hook to ${displayName}'s Card`;
+    document.getElementById('hookEntryNote').textContent = "Started from your source — hooking it to someone else's card.";
+    document.getElementById('hookModeRow').style.display = 'flex';
+    document.getElementById('addHookRowBtn').style.display = 'none';
+    document.getElementById('hookSubmitBtn').style.display = 'block';
+    document.getElementById('hookFinePrint').style.display = 'block';
+    pushView('hook');
+}
+
+function openScanToHookModal() {
+    const bodyHtml = `
+        <div id="qrScannerRegion" style="width:100%;"></div>
+        <div style="text-align:center;margin:12px 0;font-size:11px;color:var(--text-dim);">or</div>
+        <div class="field-group"><label>Paste the card's code manually</label><input id="manualQrPaste" placeholder="Paste QR text if you can't scan"></div>
+        <div class="cta-row"><button class="btn btn-primary" onclick="submitManualQr()">Continue</button></div>`;
+    openModal('Scan a card', bodyHtml);
+    try {
+        html5QrScanner = new Html5Qrcode('qrScannerRegion');
+        html5QrScanner.start({ facingMode: 'environment' }, { fps: 10, qrbox: 220 }, (decodedText) => { html5QrScanner.stop().catch(() => {}); resolveScannedQr(decodedText); }, () => {})
+            .catch((e) => { console.warn('[card-qr] camera scan unavailable, manual paste only:', e); });
+    } catch (e) { console.warn('[card-qr] Html5Qrcode not available, manual paste only:', e); }
+}
+
+function submitManualQr() {
+    const raw = document.getElementById('manualQrPaste')?.value.trim();
+    if (!raw) { showMessage('Paste the code first, or use the camera scanner above.', 'warning'); return; }
+    resolveScannedQr(raw);
+}
+
+async function resolveScannedQr(raw) {
+    if (html5QrScanner) { try { await html5QrScanner.stop(); } catch (e) {} }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/Resolveqr.php', { raw });
+    if (!result.ok) { showMessage('Couldn\'t read that code: ' + friendlyApiError(result.error), 'error'); return; }
+    const { card_suffix, display_name } = result.body.data;
+    confirmHookTargetCard(card_suffix, display_name);
+}
+
+// ============================================================
+// CARD VIEW
+// ============================================================
+async function loadCardView() {
+    const body = document.getElementById('cardViewBody');
+    if (!body) return;
+    body.innerHTML = `<div style="text-align:center;padding:40px 0;"><div class="spinner" style="border-color:rgba(16,30,27,0.15);border-top-color:var(--primary);"></div> Loading...</div>`;
+    try {
+        const result = await callApiGet(CONFIG.API_BASE + '/api/v1/cards/My.php');
+        if (!result.ok) {
+            body.innerHTML = `<div style="color:var(--danger);padding:12px;text-align:center;"><div style="font-weight:700;margin-bottom:6px;">Couldn't load your card</div><div style="font-size:12px;">${escapeHtml(friendlyApiError(result.error))}</div><button class="btn btn-secondary btn-sm" onclick="loadCardView()" style="margin-top:12px;width:auto;">Retry</button></div>`;
+            return;
+        }
+        myCard = result.body.data;
+        body.innerHTML = renderCardViewBody();
+        if (myCard.is_active && myCard.qr_payload) renderCardQr(myCard.qr_payload);
+        if (myCard.active_session) { lastKnownSession = myCard.active_session; startSessionPolling(myCard.active_session.session_id); }
+    } catch (e) {
+        body.innerHTML = `<div style="color:var(--danger);padding:12px;text-align:center;"><div style="font-weight:700;margin-bottom:6px;">Something went wrong loading your card</div><div style="font-size:12px;">${escapeHtml(e.message || String(e))}</div><button class="btn btn-secondary btn-sm" onclick="loadCardView()" style="margin-top:12px;width:auto;">Retry</button></div>`;
+    }
+}
+
+function renderCardViewBody() {
+    if (!myCard) return '<div>No card data</div>';
+    if (!myCard.is_active) {
+        return `<div style="text-align:center;padding:10px 0 20px;">
+            <div style="font-weight:700;font-size:16px;margin-bottom:6px;">Your VouchMorph Card is ready</div>
+            <div style="font-size:12px;color:var(--text-muted);max-width:320px;margin:0 auto 18px;">It's issued but not active yet — activate it once with a small one-time fee from any of your linked sources, and it's ready to use.</div>
+            <div style="font-family:var(--font-mono);font-size:14px;font-weight:700;margin-bottom:4px;">•••• ${escapeHtml(myCard.card_suffix)}</div>
+            <div style="font-size:12px;color:var(--text-dim);margin-bottom:18px;">Activation fee: ${formatMoney(myCard.activation_fee, myCard.currency)}</div>
+            <div class="cta-row"><button class="btn btn-primary" onclick="openActivateCardModal()">Activate my card</button></div>
+            <div style="margin-top:14px;"><span class="quick-link muted" onclick="openHelpModal()">How does this work? →</span></div>
+        </div>`;
+    }
+    const hook = myCard.hook;
+    const contributorsHtml = hook && hook.contributors.length ? hook.contributors.map(c => `
+        <div class="myc-source-row">
+            <div class="myc-source-tile">${escapeHtml(institutionInitials(c.institution))}</div>
+            <div class="myc-source-info"><div class="myc-source-inst">${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)}${c.is_me ? ' <span style="color:var(--accent);font-weight:700;">(you)</span>' : ''}</div><div class="myc-source-ident">${escapeHtml(c.source_identifier)}</div></div>
+            <div style="text-align:right;">
+                <div class="myc-source-amt">${formatMoney(c.held_amount, hook.currency)}</div>
+                <span class="source-status-badge open">Open</span>
+            </div>
+        </div>`).join('') : `<div style="font-size:12px;color:var(--text-dim);padding:8px 0;">No sources hooked yet.</div>`;
+    const cardName = myCard.display_name || (Journey.read().cardNamed ? Journey.read().cardNamed : null);
+
+    return `
+        <div class="myc-layout">
+            <div class="myc-qr-panel">
+                <div class="myc-card-visual">
+                    <div class="myc-card-top"><div class="myc-card-mark">VouchMorph<sup>TM</sup></div><div class="myc-card-status active">Active</div></div>
+                    <div class="myc-card-bottom"><div class="myc-card-number">•••• •••• •••• ${escapeHtml(myCard.card_suffix)}</div><div class="myc-card-name">${cardName ? escapeHtml(cardName) : 'VouchMorph Card'}</div></div>
+                </div>
+                <div class="qr-tap-target" onclick="goQrFull()">
+                    <div class="myc-qr-frame" id="cardQrContainer"></div>
+                    <div class="myc-qr-caption">Scan to hook a source to this card</div>
+                    <div class="myc-qr-tap-hint">Tap to view full screen &rsaquo;</div>
+                </div>
+                ${cardName ? '' : `<div style="margin-top:12px;"><span class="quick-link muted" onclick="openNameCardModal()">Give your card a name →</span></div>`}
+                <div class="cta-row" style="margin-top:20px;width:100%;">
+                    <button class="btn btn-secondary" onclick="openHookBuilder('card')">Hook a source</button>
+                    ${hook && hook.contributors.length ? `<button class="btn btn-primary" onclick="openCreateSessionModal(myCard.card_suffix)">Start a swap</button>` : ''}
+                </div>
+                ${hook && hook.contributors.length ? `<button class="btn secondary" style="margin-top:10px;" onclick="goView('swap'); setTimeout(()=>setSwapSourceMode('VMCARD'), 30);">Use this card as a Swap source</button>` : ''}
+                <div style="margin-top:14px;"><span class="quick-link muted" onclick="pendingHookPrefill=null; openScanToHookModal()">Hook to someone else's card (scan their QR)</span></div>
+            </div>
+            <div>
+                <div class="myc-panel">
+                    <div class="myc-panel-head"><span class="myc-panel-title">Hooked sources</span>${hook ? `<span class="myc-panel-total">${formatMoney(hook.total_held, hook.currency)}</span>` : ''}</div>
+                    ${hook ? `<div class="help" style="margin-bottom:6px;">Held until ${new Date(hook.expires_at).toLocaleString()} — releases automatically after 24 hours if it isn't spent first.</div>` : ''}
+                    ${contributorsHtml}
+                    ${hook && hook.contributors.length ? `<button class="btn secondary" style="margin-top:14px;" onclick="openUnhook({hookReference: hook.hook_reference, count: hook.contributors.length, amount: formatMoney(hook.total_held, hook.currency)})">Unhook everything</button>` : ''}
+                </div>
+                <div id="sessionStatusArea">${myCard.active_session ? renderSessionStatus(myCard.active_session) : ''}</div>
+            </div>
+        </div>`;
+}
+
+function renderCardQr(payloadText) {
+    const el = document.getElementById('cardQrContainer');
+    if (!el || typeof QRCode === 'undefined') return;
+    el.innerHTML = '';
+    new QRCode(el, { text: payloadText, width: 176, height: 176 });
+}
+
+function goQrFull() {
+    if (!myCard || !myCard.qr_payload) { showMessage("Card QR isn't ready yet.", 'warning'); return; }
+    document.getElementById('qrFullSuffix').textContent = '•••• ' + myCard.card_suffix;
+    document.getElementById('qrFullName').textContent = (myCard.display_name || Journey.read().cardNamed) || 'VouchMorph Card';
+    pushView('qrfull');
+    const holder = document.getElementById('qrHolderLg');
+    if (holder) { holder.innerHTML = ''; new QRCode(holder, { text: myCard.qr_payload, width: 300, height: 300 }); }
+}
+
+function openNameCardModal() {
+    const bodyHtml = `<div style="text-align:center;padding:6px 0 10px;font-size:12px;color:var(--text-muted);">Give your card a name — just for you, shown wherever you see it.</div><div class="field-group"><label>Card name</label><input id="cardNameInput" placeholder="e.g. Thabo's Card" maxlength="30"></div><div class="cta-row"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveCardName()">Save</button></div>`;
+    openModal('Name your card', bodyHtml);
+}
+
+function saveCardName() {
+    const name = document.getElementById('cardNameInput')?.value.trim();
+    if (!name) { showMessage('Enter a name first.', 'warning'); return; }
+    const data = Journey.read(); data.cardNamed = name; Journey.write(data);
+    showMessage(`Saved — meet "${name}". 🎉`, 'success');
+    closeModal(); loadCardView();
+}
+
+function openActivateCardModal() {
+    returnMovableNodesHome();
+    const modalBody = document.getElementById('modalBody');
+    if (!modalBody) return;
+    modalBody.innerHTML = '';
+    modalBody.appendChild(document.getElementById('fromSection'));
+    state.fromCategory = 'WALLET'; toggleSourcePanelInline('WALLET');
+    const feeNote = document.createElement('div');
+    feeNote.style.cssText = 'font-size:12px;color:var(--text-dim);text-align:center;margin-top:10px;';
+    feeNote.textContent = `A one-time ${formatMoney(myCard.activation_fee, myCard.currency)} activation fee will be charged from the source you select.`;
+    modalBody.appendChild(feeNote);
+    const btnRow = document.createElement('div');
+    btnRow.className = 'cta-row'; btnRow.style.marginTop = '14px';
+    btnRow.innerHTML = `<button type="button" class="btn btn-primary" onclick="confirmActivateCard('${myCard.card_suffix}')">Pay and activate</button>`;
+    modalBody.appendChild(btnRow);
+    document.getElementById('modalTitle').textContent = 'Activate your card';
+    document.getElementById('modal').classList.add('active');
+}
+
+// ============================================================
+// SESSION HELPERS
+// ============================================================
+function startSessionPolling(sessionId) {
+    stopSessionPolling();
+    activeSessionPollTimer = setInterval(async () => {
+        const result = await callApiGet(CONFIG.API_BASE + '/api/v1/cards/ContributionStatus.php?session_id=' + sessionId);
+        if (!result.ok) return;
+        const session = result.body.data;
+        lastKnownSession = session;
+        const area = document.getElementById('sessionStatusArea');
+        if (area) area.innerHTML = renderSessionStatus(session);
+        if (['COMPLETED', 'CANCELLED', 'EXPIRED', 'FAILED'].includes(session.status)) stopSessionPolling();
+    }, 3000);
+}
+
+function stopSessionPolling() { if (activeSessionPollTimer) { clearInterval(activeSessionPollTimer); activeSessionPollTimer = null; } }
+
+function renderSessionStatus(session) {
+    const preview = session.preview || { total_target: session.target_amount, total_covered: 0, remaining: session.target_amount, contributors: [] };
+    const pct = preview.total_target > 0 ? Math.min(100, (preview.total_covered / preview.total_target) * 100) : 0;
+    const contributors = preview.contributors || [];
+    const avatarsHtml = contributors.map(c => {
+        const hasContributed = (c.amount || 0) > 0;
+        return `<div class="myc-avatar-tile ${c.is_me ? 'you' : ''} ${hasContributed ? '' : 'pending'}" title="${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)}">${escapeHtml(institutionInitials(c.institution))}</div>`;
+    }).join('');
+    const contributedCount = contributors.filter(c => (c.amount || 0) > 0).length;
+    const rowsHtml = contributors.map(c => `<div class="myc-contributor-row"><div class="myc-contributor-tile">${escapeHtml(institutionInitials(c.institution))}</div><span class="myc-contributor-name">${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)} · ${escapeHtml(c.source_identifier)}${c.below_minimum ? ' <span style="color:var(--warning);">(below minimum — won\'t be included)</span>' : ''}</span><span class="myc-contributor-amt">${formatMoney(c.amount, session.currency)}</span></div>`).join('');
+    const manualInput = session.strategy === 'MANUAL' ? `<div class="field-group" style="margin-top:10px;"><label>Your contribution</label><div style="display:flex;gap:8px;"><input type="number" id="myManualAmount" min="0" step="0.01" placeholder="0.00" style="flex:1;"><button class="btn btn-secondary btn-sm" onclick="submitMyManualAmount(${session.session_id})">Set</button></div></div>` : '';
+    return `<div class="myc-panel"><div class="myc-panel-head"><span class="myc-panel-title">Swap in progress — ${escapeHtml(session.strategy)}</span></div><div class="myc-swap-strip">${avatarsHtml}<span class="myc-swap-strip-label">${contributors.length} hooked, ${contributedCount} have contributed</span></div><div class="comp-bar-track"><div class="comp-bar-seg" style="width:${pct}%;background:var(--accent);"></div></div><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:14px;"><span style="font-weight:700;font-family:var(--font-mono);">${formatMoney(preview.total_covered, session.currency)} of ${formatMoney(preview.total_target, session.currency)}</span><span style="color:var(--text-dim);">${preview.remaining > 0 ? formatMoney(preview.remaining, session.currency) + ' remaining' : 'Fully covered — ready to go! 🎉'}</span></div>${rowsHtml}${manualInput}<div class="cta-row" style="margin-top:14px;"><button class="btn btn-secondary" onclick="cancelSession(${session.session_id})">Cancel</button><button class="btn btn-primary" ${session.can_execute ? '' : 'disabled'} onclick="openSwipePreview(${session.session_id})">${session.can_execute ? 'Ready to swipe' : 'Waiting for full coverage…'}</button></div></div>`;
+}
+
+function openCreateSessionModal(cardSuffix) {
+    const instOptions = Object.keys(PARTICIPANTS).map(c => `<option value="${c}">${PARTICIPANTS[c]?.name || c}</option>`).join('');
+    const bodyHtml = `
+        <div class="field-group"><label>Amount to pay</label><input type="number" id="sessTarget" min="0.01" step="0.01" placeholder="0.00"></div>
+        <div class="field-group"><label>Currency</label><select id="sessCurrency">${[...new Set(Object.values(PARTICIPANTS).map(p => p?.limits?.currency).filter(Boolean))].map(c => `<option value="${c}" ${c === (myCard.hook?.currency || myCard.currency) ? 'selected' : ''}>${c}</option>`).join('') || `<option value="${myCard.hook?.currency || myCard.currency || 'BWP'}">${myCard.hook?.currency || myCard.currency || 'BWP'}</option>`}</select></div>
+        <div class="field-group"><label>Destination institution</label><select id="sessToInst"><option value="">Select</option>${instOptions}</select></div>
+        <div class="field-group"><label>Destination account/wallet number</label><input id="sessToIdentifier" placeholder="Account number or phone"></div>
+        <div class="field-group"><label>Strategy — how should contributions split?</label>
+            <select id="sessStrategy">
+                <option value="SMART" selected>Smart (recommended) — VouchMorph balances it automatically</option>
+                <option value="EQUAL">Equal — split evenly across hooked sources</option>
+                <option value="RATIO">Ratio — proportional to each source's balance</option>
+                <option value="MANUAL">Manual — each person enters their own amount</option>
+            </select>
+        </div>
+        <div style="font-size:11px;color:var(--text-dim);margin-bottom:12px;">Everyone currently hooked will see this in real time. A small VouchMorph fee applies on top of the amount to pay, the same way it does for Combine Sources — the exact fee shows on the preview before you swipe.</div>
+        <div class="cta-row"><button class="btn btn-primary" onclick="submitCreateSession('${cardSuffix}')">Start swap</button></div>`;
+    openModal('Start a swap', bodyHtml);
+}
+
+async function submitCreateSession(cardSuffix) {
+    const target = parseFloat(document.getElementById('sessTarget')?.value);
+    const currency = document.getElementById('sessCurrency')?.value.trim();
+    const toInst = document.getElementById('sessToInst')?.value;
+    const toIdentifier = document.getElementById('sessToIdentifier')?.value.trim();
+    const strategy = document.getElementById('sessStrategy')?.value;
+    if (!(target > 0)) { showMessage('Enter the amount to pay.', 'warning'); return; }
+    if (!toInst || !toIdentifier) { showMessage('Select a destination institution and enter an account/wallet number.', 'warning'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/Create.php', { card_suffix: cardSuffix, target_amount: target, currency, strategy, to_institution: toInst, destination_identifier: toIdentifier });
+    if (!result.ok) { showMessage('Couldn\'t start that swap: ' + friendlyApiError(result.error), 'error'); return; }
+    showMessage('Swap started.', 'success');
+    closeModal(); loadCardView();
+}
+
+async function submitMyManualAmount(sessionId) {
+    const amount = parseFloat(document.getElementById('myManualAmount')?.value);
+    if (isNaN(amount) || amount < 0) { showMessage('Enter a valid amount.', 'warning'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/Contribute.php', { session_id: sessionId, amount });
+    if (!result.ok) { showMessage('Couldn\'t set that contribution: ' + friendlyApiError(result.error), 'error'); return; }
+    lastKnownSession = result.body.data;
+    const area = document.getElementById('sessionStatusArea');
+    if (area) area.innerHTML = renderSessionStatus(result.body.data);
+}
+
+async function cancelSession(sessionId) {
+    showConfirm('Cancel this swap session? The hooked sources stay held for a new swap — this only cancels the swap attempt itself, not the holds.', async () => {
+        const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/cancel.php', { session_id: sessionId, reason: 'Cancelled by owner' });
+        if (!result.ok) { showMessage('Couldn\'t cancel: ' + friendlyApiError(result.error), 'error'); return; }
+        stopSessionPolling();
+        showMessage('Swap cancelled — hooked sources are still held for next time.', 'info');
+        loadCardView();
     });
 }
 
 // ============================================================
-// TOOLBOX — persistent view. "My sources" rows each carry a
-// "Hook to card" quick action (source-side hook entry, alongside
-// the card-side entry from the Card view itself).
+// ACTIVITY
+// ============================================================
+async function loadActivityView() {
+    const body = document.getElementById('activityViewBody');
+    if (!body) return;
+    body.innerHTML = `<div style="text-align:center;padding:40px 0;"><div class="spinner" style="border-color:rgba(16,30,27,0.15);border-top-color:var(--primary);"></div> Loading swaps...</div>`;
+    if (!CONFIG.USER_ID) { body.innerHTML = `<div style="text-align:center;padding:30px;color:var(--danger);"><div style="font-weight:700;">Could not identify your account</div><div style="font-size:12px;color:var(--text-muted);margin-top:8px;">Your session doesn't have a user ID attached. Try logging out and back in.</div></div>`; return; }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/history.php', { user_id: CONFIG.USER_ID, limit: 50 });
+    if (!result.ok) { body.innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">Couldn't load swap history: ${escapeHtml(friendlyApiError(result.error))}</div>`; return; }
+    renderActivityBody(result.body);
+}
+
+function renderActivityBody(data) {
+    const swaps = data.data || data.swaps || [];
+    const body = document.getElementById('activityViewBody');
+    if (!body) return;
+    if (swaps.length === 0) { body.innerHTML = `<div style="text-align:center;padding:30px;color:var(--text-muted);"><div style="font-weight:700;">No swaps yet</div><div style="font-size:12px;margin-top:8px;">Once you make your first swap, it'll show up here.</div></div>`; return; }
+    let html = `<div class="field-group" style="margin-bottom:16px;"><input id="activitySearchInput" placeholder="Search by type, institution, or reference…" oninput="filterActivity(this.value)" style="font-size:15px;padding:14px 16px;"></div>`;
+    html += `<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;" id="activityCount">Showing ${swaps.length} swap(s)</div>`;
+    html += `<div id="activityRowsHolder">`;
+    swaps.forEach((swap) => {
+        const statusColor = swap.status === 'completed' || swap.status === 'success' ? 'var(--success)' : swap.status === 'pending' ? 'var(--warning)' : 'var(--danger)';
+        const code = swap.voucher_number || null, pin = swap.atm_pin || null, claimPin = swap.claim_pin || null;
+        const hasCode = !!(code || pin || claimPin);
+        const codeInlineHtml = hasCode ? `<div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);display:flex;gap:16px;flex-wrap:wrap;">${code ? `<div><div style="font-size:10px;color:var(--text-dim);">Code</div><div style="font-family:var(--font-mono);font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(code)}</div></div>` : ''}${pin ? `<div><div style="font-size:10px;color:var(--text-dim);">PIN</div><div style="font-family:var(--font-mono);font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(pin)}</div></div>` : ''}${claimPin ? `<div><div style="font-size:10px;color:var(--text-dim);">Claim PIN</div><div style="font-family:var(--font-mono);font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(claimPin)}</div></div>` : ''}</div>` : '';
+        const searchBlob = escapeHtml([swap.swap_type, swap.reference, swap.swap_reference, swap.source_institution, swap.destination_institution, swap.status].filter(Boolean).join(' '));
+        html += `<div class="myc-panel" style="cursor:pointer;margin-bottom:8px;" data-search="${searchBlob.toLowerCase()}" onclick="viewSwapDetail('${swap.reference || swap.swap_reference || 'N/A'}')"><div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;"><div><div style="font-weight:700;">${swap.swap_type || 'SWAP'} <span style="font-size:11px;color:var(--text-muted);">${swap.reference || swap.swap_reference || ''}</span></div><div style="font-size:12px;color:var(--text-muted);">${swap.source_institution || 'Unknown'} → ${swap.destination_institution || 'Unknown'}</div></div><div style="text-align:right;"><div style="font-weight:700;color:var(--accent);font-family:var(--font-mono);">${formatMoney(swap.amount, swap.currency)}</div><div style="font-size:11px;color:${statusColor};">${swap.status || 'unknown'}</div></div></div>${codeInlineHtml}</div>`;
+    });
+    html += `</div>`;
+    body.innerHTML = html;
+}
+
+function filterActivity(query) {
+    const q = query.trim().toLowerCase();
+    const rows = document.querySelectorAll('#activityRowsHolder [data-search]');
+    let visibleCount = 0;
+    rows.forEach(row => {
+        const matches = !q || row.dataset.search.includes(q);
+        row.style.display = matches ? '' : 'none';
+        if (matches) visibleCount++;
+    });
+    const countEl = document.getElementById('activityCount');
+    if (countEl) countEl.textContent = q ? `${visibleCount} match${visibleCount === 1 ? '' : 'es'}` : `Showing ${rows.length} swap(s)`;
+}
+
+async function viewSwapDetail(reference) {
+    openModal('Swap details', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading details...</div>');
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/details.php', { reference });
+    if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">Couldn't load swap details: ${escapeHtml(friendlyApiError(result.error))}</div>`; return; }
+    renderSwapDetail(result.body);
+}
+
+function renderSwapDetail(data) {
+    const swap = data.swap || data.data || {};
+    const code = swap.voucher_number || null, pin = swap.atm_pin || null;
+    const codeBox = (code || pin) ? `<div class="atm-code" style="margin-bottom:12px;">${code ? `<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Cashout / Voucher Code</div><div class="code">${escapeHtml(code)}</div>` : ''}${pin ? `<div style="font-size:11px;color:var(--text-muted);margin:${code ? '10px' : '0'} 0 4px;">PIN</div><div class="code">${escapeHtml(pin)}</div>` : ''}${swap.voucher_expiry ? `<div style="font-size:11px;color:var(--text-dim);margin-top:8px;">Expires ${new Date(swap.voucher_expiry).toLocaleString()}</div>` : ''}</div>` : '';
+    document.getElementById('modalBody').innerHTML = `<div style="max-height:70vh;overflow-y:auto;"><div style="background:var(--accent-soft);padding:16px;margin-bottom:12px;"><div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;"><div><div style="font-size:12px;color:var(--text-muted);">Reference</div><div style="font-weight:700;">${swap.reference || swap.swap_reference || 'N/A'}</div></div><div><div style="font-size:12px;color:var(--text-muted);">Status</div><div style="font-weight:700;">${swap.status || 'unknown'}</div></div></div></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;"><div style="background:var(--surface);border:1px solid var(--border);padding:12px;"><div style="font-size:11px;color:var(--text-muted);">Swap type</div><div style="font-weight:700;">${swap.swap_type || 'N/A'}</div></div><div style="background:var(--surface);border:1px solid var(--border);padding:12px;"><div style="font-size:11px;color:var(--text-muted);">Amount</div><div style="font-weight:700;font-size:16px;color:var(--accent);font-family:var(--font-mono);">${formatMoney(swap.amount, swap.currency)}</div></div></div>${codeBox}<div style="margin-top:12px;"><button class="btn btn-secondary" onclick="closeModal()" style="width:100%;">Close</button></div></div>`;
+}
+
+// ============================================================
+// TOOLBOX
 // ============================================================
 async function loadToolboxView() {
     const body = document.getElementById('toolboxViewBody');
+    if (!body) return;
     body.innerHTML = `<div style="text-align:center;padding:40px 0;"><div class="spinner" style="border-color:rgba(16,30,27,0.15);border-top-color:var(--primary);"></div> Loading...</div>`;
     await getCurrentUserRole();
     await loadUserSources();
     body.innerHTML = renderToolboxBody();
 }
+
 function renderToolboxBody() {
     const claimCount = pendingClaims.length;
     const isAgent = !!(SessionUser && SessionUser.is_agent);
@@ -2857,10 +3543,6 @@ function renderToolboxBody() {
 
     const progressHtml = doneCount < steps.length ? `<div style="background:var(--surface-muted);border:1px solid var(--border);padding:14px 16px;margin-bottom:20px;"><div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:var(--text-dim);margin-bottom:8px;">Getting set up — ${doneCount}/${steps.length}</div>${steps.map(s => `<div style="font-size:13px;color:${s.done ? 'var(--success)' : 'var(--text-muted)'};padding:3px 0;">${s.done ? '✓' : '○'} ${s.label}</div>`).join('')}</div>` : '';
 
-    // Each group is a native <details> accordion so the page doesn't
-    // scroll forever — only "Money" (and "Identity" when something's
-    // waiting) start open. data-search carries a plain-text label per
-    // row so the search box above can filter without re-rendering.
     const groupsHtml = groups.map((g, gi) => `
         <details class="toolbox-accordion" ${g.open ? 'open' : ''} data-group-idx="${gi}">
             <summary class="toolbox-accordion-summary">${g.title}<span class="toolbox-accordion-arrow">&rsaquo;</span></summary>
@@ -2889,9 +3571,7 @@ function renderToolboxBody() {
             </div>
         </details>`;
 }
-// Filters rows by their data-search text; auto-opens any accordion
-// that still has a visible match so results are never hidden inside
-// a collapsed section, and shows a plain "no matches" note otherwise.
+
 function filterToolbox(query) {
     const q = query.trim().toLowerCase();
     const accordions = document.querySelectorAll('#toolboxViewBody .toolbox-accordion');
@@ -2923,170 +3603,85 @@ function filterToolbox(query) {
         noResults.remove();
     }
 }
+
 function updateToolboxBadge() {
     const badge = document.getElementById('toolboxBadge');
     if (!badge) return;
     const totalPending = pendingSources.length + pendingClaims.length;
     if (totalPending > 0) { badge.style.display = 'inline-flex'; badge.textContent = totalPending; } else { badge.style.display = 'none'; }
 }
-function hookSelectedSourceToCard() {
-    const idField = (getAssetConfig(state.fromAsset)?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
-    const identifier = idField ? state.fromFields[idField.name] : '';
-    promptHookThisSource({ instName: PARTICIPANTS[state.fromInst]?.name || state.fromInst, institution: state.fromInst, assetType: state.fromAsset, identifier });
+
+// ============================================================
+// TOOLBOX SUB-FUNCTIONS
+// ============================================================
+async function getCurrentUserRole() {
+    if (SessionUser) return SessionUser;
+    const result = await callApi(CONFIG.API_BASE + '/user/whoami.php', {});
+    SessionUser = (result.ok && result.body) ? result.body : { success: false, role: 'user', is_agent: false, is_admin: false, permissions: [] };
+    renderProgressCard();
+    return SessionUser;
 }
 
-function openFinalizeIdentityModal() { openModal('Finalize identity swap', renderFinalizeIdentityModal()); }
-function renderFinalizeIdentityModal() {
-    const claimsHtml = pendingClaims.length === 0 ? `<div style="font-size:12px;color:var(--text-dim);margin-bottom:16px;">No identity money is currently waiting for you.</div>` : `<div style="margin-bottom:16px;">${pendingClaims.map((c, i) => {
-        const pinLabel = c.claim_type === 'otp_pin' ? 'the OTP PIN sent by SMS' : 'your transaction PIN';
-        const claimPin = c.claim_pin || null, code = c.voucher_number || null, pin = c.atm_pin || null;
-        const hasCode = !!(code || pin || claimPin);
-        const codeInlineHtml = hasCode ? `<div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--border);display:flex;gap:16px;flex-wrap:wrap;">${code ? `<div><div style="font-size:10px;color:var(--text-dim);">Code</div><div style="font-family:var(--font-mono);font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(code)}</div></div>` : ''}${pin ? `<div><div style="font-size:10px;color:var(--text-dim);">PIN</div><div style="font-family:var(--font-mono);font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(pin)}</div></div>` : ''}${claimPin ? `<div><div style="font-size:10px;color:var(--text-dim);">Claim PIN</div><div style="font-family:var(--font-mono);font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(claimPin)}</div></div>` : ''}${c.voucher_expiry ? `<div><div style="font-size:10px;color:var(--text-dim);">Expires</div><div style="font-size:12px;color:var(--text-muted);">${new Date(c.voucher_expiry).toLocaleString()}</div></div>` : ''}</div>` : '';
-        return `<div style="border:1px solid var(--border);padding:13px;margin-bottom:8px;background:#fff;"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;"><div style="flex:1;"><div style="font-weight:700;font-size:15px;color:var(--accent);font-family:var(--font-mono);">${formatMoney(c.amount, c.currency)}</div><div style="font-size:12px;color:var(--text-muted);">From ${escapeHtml(c.source_institution || 'Unknown')}</div><div style="font-size:11px;color:var(--text-dim);">Needs ${pinLabel} · Expires ${c.hold_expires_at ? new Date(c.hold_expires_at).toLocaleString() : 'soon'}</div></div><button class="btn btn-primary btn-sm" onclick="openClaimForm(${i})" style="flex-shrink:0;">Finalize</button></div>${codeInlineHtml}</div>`;
-    }).join('')}</div>`;
-    return `<div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">Money sent to your national ID, phone, or email shows up here. Tap Finalize on any of them — Cashout, Deposit, and Hook to a VouchMorph Card are all options there, so you're not limited to withdrawing it first.</div>${claimsHtml}<div style="border-top:1px solid var(--border);padding-top:16px;margin-top:4px;"><div class="field-label" style="margin-bottom:6px;">Need to claim an identity swap?</div><div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">If you received a swap notification, enter the claim PIN below to complete the transaction.</div><div class="field-group"><label>Swap reference</label><input id="directClaimRef" placeholder="e.g. SWAP_123456789"></div><div class="field-group"><label>Claim PIN</label><input type="password" id="directClaimPin" placeholder="Enter the PIN you received" maxlength="6"></div><div class="cta-row"><button class="btn btn-primary" onclick="submitDirectClaim()">Claim swap</button></div></div><div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px;font-size:11px;color:var(--text-dim);"><span class="quick-link muted" onclick="closeModal();openAddIdentityModal();">Need to register a new identity instead? Click here →</span></div>`;
-}
-// Which card a pending claim-via-hook should target, and which claim
-// index we're mid-way through resolving it for — needed because
-// picking "Another VouchMorph Card" has to temporarily replace this
-// same modal's content (there's only one modal at a time) and then
-// come back to the claim form afterward with the target filled in.
-let claimHookCardSuffix = null;
-let claimHookCardLabel = null;
-let pendingClaimIdxForHook = null;
-
-function openClaimForm(idx) {
-    if (pendingClaimIdxForHook !== idx) { claimHookCardSuffix = null; claimHookCardLabel = null; } // fresh claim, drop any stale target from a different one
-    pendingClaimIdxForHook = idx;
-    const claim = pendingClaims[idx]; if (!claim) return;
-    const pinHint = claim.claim_type === 'otp_pin' ? 'Use the one-time PIN sent by SMS when this money was sent.' : 'Use your VouchMorph transaction PIN.';
-    const body = `<div style="background:var(--accent-soft);padding:14px;margin-bottom:14px;"><div style="font-size:20px;font-weight:600;color:var(--accent);font-family:var(--font-mono);">${formatMoney(claim.amount, claim.currency)}</div><div style="font-size:12px;color:var(--text-muted);">From ${escapeHtml(claim.source_institution || 'Unknown')}</div></div><div class="field-group"><label>Claim PIN</label><input type="password" id="claimPin" inputmode="numeric" maxlength="6" placeholder="••••"><div class="help">${pinHint}</div></div><div class="field-group"><label>Receive as</label><select id="claimDestType" onchange="toggleClaimDestFields(this.value)"><option value="CASHOUT">Cashout (ATM / Agent code)</option><option value="DEPOSIT">Deposit to an account/wallet</option><option value="HOOK" ${claimHookCardSuffix ? 'selected' : ''}>Hook to a VouchMorph Card</option></select></div><div id="claimDepositFields" style="display:none;"><div class="field-group"><label>Destination institution</label><select id="claimDestInst"><option value="">Select institution</option>${Object.keys(PARTICIPANTS).map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('')}</select></div><div class="field-group"><label>Account / wallet number</label><input id="claimDestIdentifier" placeholder="Account number or phone"></div></div><div id="claimHookFields" style="display:${claimHookCardSuffix ? 'block' : 'none'};"><div class="cta-row" style="flex-direction:column;gap:10px;"><button class="btn btn-secondary" onclick="chooseClaimHookTarget('my')">My VouchMorph Card</button><button class="btn btn-secondary" onclick="chooseClaimHookTarget('other')">Another VouchMorph Card</button></div><div style="margin-top:10px;font-size:12px;color:var(--accent);text-align:center;">${claimHookCardSuffix ? `Will hook to ${escapeHtml(claimHookCardLabel || ('•••• ' + claimHookCardSuffix))}` : ''}</div></div><div class="cta-row"><button class="btn btn-secondary" onclick="openFinalizeIdentityModal()">Back</button><button class="btn btn-primary" onclick="submitClaim('${claim.swap_reference}')">Finalize</button></div>`;
-    openModal('Finalize identity swap', body);
-    if (claimHookCardSuffix) toggleClaimDestFields('HOOK');
-}
-function toggleClaimDestFields(type) {
-    document.getElementById('claimDepositFields').style.display = type === 'DEPOSIT' ? 'block' : 'none';
-    document.getElementById('claimHookFields').style.display = type === 'HOOK' ? 'block' : 'none';
-    const sel = document.getElementById('claimDestType');
-    if (sel) sel.value = type;
-}
-// "My Card" resolves instantly (fetching your own card if not already
-// loaded); "Another" swaps this same modal to a small card-number/QR
-// step, then returns to the claim form with the target filled in —
-// same single-modal pattern used everywhere else in the app.
-async function chooseClaimHookTarget(which) {
-    if (which === 'my') {
-        if (!myCard) {
-            const result = await callApiGet(CONFIG.API_BASE + '/api/v1/cards/My.php');
-            if (!result.ok) { showMessage("Couldn't load your card: " + friendlyApiError(result.error), 'error'); return; }
-            myCard = result.body.data;
-        }
-        if (!myCard.is_active) { showMessage('Your VouchMorph Card is not active yet — activate it first from the Card view.', 'warning'); return; }
-        claimHookCardSuffix = myCard.card_suffix;
-        claimHookCardLabel = `your card •••• ${myCard.card_suffix}`;
-        openClaimForm(pendingClaimIdxForHook);
-        return;
+async function loadUserSources() {
+    if (!CONFIG.USER_ID) return;
+    const result = await callApi(CONFIG.API_BASE + '/user/sources.php', {});
+    if (result.ok) {
+        userSources = result.body.data?.sources || [];
+        if (sourcePanelOpenCat === 'WALLET' || state.fromCategory === 'WALLET') renderSavedSourceChips();
+        renderProgressCard();
     }
-    openModal('Enter the other card', `
-        <div class="field-group"><label>Card number or suffix</label><input id="claimOtherCardNumber" placeholder="e.g. last 4 digits or full number"></div>
-        <div class="cta-row"><button class="btn btn-primary" onclick="resolveClaimOtherCard()">Continue</button></div>
-        <div style="text-align:center;margin:16px 0;font-size:11px;color:var(--text-dim);">or</div>
-        <button class="btn btn-secondary" onclick="openScanForClaimHook()">Scan their QR code instead</button>
-        <div class="cta-row" style="margin-top:14px;"><button class="btn secondary" onclick="openClaimForm(pendingClaimIdxForHook)">Back</button></div>`);
+    const pendingResult = await callApi(CONFIG.API_BASE + '/api/v1/sources/pending.php', {});
+    if (pendingResult.ok) { pendingSources = pendingResult.body.data || []; updateToolboxBadge(); }
 }
-async function resolveClaimOtherCard() {
-    const raw = document.getElementById('claimOtherCardNumber').value.trim();
-    if (!raw) { showMessage('Enter a card number.', 'warning'); return; }
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/LookupBySuffix.php', { card_suffix: raw });
-    if (!result.ok) { showMessage("Couldn't find that card: " + friendlyApiError(result.error), 'error'); return; }
-    finishClaimHookTarget(result.body.data.card_suffix, result.body.data.display_name);
+
+async function checkPendingClaims() {
+    if (!CONFIG.USER_ID) return;
+    try { const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/pending_claims.php', {}); if (!result.ok) return; pendingClaims = result.body.data || []; updateToolboxBadge(); }
+    catch (e) { console.error('[claims] Failed to check pending claims', e); }
 }
-function openScanForClaimHook() {
-    openModal('Scan a card', `
-        <div id="qrScannerRegion" style="width:100%;"></div>
-        <div style="text-align:center;margin:12px 0;font-size:11px;color:var(--text-dim);">or paste the code manually above</div>`);
-    try {
-        html5QrScanner = new Html5Qrcode('qrScannerRegion');
-        html5QrScanner.start({ facingMode: 'environment' }, { fps: 10, qrbox: 220 }, async (decodedText) => {
-            html5QrScanner.stop().catch(() => {});
-            const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/Resolveqr.php', { raw: decodedText });
-            if (!result.ok) { showMessage("Couldn't read that code: " + friendlyApiError(result.error), 'error'); return; }
-            finishClaimHookTarget(result.body.data.card_suffix, result.body.data.display_name);
-        }, () => {}).catch((e) => console.warn('[claim-hook-qr] camera scan unavailable:', e));
-    } catch (e) { console.warn('[claim-hook-qr] Html5Qrcode not available:', e); }
+
+function openProfileModal() { openModal('My profile', renderProfileModal()); }
+
+function renderProfileModal() {
+    const rows = savedIdentities.length ? savedIdentities.map((id, i) => `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);"><div><div style="font-size:11px;color:var(--text-muted);">${escapeHtml(IDENTITY_TYPE_LABELS[id.type] || id.type)}</div><div style="font-size:14px;font-weight:700;">${escapeHtml(id.value)}</div></div><div class="quick-actions" style="margin:0;"><span class="quick-link" onclick="useSavedIdentity(${i})">Use</span><span class="quick-link danger" onclick="removeSavedIdentity(${i})">Remove</span></div></div>`).join('') : `<div style="font-size:12px;color:var(--text-dim);">No saved identities yet.</div>`;
+    return `<div style="margin-bottom:12px;"><div style="font-weight:700;margin-bottom:4px;">Your registered identities</div>${rows}</div><div style="border-top:1px solid var(--border);padding-top:16px;"><div class="field-label" style="margin-bottom:8px;">Transaction PIN</div><div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Required to claim money sent to your verified identity. Never share it.</div><div class="field-group"><label>New PIN (4-6 digits)</label><input type="password" id="newPin" inputmode="numeric" maxlength="6" placeholder="••••"></div><div class="field-group"><label>Confirm PIN</label><input type="password" id="confirmPin" inputmode="numeric" maxlength="6" placeholder="••••"></div><div class="cta-row"><button class="btn btn-primary" onclick="setTransactionPin()">Set PIN</button></div></div><div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px;"><span class="quick-link" onclick="closeModal();openAddIdentityModal();">Add a new identity</span><span class="quick-link muted" onclick="closeModal();openFinalizeIdentityModal();">Finalize an identity swap</span></div>`;
 }
-function finishClaimHookTarget(cardSuffix, displayName) {
-    claimHookCardSuffix = cardSuffix;
-    claimHookCardLabel = `${displayName}'s card •••• ${cardSuffix}`;
-    openClaimForm(pendingClaimIdxForHook);
+
+function removeSavedIdentity(idx) { savedIdentities.splice(idx, 1); document.getElementById('modalBody').innerHTML = renderProfileModal(); }
+
+function useSavedIdentity(idx) {
+    const id = savedIdentities[idx]; if (!id) return;
+    closeModal(); goView('swap'); openIdentitySendModal();
+    state.toIdentityType = id.type; state.toIdentityValue = id.value;
+    setTimeout(() => { const typeSel = document.getElementById('identityType'); const valInput = document.getElementById('identityValue'); if (typeSel) typeSel.value = id.type; if (valInput) valInput.value = id.value; updateIdentityHelp(); refreshUI(); }, 50);
+    showMessage(`Using saved ${IDENTITY_TYPE_LABELS[id.type] || id.type}: ${id.value}`, 'success');
 }
-async function submitDirectClaim() {
-    const swapRef = document.getElementById('directClaimRef').value.trim();
-    const pin = document.getElementById('directClaimPin').value.trim();
-    if (!swapRef) { showMessage('Please enter the swap reference.', 'warning'); return; }
-    if (!pin) { showMessage('Please enter your claim PIN.', 'warning'); return; }
+
+async function setTransactionPin() {
+    const pin = document.getElementById('newPin').value.trim();
+    const confirmPin = document.getElementById('confirmPin').value.trim();
     if (!/^\d{4,6}$/.test(pin)) { showMessage('Your PIN should be 4 to 6 digits.', 'warning'); return; }
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/claim_identity.php', { swap_reference: swapRef, pin });
-    if (!result.ok) { showMessage('That claim didn\'t go through: ' + friendlyApiError(result.error), 'error'); return; }
-    closeModal(); showMessage('Funds claimed successfully! 🎉', 'success'); checkPendingClaims(); loadToolboxView();
+    if (pin !== confirmPin) { showMessage('Those two PINs don\'t match — try again.', 'warning'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/set_pin.php', { pin, confirm_pin: confirmPin });
+    if (!result.ok) { showMessage('Could not set your PIN: ' + friendlyApiError(result.error), 'error'); return; }
+    if (SessionUser) SessionUser.has_pin = true;
+    showMessage('Transaction PIN set. Keep it private. 🎉', 'success');
+    renderProgressCard(); closeModal();
 }
-async function submitClaim(swapReference) {
-    const pin = document.getElementById('claimPin').value.trim();
-    const destType = document.getElementById('claimDestType').value;
-    if (!pin) { showMessage('Enter your claim PIN.', 'warning'); return; }
-    const payload = { swap_reference: swapReference, pin, destination_type: destType };
-    let destInst = null, destIdentifier = null;
-    if (destType === 'DEPOSIT') {
-        destInst = document.getElementById('claimDestInst').value;
-        destIdentifier = document.getElementById('claimDestIdentifier').value.trim();
-        payload.destination_institution = destInst;
-        payload.destination_identifier = destIdentifier;
-        if (!destInst || !destIdentifier) { showMessage('Select a destination institution and enter an account/wallet number.', 'warning'); return; }
-    } else if (destType === 'HOOK') {
-        // NOTE: 'HOOK' is not a confirmed destination_type on the real
-        // claim_identity.php — this needs backend support added before
-        // it will actually work. Frontend is ready for it either way.
-        if (!claimHookCardSuffix) { showMessage('Choose which card to hook this to first.', 'warning'); return; }
-        payload.card_suffix = claimHookCardSuffix;
-    }
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/claim_identity.php', payload);
-    if (!result.ok) { showMessage('That claim didn\'t go through: ' + friendlyApiError(result.error), 'error'); return; }
-    checkPendingClaims();
-    if (destType === 'HOOK') {
-        closeModal();
-        showMessage(`Claimed and hooked to ${claimHookCardLabel || 'the card'}. 🎉`, 'success');
-        claimHookCardSuffix = null; claimHookCardLabel = null; pendingClaimIdxForHook = null;
-        loadToolboxView();
-        return;
-    }
-    if (destType === 'DEPOSIT' && destInst && destIdentifier) {
-        // The claimed money just landed in a real account/wallet — offer
-        // to hook it right away instead of making the person go find it
-        // again later under My sources.
-        openModal('Claimed', `
-            <div style="text-align:center;padding:10px 0 4px;">
-                <div style="font-size:36px;margin-bottom:8px;">✓</div>
-                <div style="font-size:16px;font-weight:700;margin-bottom:6px;">Funds claimed successfully! 🎉</div>
-                <div style="font-size:12px;color:var(--text-muted);margin-bottom:20px;">Deposited to ${escapeHtml(PARTICIPANTS[destInst]?.name || destInst)} — ${escapeHtml(destIdentifier)}</div>
-                <div class="cta-row" style="flex-direction:column;gap:10px;">
-                    <button class="btn btn-primary" onclick="closeModal(); promptHookThisSource({instName: '${escapeHtml(PARTICIPANTS[destInst]?.name || destInst)}', institution: '${escapeHtml(destInst)}', assetType: 'ACCOUNT', identifier: '${escapeHtml(destIdentifier)}'});">Hook this to a card</button>
-                    <button class="btn secondary" onclick="closeModal(); loadToolboxView();">Done</button>
-                </div>
-            </div>`);
-    } else {
-        closeModal(); showMessage('Funds claimed successfully! 🎉', 'success'); loadToolboxView();
-    }
-}
+
 function openAddIdentityModal() {
     openModal('Register identity', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading...</div>');
     getCurrentUserRole().then(session => { if (session.is_agent) renderAgentIdentityForm(); else renderUserIdentityForm(); });
 }
+
 function renderUserIdentityForm() {
     document.getElementById('modalBody').innerHTML = `<div><div style="font-weight:700;font-size:15px;margin-bottom:4px;">Add an identity to your account</div><div style="font-size:12px;color:var(--text-muted);margin-bottom:16px;">Register a phone number, email, or ID so people can swap directly to you.</div><div class="field-group"><label>Identity type</label><select id="userIdentityType"><option value="phone">Phone Number</option><option value="email">Email</option><option value="national_id">National ID</option><option value="birth_certificate">Birth Certificate</option><option value="voter_id">Voter ID</option></select></div><div class="field-group"><label>Identity value</label><input type="text" id="userIdentityValue" placeholder="Enter the ID number, phone, or email"></div><div style="background:var(--accent-soft);border-left:3px solid var(--accent);padding:10px 14px;font-size:12px;margin-bottom:14px;">Phone numbers are verified instantly via SMS. National IDs and other documents require in-person verification by a VouchMorph agent.</div><div id="regIdentityOtpFields" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);"><div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;" id="regIdentityOtpMessage"></div><div class="otp-input-group"><input type="text" id="regIdentityOtp" placeholder="Enter verification code" inputmode="numeric" maxlength="8"><button class="btn btn-primary btn-sm" onclick="submitVerifyIdentityOtp()">Verify</button></div></div><div class="cta-row"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="submitRegisterIdentity()">Register identity</button></div><div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px;font-size:11px;color:var(--text-dim);"><span class="quick-link muted" onclick="closeModal();openFinalizeIdentityModal();">Need to claim a swap sent to your identity? Click here →</span></div></div>`;
 }
+
 function renderAgentIdentityForm() {
     document.getElementById('modalBody').innerHTML = `<div><div style="font-weight:700;font-size:15px;margin-bottom:4px;">Register a verified identity (Agent)</div><div style="font-size:12px;color:var(--text-muted);margin-bottom:16px;">Use this after physically verifying the person's document.</div><div class="field-group"><label>Account holder's phone or email</label><input type="text" id="agentTargetLookup" placeholder="Phone or email on their VouchMorph account"></div><div class="field-group"><label>Identity type</label><select id="agentIdentityType"><option value="national_id">National ID</option><option value="voters_id">Voter's ID</option><option value="drivers_license">Driver's License</option><option value="birth_certificate">Birth Certificate</option><option value="passport">Passport</option></select></div><div class="field-group"><label>ID number</label><input type="text" id="agentIdentityValue" placeholder="Document number"></div><div class="field-group"><label style="display:flex;align-items:center;gap:8px;text-transform:none;font-weight:400;"><input type="checkbox" id="agentDocVerified" style="width:auto;"> I have physically verified this document</label></div><div class="cta-row"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="submitAgentIdentity()">Register identity</button></div></div>`;
 }
+
 async function submitRegisterIdentity() {
     const identityType = document.getElementById('userIdentityType').value;
     const identityValue = document.getElementById('userIdentityValue').value.trim();
@@ -3101,6 +3696,7 @@ async function submitRegisterIdentity() {
     renderProgressCard();
     setTimeout(() => closeModal(), 2000);
 }
+
 async function submitAgentIdentity() {
     const lookup = document.getElementById('agentTargetLookup').value.trim();
     const type = document.getElementById('agentIdentityType').value;
@@ -3114,6 +3710,7 @@ async function submitAgentIdentity() {
     showMessage(result.body.message || 'Identity registered successfully.', 'success');
     setTimeout(() => closeModal(), 2000);
 }
+
 async function submitVerifyIdentityOtp() {
     const otp = document.getElementById('regIdentityOtp').value.trim();
     if (!otp) { showMessage('Enter the verification code.', 'warning'); return; }
@@ -3124,13 +3721,108 @@ async function submitVerifyIdentityOtp() {
     setTimeout(() => closeModal(), 2000);
 }
 
-async function getCurrentUserRole() {
-    if (SessionUser) return SessionUser;
-    const result = await callApi(CONFIG.API_BASE + '/user/whoami.php', {});
-    SessionUser = (result.ok && result.body) ? result.body : { success: false, role: 'user', is_agent: false, is_admin: false, permissions: [] };
-    renderProgressCard();
-    return SessionUser;
+function openFinalizeIdentityModal() { openModal('Finalize identity swap', renderFinalizeIdentityModal()); }
+
+function renderFinalizeIdentityModal() {
+    const claimsHtml = pendingClaims.length === 0 ? `<div style="font-size:12px;color:var(--text-dim);margin-bottom:16px;">No identity money is currently waiting for you.</div>` : `<div style="margin-bottom:16px;">${pendingClaims.map((c, i) => {
+        const pinLabel = c.claim_type === 'otp_pin' ? 'the OTP PIN sent by SMS' : 'your transaction PIN';
+        const claimPin = c.claim_pin || null, code = c.voucher_number || null, pin = c.atm_pin || null;
+        const hasCode = !!(code || pin || claimPin);
+        const codeInlineHtml = hasCode ? `<div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--border);display:flex;gap:16px;flex-wrap:wrap;">${code ? `<div><div style="font-size:10px;color:var(--text-dim);">Code</div><div style="font-family:var(--font-mono);font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(code)}</div></div>` : ''}${pin ? `<div><div style="font-size:10px;color:var(--text-dim);">PIN</div><div style="font-family:var(--font-mono);font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(pin)}</div></div>` : ''}${claimPin ? `<div><div style="font-size:10px;color:var(--text-dim);">Claim PIN</div><div style="font-family:var(--font-mono);font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(claimPin)}</div></div>` : ''}${c.voucher_expiry ? `<div><div style="font-size:10px;color:var(--text-dim);">Expires</div><div style="font-size:12px;color:var(--text-muted);">${new Date(c.voucher_expiry).toLocaleString()}</div></div>` : ''}</div>` : '';
+        return `<div style="border:1px solid var(--border);padding:13px;margin-bottom:8px;background:#fff;"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;"><div style="flex:1;"><div style="font-weight:700;font-size:15px;color:var(--accent);font-family:var(--font-mono);">${formatMoney(c.amount, c.currency)}</div><div style="font-size:12px;color:var(--text-muted);">From ${escapeHtml(c.source_institution || 'Unknown')}</div><div style="font-size:11px;color:var(--text-dim);">Needs ${pinLabel} · Expires ${c.hold_expires_at ? new Date(c.hold_expires_at).toLocaleString() : 'soon'}</div></div><button class="btn btn-primary btn-sm" onclick="openClaimForm(${i})" style="flex-shrink:0;">Finalize</button></div>${codeInlineHtml}</div>`;
+    }).join('')}</div>`;
+    return `<div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">Money sent to your national ID, phone, or email shows up here. Tap Finalize on any of them — Cashout, Deposit, and Hook to a VouchMorph Card are all options there, so you're not limited to withdrawing it first.</div>${claimsHtml}<div style="border-top:1px solid var(--border);padding-top:16px;margin-top:4px;"><div class="field-label" style="margin-bottom:6px;">Need to claim an identity swap?</div><div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">If you received a swap notification, enter the claim PIN below to complete the transaction.</div><div class="field-group"><label>Swap reference</label><input id="directClaimRef" placeholder="e.g. SWAP_123456789"></div><div class="field-group"><label>Claim PIN</label><input type="password" id="directClaimPin" placeholder="Enter the PIN you received" maxlength="6"></div><div class="cta-row"><button class="btn btn-primary" onclick="submitDirectClaim()">Claim swap</button></div></div><div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px;font-size:11px;color:var(--text-dim);"><span class="quick-link muted" onclick="closeModal();openAddIdentityModal();">Need to register a new identity instead? Click here →</span></div>`;
 }
+
+let claimHookCardSuffix = null;
+let claimHookCardLabel = null;
+let pendingClaimIdxForHook = null;
+
+function openClaimForm(idx) {
+    if (pendingClaimIdxForHook !== idx) { claimHookCardSuffix = null; claimHookCardLabel = null; }
+    pendingClaimIdxForHook = idx;
+    const claim = pendingClaims[idx]; if (!claim) return;
+    const pinHint = claim.claim_type === 'otp_pin' ? 'Use the one-time PIN sent by SMS when this money was sent.' : 'Use your VouchMorph transaction PIN.';
+    const bodyHtml = `<div style="background:var(--accent-soft);padding:14px;margin-bottom:14px;"><div style="font-size:20px;font-weight:600;color:var(--accent);font-family:var(--font-mono);">${formatMoney(claim.amount, claim.currency)}</div><div style="font-size:12px;color:var(--text-muted);">From ${escapeHtml(claim.source_institution || 'Unknown')}</div></div><div class="field-group"><label>Claim PIN</label><input type="password" id="claimPin" inputmode="numeric" maxlength="6" placeholder="••••"><div class="help">${pinHint}</div></div><div class="field-group"><label>Receive as</label><select id="claimDestType" onchange="toggleClaimDestFields(this.value)"><option value="CASHOUT">Cashout (ATM / Agent code)</option><option value="DEPOSIT">Deposit to an account/wallet</option><option value="HOOK" ${claimHookCardSuffix ? 'selected' : ''}>Hook to a VouchMorph Card</option></select></div><div id="claimDepositFields" style="display:none;"><div class="field-group"><label>Destination institution</label><select id="claimDestInst"><option value="">Select institution</option>${Object.keys(PARTICIPANTS).map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('')}</select></div><div class="field-group"><label>Account / wallet number</label><input id="claimDestIdentifier" placeholder="Account number or phone"></div></div><div id="claimHookFields" style="display:${claimHookCardSuffix ? 'block' : 'none'};"><div class="cta-row" style="flex-direction:column;gap:10px;"><button class="btn btn-secondary" onclick="chooseClaimHookTarget('my')">My VouchMorph Card</button><button class="btn btn-secondary" onclick="chooseClaimHookTarget('other')">Another VouchMorph Card</button></div><div style="margin-top:10px;font-size:12px;color:var(--accent);text-align:center;">${claimHookCardSuffix ? `Will hook to ${escapeHtml(claimHookCardLabel || ('•••• ' + claimHookCardSuffix))}` : ''}</div></div><div class="cta-row"><button class="btn btn-secondary" onclick="openFinalizeIdentityModal()">Back</button><button class="btn btn-primary" onclick="submitClaim('${claim.swap_reference}')">Finalize</button></div>`;
+    openModal('Finalize identity swap', bodyHtml);
+    if (claimHookCardSuffix) toggleClaimDestFields('HOOK');
+}
+
+function toggleClaimDestFields(type) {
+    const depositFields = document.getElementById('claimDepositFields');
+    const hookFields = document.getElementById('claimHookFields');
+    const sel = document.getElementById('claimDestType');
+    if (depositFields) depositFields.style.display = type === 'DEPOSIT' ? 'block' : 'none';
+    if (hookFields) hookFields.style.display = type === 'HOOK' ? 'block' : 'none';
+    if (sel) sel.value = type;
+}
+
+async function chooseClaimHookTarget(which) {
+    if (which === 'my') {
+        if (!myCard) {
+            const result = await callApiGet(CONFIG.API_BASE + '/api/v1/cards/My.php');
+            if (!result.ok) { showMessage("Couldn't load your card: " + friendlyApiError(result.error), 'error'); return; }
+            myCard = result.body.data;
+        }
+        if (!myCard.is_active) { showMessage('Your VouchMorph Card is not active yet — activate it first from the Card view.', 'warning'); return; }
+        claimHookCardSuffix = myCard.card_suffix;
+        claimHookCardLabel = `your card •••• ${myCard.card_suffix}`;
+        openClaimForm(pendingClaimIdxForHook);
+        return;
+    }
+    const bodyHtml = `
+        <div class="field-group"><label>Card number or suffix</label><input id="claimOtherCardNumber" placeholder="e.g. last 4 digits or full number"></div>
+        <div class="cta-row"><button class="btn btn-primary" onclick="resolveClaimOtherCard()">Continue</button></div>
+        <div style="text-align:center;margin:16px 0;font-size:11px;color:var(--text-dim);">or</div>
+        <button class="btn btn-secondary" onclick="openScanForClaimHook()">Scan their QR code instead</button>
+        <div class="cta-row" style="margin-top:14px;"><button class="btn secondary" onclick="openClaimForm(pendingClaimIdxForHook)">Back</button></div>`;
+    openModal('Enter the other card', bodyHtml);
+}
+
+async function resolveClaimOtherCard() {
+    const raw = document.getElementById('claimOtherCardNumber')?.value.trim();
+    if (!raw) { showMessage('Enter a card number.', 'warning'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/LookupBySuffix.php', { card_suffix: raw });
+    if (!result.ok) { showMessage("Couldn't find that card: " + friendlyApiError(result.error), 'error'); return; }
+    finishClaimHookTarget(result.body.data.card_suffix, result.body.data.display_name);
+}
+
+function openScanForClaimHook() {
+    const bodyHtml = `
+        <div id="qrScannerRegion" style="width:100%;"></div>
+        <div style="text-align:center;margin:12px 0;font-size:11px;color:var(--text-dim);">or paste the code manually above</div>`;
+    openModal('Scan a card', bodyHtml);
+    try {
+        html5QrScanner = new Html5Qrcode('qrScannerRegion');
+        html5QrScanner.start({ facingMode: 'environment' }, { fps: 10, qrbox: 220 }, async (decodedText) => {
+            html5QrScanner.stop().catch(() => {});
+            const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/Resolveqr.php', { raw: decodedText });
+            if (!result.ok) { showMessage("Couldn't read that code: " + friendlyApiError(result.error), 'error'); return; }
+            finishClaimHookTarget(result.body.data.card_suffix, result.body.data.display_name);
+        }, () => {}).catch((e) => console.warn('[claim-hook-qr] camera scan unavailable:', e));
+    } catch (e) { console.warn('[claim-hook-qr] Html5Qrcode not available:', e); }
+}
+
+function finishClaimHookTarget(cardSuffix, displayName) {
+    claimHookCardSuffix = cardSuffix;
+    claimHookCardLabel = `${displayName}'s card •••• ${cardSuffix}`;
+    openClaimForm(pendingClaimIdxForHook);
+}
+
+async function submitDirectClaim() {
+    const swapRef = document.getElementById('directClaimRef')?.value.trim();
+    const pin = document.getElementById('directClaimPin')?.value.trim();
+    if (!swapRef) { showMessage('Please enter the swap reference.', 'warning'); return; }
+    if (!pin) { showMessage('Please enter your claim PIN.', 'warning'); return; }
+    if (!/^\d{4,6}$/.test(pin)) { showMessage('Your PIN should be 4 to 6 digits.', 'warning'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/claim_identity.php', { swap_reference: swapRef, pin });
+    if (!result.ok) { showMessage('That claim didn\'t go through: ' + friendlyApiError(result.error), 'error'); return; }
+    closeModal(); showMessage('Funds claimed successfully! 🎉', 'success'); checkPendingClaims(); loadToolboxView();
+}
+
+// ============================================================
+// AGENT FUNCTIONS
+// ============================================================
 async function loadAgentStatus() {
     if (!CONFIG.USER_ID) return;
     await getCurrentUserRole();
@@ -3138,85 +3830,29 @@ async function loadAgentStatus() {
     if (!result.ok) return;
     agentStatus = result.body.data; agentStatus.is_agent = SessionUser.is_agent;
 }
-async function openAgentModal() {
-    openModal('Agent account', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading...</div>');
-    await getCurrentUserRole();
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/status.php', {});
-    if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="color:var(--danger);">Couldn't load agent status: ${escapeHtml(friendlyApiError(result.error))}</div>`; return; }
-    agentStatus = result.body.data; agentStatus.is_agent = SessionUser.is_agent;
-    document.getElementById('modalBody').innerHTML = renderAgentModal();
-}
-function renderAgentModal() {
-    const activeDestinations = agentStatus.all_destinations.filter(d => d.status !== 'cancelled' && !d.deleted_at);
-    const statusRows = activeDestinations.length ? activeDestinations.map(d => {
-        const isPending = d.status === 'pending_confirmation', isRejected = d.status === 'rejected', canCancel = isPending || isRejected;
-        const badge = d.status === 'active' ? '<span style="background:rgba(31,138,84,0.1);color:var(--success);padding:2px 8px;font-size:10px;font-weight:700;">Active</span>' : isPending ? '<span style="background:#fef3c7;color:#8a5a0b;padding:2px 8px;font-size:10px;font-weight:700;">Pending approval</span>' : '<span style="background:#fbeceb;color:var(--danger);padding:2px 8px;font-size:10px;font-weight:700;">' + (d.status || 'Unknown') + '</span>';
-        return `<div style="border:1px solid var(--border);padding:12px;margin-bottom:8px;background:#fff;"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;"><div><div style="font-weight:700;">${escapeHtml(PARTICIPANTS[d.institution]?.name || d.institution)}</div><div style="font-size:12px;color:var(--text-muted);">${escapeHtml(d.identifier)} · ${escapeHtml(d.account_type || d.asset_type)}</div></div><div style="display:flex;align-items:center;gap:8px;">${badge}${canCancel ? `<button class="btn-danger-outline" onclick="cancelAgentDestination(${d.id})">Cancel</button>` : ''}</div></div>${d.status === 'rejected' && d.rejection_reason ? `<div style="font-size:12px;color:var(--danger);margin-top:6px;">Reason: ${escapeHtml(d.rejection_reason)}</div>` : ''}</div>`;
-    }).join('') : '<div style="font-size:12px;color:var(--text-dim);">You have no agent destination accounts registered yet.</div>';
-    return `<div style="margin-bottom:16px;"><div class="field-label" style="margin-bottom:8px;">Your agent accounts</div>${statusRows}</div><div style="border-top:1px solid var(--border);padding-top:16px;"><div class="field-label" style="margin-bottom:8px;">Register a new agent destination</div><div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Register a business/agent account you hold at a participating institution. Only business or agent-designated accounts are eligible. Approval required before activation.</div><div class="field-group"><label>Institution</label><select id="agentInst" onchange="onAgentInstChange(this.value)"><option value="">Select institution</option>${Object.keys(PARTICIPANTS).map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('')}</select></div><div class="field-group" id="agentAssetTypeGroup" style="display:none;"><label>Account type</label><select id="agentAssetType"></select><div class="help">Only Account, Wallet, or Card can be used — vouchers stay manual, never registered as a destination.</div></div><div class="field-group"><label>Account / wallet / card number</label><input id="agentIdentifier" placeholder="Your business account number"></div><div class="field-group"><label>Account name (optional)</label><input id="agentAccountName" placeholder="e.g. Thabo's General Store"></div><div class="cta-row"><button class="btn btn-primary" onclick="submitAgentDestination()">Register and verify</button></div></div>`;
-}
-async function cancelAgentDestination(destinationId) {
-    showConfirm('Cancel this registration? You can register again later.', async () => {
-        const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/cancel_destination.php', { destination_id: destinationId });
-        if (!result.ok) { showMessage('Could not cancel: ' + friendlyApiError(result.error), 'error'); return; }
-        showMessage('Registration cancelled successfully.', 'success');
-        openAgentModal();
-    });
-}
-async function submitAgentDestination() {
-    const institution = document.getElementById('agentInst').value;
-    const assetType = document.getElementById('agentAssetType').value;
-    const identifier = document.getElementById('agentIdentifier').value.trim();
-    const accountName = document.getElementById('agentAccountName').value.trim();
-    if (!institution || !identifier) { showMessage('Select an institution and enter your account number.', 'warning'); return; }
-    if (!assetType) { showMessage('Select whether this is an Account, Wallet, or Card.', 'warning'); return; }
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/propose_destination.php', { institution, asset_type: assetType, identifier, account_name: accountName || undefined });
-    if (!result.ok) { showMessage('Could not register: ' + friendlyApiError(result.error), 'error'); return; }
-    const data = result.body.data;
-    if (data.requires_redirect) { showMessage(data.message || 'Redirecting you to your bank to confirm this account...', 'info'); window.location.href = data.redirect_url; return; }
-    if (!data.requires_otp) { showMessage(data.message, data.otp_supported ? 'success' : 'warning'); openAgentModal(); return; }
-    document.getElementById('modalBody').innerHTML = renderAgentOtpStep(data);
-}
-function renderAgentOtpStep(data) {
-    return `<div style="background:var(--accent-soft);padding:14px;margin-bottom:16px;"><div style="font-weight:700;margin-bottom:4px;">Verification code sent</div><div style="font-size:12px;color:var(--text-muted);">${escapeHtml(data.message)}</div></div><div class="field-group"><label>Enter the code</label><input type="text" id="agentOtpCode" inputmode="numeric" maxlength="8" placeholder="Code from your bank"></div><div class="cta-row"><button class="btn btn-secondary" onclick="openAgentModal()">Cancel</button><button class="btn btn-primary" onclick="verifyAgentOtp(${data.attempt_id})">Verify and register</button></div>`;
-}
-async function verifyAgentOtp(attemptId) {
-    const otp = document.getElementById('agentOtpCode').value.trim();
-    if (!otp) { showMessage('Enter the verification code.', 'warning'); return; }
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/verify_destination_otp.php', { attempt_id: attemptId, otp });
-    if (!result.ok) { showMessage('That code didn\'t work: ' + friendlyApiError(result.error), 'error'); return; }
-    showMessage(result.body.data.message || 'Account verified and registered.', 'success');
-    openAgentModal();
-}
-const AGENT_ELIGIBLE_ASSET_TYPES = ['ACCOUNT', 'WALLET', 'BANK-WALLET', 'CARD'];
-function onAgentInstChange(code) {
-    const group = document.getElementById('agentAssetTypeGroup'); const sel = document.getElementById('agentAssetType');
-    if (!code) { group.style.display = 'none'; sel.innerHTML = ''; return; }
-    const inst = PARTICIPANTS[code]; const allTypes = inst?.asset_types || [];
-    const eligible = allTypes.filter(t => AGENT_ELIGIBLE_ASSET_TYPES.includes(String(t).toUpperCase()));
-    if (eligible.length === 0) { group.style.display = 'block'; sel.innerHTML = '<option value="">No eligible account types at this institution</option>'; return; }
-    sel.innerHTML = eligible.map(t => `<option value="${t}">${getAssetConfig(t)?.label || t}</option>`).join('');
-    group.style.display = 'block';
-}
+
 function openAgentFinalizeIdentityModal() { openModal('Finalize identity swap', renderAgentFinalizeIdentitySearch()); }
+
 function renderAgentFinalizeIdentitySearch() {
     return `<div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">Search for a client's pending identity payment. You'll need to physically verify their document and have them tell you the OTP PIN texted to them — never their personal VouchMorph transaction PIN — before you can finalize.</div><div class="field-group"><label>Document type</label><select id="agentSearchType"><option value="national_id">National ID</option><option value="birth_certificate">Birth Certificate</option><option value="voter_id">Voter ID</option></select></div><div class="field-group"><label>Document number</label><input id="agentSearchValue" placeholder="Enter the client's ID number"></div><div class="cta-row"><button class="btn btn-primary" onclick="searchAgentClaim()">Search</button></div><div id="agentSearchResults" style="margin-top:16px;"></div><div style="border-top:1px solid var(--border);padding-top:16px;margin-top:20px;"><div class="field-label" style="margin-bottom:6px;">Not what the client needs?</div><div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">If the client wants this identity permanently registered to their VouchMorph account — optional, and separate from finalizing any swap — you can do that here instead.</div><span class="quick-link muted" onclick="closeModal();openAddIdentityModal();">Register identity to client's account →</span></div>`;
 }
+
 function openAgentToolsModal() { openModal('Agent tools', renderAgentToolsSearch()); }
+
 function renderAgentToolsSearch() {
     return `<div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">Search for a client's pending identity payment. You'll need to physically verify their document and have them tell you the OTP PIN texted to them — never their personal VouchMorph transaction PIN — before you can finalize.</div><div class="field-group"><label>Document type</label><select id="agentSearchType"><option value="national_id">National ID</option><option value="birth_certificate">Birth Certificate</option><option value="voter_id">Voter ID</option></select></div><div class="field-group"><label>Document number</label><input id="agentSearchValue" placeholder="Enter the client's ID number"></div><div class="cta-row"><button class="btn btn-primary" onclick="searchAgentClaim()">Search</button></div><div id="agentSearchResults" style="margin-top:16px;"></div>`;
 }
 
 async function searchAgentClaim() {
-    const identityType = document.getElementById('agentSearchType').value;
-    const identityValue = document.getElementById('agentSearchValue').value.trim();
+    const identityType = document.getElementById('agentSearchType')?.value;
+    const identityValue = document.getElementById('agentSearchValue')?.value.trim();
     const resultsBox = document.getElementById('agentSearchResults');
     if (!identityValue) { showMessage('Enter the document number to search.', 'warning'); return; }
-    resultsBox.innerHTML = '<div style="text-align:center;padding:16px;"><div class="spinner"></div> Searching...</div>';
+    if (resultsBox) resultsBox.innerHTML = '<div style="text-align:center;padding:16px;"><div class="spinner"></div> Searching...</div>';
     const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/search_claim.php', { identity_type: identityType, identity_value: identityValue });
-    if (!result.ok) { resultsBox.innerHTML = `<div style="color:var(--danger);">${escapeHtml(friendlyApiError(result.error))}</div>`; return; }
+    if (!result.ok) { if (resultsBox) resultsBox.innerHTML = `<div style="color:var(--danger);">${escapeHtml(friendlyApiError(result.error))}</div>`; return; }
     const data = result.body.data;
-    if (!data) { resultsBox.innerHTML = '<div style="font-size:12px;color:var(--text-dim);">No pending payment found for this identity.</div>'; return; }
+    if (!data) { if (resultsBox) resultsBox.innerHTML = '<div style="font-size:12px;color:var(--text-dim);">No pending payment found for this identity.</div>'; return; }
     agentSearchData = data;
     if (data.multi_currency) {
         let html = '<div style="margin-bottom:12px;"><strong>Multiple currencies found for this identity:</strong></div>';
@@ -3225,26 +3861,28 @@ async function searchAgentClaim() {
             const identityTypeEscaped = escapeHtml(data.identity_type), identityValueEscaped = escapeHtml(data.identity_value);
             html += `<div style="border:1px solid var(--border);padding:13px;margin-bottom:8px;background:#fff;"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;"><div><div style="font-weight:700;font-size:16px;color:var(--accent);font-family:var(--font-mono);">${formatMoney(totalAmount, currency)}</div><div style="font-size:12px;color:var(--text-muted);">From ${swapCount} different source(s)</div><div style="font-size:11px;color:var(--text-dim);">Expires ${b.earliest_expires_at ? new Date(b.earliest_expires_at).toLocaleString() : 'soon'}</div></div><button class="btn btn-primary btn-sm" onclick="openAgentFinalizeFormAggregated('${identityTypeEscaped}', '${identityValueEscaped}', '${currency}', ${totalAmount}, ${swapCount})">Claim</button></div></div>`;
         });
-        resultsBox.innerHTML = html; return;
+        if (resultsBox) resultsBox.innerHTML = html; return;
     }
     const currency = escapeHtml(data.currency), totalAmount = parseFloat(data.total_amount).toFixed(2), swapCount = parseInt(data.swap_count);
     const identityTypeEscaped = escapeHtml(data.identity_type), identityValueEscaped = escapeHtml(data.identity_value);
-    resultsBox.innerHTML = `<div style="border:1px solid var(--border);padding:13px;margin-bottom:8px;background:#fff;"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;"><div><div style="font-weight:700;font-size:16px;color:var(--accent);font-family:var(--font-mono);">${formatMoney(totalAmount, currency)}</div><div style="font-size:12px;color:var(--text-muted);">From ${swapCount} different source(s)</div><div style="font-size:11px;color:var(--text-dim);">Expires ${data.earliest_expires_at ? new Date(data.earliest_expires_at).toLocaleString() : 'soon'}</div></div><button class="btn btn-primary btn-sm" onclick="openAgentFinalizeFormAggregated('${identityTypeEscaped}', '${identityValueEscaped}', '${currency}', ${totalAmount}, ${swapCount})">Claim</button></div></div>`;
+    if (resultsBox) resultsBox.innerHTML = `<div style="border:1px solid var(--border);padding:13px;margin-bottom:8px;background:#fff;"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;"><div><div style="font-weight:700;font-size:16px;color:var(--accent);font-family:var(--font-mono);">${formatMoney(totalAmount, currency)}</div><div style="font-size:12px;color:var(--text-muted);">From ${swapCount} different source(s)</div><div style="font-size:11px;color:var(--text-dim);">Expires ${data.earliest_expires_at ? new Date(data.earliest_expires_at).toLocaleString() : 'soon'}</div></div><button class="btn btn-primary btn-sm" onclick="openAgentFinalizeFormAggregated('${identityTypeEscaped}', '${identityValueEscaped}', '${currency}', ${totalAmount}, ${swapCount})">Claim</button></div></div>`;
 }
+
 function openAgentFinalizeFormAggregated(identityType, identityValue, currency, totalAmount, swapCount) {
     const data = agentSearchData;
     if (!data) { showMessage('Search data not found. Please search again.', 'error'); return; }
     if (!agentStatus.approved_destinations || agentStatus.approved_destinations.length === 0) { openModal('Agent tools', '<div style="color:var(--danger);">You have no approved agent destination account. Register one first.</div>'); return; }
     const destOptions = agentStatus.approved_destinations.map(d => `<option value="${d.id}">${escapeHtml(PARTICIPANTS[d.institution]?.name || d.institution)} - ${escapeHtml(d.identifier)}</option>`).join('');
     const searchTypeLabel = IDENTITY_TYPE_LABELS[document.getElementById('agentSearchType')?.value] || 'document';
-    const body = `<div style="background:var(--accent-soft);padding:14px;margin-bottom:14px;"><div style="font-size:12px;color:var(--text-muted);">Client's total balance</div><div style="font-size:22px;font-weight:600;color:var(--accent);font-family:var(--font-mono);">${formatMoney(totalAmount, currency)}</div><div style="font-size:11px;color:var(--text-dim);margin-top:4px;">This is an aggregated balance from ${swapCount} different source(s). The full amount deposits into your account. Whatever the client doesn't take as cash today is instantly sent back to their identity as a new claim.</div></div><div class="field-group"><label>Deposit into</label><select id="agentDestSelect">${destOptions}</select></div><div class="field-group"><label>Cash to give the client now</label><input type="number" id="cashNowAmount" min="0" max="${totalAmount}" step="0.01" value="${totalAmount}"><div class="help">Leave less than the full amount to split — the rest becomes a new claim for them to collect elsewhere.</div></div><div class="quick-actions" style="margin:-4px 0 12px;"><span class="quick-link" onclick="document.getElementById('cashNowAmount').value=${totalAmount}">Give it all</span><span class="quick-link muted" onclick="document.getElementById('cashNowAmount').value=0">Give none now</span></div><div class="field-group"><label style="display:flex;align-items:center;gap:8px;text-transform:none;font-weight:400;"><input type="checkbox" id="agentDocVerified" style="width:auto;"> I have physically verified the client's ${searchTypeLabel}</label></div><div class="field-group"><label>Client's OTP PIN</label><input type="password" id="agentClaimPin" inputmode="numeric" maxlength="6" placeholder="Ask the client for the PIN texted to them"><div class="help">This is the OTP PIN sent by SMS — never a personal transaction PIN. The client must tell you this themselves; never accept a claim without it.</div></div><div class="cta-row"><button class="btn btn-secondary" onclick="openAgentToolsModal()">Back to search</button><button class="btn btn-primary" onclick="submitAgentFinalizeAggregated('${escapeHtml(identityType)}', '${escapeHtml(identityValue)}', ${totalAmount}, '${currency}')">Process</button></div>`;
-    openModal('Confirm deposit', body);
+    const bodyHtml = `<div style="background:var(--accent-soft);padding:14px;margin-bottom:14px;"><div style="font-size:12px;color:var(--text-muted);">Client's total balance</div><div style="font-size:22px;font-weight:600;color:var(--accent);font-family:var(--font-mono);">${formatMoney(totalAmount, currency)}</div><div style="font-size:11px;color:var(--text-dim);margin-top:4px;">This is an aggregated balance from ${swapCount} different source(s). The full amount deposits into your account. Whatever the client doesn't take as cash today is instantly sent back to their identity as a new claim.</div></div><div class="field-group"><label>Deposit into</label><select id="agentDestSelect">${destOptions}</select></div><div class="field-group"><label>Cash to give the client now</label><input type="number" id="cashNowAmount" min="0" max="${totalAmount}" step="0.01" value="${totalAmount}"><div class="help">Leave less than the full amount to split — the rest becomes a new claim for them to collect elsewhere.</div></div><div class="quick-actions" style="margin:-4px 0 12px;"><span class="quick-link" onclick="document.getElementById('cashNowAmount').value=${totalAmount}">Give it all</span><span class="quick-link muted" onclick="document.getElementById('cashNowAmount').value=0">Give none now</span></div><div class="field-group"><label style="display:flex;align-items:center;gap:8px;text-transform:none;font-weight:400;"><input type="checkbox" id="agentDocVerified" style="width:auto;"> I have physically verified the client's ${searchTypeLabel}</label></div><div class="field-group"><label>Client's OTP PIN</label><input type="password" id="agentClaimPin" inputmode="numeric" maxlength="6" placeholder="Ask the client for the PIN texted to them"><div class="help">This is the OTP PIN sent by SMS — never a personal transaction PIN. The client must tell you this themselves; never accept a claim without it.</div></div><div class="cta-row"><button class="btn btn-secondary" onclick="openAgentToolsModal()">Back to search</button><button class="btn btn-primary" onclick="submitAgentFinalizeAggregated('${escapeHtml(identityType)}', '${escapeHtml(identityValue)}', ${totalAmount}, '${currency}')">Process</button></div>`;
+    openModal('Confirm deposit', bodyHtml);
 }
+
 async function submitAgentFinalizeAggregated(identityType, identityValue, totalAmount, currency) {
-    const destinationAccountId = document.getElementById('agentDestSelect').value;
-    const docVerified = document.getElementById('agentDocVerified').checked;
-    const pin = document.getElementById('agentClaimPin').value.trim();
-    const cashNowAmount = parseFloat(document.getElementById('cashNowAmount').value);
+    const destinationAccountId = document.getElementById('agentDestSelect')?.value;
+    const docVerified = document.getElementById('agentDocVerified')?.checked;
+    const pin = document.getElementById('agentClaimPin')?.value.trim();
+    const cashNowAmount = parseFloat(document.getElementById('cashNowAmount')?.value);
     if (!docVerified) { showMessage('You must confirm you verified the client\'s physical document.', 'warning'); return; }
     if (!pin) { showMessage('Enter the client\'s claim PIN.', 'warning'); return; }
     if (isNaN(cashNowAmount) || cashNowAmount < 0 || cashNowAmount > totalAmount) { showMessage(`Cash amount must be between 0 and ${totalAmount}.`, 'warning'); return; }
@@ -3266,736 +3904,270 @@ async function submitAgentFinalizeAggregated(identityType, identityValue, totalA
     agentSearchData = null;
 }
 
-// ============================================================
-// ACTIVITY — persistent view, swap history rendered inline
-// (was a modal before).
-// ============================================================
-async function loadActivityView() {
-    const body = document.getElementById('activityViewBody');
-    body.innerHTML = `<div style="text-align:center;padding:40px 0;"><div class="spinner" style="border-color:rgba(16,30,27,0.15);border-top-color:var(--primary);"></div> Loading swaps...</div>`;
-    if (!CONFIG.USER_ID) { body.innerHTML = `<div style="text-align:center;padding:30px;color:var(--danger);"><div style="font-weight:700;">Could not identify your account</div><div style="font-size:12px;color:var(--text-muted);margin-top:8px;">Your session doesn't have a user ID attached. Try logging out and back in.</div></div>`; return; }
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/history.php', { user_id: CONFIG.USER_ID, limit: 50 });
-    if (!result.ok) { body.innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">Couldn't load swap history: ${escapeHtml(friendlyApiError(result.error))}</div>`; return; }
-    renderActivityBody(result.body);
+function openAgentModal() {
+    openModal('Agent account', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading...</div>');
+    getCurrentUserRole().then(async () => {
+        const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/status.php', {});
+        if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="color:var(--danger);">Couldn't load agent status: ${escapeHtml(friendlyApiError(result.error))}</div>`; return; }
+        agentStatus = result.body.data; agentStatus.is_agent = SessionUser.is_agent;
+        document.getElementById('modalBody').innerHTML = renderAgentModal();
+    });
 }
-function renderActivityBody(data) {
-    const swaps = data.data || data.swaps || [];
-    const body = document.getElementById('activityViewBody');
-    if (swaps.length === 0) { body.innerHTML = `<div style="text-align:center;padding:30px;color:var(--text-muted);"><div style="font-weight:700;">No swaps yet</div><div style="font-size:12px;margin-top:8px;">Once you make your first swap, it'll show up here.</div></div>`; return; }
-    let html = `<div class="field-group" style="margin-bottom:16px;"><input id="activitySearchInput" placeholder="Search by type, institution, or reference…" oninput="filterActivity(this.value)" style="font-size:15px;padding:14px 16px;"></div>`;
-    html += `<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;" id="activityCount">Showing ${swaps.length} swap(s)</div>`;
-    html += `<div id="activityRowsHolder">`;
-    swaps.forEach((swap) => {
-        const statusColor = swap.status === 'completed' || swap.status === 'success' ? 'var(--success)' : swap.status === 'pending' ? 'var(--warning)' : 'var(--danger)';
-        const code = swap.voucher_number || null, pin = swap.atm_pin || null, claimPin = swap.claim_pin || null;
-        const hasCode = !!(code || pin || claimPin);
-        const codeInlineHtml = hasCode ? `<div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);display:flex;gap:16px;flex-wrap:wrap;">${code ? `<div><div style="font-size:10px;color:var(--text-dim);">Code</div><div style="font-family:var(--font-mono);font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(code)}</div></div>` : ''}${pin ? `<div><div style="font-size:10px;color:var(--text-dim);">PIN</div><div style="font-family:var(--font-mono);font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(pin)}</div></div>` : ''}${claimPin ? `<div><div style="font-size:10px;color:var(--text-dim);">Claim PIN</div><div style="font-family:var(--font-mono);font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(claimPin)}</div></div>` : ''}</div>` : '';
-        const searchBlob = escapeHtml([swap.swap_type, swap.reference, swap.swap_reference, swap.source_institution, swap.destination_institution, swap.status].filter(Boolean).join(' '));
-        html += `<div class="myc-panel" style="cursor:pointer;margin-bottom:8px;" data-search="${searchBlob.toLowerCase()}" onclick="viewSwapDetail('${swap.reference || swap.swap_reference || 'N/A'}')"><div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;"><div><div style="font-weight:700;">${swap.swap_type || 'SWAP'} <span style="font-size:11px;color:var(--text-muted);">${swap.reference || swap.swap_reference || ''}</span></div><div style="font-size:12px;color:var(--text-muted);">${swap.source_institution || 'Unknown'} → ${swap.destination_institution || 'Unknown'}</div></div><div style="text-align:right;"><div style="font-weight:700;color:var(--accent);font-family:var(--font-mono);">${formatMoney(swap.amount, swap.currency)}</div><div style="font-size:11px;color:${statusColor};">${swap.status || 'unknown'}</div></div></div>${codeInlineHtml}</div>`;
+
+const AGENT_ELIGIBLE_ASSET_TYPES = ['ACCOUNT', 'WALLET', 'BANK-WALLET', 'CARD'];
+
+function renderAgentModal() {
+    const activeDestinations = agentStatus.all_destinations.filter(d => d.status !== 'cancelled' && !d.deleted_at);
+    const statusRows = activeDestinations.length ? activeDestinations.map(d => {
+        const isPending = d.status === 'pending_confirmation', isRejected = d.status === 'rejected', canCancel = isPending || isRejected;
+        const badge = d.status === 'active' ? '<span style="background:rgba(31,138,84,0.1);color:var(--success);padding:2px 8px;font-size:10px;font-weight:700;">Active</span>' : isPending ? '<span style="background:#fef3c7;color:#8a5a0b;padding:2px 8px;font-size:10px;font-weight:700;">Pending approval</span>' : '<span style="background:#fbeceb;color:var(--danger);padding:2px 8px;font-size:10px;font-weight:700;">' + (d.status || 'Unknown') + '</span>';
+        return `<div style="border:1px solid var(--border);padding:12px;margin-bottom:8px;background:#fff;"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;"><div><div style="font-weight:700;">${escapeHtml(PARTICIPANTS[d.institution]?.name || d.institution)}</div><div style="font-size:12px;color:var(--text-muted);">${escapeHtml(d.identifier)} · ${escapeHtml(d.account_type || d.asset_type)}</div></div><div style="display:flex;align-items:center;gap:8px;">${badge}${canCancel ? `<button class="btn-danger-outline" onclick="cancelAgentDestination(${d.id})">Cancel</button>` : ''}</div></div>${d.status === 'rejected' && d.rejection_reason ? `<div style="font-size:12px;color:var(--danger);margin-top:6px;">Reason: ${escapeHtml(d.rejection_reason)}</div>` : ''}</div>`;
+    }).join('') : '<div style="font-size:12px;color:var(--text-dim);">You have no agent destination accounts registered yet.</div>';
+    return `<div style="margin-bottom:16px;"><div class="field-label" style="margin-bottom:8px;">Your agent accounts</div>${statusRows}</div><div style="border-top:1px solid var(--border);padding-top:16px;"><div class="field-label" style="margin-bottom:8px;">Register a new agent destination</div><div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Register a business/agent account you hold at a participating institution. Only business or agent-designated accounts are eligible. Approval required before activation.</div><div class="field-group"><label>Institution</label><select id="agentInst" onchange="onAgentInstChange(this.value)"><option value="">Select institution</option>${Object.keys(PARTICIPANTS).map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('')}</select></div><div class="field-group" id="agentAssetTypeGroup" style="display:none;"><label>Account type</label><select id="agentAssetType"></select><div class="help">Only Account, Wallet, or Card can be used — vouchers stay manual, never registered as a destination.</div></div><div class="field-group"><label>Account / wallet / card number</label><input id="agentIdentifier" placeholder="Your business account number"></div><div class="field-group"><label>Account name (optional)</label><input id="agentAccountName" placeholder="e.g. Thabo's General Store"></div><div class="cta-row"><button class="btn btn-primary" onclick="submitAgentDestination()">Register and verify</button></div></div>`;
+}
+
+function onAgentInstChange(code) {
+    const group = document.getElementById('agentAssetTypeGroup'); const sel = document.getElementById('agentAssetType');
+    if (!code) { if (group) group.style.display = 'none'; if (sel) sel.innerHTML = ''; return; }
+    const inst = PARTICIPANTS[code]; const allTypes = inst?.asset_types || [];
+    const eligible = allTypes.filter(t => AGENT_ELIGIBLE_ASSET_TYPES.includes(String(t).toUpperCase()));
+    if (eligible.length === 0) { if (group) group.style.display = 'block'; if (sel) sel.innerHTML = '<option value="">No eligible account types at this institution</option>'; return; }
+    if (sel) sel.innerHTML = eligible.map(t => `<option value="${t}">${getAssetConfig(t)?.label || t}</option>`).join('');
+    if (group) group.style.display = 'block';
+}
+
+async function submitAgentDestination() {
+    const institution = document.getElementById('agentInst')?.value;
+    const assetType = document.getElementById('agentAssetType')?.value;
+    const identifier = document.getElementById('agentIdentifier')?.value.trim();
+    const accountName = document.getElementById('agentAccountName')?.value.trim();
+    if (!institution || !identifier) { showMessage('Select an institution and enter your account number.', 'warning'); return; }
+    if (!assetType) { showMessage('Select whether this is an Account, Wallet, or Card.', 'warning'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/propose_destination.php', { institution, asset_type: assetType, identifier, account_name: accountName || undefined });
+    if (!result.ok) { showMessage('Could not register: ' + friendlyApiError(result.error), 'error'); return; }
+    const data = result.body.data;
+    if (data.requires_redirect) { showMessage(data.message || 'Redirecting you to your bank to confirm this account...', 'info'); window.location.href = data.redirect_url; return; }
+    if (!data.requires_otp) { showMessage(data.message, data.otp_supported ? 'success' : 'warning'); openAgentModal(); return; }
+    document.getElementById('modalBody').innerHTML = renderAgentOtpStep(data);
+}
+
+function renderAgentOtpStep(data) {
+    return `<div style="background:var(--accent-soft);padding:14px;margin-bottom:16px;"><div style="font-weight:700;margin-bottom:4px;">Verification code sent</div><div style="font-size:12px;color:var(--text-muted);">${escapeHtml(data.message)}</div></div><div class="field-group"><label>Enter the code</label><input type="text" id="agentOtpCode" inputmode="numeric" maxlength="8" placeholder="Code from your bank"></div><div class="cta-row"><button class="btn btn-secondary" onclick="openAgentModal()">Cancel</button><button class="btn btn-primary" onclick="verifyAgentOtp(${data.attempt_id})">Verify and register</button></div>`;
+}
+
+async function verifyAgentOtp(attemptId) {
+    const otp = document.getElementById('agentOtpCode')?.value.trim();
+    if (!otp) { showMessage('Enter the verification code.', 'warning'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/verify_destination_otp.php', { attempt_id: attemptId, otp });
+    if (!result.ok) { showMessage('That code didn\'t work: ' + friendlyApiError(result.error), 'error'); return; }
+    showMessage(result.body.data.message || 'Account verified and registered.', 'success');
+    openAgentModal();
+}
+
+async function cancelAgentDestination(destinationId) {
+    showConfirm('Cancel this registration? You can register again later.', async () => {
+        const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/cancel_destination.php', { destination_id: destinationId });
+        if (!result.ok) { showMessage('Could not cancel: ' + friendlyApiError(result.error), 'error'); return; }
+        showMessage('Registration cancelled successfully.', 'success');
+        openAgentModal();
+    });
+}
+
+// ============================================================
+// ADD SOURCE
+// ============================================================
+function openAddSource() {
+    const instOptions = Object.keys(PARTICIPANTS).map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('');
+    const bodyHtml = `
+        <div style="margin-bottom:16px;"><div style="font-size:13px;font-weight:700;margin-bottom:4px;">Link a new source</div><div style="font-size:12px;color:var(--text-muted);">Your bank will verify ownership via OTP or OAuth.</div></div>
+        <div class="field-group"><label>Institution</label><select id="addSourceInst" onchange="onAddSourceInstChange(this.value)"><option value="">Select institution</option>${instOptions}</select></div>
+        <div class="field-group" id="addSourceAssetGroup" style="display:none;"><label>Asset type</label><select id="addSourceAssetType" onchange="onAddSourceAssetTypeChange(this.value)"></select><div class="help">Users can only add Accounts, Wallets, or Cards.</div></div>
+        <div class="field-group"><label>Identifier</label><input id="addSourceIdentifier" placeholder="Account number, phone, or card number"><div class="help" id="addSourceIdentifierHelp">The number that identifies your account at this institution.</div></div>
+        <div class="field-group"><label>Account name (optional)</label><input id="addSourceAccountName" placeholder="e.g. My Main Account"></div>
+        <div style="background:var(--accent-soft);border-left:3px solid var(--accent);padding:10px 14px;font-size:12px;margin-bottom:14px;color:var(--primary);">🔒 Your details are encrypted and only used to verify you own this account — VouchMorph never stores your bank password.</div>
+        <div id="addSourceOtpFields" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);"><div style="font-size:12px;font-weight:700;margin-bottom:8px;">Verify with OTP</div><div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;" id="otpMessage">A verification code has been sent to your registered phone.</div><div class="otp-input-group"><input type="text" id="addSourceOtp" placeholder="Enter code" inputmode="numeric" maxlength="8"><button class="btn btn-primary btn-sm" onclick="completeSourceOtp()">Verify</button></div></div>
+        <div class="cta-row"><button class="btn btn-secondary" onclick="loadToolboxView()">Cancel</button><button class="btn btn-primary" id="addSourceSubmitBtn" onclick="submitAddSource()">Link source</button></div>`;
+    openModal('Add source — step 1 of 2: Link', bodyHtml);
+}
+
+let addSourceState = { attemptId: null, requiresOtp: false, requiresRedirect: false, redirectUrl: null, institution: null, assetType: null, identifier: null };
+
+function onAddSourceInstChange(code) {
+    const group = document.getElementById('addSourceAssetGroup'); const sel = document.getElementById('addSourceAssetType');
+    if (!code) { if (group) group.style.display = 'none'; if (sel) sel.innerHTML = ''; return; }
+    const inst = PARTICIPANTS[code]; const allTypes = inst?.asset_types || [];
+    const eligible = allTypes.filter(t => ['ACCOUNT', 'WALLET', 'CARD', 'MNO-WALLET', 'BANK-WALLET'].includes(String(t).toUpperCase()));
+    if (eligible.length === 0) { if (sel) sel.innerHTML = `<option value="">This institution doesn't support self-service linking yet</option>`; if (group) group.style.display = 'block'; return; }
+    if (sel) sel.innerHTML = eligible.map(t => `<option value="${t}">${assetIcon(t)} ${getAssetConfig(t)?.label || t}</option>`).join('');
+    if (group) group.style.display = 'block'; onAddSourceAssetTypeChange(eligible[0]);
+}
+
+function onAddSourceAssetTypeChange(type) {
+    const idInput = document.getElementById('addSourceIdentifier'); const help = document.getElementById('addSourceIdentifierHelp');
+    if (!idInput) return;
+    const t = String(type).toUpperCase();
+    const copy = { 'ACCOUNT': ['e.g. 0011223344', 'Your bank account number.'], 'CARD': ['e.g. 16-digit card number', 'The number on the front of your card.'], 'WALLET': ['e.g. +267 71 234 567', 'The phone number your wallet is registered to.'], 'MNO-WALLET': ['e.g. +267 71 234 567', 'The phone number your mobile wallet is registered to.'], 'BANK-WALLET': ['e.g. 0011223344', 'Your bank wallet account number.'] };
+    const [ph, h] = copy[t] || ['Account number, phone, or card number', 'The number that identifies your account at this institution.'];
+    idInput.placeholder = ph; if (help) help.textContent = h;
+}
+
+async function submitAddSource() {
+    const institution = document.getElementById('addSourceInst')?.value;
+    const assetType = document.getElementById('addSourceAssetType')?.value;
+    const identifier = document.getElementById('addSourceIdentifier')?.value.trim();
+    const accountName = document.getElementById('addSourceAccountName')?.value.trim();
+    if (!institution) { showMessage('Select an institution.', 'warning'); return; }
+    if (!assetType) { showMessage('Select an asset type.', 'warning'); return; }
+    if (!identifier) { showMessage('Enter your account identifier.', 'warning'); return; }
+    const btn = document.getElementById('addSourceSubmitBtn'); const original = btn.textContent;
+    btn.disabled = true; btn.textContent = 'Registering...';
+    const result = await callApi(CONFIG.API_BASE + '/user/add_source.php', { institution, asset_type: assetType, identifier, account_name: accountName || undefined });
+    btn.disabled = false; btn.textContent = original;
+    if (!result.ok) { showMessage('Could not add that source: ' + friendlyApiError(result.error), 'error'); return; }
+    const data = result.body.data || {};
+    addSourceState = { attemptId: data.attempt_id || null, requiresOtp: data.requires_otp || false, requiresRedirect: data.requires_redirect || false, redirectUrl: data.redirect_url || null, institution, assetType, identifier };
+    if (data.requires_redirect) { showMessage('Redirecting to your bank for verification...', 'info'); setTimeout(() => { window.location.href = data.redirect_url; }, 1500); return; }
+    if (data.requires_otp) {
+        document.getElementById('modalTitle').textContent = 'Add source — step 2 of 2: Verify';
+        document.getElementById('addSourceOtpFields').style.display = 'block';
+        document.getElementById('otpMessage').textContent = data.message || 'A verification code has been sent to your registered phone.';
+        document.getElementById('addSourceSubmitBtn').style.display = 'none';
+        showMessage('OTP sent! Enter the code to verify.', 'success'); return;
+    }
+    showMessage(data.message || 'Source added!', 'success');
+    setTimeout(() => { loadUserSources(); loadToolboxView(); }, 1500);
+}
+
+async function completeSourceOtp() {
+    const otp = document.getElementById('addSourceOtp')?.value.trim();
+    if (!otp) { showMessage('Enter the verification code.', 'warning'); return; }
+    if (!addSourceState.attemptId) { showMessage('No pending verification attempt.', 'error'); return; }
+    const btn = document.querySelector('#addSourceOtpFields .btn-primary'); const original = btn.textContent;
+    btn.disabled = true; btn.textContent = 'Verifying...';
+    const result = await callApi(CONFIG.API_BASE + '/user/verify_source.php', { attempt_id: addSourceState.attemptId, otp, user_id: CONFIG.USER_ID });
+    btn.disabled = false; btn.textContent = original;
+    if (!result.ok) { showMessage('That code didn\'t work: ' + friendlyApiError(result.error), 'error'); return; }
+    showMessage('Source verified and activated! 🎉', 'success');
+    setTimeout(() => { loadUserSources(); loadToolboxView(); }, 1500);
+}
+
+function openPendingSources() { openModal('Pending sources', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading pending sources...</div>'); loadPendingSources(); }
+
+async function loadPendingSources() {
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/sources/pending.php', {});
+    if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);"><div style="font-weight:700;">Couldn't load pending sources</div><div style="font-size:12px;color:var(--text-muted);margin-top:8px;">${escapeHtml(friendlyApiError(result.error))}</div><button class="btn btn-primary btn-sm" onclick="loadPendingSources()" style="margin-top:12px;">Retry</button></div>`; return; }
+    pendingSources = result.body.data || [];
+    renderPendingSources();
+}
+
+function renderPendingSources() {
+    const container = document.getElementById('modalBody');
+    if (!container) return;
+    if (!pendingSources || pendingSources.length === 0) { container.innerHTML = `<div style="text-align:center;padding:30px;color:var(--text-muted);"><div style="font-weight:700;font-size:16px;">No pending sources</div><div style="font-size:12px;margin-top:8px;">All your sources are active and verified.</div></div>`; return; }
+    let html = `<div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">${pendingSources.length} source(s) pending verification. Pending sources expire after 3 minutes if not completed.</div><div style="max-height:60vh;overflow-y:auto;">`;
+    pendingSources.forEach((source) => {
+        const statusLabel = getSourceStatusLabel(source), statusClass = getSourceStatusClass(source), sourceTypeLabel = getSourceTypeLabel(source);
+        const canDelete = ['pending_confirmation', 'pending', 'proposed', 'otp_pending', 'oauth_pending'].includes(source.status);
+        const canRetry = ['cancelled', 'rejected', 'failed'].includes(source.status);
+        const isExpiring = source.is_expiring || false;
+        html += `<div class="source-card" style="border-left: 3px solid ${isExpiring ? 'var(--warning)' : 'var(--border)'};"><div class="source-header"><div><div class="source-institution">${escapeHtml(source.institution_name || source.institution)}<span style="font-size:11px;color:var(--text-muted);font-weight:400;margin-left:6px;">(${sourceTypeLabel})</span></div><div class="source-details" style="margin-top:4px;"><span style="font-weight:600;">${escapeHtml(source.identifier)}</span>${source.account_name ? ` · ${escapeHtml(source.account_name)}` : ''}${source.asset_type ? ` · ${source.asset_type}` : ''}</div></div><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;"><span class="source-status ${statusClass}">${statusLabel}</span>${isExpiring ? `<span style="font-size:10px;color:var(--warning);font-weight:700;">Expiring soon</span>` : ''}${canDelete ? `<button class="btn-danger-outline" onclick="deletePendingSource('${source.type}', ${source.id})">Delete</button>` : ''}${canRetry ? `<button class="btn-primary btn-sm" onclick="retryPendingSource('${source.type}', ${source.id})">Retry</button>` : ''}</div></div>${source.error_message ? `<div style="font-size:11px;color:var(--danger);margin-top:4px;">${escapeHtml(friendlyApiError(source.error_message))}</div>` : ''}</div>`;
     });
     html += `</div>`;
-    body.innerHTML = html;
+    container.innerHTML = html;
 }
-function filterActivity(query) {
-    const q = query.trim().toLowerCase();
-    const rows = document.querySelectorAll('#activityRowsHolder [data-search]');
-    let visibleCount = 0;
-    rows.forEach(row => {
-        const matches = !q || row.dataset.search.includes(q);
-        row.style.display = matches ? '' : 'none';
-        if (matches) visibleCount++;
+
+function getSourceStatusLabel(source) { return { pending_confirmation: 'Pending Confirmation', pending: 'Pending', proposed: 'Proposed', otp_pending: 'OTP Verification', oauth_pending: 'OAuth Verification', cancelled: 'Cancelled', rejected: 'Rejected', failed: 'Failed', expired: 'Expired' }[source.status] || source.status; }
+
+function getSourceStatusClass(source) { return { pending_confirmation: 'pending', pending: 'pending', proposed: 'pending', otp_pending: 'pending', oauth_pending: 'pending', cancelled: 'inactive', rejected: 'inactive', failed: 'inactive', expired: 'inactive' }[source.status] || 'pending'; }
+
+function getSourceTypeLabel(source) { return { user_source: 'Source', agent_destination: 'Agent Destination', registration_attempt: 'Verification Attempt', agent_attempt: 'Agent Verification' }[source.type] || source.type; }
+
+async function deletePendingSource(type, sourceId) {
+    showConfirm('Delete this pending source? It can be re-added later.', async () => {
+        const result = await callApi(CONFIG.API_BASE + '/api/v1/sources/delete.php', { type, source_id: sourceId });
+        if (!result.ok) { showMessage('Could not delete that source: ' + friendlyApiError(result.error), 'error'); return; }
+        showMessage(result.body.data?.message || 'Source deleted successfully.', 'success');
+        loadPendingSources();
     });
-    const countEl = document.getElementById('activityCount');
-    if (countEl) countEl.textContent = q ? `${visibleCount} match${visibleCount === 1 ? '' : 'es'}` : `Showing ${rows.length} swap(s)`;
-}
-async function viewSwapDetail(reference) {
-    openModal('Swap details', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading details...</div>');
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/details.php', { reference });
-    if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);">Couldn't load swap details: ${escapeHtml(friendlyApiError(result.error))}</div>`; return; }
-    renderSwapDetail(result.body);
-}
-function renderSwapDetail(data) {
-    const swap = data.swap || data.data || {};
-    const code = swap.voucher_number || null, pin = swap.atm_pin || null;
-    const codeBox = (code || pin) ? `<div class="atm-code" style="margin-bottom:12px;">${code ? `<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Cashout / Voucher Code</div><div class="code">${escapeHtml(code)}</div>` : ''}${pin ? `<div style="font-size:11px;color:var(--text-muted);margin:${code ? '10px' : '0'} 0 4px;">PIN</div><div class="code">${escapeHtml(pin)}</div>` : ''}${swap.voucher_expiry ? `<div style="font-size:11px;color:var(--text-dim);margin-top:8px;">Expires ${new Date(swap.voucher_expiry).toLocaleString()}</div>` : ''}</div>` : '';
-    document.getElementById('modalBody').innerHTML = `<div style="max-height:70vh;overflow-y:auto;"><div style="background:var(--accent-soft);padding:16px;margin-bottom:12px;"><div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;"><div><div style="font-size:12px;color:var(--text-muted);">Reference</div><div style="font-weight:700;">${swap.reference || swap.swap_reference || 'N/A'}</div></div><div><div style="font-size:12px;color:var(--text-muted);">Status</div><div style="font-weight:700;">${swap.status || 'unknown'}</div></div></div></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;"><div style="background:var(--surface);border:1px solid var(--border);padding:12px;"><div style="font-size:11px;color:var(--text-muted);">Swap type</div><div style="font-weight:700;">${swap.swap_type || 'N/A'}</div></div><div style="background:var(--surface);border:1px solid var(--border);padding:12px;"><div style="font-size:11px;color:var(--text-muted);">Amount</div><div style="font-weight:700;font-size:16px;color:var(--accent);font-family:var(--font-mono);">${formatMoney(swap.amount, swap.currency)}</div></div></div>${codeBox}<div style="margin-top:12px;"><button class="btn btn-secondary" onclick="closeModal()" style="width:100%;">Close</button></div></div>`;
 }
 
-function openProfileModal() { openModal('My profile', renderProfileModal()); }
-function renderProfileModal() {
-    const rows = savedIdentities.length ? savedIdentities.map((id, i) => `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);"><div><div style="font-size:11px;color:var(--text-muted);">${escapeHtml(IDENTITY_TYPE_LABELS[id.type] || id.type)}</div><div style="font-size:14px;font-weight:700;">${escapeHtml(id.value)}</div></div><div class="quick-actions" style="margin:0;"><span class="quick-link" onclick="useSavedIdentity(${i})">Use</span><span class="quick-link danger" onclick="removeSavedIdentity(${i})">Remove</span></div></div>`).join('') : `<div style="font-size:12px;color:var(--text-dim);">No saved identities yet.</div>`;
-    return `<div style="margin-bottom:12px;"><div style="font-weight:700;margin-bottom:4px;">Your registered identities</div>${rows}</div><div style="border-top:1px solid var(--border);padding-top:16px;"><div class="field-label" style="margin-bottom:8px;">Transaction PIN</div><div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Required to claim money sent to your verified identity. Never share it.</div><div class="field-group"><label>New PIN (4-6 digits)</label><input type="password" id="newPin" inputmode="numeric" maxlength="6" placeholder="••••"></div><div class="field-group"><label>Confirm PIN</label><input type="password" id="confirmPin" inputmode="numeric" maxlength="6" placeholder="••••"></div><div class="cta-row"><button class="btn btn-primary" onclick="setTransactionPin()">Set PIN</button></div></div><div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px;"><span class="quick-link" onclick="closeModal();openAddIdentityModal();">Add a new identity</span><span class="quick-link muted" onclick="closeModal();openFinalizeIdentityModal();">Finalize an identity swap</span></div>`;
-}
-function removeSavedIdentity(idx) { savedIdentities.splice(idx, 1); document.getElementById('modalBody').innerHTML = renderProfileModal(); }
-function useSavedIdentity(idx) {
-    const id = savedIdentities[idx]; if (!id) return;
-    closeModal(); goView('swap'); openIdentitySendModal();
-    state.toIdentityType = id.type; state.toIdentityValue = id.value;
-    setTimeout(() => { const typeSel = document.getElementById('identityType'); const valInput = document.getElementById('identityValue'); if (typeSel) typeSel.value = id.type; if (valInput) valInput.value = id.value; updateIdentityHelp(); refreshUI(); }, 50);
-    showMessage(`Using saved ${IDENTITY_TYPE_LABELS[id.type] || id.type}: ${id.value}`, 'success');
-}
-async function setTransactionPin() {
-    const pin = document.getElementById('newPin').value.trim();
-    const confirmPin = document.getElementById('confirmPin').value.trim();
-    if (!/^\d{4,6}$/.test(pin)) { showMessage('Your PIN should be 4 to 6 digits.', 'warning'); return; }
-    if (pin !== confirmPin) { showMessage('Those two PINs don\'t match — try again.', 'warning'); return; }
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/set_pin.php', { pin, confirm_pin: confirmPin });
-    if (!result.ok) { showMessage('Could not set your PIN: ' + friendlyApiError(result.error), 'error'); return; }
-    if (SessionUser) SessionUser.has_pin = true;
-    showMessage('Transaction PIN set. Keep it private. 🎉', 'success');
-    renderProgressCard(); closeModal();
-}
-
-function openHelpModal() {
-    openModal('Help', `<div style="font-size:13px;line-height:1.7;color:var(--text);">
-        <p style="font-weight:700;margin-bottom:6px;">Swapping money</p>
-        <ol style="padding-left:18px;margin-bottom:16px;"><li>From the hub, tap Swap.</li><li>Pick a source tile: Wallet, Card, Voucher, or My Card (draws from whatever's hooked to your VouchMorph Card).</li><li>Choose "Where's this going?" — Deposit, Cashout, or Identity.</li><li>Enter the amount, review the fee, and confirm. Nothing moves until you tap Confirm.</li></ol>
-        <p style="font-weight:700;margin-bottom:6px;">Swapping to an identity</p>
-        <ol style="padding-left:18px;margin-bottom:16px;"><li>Under "Where's this going?", tap Identity.</li><li>Enter their national ID, phone, or email.</li></ol>
-        <p style="font-weight:700;margin-bottom:6px;">Combining multiple sources</p>
-        <ol style="padding-left:18px;margin-bottom:16px;"><li>Tap the "Combine" tile alongside the other source options.</li><li>Type the total amount — "Smart" (recommended) balances it across your sources for you automatically.</li><li>Tap "Use these sources," then choose where it's going — Deposit, Cashout, or Identity — exactly like any other swap.</li></ol>
-        <p style="font-weight:700;margin-bottom:6px;">Your VouchMorph Card</p>
-        <ol style="padding-left:18px;margin-bottom:16px;"><li>From the hub, tap Card. Every account gets one automatically.</li><li>It starts inactive — activate it once with a small one-time fee from any linked source.</li><li>Hook one or many sources — from the Card view ("Hook a source"), or from any row in Toolbox → My sources ("Hook to card"). Each hooked source is held for up to 24 hours per its own authorized amount.</li><li>Once something is hooked, you can spend it directly: go to Swap and pick "My Card" as your source — it draws from everything hooked, using the same Smart/Equal/Ratio/Manual split as Combine sources.</li><li>Each hooked source shows an Unhook option if you want to release it before you spend it.</li></ol>
-        <p style="font-weight:700;margin-bottom:6px;">Claiming money sent to you</p>
-        <ol style="padding-left:18px;margin-bottom:16px;"><li>Toolbox → Finalize identity swap.</li><li>Enter your claim PIN and choose how to receive it.</li></ol>
-        <p style="font-weight:700;margin-bottom:6px;">Agent access</p>
-        <ol style="padding-left:18px;"><li>Agent access is granted by VouchMorph admin staff to your account.</li><li>Once granted, open Toolbox → Agent destinations to register a business account, then use Agent tools to search and finalize client claims.</li></ol>
-    </div>`);
+async function retryPendingSource(type, sourceId) {
+    showConfirm('Retry this source? This will start a new verification attempt.', async () => {
+        const result = await callApi(CONFIG.API_BASE + '/api/v1/sources/retry.php', { type, source_id: sourceId });
+        if (!result.ok) { showMessage('Could not retry that source: ' + friendlyApiError(result.error), 'error'); return; }
+        const data = result.body.data || {};
+        if (data.requires_redirect) { showMessage(data.message || 'Redirecting to bank...', 'info'); setTimeout(() => { window.location.href = data.redirect_url; }, 1500); return; }
+        if (data.requires_otp) { showMessage(data.message || 'OTP sent. Enter the code to verify.', 'success'); loadPendingSources(); return; }
+        showMessage(data.message || 'Source retry initiated successfully.', 'success');
+        loadPendingSources();
+    });
 }
 
 // ============================================================
-// Lightweight per-product "How it works" — a short read for
-// people who like reading, reached via a small "?" button next
-// to the product title, separate from the full Help modal.
+// VIEW BALANCE
 // ============================================================
-const HOW_IT_WORKS = {
-    swap: {
-        title: 'How Swap works',
-        body: `<div style="font-size:13px;line-height:1.7;color:var(--text);">
-            <p style="margin-bottom:12px;">Pick a source (Wallet, Card, Voucher, or My Card), pick a destination, enter an amount, and review the fee before anything moves.</p>
-            <p style="margin-bottom:12px;"><strong>My Card</strong> draws from whatever's hooked to your VouchMorph Card instead of one single source — it splits automatically using Smart, Equal, Ratio, or Manual, the same as Combine sources.</p>
-            <p>Nothing is final until you tap Confirm on the review screen — you can back out any time before that.</p>
-        </div>`,
-    },
-    card: {
-        title: 'How the Card works',
-        body: `<div style="font-size:13px;line-height:1.7;color:var(--text);">
-            <p style="margin-bottom:12px;">Every account gets a VouchMorph Card automatically. It starts inactive — a small one-time fee from any linked source turns it on.</p>
-            <p style="margin-bottom:12px;">Once active, <strong>hook</strong> sources to it — accounts, wallets, cashout vouchers, or a claimed identity balance. Each hook holds that amount for up to 24 hours.</p>
-            <p style="margin-bottom:12px;">You can hook one source or several at once, and start from either side: the Card view's "Hook a source," or any source's "Hook to card" in Toolbox.</p>
-            <p>Anything hooked becomes spendable right away as a Swap source ("My Card"), and can be released early via Unhook if it hasn't been spent yet.</p>
-        </div>`,
-    },
-};
-function openHowItWorks(key) {
-    const info = HOW_IT_WORKS[key];
-    if (!info) return;
-    openModal(info.title, info.body);
-}
-function openTermsModal() {
-    openModal('Terms and conditions', `<div style="font-size:13px;line-height:1.7;color:var(--text);">
-        <p style="font-weight:700;margin-bottom:6px;">1. The service</p><p style="margin-bottom:14px;">VouchMorph facilitates transfers, cashouts, and identity-based payments between participating institutions on your instruction. We act as an intermediary; the underlying funds remain with the institutions holding your linked sources until a swap completes.</p>
-        <p style="font-weight:700;margin-bottom:6px;">2. Your responsibilities</p><p style="margin-bottom:14px;">You are responsible for keeping your PIN, claim codes, and linked source credentials confidential. VouchMorph staff will never ask for your PIN.</p>
-        <p style="font-weight:700;margin-bottom:6px;">3. Fees</p><p style="margin-bottom:14px;">Applicable fees are shown before you confirm any swap. Fees vary by swap type, delivery method, and destination institution.</p>
-        <p style="font-weight:700;margin-bottom:6px;">4. Identity swaps</p><p style="margin-bottom:14px;">Money sent to an identity (national ID, phone, email, etc.) is held for the recipient for a limited window and requires verification to claim.</p>
-        <p style="margin-top:16px;color:var(--danger);font-size:11px;font-weight:700;">⚠ Placeholder — replace with reviewed legal terms and a recorded consent flow before this goes live with real funds.</p>
-    </div>`);
-}
-async function checkPendingClaims() {
-    if (!CONFIG.USER_ID) return;
-    try { const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/pending_claims.php', {}); if (!result.ok) return; pendingClaims = result.body.data || []; updateToolboxBadge(); }
-    catch (e) { console.error('[claims] Failed to check pending claims', e); }
-}
-// ------------------------------------------------------------
-// Nodes like #fromSection / #toSection / #identityFields get
-// physically moved into whichever modal is using them (Destination
-// picker, Identity picker, Activate card). If a modal is closed and
-// these nodes aren't returned home, the NEXT modal that does
-// `modalBody.innerHTML = ''` destroys them outright, and every
-// subsequent flow that expects e.g. #toInstSelect to exist breaks.
-// This must run before any modal is reused.
-// ------------------------------------------------------------
-function returnMovableNodesHome() {
-    const offscreen = document.getElementById('offscreenNodes');
-    const toInstSlot = document.getElementById('toInstAssetGroupSlot');
-    const toInstGroup = document.getElementById('toInstAssetGroup');
-    if (toInstGroup && toInstSlot && toInstGroup.parentElement !== toInstSlot) toInstSlot.appendChild(toInstGroup);
-    ['fromSection', 'toSection', 'identityFields'].forEach(id => {
-        const el = document.getElementById(id);
-        if (el && offscreen && el.parentElement !== offscreen) offscreen.appendChild(el);
-    });
-    // If Swap's single-source picker is the active mode, re-adopt
-    // fromSection immediately so the view isn't left empty right
-    // after closing a modal that borrowed it (e.g. Activate card).
-    if (state.swapSourceMode !== 'VMCARD') {
-        const singleHolder = document.getElementById('swapSingleSourceHolder');
-        const fromSectionEl = document.getElementById('fromSection');
-        if (singleHolder && fromSectionEl && fromSectionEl.parentElement !== singleHolder) singleHolder.appendChild(fromSectionEl);
+async function viewWalletBalance() {
+    openModal('Balances', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading balances...</div>');
+    const result = await fetchAllBalances();
+    if (!result.success) {
+        document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);"><div style="font-weight:700;">Couldn't load your balances</div><div style="font-size:12px;color:var(--text-muted);margin-top:8px;">${escapeHtml(friendlyApiError(result.error))}</div><button class="btn btn-primary btn-sm" onclick="viewWalletBalance()" style="margin-top:12px;">Retry</button></div>`;
+        return;
     }
-}
-function openModal(title, bodyHtml) {
-    const modalTitle = document.getElementById('modalTitle'), modalBody = document.getElementById('modalBody'), modal = document.getElementById('modal');
-    if (modalTitle) modalTitle.textContent = title;
-    if (modalBody) modalBody.innerHTML = bodyHtml;
-    if (modal) modal.classList.add('active');
-}
-function closeModal() {
-    document.getElementById('modal').classList.remove('active');
-    returnMovableNodesHome();
-    stopSessionPolling();
-    refreshUI();
-}
-function showMessage(text, type = 'info') {
-    const el = document.getElementById('mainMessage');
-    el.textContent = text; el.className = `message show ${type}`;
-    clearTimeout(showMessage._t);
-    showMessage._t = setTimeout(() => el.classList.remove('show'), 6000);
+    const data = result.data || {}; const sources = data.sources || []; const totals = data.total || {};
+    if (sources.length === 0) {
+        document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:30px;color:var(--text-muted);"><div style="font-weight:700;">No sources linked yet</div><div style="font-size:12px;margin-top:8px;">Add a source to see your balance</div><button class="btn btn-primary btn-sm" onclick="closeModal();goView('toolbox');" style="margin-top:12px;">Add source</button></div>`;
+        return;
+    }
+    let html = `<div style="margin-bottom:16px;"><div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">Your total balance across all linked sources</div>`;
+    if (Object.keys(totals).length > 0) {
+        html += `<div style="background:var(--primary);color:#fff;padding:16px;margin-bottom:12px;">`;
+        Object.keys(totals).forEach(cur => { html += `<div style="display:flex;justify-content:space-between;align-items:center;"><span style="font-size:12px;opacity:0.7;">Total ${cur}</span><span style="font-size:22px;font-weight:600;font-family:var(--font-mono);">${formatMoney(totals[cur], cur)}</span></div>`; });
+        html += `</div>`;
+    }
+    html += `<div style="max-height:50vh;overflow-y:auto;">`;
+    sources.forEach(item => {
+        const source = item.source, balance = item.balance;
+        const instName = PARTICIPANTS[source.institution]?.name || source.institution;
+        const assetLabel = ASSETS[source.asset_type]?.label || source.asset_type;
+        let balanceDisplay = '—';
+        if (balance.success) balanceDisplay = formatMoney(balance.balance, balance.currency);
+        else balanceDisplay = `<span style="color:var(--text-muted);font-size:12px;">${escapeHtml(friendlyApiError(balance.error) || 'Unavailable')}</span>`;
+        html += `<div style="border:1px solid var(--border);padding:13px;margin-bottom:8px;background:#fff;"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;"><div style="display:flex;align-items:center;gap:10px;"><span class="row-icon" style="font-size:18px;">${assetIcon(source.asset_type)}</span><div><div style="font-weight:700;">${escapeHtml(instName)}</div><div style="font-size:12px;color:var(--text-muted);">${escapeHtml(assetLabel)} · ${escapeHtml(source.identifier)}${source.account_name ? ` · ${escapeHtml(source.account_name)}` : ''}</div></div></div><div style="text-align:right;"><div style="font-size:16px;font-weight:600;font-family:var(--font-mono);">${balanceDisplay}</div><div style="font-size:10px;color:var(--text-dim);text-transform:uppercase;">${source.status}</div></div></div><div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);display:flex;gap:8px;flex-wrap:wrap;"><button class="btn-primary btn-sm" onclick="refreshSourceBalance('${source.id}')">Refresh</button></div></div>`;
+    });
+    html += `</div><div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border);display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-primary btn-sm" onclick="refreshAllBalances()">Refresh all</button><button class="btn btn-secondary btn-sm" onclick="closeModal();goView('toolbox');">Add source</button><button class="btn btn-secondary btn-sm" onclick="closeModal()">Close</button></div>`;
+    document.getElementById('modalBody').innerHTML = html;
 }
 
-// ============================================================
-// CARD — persistent full-page view. QR tap takes over the whole
-// screen (goQrFull). Hooked-source rows show an "Open" status
-// badge and an Unhook action. "Use as Swap source" jumps straight
-// into Swap with My Card pre-selected.
-// ============================================================
-async function loadCardView() {
-    const body = document.getElementById('cardViewBody');
-    body.innerHTML = `<div style="text-align:center;padding:40px 0;"><div class="spinner" style="border-color:rgba(16,30,27,0.15);border-top-color:var(--primary);"></div> Loading...</div>`;
+async function refreshSourceBalance(sourceId) {
+    const source = userSources.find(s => s.id === sourceId);
+    if (!source) { showMessage('Source not found', 'error'); return; }
+    showMessage(`Fetching balance for ${source.institution}...`, 'info');
+    const result = await fetchBalance(source.institution, source.identifier, source.identifier_type);
+    if (result.success) { showMessage(`Balance updated: ${formatMoney(result.data?.balance, result.data?.currency)}`, 'success'); viewWalletBalance(); }
+    else { showMessage(`Couldn't fetch that balance: ${friendlyApiError(result.error)}`, 'error'); viewWalletBalance(); }
+}
+
+async function refreshAllBalances() { showMessage('Refreshing all balances...', 'info'); await viewWalletBalance(); }
+
+async function fetchBalance(institution, identifier, identifierType = 'auto') {
     try {
-        const result = await callApiGet(CONFIG.API_BASE + '/api/v1/cards/My.php');
-        if (!result.ok) {
-            console.error('[card] My.php failed:', result.error);
-            body.innerHTML = `<div style="color:var(--danger);padding:12px;text-align:center;"><div style="font-weight:700;margin-bottom:6px;">Couldn't load your card</div><div style="font-size:12px;">${escapeHtml(friendlyApiError(result.error))}</div><button class="btn btn-secondary btn-sm" onclick="loadCardView()" style="margin-top:12px;width:auto;">Retry</button></div>`;
-            return;
-        }
-        myCard = result.body.data;
-        body.innerHTML = renderCardViewBody();
-        if (myCard.is_active && myCard.qr_payload) renderCardQr(myCard.qr_payload);
-        if (myCard.active_session) { lastKnownSession = myCard.active_session; startSessionPolling(myCard.active_session.session_id); }
-    } catch (e) {
-        console.error('[card] loadCardView threw:', e);
-        body.innerHTML = `<div style="color:var(--danger);padding:12px;text-align:center;"><div style="font-weight:700;margin-bottom:6px;">Something went wrong loading your card</div><div style="font-size:12px;">${escapeHtml(e.message || String(e))}</div><button class="btn btn-secondary btn-sm" onclick="loadCardView()" style="margin-top:12px;width:auto;">Retry</button></div>`;
-    }
-}
-function renderCardViewBody() {
-    if (!myCard.is_active) {
-        return `<div style="text-align:center;padding:10px 0 20px;">
-            <div style="font-weight:700;font-size:16px;margin-bottom:6px;">Your VouchMorph Card is ready</div>
-            <div style="font-size:12px;color:var(--text-muted);max-width:320px;margin:0 auto 18px;">It's issued but not active yet — activate it once with a small one-time fee from any of your linked sources, and it's ready to use.</div>
-            <div style="font-family:var(--font-mono);font-size:14px;font-weight:700;margin-bottom:4px;">•••• ${escapeHtml(myCard.card_suffix)}</div>
-            <div style="font-size:12px;color:var(--text-dim);margin-bottom:18px;">Activation fee: ${formatMoney(myCard.activation_fee, myCard.currency)}</div>
-            <div class="cta-row"><button class="btn btn-primary" onclick="openActivateCardModal()">Activate my card</button></div>
-            <div style="margin-top:14px;"><span class="quick-link muted" onclick="openHelpModal()">How does this work? →</span></div>
-        </div>`;
-    }
-    const hook = myCard.hook;
-    // Per the real backend (CardService::releaseHook / unhook.php), a
-    // hook is released as one all-or-nothing unit — every source in it
-    // together, via hook_reference. There is no per-source release, so
-    // this is one "Unhook everything" action for the hook shown here,
-    // not a button on each row.
-    const contributorsHtml = hook && hook.contributors.length ? hook.contributors.map(c => `
-        <div class="myc-source-row">
-            <div class="myc-source-tile">${escapeHtml(institutionInitials(c.institution))}</div>
-            <div class="myc-source-info"><div class="myc-source-inst">${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)}${c.is_me ? ' <span style="color:var(--accent);font-weight:700;">(you)</span>' : ''}</div><div class="myc-source-ident">${escapeHtml(c.source_identifier)}</div></div>
-            <div style="text-align:right;">
-                <div class="myc-source-amt">${formatMoney(c.held_amount, hook.currency)}</div>
-                <span class="source-status-badge open">Open</span>
-            </div>
-        </div>`).join('') : `<div style="font-size:12px;color:var(--text-dim);padding:8px 0;">No sources hooked yet.</div>`;
-    const cardName = myCard.display_name || (Journey.read().cardNamed ? Journey.read().cardNamed : null);
-    return `
-        <div class="myc-layout">
-            <div class="myc-qr-panel">
-                <div class="myc-card-visual">
-                    <div class="myc-card-top"><div class="myc-card-mark">VouchMorph<sup>TM</sup></div><div class="myc-card-status active">Active</div></div>
-                    <div class="myc-card-bottom"><div class="myc-card-number">•••• •••• •••• ${escapeHtml(myCard.card_suffix)}</div><div class="myc-card-name">${cardName ? escapeHtml(cardName) : 'VouchMorph Card'}</div></div>
-                </div>
-                <div class="qr-tap-target" onclick="goQrFull()">
-                    <div class="myc-qr-frame" id="cardQrContainer"></div>
-                    <div class="myc-qr-caption">Scan to hook a source to this card</div>
-                    <div class="myc-qr-tap-hint">Tap to view full screen &rsaquo;</div>
-                </div>
-                ${cardName ? '' : `<div style="margin-top:12px;"><span class="quick-link muted" onclick="openNameCardModal()">Give your card a name →</span></div>`}
-                <div class="cta-row" style="margin-top:20px;width:100%;">
-                    <button class="btn btn-secondary" onclick="openHookBuilder('card')">Hook a source</button>
-                    ${hook && hook.contributors.length ? `<button class="btn btn-primary" onclick="openCreateSessionModal(myCard.card_suffix)">Start a swap</button>` : ''}
-                </div>
-                ${hook && hook.contributors.length ? `<button class="btn secondary" style="margin-top:10px;" onclick="goView('swap'); setTimeout(()=>setSwapSourceMode('VMCARD'), 30);">Use this card as a Swap source</button>` : ''}
-                <div style="margin-top:14px;"><span class="quick-link muted" onclick="pendingHookPrefill=null; openScanToHookModal()">Hook to someone else's card (scan their QR)</span></div>
-            </div>
-            <div>
-                <div class="myc-panel">
-                    <div class="myc-panel-head"><span class="myc-panel-title">Hooked sources</span>${hook ? `<span class="myc-panel-total">${formatMoney(hook.total_held, hook.currency)}</span>` : ''}</div>
-                    ${hook ? `<div class="help" style="margin-bottom:6px;">Held until ${new Date(hook.expires_at).toLocaleString()} — releases automatically after 24 hours if it isn't spent first.</div>` : ''}
-                    ${contributorsHtml}
-                    ${hook && hook.contributors.length ? `<button class="btn secondary" style="margin-top:14px;" onclick="openUnhook({hookReference: hook.hook_reference, count: hook.contributors.length, amount: formatMoney(hook.total_held, hook.currency)})">Unhook everything</button>` : ''}
-                </div>
-                <div id="sessionStatusArea">${myCard.active_session ? renderSessionStatus(myCard.active_session) : ''}</div>
-            </div>
-        </div>`;
-}
-function openNameCardModal() {
-    openModal('Name your card', `<div style="text-align:center;padding:6px 0 10px;font-size:12px;color:var(--text-muted);">Give your card a name — just for you, shown wherever you see it.</div><div class="field-group"><label>Card name</label><input id="cardNameInput" placeholder="e.g. Thabo's Card" maxlength="30"></div><div class="cta-row"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveCardName()">Save</button></div>`);
-}
-function saveCardName() {
-    const name = document.getElementById('cardNameInput').value.trim();
-    if (!name) { showMessage('Enter a name first.', 'warning'); return; }
-    const data = Journey.read(); data.cardNamed = name; Journey.write(data);
-    showMessage(`Saved — meet "${name}". 🎉`, 'success');
-    closeModal(); loadCardView();
-}
-function renderCardQr(payloadText) {
-    const el = document.getElementById('cardQrContainer');
-    if (!el || typeof QRCode === 'undefined') return;
-    el.innerHTML = '';
-    new QRCode(el, { text: payloadText, width: 176, height: 176 });
-}
-function goQrFull() {
-    if (!myCard || !myCard.qr_payload) { showMessage("Card QR isn't ready yet.", 'warning'); return; }
-    document.getElementById('qrFullSuffix').textContent = '•••• ' + myCard.card_suffix;
-    document.getElementById('qrFullName').textContent = (myCard.display_name || Journey.read().cardNamed) || 'VouchMorph Card';
-    pushView('qrfull');
-    document.getElementById('qrHolderLg').innerHTML = '';
-    new QRCode(document.getElementById('qrHolderLg'), { text: myCard.qr_payload, width: 300, height: 300 });
+        const response = await fetch(CONFIG.API_BASE + '/api/v1/user/balance.php', { method: 'POST', headers: buildHeaders(), body: JSON.stringify({ institution, identifier, identifier_type: identifierType }), credentials: 'include' });
+        return await response.json();
+    } catch (error) { console.error('Balance fetch error:', error); return { success: false, error: error.message }; }
 }
 
-function openActivateCardModal() {
-    returnMovableNodesHome();
-    const modalBody = document.getElementById('modalBody');
-    modalBody.innerHTML = '';
-    modalBody.appendChild(document.getElementById('fromSection'));
-    state.fromCategory = 'WALLET'; toggleSourcePanelInline('WALLET');
-    const feeNote = document.createElement('div');
-    feeNote.style.cssText = 'font-size:12px;color:var(--text-dim);text-align:center;margin-top:10px;';
-    feeNote.textContent = `A one-time ${formatMoney(myCard.activation_fee, myCard.currency)} activation fee will be charged from the source you select.`;
-    modalBody.appendChild(feeNote);
-    const btnRow = document.createElement('div');
-    btnRow.className = 'cta-row'; btnRow.style.marginTop = '14px';
-    btnRow.innerHTML = `<button type="button" class="btn btn-primary" onclick="confirmActivateCard('${myCard.card_suffix}')">Pay and activate</button>`;
-    modalBody.appendChild(btnRow);
-    document.getElementById('modalTitle').textContent = 'Activate your card';
-    document.getElementById('modal').classList.add('active');
-}
-async function confirmActivateCard(cardSuffix) {
-    const hasSource = !!(state.fromInst && state.fromAsset && fieldsValidForAsset(state.fromAsset, state.fromFields, true).valid);
-    if (!hasSource) { showMessage('Finish selecting the source — institution, asset type, and required fields.', 'warning'); return; }
-    const idField = (getAssetConfig(state.fromAsset)?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
-    const identifier = idField ? state.fromFields[idField.name] : null;
-    const pin = extractPinFromFields(state.fromAsset, state.fromFields);
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/Activate.php', { card_suffix: cardSuffix, institution: state.fromInst, asset_type: state.fromAsset, identifier, pin: pin || undefined });
-    if (!result.ok) { showMessage('Activation didn\'t go through: ' + friendlyApiError(result.error), 'error'); return; }
-    showMessage('Card activated! 🎉', 'success');
-    closeModal(); loadCardView();
-}
-
-// ============================================================
-// HOOK BUILDER — dual entry (card-side "Hook a source" / source-
-// side "Hook to card"), single or multiple sources per hook, five
-// asset types: Account, Wallet, Card (Visa/Mastercard), Cashout
-// Voucher, Identity claim (only enabled once there's an actual
-// claimed balance — mirrors pendingClaims, same signal used
-// elsewhere in the app). This is a plain bank-issued card, distinct
-// from the VouchMorph Card itself — hooking a VouchMorph Card to
-// another VouchMorph Card is a separate, blocked scenario.
-// ============================================================
-const HOOK_ASSET_TYPES = [
-    { key: 'ACCOUNT', label: 'Account', icon: '🏦' },
-    { key: 'WALLET', label: 'Wallet', icon: '📱' },
-    { key: 'CARD', label: 'Card (Visa/Mastercard)', icon: '🪪' },
-    { key: 'VOUCHER', label: 'Cashout voucher', icon: '🎟️' },
-    // Identity claims are hooked via their own dedicated flow now —
-    // Toolbox → Finalize identity swap → Finalize → "Hook to a
-    // VouchMorph Card" — which knows exactly which claim it's for and
-    // carries the claim PIN. The old version here just grabbed
-    // pendingClaims[0] blindly with no way to track which claim it
-    // actually referred to, so it's been removed rather than left as
-    // a second, broken path to the same thing.
-];
-let hookMode = 'single';
-let hookRows = [];
-let hookRowSeq = 0;
-let hookEntry = { source: 'card', targetCardSuffix: null };
-
-async function openHookBuilder(entryType, prefill) {
-    if (!myCard) {
-        const result = await callApiGet(CONFIG.API_BASE + '/api/v1/cards/My.php');
-        if (!result.ok) { showMessage("Couldn't load your card: " + friendlyApiError(result.error), 'error'); return; }
-        myCard = result.body.data;
-    }
-    if (!myCard.is_active) { showMessage('Your VouchMorph Card is not active yet. Activate it first from the Card view.', 'warning'); return; }
-    hookEntry = { source: entryType, targetCardSuffix: myCard.card_suffix };
-    hookRows = []; hookRowSeq = 0; hookMode = 'single';
-    // Reset from any previous success screen this view might be
-    // showing — these nodes are reused across visits.
-    document.getElementById('hookViewTitle').textContent = 'Hook a source';
-    document.getElementById('hookModeRow').style.display = 'flex';
-    document.getElementById('addHookRowBtn').style.display = 'none';
-    document.getElementById('hookSubmitBtn').style.display = 'block';
-    document.getElementById('hookFinePrint').style.display = 'block';
-    document.getElementById('hookEyebrow').textContent = entryType === 'card' ? 'Hook to My VouchMorph Card' : 'Hook this source to a card';
-    document.getElementById('hookEntryNote').textContent = entryType === 'card'
-        ? 'Started from the Card view — building the list of sources to hook.'
-        : `Started from "${prefill?.instName}" in My sources — this source is pre-filled below.`;
-    if (entryType === 'source' && prefill) addHookRow(prefill);
-    else addHookRow();
-    setHookMode('single');
-    pushView('hook');
-}
-function setHookMode(mode) {
-    hookMode = mode;
-    document.getElementById('hookModeSingleBtn').classList.toggle('active', mode === 'single');
-    document.getElementById('hookModeMultiBtn').classList.toggle('active', mode === 'multi');
-    document.getElementById('addHookRowBtn').style.display = mode === 'multi' ? 'block' : 'none';
-    if (mode === 'single' && hookRows.length > 1) hookRows = hookRows.slice(0, 1);
-    renderHookRows();
-}
-function addHookRow(prefill) {
-    if (hookMode === 'single' && hookRows.length >= 1) return;
-    hookRows.push({ id: ++hookRowSeq, instName: prefill?.instName || null, institution: prefill?.institution || null, assetType: prefill?.assetType || null, identifier: prefill?.identifier || '', pin: '', amount: '', locked: !!prefill });
-    renderHookRows();
-}
-function removeHookRow(id) { hookRows = hookRows.filter(r => r.id !== id); renderHookRows(); }
-function setHookRowAssetType(id, type) {
-    const row = hookRows.find(r => r.id === id);
-    if (!row) return;
-    row.assetType = type;
-    renderHookRows();
-}
-function renderHookRows() {
-    const holder = document.getElementById('hookRowsHolder');
-    holder.innerHTML = hookRows.map((row, idx) => {
-        if (row.locked) {
-            return `<div class="hook-row-card"><div class="hook-row-head"><span class="hook-row-label">Source ${idx + 1} — from My sources</span></div><div style="font-size:13px;font-weight:700;">${escapeHtml(row.instName)}</div><div style="font-size:11px;color:var(--text-dim);margin-bottom:10px;">${escapeHtml(row.identifier)}</div><div class="field-group"><label>Amount to authorize</label><input type="number" placeholder="0.00" value="${row.amount}" oninput="hookRows.find(r=>r.id===${row.id}).amount=this.value"></div></div>`;
-        }
-        const typeOptions = HOOK_ASSET_TYPES.map(t => `<div class="source-type-opt ${row.assetType === t.key ? 'active' : ''}" onclick="setHookRowAssetType(${row.id}, '${t.key}')"><span class="icon">${t.icon}</span>${t.label}</div>`).join('');
-        let extraFields = '';
-        let institutionField = '';
-        if (row.assetType) {
-            // Every source belongs to a specific institution — without
-            // this, confirmHookBuilder() has no way to know whether
-            // "•••• 4471" is at Zuru Bank or Saccussalis, and the hook
-            // request would be ambiguous.
-            const eligibleCodes = Object.keys(PARTICIPANTS).filter(code => (PARTICIPANTS[code].asset_types || []).map(t => String(t).toUpperCase()).includes(row.assetType === 'VOUCHER' ? 'VOUCHER' : row.assetType));
-            const options = eligibleCodes.map(code => `<option value="${code}" ${row.institution === code ? 'selected' : ''}>${PARTICIPANTS[code]?.name || code}</option>`).join('');
-            institutionField = `<div class="field-group"><label>Institution</label><select onchange="hookRows.find(r=>r.id===${row.id}).institution=this.value; renderHookRows();"><option value="">Select institution</option>${options}</select></div>`;
-            const cfg = getAssetConfig(row.assetType);
-            const pinField = (cfg?.fields || []).find(f => f.vault_field === 'pin');
-            if (pinField) extraFields = `<div class="field-group"><label>${pinField.label}</label><input type="password" placeholder="${pinField.placeholder || ''}" value="${row.pin}" oninput="hookRows.find(r=>r.id===${row.id}).pin=this.value"></div>`;
-        }
-        return `<div class="hook-row-card">
-            <div class="hook-row-head"><span class="hook-row-label">Source ${idx + 1}</span>${hookMode === 'multi' && hookRows.length > 1 ? `<button class="hook-row-remove" onclick="removeHookRow(${row.id})">Remove</button>` : ''}</div>
-            <div class="source-type-picker">${typeOptions}</div>
-            ${row.assetType ? `
-                ${institutionField}
-                <div class="field-group"><label>Identifier</label><input placeholder="Account, phone, or voucher number" value="${escapeHtml(row.identifier)}" oninput="hookRows.find(r=>r.id===${row.id}).identifier=this.value"></div>
-                ${extraFields}
-                <div class="field-group"><label>Amount to authorize</label><input type="number" placeholder="0.00" value="${row.amount}" oninput="hookRows.find(r=>r.id===${row.id}).amount=this.value"></div>
-            ` : ''}
-        </div>`;
-    }).join('');
-}
-async function confirmHookBuilder() {
-    const valid = hookRows.length > 0 && hookRows.every(r => (r.locked || r.assetType) && r.amount && parseFloat(r.amount) > 0 && r.identifier && (r.locked || r.institution));
-    if (!valid) { showMessage('Fill in each source completely — institution, identifier, and amount — before hooking.', 'warning'); return; }
-    const sources = hookRows.map(r => ({
-        institution: r.institution || undefined,
-        asset_type: r.assetType,
-        identifier: r.identifier,
-        authorized_amount: parseFloat(r.amount),
-        pin: r.pin || undefined,
-        wallet_pin: r.pin || undefined,
-    }));
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/hook.php', { card_suffix: hookEntry.targetCardSuffix, sources });
-    if (!result.ok) { showMessage('That hook didn\'t go through: ' + friendlyApiError(result.error), 'error'); return; }
-    showHookSuccess(sources.length);
-}
-
-// ------------------------------------------------------------
-// A clear success state with an explicit path back — either to
-// wherever the hook was started from (Card, or My sources) or
-// straight home — rather than silently snapping back a view.
-// ------------------------------------------------------------
-function showHookSuccess(count) {
-    const cameFromLabel = hookEntry.source === 'source' ? 'My sources' : 'Card';
-    const cameFromAction = hookEntry.source === 'source' ? "goView('toolbox')" : "goView('card')";
-    document.getElementById('hookEyebrow').textContent = 'Done';
-    document.getElementById('hookViewTitle').textContent = 'Hooked!';
-    document.getElementById('hookEntryNote').textContent = '';
-    document.getElementById('hookModeRow').style.display = 'none';
-    document.getElementById('addHookRowBtn').style.display = 'none';
-    document.getElementById('hookSubmitBtn').style.display = 'none';
-    document.getElementById('hookFinePrint').style.display = 'none';
-    document.getElementById('hookRowsHolder').innerHTML = `
-        <div class="unhook-summary" style="border-color:var(--accent);">
-            <div style="font-size:36px;margin-bottom:8px;">✓</div>
-            <div style="font-size:16px;font-weight:700;color:var(--text);">${count} source${count > 1 ? 's' : ''} hooked for 24 hours</div>
-            <div style="font-size:12px;color:var(--text-muted);margin-top:6px;">It's ready to use as a Swap source right away.</div>
-        </div>
-        <div class="cta-row" style="flex-direction:column;gap:10px;">
-            <button class="btn btn-primary" onclick="viewStack=['hub']; ${cameFromAction};">&larr; Back to ${cameFromLabel}</button>
-            <button class="btn secondary" onclick="goView('hub')">Go to Home</button>
-        </div>`;
-}
-
-// ------------------------------------------------------------
-// Scan someone else's card QR to hook to it
-// ------------------------------------------------------------
-function openScanToHookModal() {
-    openModal('Scan a card', `
-        <div id="qrScannerRegion" style="width:100%;"></div>
-        <div style="text-align:center;margin:12px 0;font-size:11px;color:var(--text-dim);">or</div>
-        <div class="field-group"><label>Paste the card's code manually</label><input id="manualQrPaste" placeholder="Paste QR text if you can't scan"></div>
-        <div class="cta-row"><button class="btn btn-primary" onclick="submitManualQr()">Continue</button></div>`);
+async function fetchAllBalances() {
     try {
-        html5QrScanner = new Html5Qrcode('qrScannerRegion');
-        html5QrScanner.start({ facingMode: 'environment' }, { fps: 10, qrbox: 220 }, (decodedText) => { html5QrScanner.stop().catch(() => {}); resolveScannedQr(decodedText); }, () => {})
-            .catch((e) => { console.warn('[card-qr] camera scan unavailable, manual paste only:', e); });
-    } catch (e) { console.warn('[card-qr] Html5Qrcode not available, manual paste only:', e); }
-}
-function submitManualQr() {
-    const raw = document.getElementById('manualQrPaste').value.trim();
-    if (!raw) { showMessage('Paste the code first, or use the camera scanner above.', 'warning'); return; }
-    resolveScannedQr(raw);
-}
-async function resolveScannedQr(raw) {
-    if (html5QrScanner) { try { await html5QrScanner.stop(); } catch (e) {} }
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/Resolveqr.php', { raw });
-    if (!result.ok) { showMessage('Couldn\'t read that code: ' + friendlyApiError(result.error), 'error'); return; }
-    const { card_suffix, display_name } = result.body.data;
-    confirmHookTargetCard(card_suffix, display_name);
-}
-
-// ============================================================
-// UNIVERSAL "Hook this source" — reachable from every source-
-// filling point (a saved Wallet pick, a manually-entered Card or
-// Voucher, or a just-claimed identity swap), not just from the
-// Card view. The card's QR/number is a public identifier — safe
-// to scan or type — never the contributor's own credentials,
-// which stay on the contributor's own device and are sent only
-// via their own authenticated hook.php call.
-// ============================================================
-let pendingHookPrefill = null;
-function promptHookThisSource(prefill) {
-    pendingHookPrefill = prefill;
-    openModal('Hook this source', `
-        <div style="text-align:center;padding:10px 0 20px;">
-            <div style="font-size:13px;color:var(--text-muted);margin-bottom:18px;">Where should this source be hooked?</div>
-            <div class="cta-row" style="flex-direction:column;gap:10px;">
-                <button class="btn btn-primary" onclick="closeModal(); openHookBuilder('source', pendingHookPrefill);">My VouchMorph Card</button>
-                <button class="btn btn-secondary" onclick="openAnotherCardChooser()">Another VouchMorph Card</button>
-            </div>
-        </div>`);
-}
-function openAnotherCardChooser() {
-    openModal('Hook to another card', `
-        <div style="padding:10px 0 4px;">
-            <div class="field-group"><label>Card number or suffix</label><input id="manualCardNumber" placeholder="e.g. last 4 digits or full number"></div>
-            <div class="cta-row"><button class="btn btn-primary" onclick="submitManualCardNumberForHook()">Continue</button></div>
-            <div style="text-align:center;margin:16px 0;font-size:11px;color:var(--text-dim);">or</div>
-            <button class="btn btn-secondary" onclick="openScanToHookModal()">Scan their QR code instead</button>
-        </div>`);
-}
-async function submitManualCardNumberForHook() {
-    const raw = document.getElementById('manualCardNumber').value.trim();
-    if (!raw) { showMessage('Enter a card number.', 'warning'); return; }
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/LookupBySuffix.php', { card_suffix: raw });
-    if (!result.ok) { showMessage('Couldn\'t find that card: ' + friendlyApiError(result.error), 'error'); return; }
-    const { card_suffix, display_name } = result.body.data;
-    confirmHookTargetCard(card_suffix, display_name);
-}
-function confirmHookTargetCard(card_suffix, display_name) {
-    openModal('Confirm', `
-        <div style="text-align:center;padding:16px;">
-            <div style="font-size:14px;margin-bottom:16px;">You're about to hook this source to <strong>${escapeHtml(display_name)}'s</strong> VouchMorph Card.</div>
-            <div class="cta-row">
-                <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-                <button class="btn btn-primary" onclick="beginHookToOtherCard('${escapeHtml(card_suffix)}', '${escapeHtml(display_name)}')">Continue</button>
-            </div>
-        </div>`);
-}
-function beginHookToOtherCard(cardSuffix, displayName) {
-    closeModal();
-    hookEntry = { source: 'source', targetCardSuffix: cardSuffix };
-    hookRows = []; hookRowSeq = 0; hookMode = 'single';
-    addHookRow(pendingHookPrefill);
-    setHookMode('single');
-    document.getElementById('hookEyebrow').textContent = `Hook to ${displayName}'s Card`;
-    document.getElementById('hookEntryNote').textContent = "Started from your source — hooking it to someone else's card.";
-    document.getElementById('hookModeRow').style.display = 'flex';
-    document.getElementById('addHookRowBtn').style.display = 'none';
-    document.getElementById('hookSubmitBtn').style.display = 'block';
-    document.getElementById('hookFinePrint').style.display = 'block';
-    pushView('hook');
-}
-
-// ============================================================
-// UNHOOK — real endpoint confirmed against the VouchMorph repo
-// (public/api/v1/cards/unhook.php + CardService::releaseHook()).
-// It releases an entire hook (hook_reference) as one all-or-nothing
-// unit — every source in that hook together. There is no per-source
-// release, so this is one "Unhook everything" action for the hook
-// currently shown on the Card view, not a button per row.
-// ============================================================
-let unhookTarget = null;
-function openUnhook(target) {
-    unhookTarget = target;
-    document.getElementById('unhookInstLine').textContent = `${target.count} source${target.count > 1 ? 's' : ''} in this hook`;
-    document.getElementById('unhookAmountLine').textContent = target.amount;
-    pushView('unhook');
-}
-async function confirmUnhook() {
-    if (!unhookTarget) { goBack(); return; }
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/unhook.php', { hook_reference: unhookTarget.hookReference, card_suffix: myCard?.card_suffix });
-    if (!result.ok) { showMessage('Couldn\'t unhook: ' + friendlyApiError(result.error), 'error'); return; }
-    const data = result.body || {};
-    if (data.status === 'UNHOOK_PARTIAL') showMessage('Some sources released — others could not be released automatically and remain held. See Help for what to do next.', 'warning');
-    else showMessage('All hooked sources released. 🎉', 'success');
-    goBack();
-    loadCardView();
-}
-
-// ------------------------------------------------------------
-// Contribution swaps — owner creates, everyone watches live
-// ------------------------------------------------------------
-function openCreateSessionModal(cardSuffix) {
-    const instOptions = Object.keys(PARTICIPANTS).map(c => `<option value="${c}">${PARTICIPANTS[c]?.name || c}</option>`).join('');
-    openModal('Start a swap', `
-        <div class="field-group"><label>Amount to pay</label><input type="number" id="sessTarget" min="0.01" step="0.01" placeholder="0.00"></div>
-        <div class="field-group"><label>Currency</label><select id="sessCurrency">${[...new Set(Object.values(PARTICIPANTS).map(p => p?.limits?.currency).filter(Boolean))].map(c => `<option value="${c}" ${c === (myCard.hook?.currency || myCard.currency) ? 'selected' : ''}>${c}</option>`).join('') || `<option value="${myCard.hook?.currency || myCard.currency || 'BWP'}">${myCard.hook?.currency || myCard.currency || 'BWP'}</option>`}</select></div>
-        <div class="field-group"><label>Destination institution</label><select id="sessToInst"><option value="">Select</option>${instOptions}</select></div>
-        <div class="field-group"><label>Destination account/wallet number</label><input id="sessToIdentifier" placeholder="Account number or phone"></div>
-        <div class="field-group"><label>Strategy — how should contributions split?</label>
-            <select id="sessStrategy">
-                <option value="SMART" selected>Smart (recommended) — VouchMorph balances it automatically</option>
-                <option value="EQUAL">Equal — split evenly across hooked sources</option>
-                <option value="RATIO">Ratio — proportional to each source's balance</option>
-                <option value="MANUAL">Manual — each person enters their own amount</option>
-            </select>
-        </div>
-        <div style="font-size:11px;color:var(--text-dim);margin-bottom:12px;">Everyone currently hooked will see this in real time. A small VouchMorph fee applies on top of the amount to pay, the same way it does for Combine Sources — the exact fee shows on the preview before you swipe.</div>
-        <div class="cta-row"><button class="btn btn-primary" onclick="submitCreateSession('${cardSuffix}')">Start swap</button></div>`);
-}
-async function submitCreateSession(cardSuffix) {
-    const target = parseFloat(document.getElementById('sessTarget').value);
-    const currency = document.getElementById('sessCurrency').value.trim();
-    const toInst = document.getElementById('sessToInst').value;
-    const toIdentifier = document.getElementById('sessToIdentifier').value.trim();
-    const strategy = document.getElementById('sessStrategy').value;
-    if (!(target > 0)) { showMessage('Enter the amount to pay.', 'warning'); return; }
-    if (!toInst || !toIdentifier) { showMessage('Select a destination institution and enter an account/wallet number.', 'warning'); return; }
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/Create.php', { card_suffix: cardSuffix, target_amount: target, currency, strategy, to_institution: toInst, destination_identifier: toIdentifier });
-    if (!result.ok) { showMessage('Couldn\'t start that swap: ' + friendlyApiError(result.error), 'error'); return; }
-    showMessage('Swap started.', 'success');
-    closeModal(); loadCardView();
-}
-function renderSessionStatus(session) {
-    const preview = session.preview || { total_target: session.target_amount, total_covered: 0, remaining: session.target_amount, contributors: [] };
-    const pct = preview.total_target > 0 ? Math.min(100, (preview.total_covered / preview.total_target) * 100) : 0;
-    const contributors = preview.contributors || [];
-    const avatarsHtml = contributors.map(c => {
-        const hasContributed = (c.amount || 0) > 0;
-        return `<div class="myc-avatar-tile ${c.is_me ? 'you' : ''} ${hasContributed ? '' : 'pending'}" title="${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)}">${escapeHtml(institutionInitials(c.institution))}</div>`;
-    }).join('');
-    const contributedCount = contributors.filter(c => (c.amount || 0) > 0).length;
-    const rowsHtml = contributors.map(c => `<div class="myc-contributor-row"><div class="myc-contributor-tile">${escapeHtml(institutionInitials(c.institution))}</div><span class="myc-contributor-name">${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)} · ${escapeHtml(c.source_identifier)}${c.below_minimum ? ' <span style="color:var(--warning);">(below minimum — won\'t be included)</span>' : ''}</span><span class="myc-contributor-amt">${formatMoney(c.amount, session.currency)}</span></div>`).join('');
-    const manualInput = session.strategy === 'MANUAL' ? `<div class="field-group" style="margin-top:10px;"><label>Your contribution</label><div style="display:flex;gap:8px;"><input type="number" id="myManualAmount" min="0" step="0.01" placeholder="0.00" style="flex:1;"><button class="btn btn-secondary btn-sm" onclick="submitMyManualAmount(${session.session_id})">Set</button></div></div>` : '';
-    return `<div class="myc-panel"><div class="myc-panel-head"><span class="myc-panel-title">Swap in progress — ${escapeHtml(session.strategy)}</span></div><div class="myc-swap-strip">${avatarsHtml}<span class="myc-swap-strip-label">${contributors.length} hooked, ${contributedCount} have contributed</span></div><div class="comp-bar-track"><div class="comp-bar-seg" style="width:${pct}%;background:var(--accent);"></div></div><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:14px;"><span style="font-weight:700;font-family:var(--font-mono);">${formatMoney(preview.total_covered, session.currency)} of ${formatMoney(preview.total_target, session.currency)}</span><span style="color:var(--text-dim);">${preview.remaining > 0 ? formatMoney(preview.remaining, session.currency) + ' remaining' : 'Fully covered — ready to go! 🎉'}</span></div>${rowsHtml}${manualInput}<div class="cta-row" style="margin-top:14px;"><button class="btn btn-secondary" onclick="cancelSession(${session.session_id})">Cancel</button><button class="btn btn-primary" ${session.can_execute ? '' : 'disabled'} onclick="openSwipePreview(${session.session_id})">${session.can_execute ? 'Ready to swipe' : 'Waiting for full coverage…'}</button></div></div>`;
-}
-function startSessionPolling(sessionId) {
-    stopSessionPolling();
-    activeSessionPollTimer = setInterval(async () => {
-        const result = await callApiGet(CONFIG.API_BASE + '/api/v1/cards/ContributionStatus.php?session_id=' + sessionId);
-        if (!result.ok) return;
-        const session = result.body.data;
-        lastKnownSession = session;
-        const area = document.getElementById('sessionStatusArea');
-        if (area) area.innerHTML = renderSessionStatus(session);
-        if (['COMPLETED', 'CANCELLED', 'EXPIRED', 'FAILED'].includes(session.status)) stopSessionPolling();
-    }, 3000);
-}
-function stopSessionPolling() { if (activeSessionPollTimer) { clearInterval(activeSessionPollTimer); activeSessionPollTimer = null; } }
-async function submitMyManualAmount(sessionId) {
-    const amount = parseFloat(document.getElementById('myManualAmount').value);
-    if (isNaN(amount) || amount < 0) { showMessage('Enter a valid amount.', 'warning'); return; }
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/Contribute.php', { session_id: sessionId, amount });
-    if (!result.ok) { showMessage('Couldn\'t set that contribution: ' + friendlyApiError(result.error), 'error'); return; }
-    lastKnownSession = result.body.data;
-    const area = document.getElementById('sessionStatusArea');
-    if (area) area.innerHTML = renderSessionStatus(result.body.data);
-}
-
-// ============================================================
-// Swipe preview + transaction report — "ready to swipe" doesn't
-// execute immediately; it shows exactly who's paying what and
-// what VouchMorph's fee comes to first, matching the same
-// preview-before-confirm pattern the rest of the app uses for
-// every other swap. Note: the exact fee figure shown here is
-// whatever the session/preview response already carries (if the
-// real API includes one) — this doesn't invent a number were
-// none is returned.
-// ============================================================
-let lastKnownSession = null;
-function openSwipePreview(sessionId) {
-    const session = lastKnownSession;
-    const preview = session?.preview || {};
-    const contributors = preview.contributors || [];
-    const fee = preview.total_fee ?? preview.fee ?? null;
-    const rows = contributors.map(c => `<div class="preview-row"><span>${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)}</span><span class="value">${formatMoney(c.amount, session.currency)}</span></div>`).join('');
-    openModal('Ready to swipe', `
-        <div class="review-hero">
-            <div class="review-hero-label">Total being paid</div>
-            <div class="review-hero-amount">${formatMoney(preview.total_target, session.currency)}</div>
-            ${fee !== null ? `<div class="review-hero-note" style="color:var(--text-dim);">includes ${formatMoney(fee, session.currency)} VouchMorph fee</div>` : `<div class="review-hero-note" style="color:var(--text-dim);">VouchMorph's fee, if any, applies the same way it does for Combine Sources</div>`}
-        </div>
-        <div class="preview-box">${rows}</div>
-        <div class="preview-reassure">This is the last step — swiping executes the swap immediately.</div>
-        <div class="modal-actions">
-            <button class="btn btn-secondary" onclick="renderSessionModalFallback(${sessionId})">Back</button>
-            <button class="btn btn-primary" onclick="confirmSwipe(${sessionId})">Swipe</button>
-        </div>`);
-}
-function renderSessionModalFallback(sessionId) { closeModal(); }
-async function confirmSwipe(sessionId) {
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/execute.php', { session_id: sessionId });
-    if (!result.ok) { showMessage('Execution didn\'t go through: ' + friendlyApiError(result.error), 'error'); return; }
-    stopSessionPolling();
-    showTransactionReport(result.body, lastKnownSession);
-}
-function showTransactionReport(response, session) {
-    const data = response.data || {};
-    const preview = session?.preview || {};
-    const contributors = preview.contributors || [];
-    const rows = contributors.map(c => `<div class="preview-row"><span>${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)} · ${escapeHtml(c.source_identifier || '')}</span><span class="value">${formatMoney(c.amount, session?.currency)}</span></div>`).join('');
-    openModal('Transaction report', `
-        <div class="result-box" id="resultBoxRoot">
-            <div class="icon">✓</div>
-            <div class="result-title">Swipe complete</div>
-            <div class="result-sub">Reference: ${escapeHtml(data.reference || response.swap_reference || '—')}</div>
-            <div style="font-size:22px;font-weight:600;font-family:var(--font-mono);margin:12px 0;">${formatMoney(preview.total_target ?? data.amount, session?.currency)}</div>
-        </div>
-        <div class="myc-panel-title" style="margin-bottom:8px;">Paid using</div>
-        <div class="preview-box">${rows || '<div style="font-size:12px;color:var(--text-dim);">Breakdown unavailable.</div>'}</div>
-        <div class="cta-row" style="margin-top:16px;"><button class="btn btn-primary" onclick="closeModal(); loadCardView();">Done</button></div>`);
-    setTimeout(() => fireConfetti(document.getElementById('resultBoxRoot')), 150);
-}
-async function executeSession(sessionId) {
-    // Kept for any older callers — routes to the same preview-first flow.
-    openSwipePreview(sessionId);
-}
-async function cancelSession(sessionId) {
-    showConfirm('Cancel this swap session? The hooked sources stay held for a new swap — this only cancels the swap attempt itself, not the holds.', async () => {
-        const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/cancel.php', { session_id: sessionId, reason: 'Cancelled by owner' });
-        if (!result.ok) { showMessage('Couldn\'t cancel: ' + friendlyApiError(result.error), 'error'); return; }
-        stopSessionPolling();
-        showMessage('Swap cancelled — hooked sources are still held for next time.', 'info');
-        loadCardView();
-    });
+        const response = await fetch(CONFIG.API_BASE + '/api/v1/user/all_balances.php', { method: 'GET', headers: buildHeaders(), credentials: 'include' });
+        return await response.json();
+    } catch (error) { console.error('Fetch all balances error:', error); return { success: false, error: error.message }; }
 }
 
 // ============================================================
 // INIT
 // ============================================================
+const IDENTITY_TYPE_LABELS = { national_id: 'National ID', birth_certificate: 'Birth Certificate', voter_id: 'Voter ID', phone: 'Phone Number', email: 'Email' };
+
 document.addEventListener('DOMContentLoaded', function() {
     loadSavedTheme();
     const toSelect = document.getElementById('toInstSelect');
@@ -4017,6 +4189,7 @@ document.addEventListener('DOMContentLoaded', function() {
     renderRepeatCard();
     renderView();
 });
+
 document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (document.getElementById('modal').classList.contains('active')) closeModal(); else if (viewStack.length > 1) goBack(); } });
 </script>
 </body>
