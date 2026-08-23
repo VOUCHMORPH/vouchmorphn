@@ -49,7 +49,10 @@ $attentionActive = $attentionActive ?? false;
 $showTraceShortcut = !empty($canTrace);
 ?>
 <script>
-(function () { var t = localStorage.getItem('vm_theme'); if (t === 'dark' || t === 'light') document.documentElement.setAttribute('data-theme', t); })();
+(function () {
+    var t = localStorage.getItem('vm_theme'); if (t === 'dark' || t === 'light') document.documentElement.setAttribute('data-theme', t);
+    var s = localStorage.getItem('vm_skin'); if (s && s !== 'control-room') document.documentElement.setAttribute('data-skin', s);
+})();
 </script>
 <header class="hdr">
     <div class="hdr-inner">
@@ -69,6 +72,12 @@ $showTraceShortcut = !empty($canTrace);
             <?php if ($showTraceShortcut): ?>
             <a href="<?php echo safeHtml($basePath . 'index.php#stage-trace'); ?>" class="hdr-icon-btn" title="Trace a payment"><?php echo svgIcon('search'); ?></a>
             <?php endif; ?>
+            <div class="skin-picker" id="skinPicker">
+                <button type="button" class="skin-chip active" data-chip="control-room" title="Control Room (default)" onclick="setSkin('control-room')"></button>
+                <button type="button" class="skin-chip" data-chip="warroom" title="War Room" onclick="setSkin('warroom')"></button>
+                <button type="button" class="skin-chip" data-chip="alpha" title="Alpha" onclick="setSkin('alpha')"></button>
+                <button type="button" class="skin-chip" data-chip="gala" title="Gala" onclick="setSkin('gala')"></button>
+            </div>
             <button type="button" class="hdr-icon-btn" id="themeToggleBtn" title="Toggle dark mode"><span id="themeToggleIcon"><?php echo svgIcon('moon'); ?></span></button>
             <a href="<?php echo safeHtml($attentionHref); ?>" class="hdr-icon-btn" title="Needs your attention">
                 <?php echo svgIcon('bell'); ?>
