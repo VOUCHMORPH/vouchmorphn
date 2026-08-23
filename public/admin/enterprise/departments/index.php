@@ -2,10 +2,40 @@
 /**
  * enterprise/departments/index.php - Department & Ration Dashboard
  *
- * Visible to: top roles (owner, it_manager_enterprise) — full control.
- * department_head — sees their own department, can request sub-departments
- * and ration borrows. Everyone else (batch staff, finance_officer, viewers)
- * is redirected: this page is not for them.
+ * ADAPTED, not rebuilt: every real function below (DepartmentService/
+ * UserManagementService calls, sub-department + ration-borrow
+ * workflow, staff quick-add, ceiling math, audit logging, CSRF) is
+ * unchanged from what this page already was. A previous, much
+ * simpler fabricated version of this file existed for a few turns
+ * of this conversation, built without ever having seen this real
+ * one — it has been discarded entirely, not merged.
+ *
+ * What actually changed here: the shell integration (this page now
+ * uses partials/permissions.php instead of its own second hardcoded
+ * copy of role logic) and the presentation layer (old shell.css class
+ * names → current ones). See the two notes below for exactly how.
+ *
+ * NOTE 1 — COMPATIBILITY ALIASES, not a permanent fixture: this page
+ * has ~300 lines of inline `style="...var(--brass)..."` etc. across
+ * renderDeptRow()/renderHierarchyNode() using the OLD design system's
+ * token names (--ink-900, --brass, --seal-red, --panel, ...). Rather
+ * than hand-edit every inline style (real risk of breaking a working
+ * page for a cosmetic rename), the <style> block below aliases the
+ * old token names to the current ones (--ink, --sky, --danger,
+ * --paper, ...). This means the legacy inline styles keep working
+ * AND automatically respond to skin switching (War Room/Alpha/Gala)
+ * for free. It also means a few old CLASS names with no current
+ * equivalent (.page-header, .panel-grid, .task-row, .form-grid, ...)
+ * are given local re-definitions in that same <style> block instead
+ * of being renamed throughout the HTML. Normalize this properly in a
+ * quieter maintenance pass — this is a bridge, not the final form.
+ *
+ * NOTE 2 — a new guessed permission code appears here that doesn't
+ * exist elsewhere in this codebase: 'approve_borrow' (owner,
+ * it_manager_enterprise, finance_officer in the original hardcoded
+ * check). Like every other permission code in partials/permissions.php,
+ * this needs to actually exist in organization_role_permissions or
+ * it silently resolves to false for everyone except owner.
  */
 
 if (session_status() === PHP_SESSION_NONE) {
@@ -30,10 +60,15 @@ $userRole = $user['role'] ?? 'viewer';
 $userId = $user['user_id'] ?? $user['id'] ?? null;
 $fullName = $user['full_name'] ?? $user['username'] ?? 'User';
 $orgName = $user['organization_name'] ?? 'Organization';
+$basePath = '../';
 
-$isTopRole = in_array($userRole, ['owner', 'it_manager_enterprise'], true);
-$isDepartmentHead = ($userRole === 'department_head');
-$canApproveBorrow = in_array($userRole, ['owner', 'it_manager_enterprise', 'finance_officer'], true);
+// FIX: this page used to carry its own second hardcoded copy of role
+// logic ($isTopRole/$isDepartmentHead/$canApproveBorrow as inline
+// in_array() checks) — the exact "two sources of truth" duplication
+// problem already found and fixed in index.php. Now uses the same
+// shared file, same real hasPermission()-backed system.
+require __DIR__ . '/../partials/permissions.php';
+$canApproveBorrow = can('approve_borrow');
 
 // This page is for org-structure management only. Batch staff, plain
 // finance visibility, auditors etc. get bounced back to the dashboard —
@@ -68,8 +103,9 @@ function logDepartmentAudit(PDO $pdo, int $orgId, ?int $actorId, string $action,
 $userMgmt = new UserManagementService($pdo);
 
 // ============================================================
-// HANDLE FORM SUBMISSIONS (POST) — unchanged from before this redesign;
-// only the HTML below this block was rebuilt.
+// HANDLE FORM SUBMISSIONS (POST) — completely unchanged. CSRF was
+// already correctly wired here (requireCsrfToken()) before I ever
+// saw this file — nothing to fix in this block.
 // ============================================================
 $flashMessage = null;
 $flashType = 'success';
@@ -341,16 +377,8 @@ if ($isTopRole) {
 }
 
 // ============================================================
-// NEW, REAL AGGREGATES for the redesign's stat cards — computed from
-// the same $tree the rest of this page already trusts, not fabricated.
-// "Global Budget" = every root department's own ceiling (the "Main
-// Central Government Account" model the sub-department budget
-// guardrails are built on — see DepartmentService::assertCeilingFitsUnderParent).
-// "Allocated" = every NON-root department's ceiling — i.e. how much of
-// that root capacity has actually been carved out to (sub-)departments.
-// "Unallocated Reserve" is just the difference, which is exactly what
-// assertCeilingFitsUnderParent's "room left" figure means, aggregated
-// org-wide instead of per-parent.
+// Real aggregates for the stat cards — computed from the same $tree
+// the rest of this page already trusts.
 // ============================================================
 function sumTreeCeilings(array $nodes, bool $rootLevel, array &$rootTotal, array &$allocatedTotal): void {
     foreach ($nodes as $node) {
@@ -371,7 +399,7 @@ $totalGlobalBudget = $rootTotalBox[0];
 $totalAllocated = $allocatedTotalBox[0];
 $unallocatedReserve = $totalGlobalBudget - $totalAllocated;
 
-/** First department_head-role staffer on record for a department, or null. Real lookup, not a placeholder. */
+/** First department_head-role staffer on record for a department, or null. */
 function resolveDepartmentHead(int $deptId, array $staffByDepartment): ?string {
     foreach ($staffByDepartment[$deptId] ?? [] as $person) {
         if ($person['role'] === 'department_head' && $person['is_active']) {
@@ -381,11 +409,8 @@ function resolveDepartmentHead(int $deptId, array $staffByDepartment): ?string {
     return null;
 }
 
-// Unified Pending Approvals feed — sub-department requests (top-role
-// decision) and ration borrow requests (top-role/finance decision)
-// merged into one list, newest first. A request type this viewer can't
-// personally decide still shows (for visibility) but locked, rather
-// than being silently omitted.
+// Unified Pending Approvals feed — sub-department requests and ration
+// borrow requests merged into one list, newest first.
 $unifiedApprovals = [];
 foreach ($pendingSubDeptRequests as $r) {
     $unifiedApprovals[] = [
@@ -436,9 +461,9 @@ function getRoleLabel($role) {
 
 /**
  * One row of the Departmental Allocations table, plus (for top roles)
- * an expandable "Manage" panel underneath carrying the exact same real
- * forms the pre-redesign page had (edit name/code/cost-center, activate/
- * deactivate, staffing quick-add) — restyled, not reduced.
+ * an expandable "Manage" panel underneath. UNCHANGED from before this
+ * adaptation — every class/var name here is legacy and resolved via
+ * the compatibility aliases in this page's <style> block.
  */
 function renderDeptRow(array $node, bool $isTopRole, array $staffByDepartment, array $quickAddSlots, ?int $newDepartmentId, string $csrfToken, int $depth = 0): string {
     $deptId = (int)$node['id'];
@@ -479,7 +504,6 @@ function renderDeptRow(array $node, bool $isTopRole, array $staffByDepartment, a
 
         $html .= '<div style="display:grid; grid-template-columns: 1fr 1fr; gap:20px;">';
 
-        // Edit + status form
         $html .= '<div>';
         $html .= '<form method="post" class="form-grid" style="margin-bottom:10px;">';
         $html .= '<input type="hidden" name="csrf_token" value="' . safeHtml($csrfToken) . '">';
@@ -508,7 +532,6 @@ function renderDeptRow(array $node, bool $isTopRole, array $staffByDepartment, a
         $html .= '</form>';
         $html .= '</div>';
 
-        // Staffing
         $html .= '<div>';
         $html .= '<div style="font-family:var(--f-cond); font-weight:700; font-size:11.5px; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-500); margin-bottom:8px;">Staffing (' . $staffCount . ')</div>';
         if ($staffCount > 0) {
@@ -546,10 +569,7 @@ function renderDeptRow(array $node, bool $isTopRole, array $staffByDepartment, a
 }
 
 /**
- * One box + its children in the org-chart hierarchy diagram. Reuses the
- * exact same $tree data the Allocations table above is built from — no
- * new query. $isRoot only affects styling (the top-power box reads
- * differently), not what data is shown.
+ * One box + its children in the org-chart hierarchy diagram. UNCHANGED.
  */
 function renderHierarchyNode(array $node, bool $isRoot = false): string {
     $classes = 'org-node';
@@ -580,20 +600,10 @@ function renderHierarchyNode(array $node, bool $isRoot = false): string {
 }
 
 // ============================================================
-// SHARED SHELL SETUP — same contract as index.php, so this page's nav
-// is generated by the exact same code, not a hand-copied lookalike.
+// SHARED SHELL SETUP — now the real $navItems contract, all flags
+// sourced from partials/permissions.php instead of a second
+// hardcoded role list.
 // ============================================================
-$basePath = '../';
-$canCreate = in_array($userRole, ['owner', 'it_manager_enterprise', 'program_officer', 'department_head'], true);
-$setupReady = true; // this page is unreachable pre-setup (owner would still be on the wizard)
-$canApprove = in_array($userRole, ['owner', 'approver', 'senior_approver', 'it_manager_enterprise'], true);
-$canDisburse = ($userRole === 'owner');
-$canManageUsers = in_array($userRole, ['owner', 'it_manager_enterprise', 'it_officer_enterprise'], true);
-$canSeeSourceAccountsArea = in_array($userRole, ['owner', 'it_manager_enterprise', 'finance_officer'], true);
-$canTrace = in_array($userRole, ['owner', 'it_manager_enterprise', 'it_officer_enterprise', 'auditor', 'senior_approver', 'approver', 'finance_officer'], true);
-
-// Same live badge numbers the dashboard shows, so a count on "Disbursements"
-// or "Source Accounts" never disagrees depending on which page you're on.
 $navPendingApprovals = 0;
 $navPendingSourceConfirmations = 0;
 try {
@@ -612,33 +622,36 @@ try {
 }
 
 $navItems = [
-    ['key' => 'dashboard', 'icon' => 'grid', 'label' => 'Dashboard', 'href' => '../index.php', 'show' => true],
-    ['key' => 'disbursements', 'icon' => 'wallet', 'label' => 'Disbursements', 'href' => '../batches/index.php?status=all', 'show' => true, 'badge' => ($navPendingApprovals > 0 && $canApprove) ? $navPendingApprovals : null],
-    ['key' => 'beneficiaries', 'icon' => 'people', 'label' => 'Beneficiaries', 'href' => '../beneficiaries.php', 'show' => true],
-    ['key' => 'trace', 'icon' => 'search', 'label' => 'Trace Payment', 'href' => '../index.php#trace', 'show' => $canTrace],
-    ['key' => 'departments', 'icon' => 'building', 'label' => 'Departments', 'href' => 'index.php', 'show' => true, 'active' => true],
+    ['key' => 'hub', 'icon' => 'grid', 'label' => 'Dashboard', 'href' => '../index.php', 'show' => true],
+    ['key' => 'attention', 'icon' => 'bell', 'label' => 'Attention', 'href' => '../index.php#stage-attention', 'show' => $canViewAttentionTile, 'badge' => ($navPendingApprovals > 0 && $canApprove) ? $navPendingApprovals : null],
+    ['key' => 'batches', 'icon' => 'layers', 'label' => 'Batches', 'href' => '../index.php#stage-batches', 'show' => $canViewBatchesTile],
+    ['key' => 'activity', 'icon' => 'history', 'label' => 'Activity', 'href' => '../index.php#stage-activity', 'show' => $canViewActivityTile],
+    ['key' => 'trace', 'icon' => 'search', 'label' => 'Trace', 'href' => '../index.php#stage-trace', 'show' => $canTrace],
+    ['key' => 'reports', 'icon' => 'file', 'label' => 'Reports', 'href' => '../index.php#stage-reports', 'show' => $canViewReports],
+    ['key' => 'departments', 'icon' => 'building', 'label' => 'Departments', 'href' => 'index.php', 'show' => $canManageDepartments || $isDepartmentHead],
+    ['key' => 'beneficiaries', 'icon' => 'users', 'label' => 'Beneficiaries', 'href' => '../beneficiaries.php', 'show' => $canViewBeneficiariesTile],
     ['key' => 'sources', 'icon' => 'bank', 'label' => 'Source Accounts', 'href' => '../imports/add_source.php', 'show' => $canSeeSourceAccountsArea, 'badge' => $navPendingSourceConfirmations > 0 ? $navPendingSourceConfirmations : null],
-    ['key' => 'team', 'icon' => 'idcard', 'label' => 'Team', 'href' => '../settings/users.php', 'show' => $canManageUsers],
-    ['key' => 'reports', 'icon' => 'chart', 'label' => 'Reports', 'href' => '../reports.php', 'show' => true],
+    ['key' => 'team', 'icon' => 'shield', 'label' => 'Team', 'href' => '../settings/users.php', 'show' => $canManageUsers],
 ];
-$navUtility = [
-    ['key' => 'settings', 'icon' => 'gear', 'label' => 'Settings', 'href' => '../settings.php', 'show' => true],
-    ['key' => 'logout', 'icon' => 'logout', 'label' => 'Log Out', 'href' => '../logout.php', 'show' => true],
-];
-$topbarSearchShow = true;
-$topbarSearchAction = 'index.php';
-$topbarSearchName = 'q';
-$topbarSearchPlaceholder = 'Search departments, budgets…';
-$topbarSearchValue = trim($_GET['q'] ?? '');
+$currentNavKey = 'departments';
 $attentionHref = '#approvals';
 $attentionActive = !empty($unifiedApprovals);
+// Popout content for THIS page's own approvals, grouped by type —
+// more useful here than repeating index.php's dashboard-wide inbox.
+$notificationItems = [];
+$structureCount = count(array_filter($unifiedApprovals, fn($r) => $r['tag'] === 'STRUCTURE'));
+$ratioCount = count(array_filter($unifiedApprovals, fn($r) => $r['tag'] === 'RATION'));
+if ($structureCount > 0) $notificationItems[] = ['label' => 'Sub-department requests', 'count' => $structureCount];
+if ($ratioCount > 0) $notificationItems[] = ['label' => 'Ration borrow requests', 'count' => $ratioCount];
 
-// If the topbar search box was used, do a simple real filter across
-// department names/codes — no separate search backend, just the tree
-// we already loaded.
+// The old topbar search box doesn't exist in the current header — this
+// page's real name/code filter still works, just moved into the stage
+// itself as its own small search form instead of living in the shared
+// chrome.
+$searchQuery = trim($_GET['q'] ?? '');
 $searchHits = [];
-if ($topbarSearchValue !== '') {
-    $needle = mb_strtolower($topbarSearchValue);
+if ($searchQuery !== '') {
+    $needle = mb_strtolower($searchQuery);
     $flattenAll = function (array $nodes) use (&$flattenAll) {
         $out = [];
         foreach ($nodes as $n) {
@@ -664,15 +677,77 @@ if ($topbarSearchValue !== '') {
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="../partials/shell.css">
     <style>
+        /* ============================================================
+           COMPATIBILITY BRIDGE — see NOTE 1 in the PHP header comment.
+           Aliases old token names to current ones (skin-aware for
+           free), and gives a handful of old class names with no
+           current equivalent a local definition instead of touching
+           every occurrence in the HTML/render functions below.
+           ============================================================ */
+        :root {
+            --ink-900: var(--ink); --ink-700: var(--ink); --ink-500: var(--ink); --ink-300: var(--ink);
+            --line-strong: var(--ink); --panel: var(--paper);
+            --brass: var(--sky); --brass-tint: var(--sky-tint); --amber: var(--sky); --ledger-green: var(--sky);
+            --green-tint: var(--sky-tint); --seal-red: var(--danger); --danger-bg: var(--danger-tint);
+            --f-cond: var(--f-display);
+        }
+        .page-header { display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: var(--u2); margin-bottom: var(--u4); padding-bottom: var(--u3); border-bottom: var(--border) solid var(--ink); }
+        .page-header h1 { font-family: var(--f-display); font-size: 26px; font-weight: 700; text-transform: uppercase; letter-spacing: .01em; }
+        .page-header .sub { font-size: 12.5px; opacity: .65; margin-top: 4px; }
+        .page-header-actions { display: flex; gap: var(--u2); flex-wrap: wrap; }
+        .card-header { display: flex; justify-content: space-between; align-items: center; gap: var(--u2); flex-wrap: wrap; margin-bottom: var(--u3); padding-bottom: var(--u2); border-bottom: var(--border) solid var(--ink); }
+        .card-title { font-family: var(--f-display); font-weight: 700; font-size: 15px; text-transform: uppercase; letter-spacing: .03em; display: flex; align-items: center; gap: var(--u1); }
+        .card-badge { font-family: var(--f-mono); font-size: 10px; font-weight: 700; background: var(--ink); color: var(--sky); padding: 2px var(--u2); }
+        .info-panel { border: var(--border) solid var(--ink); border-left-width: var(--u1); padding: var(--u2) var(--u3); margin-bottom: var(--u3); background: var(--paper); }
+        .info-panel .desc { font-size: 13px; }
+        .panel-grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: var(--u3); align-items: start; }
+        @media (max-width: 900px) { .panel-grid { grid-template-columns: 1fr; } }
+        .panel { border: var(--border) solid var(--ink); background: var(--paper); }
+        .panel-head { display: flex; justify-content: space-between; align-items: center; padding: var(--u2) var(--u3); border-bottom: var(--border) solid var(--ink); }
+        .panel-head .title { font-family: var(--f-display); font-weight: 700; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; display: flex; align-items: center; gap: var(--u1); }
+        .panel-body { padding: 0; }
+        .empty-row { text-align: center; padding: var(--u5) var(--u3); font-family: var(--f-mono); font-size: 12.5px; opacity: .55; }
+        .task-row { display: flex; gap: var(--u2); padding: var(--u2) var(--u3); border-bottom: var(--border) solid var(--ink); }
+        .task-row:last-child { border-bottom: none; }
+        .task-row.locked { opacity: .6; }
+        .task-row .dot { width: 10px; height: 10px; border: var(--border) solid var(--ink); flex-shrink: 0; margin-top: 4px; }
+        .task-row .dot.amber { background: var(--sky); }
+        .task-row .dot.muted { background: var(--paper-dim); }
+        .task-row .body { flex: 1; min-width: 0; }
+        .task-row .top-line { display: flex; justify-content: space-between; gap: var(--u2); }
+        .task-row .tag { font-family: var(--f-mono); font-size: 9.5px; font-weight: 700; text-transform: uppercase; border: var(--border) solid var(--ink); padding: 1px 6px; }
+        .task-row .when { font-family: var(--f-mono); font-size: 10.5px; opacity: .5; white-space: nowrap; }
+        .task-row .label { font-weight: 700; font-size: 13px; display: block; margin: 4px 0 2px; }
+        .task-row .meta { font-size: 11.5px; opacity: .65; }
+        .task-row .cta { display: flex; gap: var(--u1); margin-top: var(--u2); }
+        .critical-pill { font-family: var(--f-mono); font-size: 10px; font-weight: 700; background: var(--ink); color: var(--sky); padding: 2px var(--u2); }
+        .btn-mini { display: inline-flex; align-items: center; height: 26px; padding: 0 10px; border: var(--border) solid var(--ink); background: var(--paper); color: var(--ink); font-family: var(--f-display); font-weight: 700; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; cursor: pointer; }
+        .btn-mini:hover { background: var(--ink); color: var(--paper); }
+        .btn-mini.outline { background: var(--paper); }
+        .btn-mini.danger { background: var(--danger); color: var(--paper); }
+        .btn-mini.locked-btn { opacity: .5; cursor: not-allowed; display: inline-flex; align-items: center; gap: 4px; }
+        .btn-outline { background: var(--paper); color: var(--ink); border: var(--border) solid var(--ink); }
+        .btn-outline:hover { background: var(--ink); color: var(--paper); }
+        .btn-warning { background: var(--sky); color: var(--ink); border: var(--border) solid var(--ink); }
+        .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: var(--u2); margin-bottom: var(--u2); }
+        .form-group label { display: block; font-family: var(--f-mono); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 4px; opacity: .7; }
+        .form-group input, .form-group select, .form-group textarea { width: 100%; height: var(--u5); padding: 0 var(--u2); border: var(--border) solid var(--ink); background: var(--paper); color: var(--ink); font-family: var(--f-body); font-size: 13px; }
+        .form-group textarea { height: auto; padding: var(--u1) var(--u2); }
+        .hint { font-size: 11px; opacity: .55; margin-top: 4px; }
+        details.disclosure { margin-top: var(--u3); padding-top: var(--u3); border-top: var(--border) dashed var(--ink); }
+        details.disclosure summary { cursor: pointer; font-weight: 700; font-size: 13px; list-style: none; font-family: var(--f-display); text-transform: uppercase; letter-spacing: .02em; }
+        details.disclosure summary::-webkit-details-marker { display: none; }
+        details.disclosure[open] summary { margin-bottom: var(--u3); }
+        .table-responsive { overflow-x: auto; }
         .manage-row { display: none; }
         .manage-row.open-row { display: table-row; }
         .alloc-table th, .alloc-table td { vertical-align: top; }
+        .accent-brass .stat-value, .stat-value.brass { color: var(--sky-deep); }
+        .accent-danger { border-left: var(--u1) solid var(--danger); }
 
         /* ============================================================
-           ORG-CHART HIERARCHY DIAGRAM — pure CSS, no chart library.
-           Classic connector-line tree: each <li> draws a line up to its
-           parent via ::before/::after, trimmed at the first/last sibling
-           so the lines only span between actual siblings.
+           ORG-CHART HIERARCHY DIAGRAM — pure CSS, unchanged logic,
+           token names swapped to the current system.
            ============================================================ */
         .org-chart-wrap { overflow-x: auto; padding: 24px 12px 12px; }
         .org-chart, .org-chart ul { list-style: none; margin: 0; padding: 0; display: flex; justify-content: center; }
@@ -681,50 +756,57 @@ if ($topbarSearchValue !== '') {
         .org-chart li { display: flex; flex-direction: column; align-items: center; padding: 24px 10px 0; position: relative; }
         .org-chart li::before, .org-chart li::after {
             content: ''; position: absolute; top: 0; right: 50%;
-            border-top: 2px solid var(--line-strong); width: 50%; height: 24px;
+            border-top: 2px solid var(--ink); width: 50%; height: 24px;
         }
-        .org-chart li::after { right: auto; left: 50%; border-left: 2px solid var(--line-strong); }
+        .org-chart li::after { right: auto; left: 50%; border-left: 2px solid var(--ink); }
         .org-chart li:only-child { padding-top: 0; }
         .org-chart li:only-child::after, .org-chart li:only-child::before { display: none; }
         .org-chart li:first-child::before, .org-chart li:last-child::after { border: 0 none; }
-        .org-chart li:last-child::before { border-right: 2px solid var(--line-strong); border-radius: 0 6px 0 0; }
-        .org-chart li:first-child::after { border-radius: 6px 0 0 0; }
+        .org-chart li:last-child::before { border-right: 2px solid var(--ink); }
         .org-chart ul ul::before {
             content: ''; position: absolute; top: 0; left: 50%;
-            border-left: 2px solid var(--line-strong); width: 0; height: 24px;
+            border-left: 2px solid var(--ink); width: 0; height: 24px;
         }
         .org-node {
             display: inline-flex; flex-direction: column; align-items: center; gap: 3px;
-            border: 1.5px solid var(--line-strong); background: var(--panel);
+            border: var(--border) solid var(--ink); background: var(--paper);
             padding: 10px 16px; min-width: 140px; white-space: nowrap;
         }
-        .org-node .org-name { font-family: var(--f-cond); font-weight: 700; font-size: 12.5px; }
-        .org-node .org-meta { font-family: var(--f-mono); font-size: 10.5px; color: var(--ink-500); }
-        .org-node.is-root { background: var(--ink-900); border-color: var(--ink-900); }
-        .org-node.is-root .org-name { color: #fff; }
-        .org-node.is-root .org-meta { color: rgba(255,255,255,0.65); }
+        .org-node .org-name { font-family: var(--f-display); font-weight: 700; font-size: 12.5px; }
+        .org-node .org-meta { font-family: var(--f-mono); font-size: 10.5px; opacity: .65; }
+        .org-node.is-root { background: var(--ink); border-color: var(--ink); }
+        .org-node.is-root .org-name { color: var(--paper); }
+        .org-node.is-root .org-meta { color: var(--paper); opacity: .75; }
         .org-node.is-inactive { opacity: 0.55; border-style: dashed; }
-        .org-node.is-over { border-color: var(--seal-red); }
+        .org-node.is-over { border-color: var(--danger); }
+
+        .dept-search-form { max-width: 380px; margin-bottom: var(--u4); }
     </style>
 </head>
 <body>
     <?php require __DIR__ . '/../partials/shell-head.php'; ?>
+    <div class="stage-view active">
             <div class="page-header">
                 <div>
                     <h1>Departments Overview</h1>
                     <div class="sub">Manage hierarchical structures, operational budgets, and departmental approvals.</div>
                 </div>
                 <div class="page-header-actions">
-                    <button type="button" class="btn btn-outline" disabled title="Ledger export isn't built yet"><?php echo svgIcon('download'); ?> Export Ledger</button>
+                    <button type="button" class="btn btn-secondary" disabled title="Ledger export isn't built yet"><?php echo svgIcon('download'); ?> Export Ledger</button>
                     <?php if ($isTopRole): ?>
                     <a href="#dept-create" class="btn btn-primary"><?php echo svgIcon('plus'); ?> New Department</a>
                     <?php endif; ?>
                 </div>
             </div>
 
+            <form method="get" class="dept-search-form field" style="display:flex;gap:var(--u2);align-items:flex-end;">
+                <div style="flex:1;"><input type="text" name="q" placeholder="Search departments, codes&hellip;" value="<?php echo safeHtml($searchQuery); ?>"></div>
+                <button type="submit" class="btn btn-secondary btn-sm"><?php echo svgIcon('search'); ?></button>
+            </form>
+
             <?php if ($newStaffCredentials): ?>
-            <div class="card" style="border-left:4px solid var(--brass); background:var(--brass-tint);">
-                <div style="font-family:var(--f-cond); font-weight:700; font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--amber); margin-bottom:8px;">⚠ One-time display — copy this now, it will not be shown again</div>
+            <div class="card" style="border-left:var(--u1) solid var(--sky);">
+                <div style="font-family:var(--f-display); font-weight:700; font-size:11px; text-transform:uppercase; letter-spacing:.05em; margin-bottom:8px;">&#9888; One-time display — copy this now, it will not be shown again</div>
                 <div style="display:flex; gap:20px; flex-wrap:wrap; font-size:13.5px;">
                     <span><strong>Name:</strong> <?php echo safeHtml($newStaffCredentials['name']); ?></span>
                     <span><strong>Email:</strong> <?php echo safeHtml($newStaffCredentials['email']); ?></span>
@@ -734,14 +816,14 @@ if ($topbarSearchValue !== '') {
             <?php endif; ?>
 
             <?php if ($flashMessage): ?>
-            <div class="info-panel" style="<?php echo $flashType === 'error' ? 'border-left-color:var(--seal-red); background:var(--danger-bg);' : 'border-left-color:var(--ledger-green); background:var(--green-tint);'; ?>">
+            <div class="info-panel" style="<?php echo $flashType === 'error' ? 'border-left-color:var(--danger); background:var(--danger-tint);' : 'border-left-color:var(--sky); background:var(--sky-tint);'; ?>">
                 <div class="desc"><?php echo safeHtml($flashMessage); ?></div>
             </div>
             <?php endif; ?>
 
-            <?php if ($topbarSearchValue !== ''): ?>
+            <?php if ($searchQuery !== ''): ?>
             <div class="card">
-                <div class="card-header"><span class="card-title">Search results for "<?php echo safeHtml($topbarSearchValue); ?>"</span><span class="card-badge"><?php echo count($searchHits); ?> FOUND</span></div>
+                <div class="card-header"><span class="card-title">Search results for "<?php echo safeHtml($searchQuery); ?>"</span><span class="card-badge"><?php echo count($searchHits); ?> FOUND</span></div>
                 <?php if (empty($searchHits)): ?>
                 <div class="empty-row">No departments match.</div>
                 <?php else: foreach ($searchHits as $hit): ?>
@@ -753,11 +835,11 @@ if ($topbarSearchValue !== '') {
             <?php if ($isDepartmentHead && $myDepartment): ?>
             <!-- DEPARTMENT HEAD VIEW -->
             <div class="card">
-                <div class="card-header"><span class="card-title">🏢 <?php echo safeHtml($myDepartment['name']); ?></span><span class="card-badge">MY DEPARTMENT</span></div>
+                <div class="card-header"><span class="card-title"><?php echo svgIcon('building'); ?> <?php echo safeHtml($myDepartment['name']); ?></span><span class="card-badge">MY DEPARTMENT</span></div>
                 <div class="stat-grid" style="margin-bottom:16px;">
                     <div class="stat-card"><div class="stat-label">Ceiling</div><div class="stat-value"><?php echo formatCurrency($myDepartmentRation['ceiling'], $myDepartmentRation['currency']); ?></div></div>
                     <div class="stat-card"><div class="stat-label">Disbursed YTD</div><div class="stat-value"><?php echo formatCurrency($myDepartmentRation['disbursed_ytd'], $myDepartmentRation['currency']); ?></div></div>
-                    <div class="stat-card accent-<?php echo $myDepartmentRation['available'] < 0 ? 'danger' : 'green'; ?>"><div class="stat-label">Available</div><div class="stat-value"><?php echo formatCurrency($myDepartmentRation['available'], $myDepartmentRation['currency']); ?></div></div>
+                    <div class="stat-card<?php echo $myDepartmentRation['available'] < 0 ? ' accent-danger' : ''; ?>"><div class="stat-label">Available</div><div class="stat-value"><?php echo formatCurrency($myDepartmentRation['available'], $myDepartmentRation['currency']); ?></div></div>
                 </div>
 
                 <details class="disclosure">
@@ -783,7 +865,7 @@ if ($topbarSearchValue !== '') {
                         <div class="form-group">
                             <label>Borrow From</label>
                             <select name="lending_department_id" required>
-                                <option value="">Select department…</option>
+                                <option value="">Select department&hellip;</option>
                                 <?php foreach ($flatDepartments as $d): if ((int)$d['id'] === (int)$myDepartment['id']) continue; ?>
                                 <option value="<?php echo (int)$d['id']; ?>"><?php echo safeHtml($d['name']); ?></option>
                                 <?php endforeach; ?>
@@ -799,25 +881,16 @@ if ($topbarSearchValue !== '') {
             <?php endif; ?>
 
             <?php if ($isTopRole): ?>
-            <!-- ============================================================ -->
-            <!-- STAT CARDS -->
-            <!-- ============================================================ -->
             <div class="stat-grid">
                 <div class="stat-card"><div class="stat-label">Total Global Budget</div><div class="stat-value"><?php echo formatCurrency($totalGlobalBudget); ?></div><div class="stat-sub">Sum of every root department's ceiling</div></div>
                 <div class="stat-card"><div class="stat-label">Total Allocated</div><div class="stat-value"><?php echo formatCurrency($totalAllocated); ?></div><div class="stat-sub">Carved out to (sub-)departments</div></div>
-                <div class="stat-card accent-brass"><div class="stat-label">Unallocated Reserve</div><div class="stat-value brass"><?php echo formatCurrency($unallocatedReserve); ?></div><div class="stat-sub">Still available to allocate</div></div>
+                <div class="stat-card"><div class="stat-label">Unallocated Reserve</div><div class="stat-value" style="color:var(--sky-deep);"><?php echo formatCurrency($unallocatedReserve); ?></div><div class="stat-sub">Still available to allocate</div></div>
             </div>
 
-            <!-- ============================================================ -->
-            <!-- ORGANIZATIONAL HIERARCHY DIAGRAM — same $tree data as the
-                 Allocations table below, just shown as a chart instead of
-                 rows, so the reporting line from the top account down to
-                 the smallest sub-department is visible at a glance. -->
-            <!-- ============================================================ -->
             <div class="card">
                 <div class="card-header">
                     <span class="card-title"><?php echo svgIcon('building'); ?> Organizational Hierarchy</span>
-                    <span style="font-size:11.5px; color:var(--ink-300);">Top-down reporting structure &middot; ceiling &amp; utilization per box</span>
+                    <span style="font-size:11.5px; opacity:.6;">Top-down reporting structure &middot; ceiling &amp; utilization per box</span>
                 </div>
                 <?php if (empty($tree)): ?>
                 <div class="empty-row">No departments yet — create the first one below.</div>
@@ -830,9 +903,6 @@ if ($topbarSearchValue !== '') {
                 <?php endif; ?>
             </div>
 
-            <!-- ============================================================ -->
-            <!-- DEPARTMENTAL ALLOCATIONS + PENDING APPROVALS -->
-            <!-- ============================================================ -->
             <div class="panel-grid" id="approvals">
                 <div class="panel">
                     <div class="panel-head">
@@ -858,7 +928,7 @@ if ($topbarSearchValue !== '') {
                 <div class="panel">
                     <div class="panel-head">
                         <span class="title"><?php echo svgIcon('warning'); ?> Pending Approvals</span>
-                        <?php if (!empty($unifiedApprovals)): ?><span class="critical-pill"><?php echo count($unifiedApprovals); ?><small style="font-size:8px;">REQ</small></span><?php endif; ?>
+                        <?php if (!empty($unifiedApprovals)): ?><span class="critical-pill"><?php echo count($unifiedApprovals); ?> REQ</span><?php endif; ?>
                     </div>
                     <div class="panel-body">
                         <?php if (empty($unifiedApprovals)): ?>
@@ -893,11 +963,8 @@ if ($topbarSearchValue !== '') {
                 </div>
             </div>
 
-            <!-- ============================================================ -->
-            <!-- CREATE / ADJUST — same real forms as before, restyled -->
-            <!-- ============================================================ -->
             <div class="card" id="dept-create">
-                <div class="card-header"><span class="card-title">➕ Create &amp; Adjust</span></div>
+                <div class="card-header"><span class="card-title"><?php echo svgIcon('plus'); ?> Create &amp; Adjust</span></div>
 
                 <details class="disclosure" open>
                     <summary>Create top-level department</summary>
@@ -905,9 +972,9 @@ if ($topbarSearchValue !== '') {
                         <input type="hidden" name="csrf_token" value="<?php echo safeHtml($csrfToken); ?>">
                         <input type="hidden" name="action" value="create_department">
                         <div class="form-group"><label>Name</label><input type="text" name="name" required placeholder="e.g. Huíla Province"></div>
-                        <div class="form-group"><label>Code <span style="text-transform:none; color:var(--ink-300);">(optional)</span></label><input type="text" name="code" placeholder="e.g. HUI"></div>
-                        <div class="form-group"><label>Cost Center <span style="text-transform:none; color:var(--ink-300);">(optional)</span></label><input type="text" name="cost_center"></div>
-                        <div class="form-group"><label>Budget Ceiling <span style="text-transform:none; color:var(--ink-300);">(optional)</span></label><input type="number" step="0.01" name="budget_ceiling" placeholder="Leave blank for no vote"></div>
+                        <div class="form-group"><label>Code <span style="text-transform:none;">(optional)</span></label><input type="text" name="code" placeholder="e.g. HUI"></div>
+                        <div class="form-group"><label>Cost Center <span style="text-transform:none;">(optional)</span></label><input type="text" name="cost_center"></div>
+                        <div class="form-group"><label>Budget Ceiling <span style="text-transform:none;">(optional)</span></label><input type="number" step="0.01" name="budget_ceiling" placeholder="Leave blank for no vote"></div>
                         <div class="form-group" style="align-self:end;"><button type="submit" class="btn btn-primary">Create</button></div>
                     </form>
                 </details>
@@ -917,21 +984,25 @@ if ($topbarSearchValue !== '') {
                     <form method="post" class="form-grid" style="margin-top:10px;">
                         <input type="hidden" name="csrf_token" value="<?php echo safeHtml($csrfToken); ?>">
                         <input type="hidden" name="action" value="create_sub_department">
-                        <div class="form-group"><label>Parent Department</label><select name="parent_id" required><option value="">Select…</option><?php foreach ($flatDepartments as $d): ?><option value="<?php echo (int)$d['id']; ?>"><?php echo safeHtml($d['name']); ?></option><?php endforeach; ?></select></div>
+                        <div class="form-group"><label>Parent Department</label><select name="parent_id" required><option value="">Select&hellip;</option><?php foreach ($flatDepartments as $d): ?><option value="<?php echo (int)$d['id']; ?>"><?php echo safeHtml($d['name']); ?></option><?php endforeach; ?></select></div>
                         <div class="form-group"><label>Name</label><input type="text" name="name" required></div>
                         <div class="form-group"><label>Code</label><input type="text" name="code"></div>
-                        <div class="form-group"><label>Budget Ceiling <span style="text-transform:none; color:var(--ink-300);">(optional)</span></label><input type="number" step="0.01" name="budget_ceiling" placeholder="Leave blank for no vote"></div>
+                        <div class="form-group"><label>Budget Ceiling <span style="text-transform:none;">(optional)</span></label><input type="number" step="0.01" name="budget_ceiling" placeholder="Leave blank for no vote"></div>
                         <div class="form-group" style="align-self:end;"><button type="submit" class="btn btn-primary">Create Sub-department</button></div>
                     </form>
                     <p class="hint">Must fit within the parent's remaining (unallocated) ceiling.</p>
                 </details>
             </div>
             <?php endif; ?>
-        <?php
-        $dbHealthy = DBConnection::isConnected();
-        $footerStatusLine = 'LEDGER SYNC: ' . ($dbHealthy ? '<span class="ok">OK</span>' : '<span class="bad">DEGRADED</span>');
-        require __DIR__ . '/../partials/shell-foot.php';
-        ?>
+    </div>
+    <?php
+    $dbHealthy = DBConnection::isConnected();
+    // NOTE: the old footer supported colored <span class="ok">/<span
+    // class="bad"> inline HTML; the current shell-foot.php escapes
+    // $footerNote as plain text, so the color is lost here — a small,
+    // acceptable simplification, flagged rather than silently dropped.
+    $footerNote = 'Ledger sync: ' . ($dbHealthy ? 'OK' : 'DEGRADED');
+    require __DIR__ . '/../partials/shell-foot.php';
+    ?>
 </body>
 </html>
-
