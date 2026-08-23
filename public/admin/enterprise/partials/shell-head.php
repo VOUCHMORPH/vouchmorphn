@@ -18,7 +18,7 @@
  *   - set: $basePath — '' at the enterprise root, '../' one level down
  *   - set: $navItems — array of ['key','icon','label','href','show','badge']
  *           in display order. 'show' is a bool the page computes from
- *           its own already-established $canView*/$can* capability
+ *           its own already-established $canView.../$can... capability
  *           flags — this file does zero permission logic itself.
  *   - set: $currentNavKey — which $navItems['key'] is "this page",
  *           so the right sidebar row highlights. No key = nothing
