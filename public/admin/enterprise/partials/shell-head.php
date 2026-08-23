@@ -60,6 +60,12 @@ if (!function_exists('svgIcon')) {
             'chevron-left' => '<path d="M15 6l-6 6 6 6"/>',
             'chevron-right' => '<path d="M9 6l6 6-6 6"/>',
             'menu' => '<path d="M4 7h16M4 12h16M4 17h16"/>',
+            'building' => '<rect x="4" y="3" width="16" height="18"/><path d="M8 8h1M8 12h1M8 16h1M15 8h1M15 12h1M15 16h1M9 21v-4h6v4"/>',
+            'warning' => '<path d="M12 3l10 18H2Z"/><path d="M12 10v4M12 17h.01"/>',
+            'download' => '<path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 19h16"/>',
+            'plus' => '<path d="M12 5v14M5 12h14"/>',
+            'lock' => '<rect x="5" y="10" width="14" height="10"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>',
+            'idcard' => '<rect x="3" y="4" width="18" height="16"/><circle cx="9" cy="11" r="2.2"/><path d="M6 17c0-2 1.4-3.2 3-3.2s3 1.2 3 3.2M14 9h5M14 13h5"/>',
         ];
         $path = $icons[$name] ?? $icons['mark'];
         return '<svg class="i" viewBox="0 0 24 24">' . $path . '</svg>';
