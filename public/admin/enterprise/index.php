@@ -186,23 +186,11 @@ function renderSetupWizard(string $orgName, string $fullName, string $userRole, 
 // policy, not a display bug — flag it to whoever owns compliance
 // sign-off before this goes live.
 // ============================================================
-$ROLE_CAPS = [
-    'owner'                 => ['view_stats','view_attention','view_batches','view_activity','view_reports','export_filings','view_beneficiaries','manage_departments','manage_sources','manage_users','create_batch','act_approve','act_disburse','act_confirm_source'],
-    'it_manager_enterprise' => ['view_stats','view_attention','view_batches','view_activity','view_reports','view_beneficiaries','manage_departments','manage_sources','manage_users','create_batch','act_approve','act_confirm_source'],
-    'it_officer_enterprise' => ['manage_users','manage_sources'],
-    'it_support'            => [],
-    'finance_officer'       => ['view_stats','view_batches','view_activity','view_reports','view_beneficiaries','manage_sources','act_confirm_source'],
-    'senior_approver'       => ['view_stats','view_attention','view_batches','view_activity','view_reports','act_approve'],
-    'approver'              => ['view_stats','view_attention','view_batches','act_approve'],
-    'department_head'       => ['view_stats','view_attention','view_batches','view_beneficiaries','create_batch'],
-    'program_officer'       => ['view_batches','view_beneficiaries','create_batch'],
-    'beneficiary_registrar' => ['view_beneficiaries'],
-    'auditor'               => ['view_stats','view_batches','view_activity','view_reports','export_filings','view_beneficiaries'],
-    'supervisor'            => ['view_stats','view_batches'],
-    'viewer'                => [],
-];
-$myCaps = $ROLE_CAPS[$userRole] ?? [];
-function can(string $cap): bool { global $myCaps; return in_array($cap, $myCaps, true); }
+// ============================================================
+// PERMISSIONS — now the single shared file, see its own header
+// for the full explanation of what moved and why.
+// ============================================================
+require __DIR__ . '/partials/permissions.php';
 
 $scopableOversightRoles = ['owner', 'approver', 'senior_approver'];
 $userDeptScopeIds = in_array($userRole, $scopableOversightRoles, true)
@@ -218,27 +206,6 @@ function departmentScopeSql(?array $scopeIds, array &$params, string $prefix = '
     }
     return ' AND department_id IN (' . implode(',', $placeholders) . ')';
 }
-
-$isTopRole = in_array($userRole, ['owner', 'it_manager_enterprise'], true);
-$canCreate = can('create_batch');
-$canApprove = can('act_approve');
-$canDisburse = can('act_disburse');
-$isSupervisor = ($userRole === 'owner');
-$canConfirmSource = can('act_confirm_source');
-$canTrace = in_array($userRole, ['owner', 'it_manager_enterprise', 'auditor', 'senior_approver', 'approver', 'finance_officer']);
-$canManageDepartments = can('manage_departments');
-$isDepartmentHead = ($userRole === 'department_head');
-$canSeeSourceAccountsArea = can('manage_sources');
-$canManageUsers = can('manage_users');
-$canSeeFinancialStats = can('view_stats');
-$canViewBatchesTile = can('view_batches');
-$canViewActivityTile = can('view_activity');
-$canViewReports = can('view_reports');
-$canExportFilings = can('export_filings');
-$canViewBeneficiariesTile = can('view_beneficiaries');
-$isReadOnly = in_array($userRole, ['auditor', 'viewer']);
-$isApprover = in_array($userRole, ['approver', 'senior_approver']);
-$isLoader = in_array($userRole, ['program_officer', 'department_head']);
 
 // ============================================================
 // FETCH DASHBOARD DATA  (unchanged business logic)
@@ -488,20 +455,44 @@ if ($canViewReports) {
 // Dropped by mistake in the first center-stage pass, which flattened
 // every item to the same dot.
 $actionItems = [];
-if ($canApprove && ($metrics['pending_approvals'] ?? 0) > 0) $actionItems[] = ['label' => 'Batches awaiting your approval', 'count' => $metrics['pending_approvals'], 'href' => 'batches/index.php?status=pending_approval', 'cta' => 'Review now', 'tone' => 'amber'];
-if ($canDisburse && ($metrics['approved_for_disbursement'] ?? 0) > 0) $actionItems[] = ['label' => 'Approved batches ready to disburse', 'count' => $metrics['approved_for_disbursement'], 'href' => 'batches/index.php?status=approved', 'cta' => 'Disburse now', 'tone' => 'green'];
-if ($canConfirmSource && ($metrics['pending_source_confirmations'] ?? 0) > 0) $actionItems[] = ['label' => 'Source accounts awaiting confirmation', 'count' => $metrics['pending_source_confirmations'], 'href' => 'imports/add_source.php', 'cta' => 'Confirm now', 'tone' => 'amber'];
-if (($metrics['rejected_batches'] ?? 0) > 0 && ($canCreate || $isSupervisor)) $actionItems[] = ['label' => 'Rejected batches needing correction', 'count' => $metrics['rejected_batches'], 'href' => 'batches/index.php?status=rejected', 'cta' => 'Review', 'tone' => 'danger'];
+if ($canApprove && ($metrics['pending_approvals'] ?? 0) > 0) $actionItems[] = ['key' => 'approvals', 'label' => 'Batches awaiting your approval', 'desc' => 'Each of these has cleared upload and is waiting on a decision before it can move to disbursement. Nothing here has been rejected — they simply haven\'t been looked at yet.', 'count' => $metrics['pending_approvals'], 'href' => 'batches/index.php?status=pending_approval', 'cta' => 'Review now', 'tone' => 'amber'];
+if ($canDisburse && ($metrics['approved_for_disbursement'] ?? 0) > 0) $actionItems[] = ['key' => 'disburse', 'label' => 'Approved batches ready to disburse', 'desc' => 'Fully approved and held for the final release step. This is the only action on this list that actually moves money.', 'count' => $metrics['approved_for_disbursement'], 'href' => 'batches/index.php?status=approved', 'cta' => 'Disburse now', 'tone' => 'green'];
+if ($canConfirmSource && ($metrics['pending_source_confirmations'] ?? 0) > 0) $actionItems[] = ['key' => 'sources', 'label' => 'Source accounts awaiting confirmation', 'desc' => 'Newly linked source accounts sit here until someone confirms ownership. Batches can\'t draw from an unconfirmed source.', 'count' => $metrics['pending_source_confirmations'], 'href' => 'imports/add_source.php', 'cta' => 'Confirm now', 'tone' => 'amber'];
+if (($metrics['rejected_batches'] ?? 0) > 0 && ($canCreate || $isSupervisor)) $actionItems[] = ['key' => 'rejected', 'label' => 'Rejected batches needing correction', 'desc' => 'Sent back by an approver with a reason attached. These stay off the disbursement path entirely until they\'re corrected and resubmitted.', 'count' => $metrics['rejected_batches'], 'href' => 'batches/index.php?status=rejected', 'cta' => 'Review', 'tone' => 'danger'];
 $attentionCount = array_sum(array_column($actionItems, 'count'));
 $attentionActive = $attentionCount > 0;
 $criticalActionCount = count(array_filter($actionItems, fn($i) => $i['tone'] === 'danger'));
-// A role only gets the action inbox if it can actually act on
-// something in it — a pure oversight role (auditor/viewer) uses
-// Reports instead, never an inbox with nothing it's allowed to press.
-$canViewAttentionTile = $canApprove || $canDisburse || $canConfirmSource || $canCreate || $isSupervisor;
+// $canViewAttentionTile now comes from partials/permissions.php —
+// no longer redefined here.
 $hubHasAnyTile = $canViewAttentionTile || $canViewBatchesTile || $canViewActivityTile || $canTrace
     || $canViewBeneficiariesTile || $canManageDepartments || $isDepartmentHead || $canSeeSourceAccountsArea
     || $canManageUsers || $canViewReports;
+
+// ============================================================
+// SIDEBAR NAV — one array, shared with every other page via
+// shell-head.php's contract. This is the actual fix for pages
+// drifting out of sync with the hub: there is now exactly one
+// place that decides what the sidebar contains.
+// ============================================================
+$navItems = [
+    ['key' => 'hub', 'icon' => 'grid', 'label' => 'Dashboard', 'href' => 'index.php', 'show' => true],
+    ['key' => 'attention', 'icon' => 'bell', 'label' => 'Attention', 'href' => 'index.php#stage-attention', 'show' => $canViewAttentionTile, 'badge' => $attentionCount > 0 ? $attentionCount : null],
+    ['key' => 'batches', 'icon' => 'layers', 'label' => 'Batches', 'href' => 'index.php#stage-batches', 'show' => $canViewBatchesTile],
+    ['key' => 'activity', 'icon' => 'history', 'label' => 'Activity', 'href' => 'index.php#stage-activity', 'show' => $canViewActivityTile],
+    ['key' => 'trace', 'icon' => 'search', 'label' => 'Trace', 'href' => 'index.php#stage-trace', 'show' => $canTrace],
+    ['key' => 'reports', 'icon' => 'file', 'label' => 'Reports', 'href' => 'index.php#stage-reports', 'show' => $canViewReports],
+    ['key' => 'departments', 'icon' => 'sitemap', 'label' => 'Departments', 'href' => 'departments/index.php', 'show' => $canManageDepartments || $isDepartmentHead],
+    ['key' => 'beneficiaries', 'icon' => 'users', 'label' => 'Beneficiaries', 'href' => 'beneficiaries.php', 'show' => $canViewBeneficiariesTile],
+    ['key' => 'sources', 'icon' => 'bank', 'label' => 'Source Accounts', 'href' => 'imports/add_source.php', 'show' => $canSeeSourceAccountsArea, 'badge' => ($metrics['pending_source_confirmations'] ?? 0) > 0 ? $metrics['pending_source_confirmations'] : null],
+    ['key' => 'team', 'icon' => 'shield', 'label' => 'Team', 'href' => 'settings/users.php', 'show' => $canManageUsers],
+];
+// index.php's own sub-stages live behind URL hashes on one page, so
+// the server can't know which one is "current" the way it can for a
+// separate page like departments/index.php — the client-side script
+// at the bottom re-highlights the matching sidebar row the moment
+// goStage() runs. 'hub' is the honest default for a fresh load.
+$currentNavKey = 'hub';
+$notificationItems = $actionItems;
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -630,6 +621,12 @@ require __DIR__ . '/partials/shell-head.php';
 
     <!-- ============================================================
          STAGE — NEEDS ATTENTION (server-side gated, not just hidden)
+         List-left / detail-right, per the LeadHive reference: the
+         left pane is just a plain selectable list, the right pane
+         "pops out" full detail the instant something is selected.
+         All the data (label/desc/count/cta/href) already lives in
+         data-* attributes rendered server-side — the click handler
+         only ever reads the DOM, it never re-fetches anything.
          ============================================================ -->
     <?php if ($canViewAttentionTile): ?>
     <div class="stage-view" id="stage-attention">
@@ -642,18 +639,27 @@ require __DIR__ . '/partials/shell-head.php';
         </div>
         <?php if (empty($actionItems)): ?>
             <div class="empty">All clear — nothing needs your attention right now.</div>
-        <?php else: foreach ($actionItems as $item): ?>
-            <div class="card">
-                <div class="row" style="border:none;">
-                    <span class="row-dot tone-<?php echo safeHtml($item['tone']); ?>"></span>
-                    <div class="row-body">
-                        <div class="row-title"><?php echo safeHtml($item['label']); ?></div>
-                        <div class="row-sub"><?php echo (int)$item['count']; ?> item(s)</div>
-                    </div>
-                    <a href="<?php echo safeHtml($item['href']); ?>" class="btn btn-primary btn-sm"><?php echo safeHtml($item['cta']); ?></a>
+        <?php else: ?>
+        <div class="pane-grid">
+            <div class="pane-list">
+                <div class="pane-list-head">Docket &middot; <?php echo count($actionItems); ?> item type(s)</div>
+                <?php foreach ($actionItems as $idx => $item): ?>
+                <div class="pane-list-item<?php echo $idx === 0 ? ' selected' : ''; ?>"
+                     onclick="selectAttentionItem(this)"
+                     data-label="<?php echo safeHtml($item['label']); ?>"
+                     data-desc="<?php echo safeHtml($item['desc']); ?>"
+                     data-count="<?php echo (int)$item['count']; ?>"
+                     data-tone="<?php echo safeHtml($item['tone']); ?>"
+                     data-cta="<?php echo safeHtml($item['cta']); ?>"
+                     data-href="<?php echo safeHtml($item['href']); ?>">
+                    <span class="t"><?php echo safeHtml($item['label']); ?></span>
+                    <span class="d"><?php echo (int)$item['count']; ?> item(s) &middot; <?php echo ucfirst(safeHtml($item['tone'])); ?></span>
                 </div>
+                <?php endforeach; ?>
             </div>
-        <?php endforeach; endif; ?>
+            <div id="attentionDetail"><!-- filled by JS on load + on click, see bottom script --></div>
+        </div>
+        <?php endif; ?>
     </div>
     <?php endif; ?>
 
@@ -896,10 +902,19 @@ function goStage(name) {
     document.querySelectorAll('.stage-view').forEach(v => v.classList.remove('active'));
     const el = document.getElementById('stage-' + name);
     (el || document.getElementById('stage-hub')).classList.add('active');
-    const backBtn = document.querySelector('.hdr-back');
     if (name === 'hub') { history.replaceState(null, '', 'index.php'); }
     else { history.replaceState(null, '', '#stage-' + name); }
     sessionStorage.setItem('vm_stage', name);
+    // The sidebar was built server-side with 'hub' marked active
+    // (the server can't see the URL fragment) — this is the client
+    // half of that contract, keeping the sidebar honest about which
+    // in-page stage is actually showing.
+    document.querySelectorAll('.side-nav-item').forEach(function (link) {
+        const href = link.getAttribute('href') || '';
+        const matches = (name === 'hub') ? href === 'index.php' : href.endsWith('#stage-' + name);
+        link.classList.toggle('active', matches);
+    });
+    if (name === 'attention') renderAttentionDetailFromSelected();
     window.scrollTo(0, 0);
 }
 (function initStage() {
@@ -918,6 +933,43 @@ function filterRows(bodyId, query) {
         row.style.display = (!q || row.dataset.search.includes(q)) ? '' : 'none';
     });
 }
+
+// ------------------------------------------------------------
+// NEEDS ATTENTION — list+detail pane. Selecting a row in the left
+// list "pops out" the full detail on the right: nothing here
+// refetches from the server, every field was already rendered
+// into the row's data-* attributes by PHP.
+// ------------------------------------------------------------
+function renderAttentionDetail(row) {
+    const holder = document.getElementById('attentionDetail');
+    if (!holder) return;
+    if (!row) { holder.innerHTML = '<div class="detail-empty">Select an item on the left to see its full detail here.</div>'; return; }
+    const tone = row.dataset.tone;
+    const toneLabel = tone === 'danger' ? 'Critical' : tone === 'green' ? 'Ready' : 'Waiting on you';
+    holder.innerHTML = `
+        <div class="detail-panel">
+            <span class="status status-${tone === 'danger' ? 'rejected' : tone === 'green' ? 'approved' : 'pending'}">${toneLabel}</span>
+            <div class="detail-title">${row.dataset.label}</div>
+            <div class="detail-meta">
+                <div><div class="k">Items</div><div class="v">${row.dataset.count}</div></div>
+                <div><div class="k">Priority</div><div class="v">${toneLabel}</div></div>
+            </div>
+            <div class="detail-desc">${row.dataset.desc}</div>
+            <div class="detail-actions">
+                <a href="${row.dataset.href}" class="btn btn-primary">${row.dataset.cta}</a>
+            </div>
+        </div>`;
+}
+function selectAttentionItem(el) {
+    document.querySelectorAll('#stage-attention .pane-list-item').forEach(i => i.classList.remove('selected'));
+    el.classList.add('selected');
+    renderAttentionDetail(el);
+}
+function renderAttentionDetailFromSelected() {
+    const selected = document.querySelector('#stage-attention .pane-list-item.selected') || document.querySelector('#stage-attention .pane-list-item');
+    renderAttentionDetail(selected);
+}
+document.addEventListener('DOMContentLoaded', renderAttentionDetailFromSelected);
 
 // ------------------------------------------------------------
 // Real, working export — reads the table already rendered from
