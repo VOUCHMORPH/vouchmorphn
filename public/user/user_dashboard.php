@@ -701,6 +701,19 @@ input[type=number] { -moz-appearance: textfield; }
 .myc-contributor-name { flex: 1; color: var(--text); font-weight: 600; }
 .myc-contributor-amt { font-family: var(--font-mono); font-weight: 700; }
 
+.strategy-row { display: flex; border: 1px solid var(--border-strong); margin-bottom: 10px; }
+.strategy-row button { flex: 1; padding: 10px 4px; font-size: 10px; font-weight: 700; text-transform: uppercase; background: transparent; border: none; border-right: 1px solid var(--border-strong); color: var(--text-muted); cursor: pointer; font-family: var(--font); }
+.strategy-row button:last-child { border-right: none; }
+.strategy-row button.active { background: var(--primary); color: #fff; }
+.card-source-breakdown { border: 1px solid var(--border); padding: 14px; margin: 12px 0; }
+.card-source-breakdown-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+.card-source-breakdown-row:last-child { border-bottom: none; }
+.tab-strategy-hint { text-align: center; font-size: 11px; color: var(--text-dim); margin-bottom: 14px; }
+.tab-status-line { text-align: center; font-size: 12px; margin-bottom: 14px; padding: 10px; font-weight: 600; border: 1px solid var(--border); }
+.tab-status-line.ok { color: var(--success); border-color: var(--success); }
+.tab-status-line.warn { color: #8a6508; border-color: var(--warning); }
+.tab-status-line.bad { color: var(--danger); border-color: var(--danger); }
+
 /* QR Full */
 .qr-full-wrap { max-width: 460px; margin: 0 auto; padding: 56px 24px; text-align: center; }
 .qr-frame-lg { background: #fff; padding: 30px; border: 1px solid var(--border-strong); display: inline-block; margin-bottom: 24px; }
@@ -1026,6 +1039,9 @@ input[type=number] { -moz-appearance: textfield; }
             <button class="active" id="hookModeSingleBtn" onclick="setHookMode('single')">One source</button>
             <button id="hookModeMultiBtn" onclick="setHookMode('multi')">Multiple sources</button>
         </div>
+        <div style="text-align:center;margin-bottom:14px;">
+    <span class="quick-link" onclick="addAllSavedSourcesToHook()">⚡ Hook all my saved sources at once</span>
+</div>
         <div id="hookRowsHolder"></div>
         <button class="add-row-btn" id="addHookRowBtn" style="display:none;" onclick="addHookRow()">+ Add another source</button>
         <button class="btn" id="hookSubmitBtn" onclick="confirmHookBuilder()">Hook to card</button>
@@ -1777,6 +1793,64 @@ function validateStep3() {
 }
 
 // WIZARD: SOURCE SELECTION
+# Swap wizard — fixes & additions
+
+I compared your two dashboard versions. The step-by-step Swap wizard (4 steps:
+amount → source → destination → review) is the better UX, but three things
+regressed compared to your older single-page Swap:
+
+1. **Card / Voucher / Wallet forms didn't actually appear.** `selectSource()`
+   cloned the whole `#fromSection` node into the wizard panel, but that node's
+   institution dropdown lives inside `#instAssetPanel`, which has
+   `style="display:none"` in the original markup — and nothing in the wizard
+   ever turned it back on. So picking "Card" or "Voucher" (and even "Wallet")
+   in Step 2 showed an empty panel with no way to enter an account/card/voucher
+   number.
+2. **"My Card" (VMCard) had no strategy picker.** The old Swap let you choose
+   Smart / Equal / Ratio / Manual for how a swap draws across everything
+   hooked to your card. The wizard's `renderVmCardBreakdownWizard()` just
+   toasted a message and never rendered anything — no breakdown, no strategy,
+   and it silently hardcoded `strategy: 'SMART'` in the payload.
+3. **No "hook all my sources at once."** Hooking multiple sources meant typing
+   out institution + identifier for each one from scratch, even for accounts
+   you'd already linked. Same gap existed in Combine Sources — no "use a saved
+   source" shortcut like the old Tab Builder had.
+
+Below is a drop-in patch: CSS to add, and JS functions to **replace** (same
+name, same file) or **add** (new). Everything targets the wizard version of
+`dashboard.php` (the one with `wizardState`, `selectSource`, `wizardConfirm`,
+etc).
+
+---
+
+## 1. CSS — add these rules inside your `<style>` block
+
+These four classes are used by the fixed VMCard step and don't exist yet in
+the wizard file's stylesheet (they were part of the old ledger-page CSS that
+got dropped):
+
+```css
+.strategy-row { display: flex; border: 1px solid var(--border-strong); margin-bottom: 10px; }
+.strategy-row button { flex: 1; padding: 10px 4px; font-size: 10px; font-weight: 700; text-transform: uppercase; background: transparent; border: none; border-right: 1px solid var(--border-strong); color: var(--text-muted); cursor: pointer; font-family: var(--font); }
+.strategy-row button:last-child { border-right: none; }
+.strategy-row button.active { background: var(--primary); color: #fff; }
+.card-source-breakdown { border: 1px solid var(--border); padding: 14px; margin: 12px 0; }
+.card-source-breakdown-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+.card-source-breakdown-row:last-child { border-bottom: none; }
+.tab-strategy-hint { text-align: center; font-size: 11px; color: var(--text-dim); margin-bottom: 14px; }
+.tab-status-line { text-align: center; font-size: 12px; margin-bottom: 14px; padding: 10px; font-weight: 600; border: 1px solid var(--border); }
+.tab-status-line.ok { color: var(--success); border-color: var(--success); }
+.tab-status-line.warn { color: #8a6508; border-color: var(--warning); }
+.tab-status-line.bad { color: var(--danger); border-color: var(--danger); }
+```
+
+---
+
+## 2. Fix — Step 2 source forms (Wallet / Card / Voucher)
+
+**REPLACE** your existing `selectSource(type)` function with this:
+
+```js
 function selectSource(type) {
     wizardState.source = type;
 
@@ -1796,26 +1870,353 @@ function selectSource(type) {
     }
 
     panel.style.display = 'block';
-    panel.innerHTML = '';
-    const fromSection = document.getElementById('fromSection');
-    if (fromSection) {
-        panel.appendChild(fromSection.cloneNode(true));
-        const sel = panel.querySelector('#fromInstSelect');
-        if (sel) {
-            sel.onchange = function() { wizardSelectFromInst(this.value); };
-            populateInstitutionsForAsset(type, sel);
-        }
-        wizardState.fromInst = null;
-        wizardState.fromAsset = type;
-        wizardState.fromFields = {};
-        const fieldsBox = panel.querySelector('#fromFields');
-        if (fieldsBox) { fieldsBox.innerHTML = ''; fieldsBox.style.display = 'none'; }
-        const limitsHelp = panel.querySelector('#fromLimitsHelp');
-        if (limitsHelp) limitsHelp.textContent = '';
-    }
+    wizardState.fromInst = null;
+    wizardState.fromAsset = type;
+    wizardState.fromFields = {};
     nextBtn.disabled = true;
+    renderWizardSourcePicker(panel, type);
 }
 
+// Shows any already-linked sources of this asset type first (one tap to
+// reuse), with "link a new one" underneath. Replaces the old approach of
+// cloning #fromSection wholesale, which left the institution dropdown
+// trapped inside a display:none wrapper and never became visible.
+function renderWizardSourcePicker(panel, type) {
+    const eligible = userSources.filter(s => s.status === 'active' && String(s.asset_type).toUpperCase() === String(type).toUpperCase());
+    let html = '';
+    if (eligible.length > 0) {
+        html += `
+        <div class="field-group">
+            <label>Use a saved ${escapeHtml((getAssetConfig(type)?.label || type).toLowerCase())}</label>
+            <div class="dropdown-select" id="wizardSavedDropdown">
+                <div class="dropdown-select-trigger" onclick="document.getElementById('wizardSavedDropdown').classList.toggle('open')">
+                    <span class="placeholder">Select a saved source &rsaquo;</span>
+                    <span class="dropdown-select-chevron">&#9662;</span>
+                </div>
+                <div class="dropdown-select-panel">
+                    ${eligible.map(s => `<div class="saved-source-row" onclick="wizardSelectSavedSource('${s.id}')">
+                        <div class="row-main"><div class="row-inst">${escapeHtml(PARTICIPANTS[s.institution]?.name || s.institution)}</div><div class="row-ident">${escapeHtml(s.identifier || s.source_identifier || '')}</div></div>
+                    </div>`).join('')}
+                </div>
+            </div>
+        </div>
+        <div style="text-align:center;font-size:11px;color:var(--text-dim);margin:10px 0 16px;">— or link a new one —</div>`;
+    }
+    html += `
+        <div class="field-group">
+            <label>Institution</label>
+            <select id="wizardFromInstSelect"><option value="">Select institution</option></select>
+        </div>
+        <div id="wizardFromFieldsBox"></div>
+        <div class="help" id="wizardFromLimitsHelp"></div>`;
+    panel.innerHTML = html;
+    const sel = document.getElementById('wizardFromInstSelect');
+    sel.onchange = function () { wizardSelectFromInst(this.value); };
+    populateInstitutionsForAsset(type, sel);
+}
+
+function wizardSelectSavedSource(sourceId) {
+    const source = userSources.find(s => s.id === sourceId);
+    if (!source) return;
+    const sel = document.getElementById('wizardFromInstSelect');
+    if (sel) sel.value = source.institution;
+    wizardSelectFromInst(source.institution, source);
+    document.getElementById('wizardSavedDropdown')?.classList.remove('open');
+    showMessage(`${PARTICIPANTS[source.institution]?.name || source.institution} selected.`, 'success');
+}
+```
+
+**REPLACE** your existing `wizardSelectFromInst(code)` with this (note the
+new optional second argument):
+
+```js
+function wizardSelectFromInst(code, prefillSource) {
+    wizardState.fromInst = code || null;
+    wizardState.fromFields = {};
+    const panel = document.getElementById('sourceDetailPanel');
+    if (!panel) return;
+    const fieldsBox = panel.querySelector('#wizardFromFieldsBox');
+    const limitsHelp = panel.querySelector('#wizardFromLimitsHelp');
+
+    if (!code) {
+        if (fieldsBox) fieldsBox.innerHTML = '';
+        if (limitsHelp) limitsHelp.textContent = '';
+        document.getElementById('wizardSourceNext').disabled = true;
+        return;
+    }
+
+    const inst = PARTICIPANTS[code];
+    if (limitsHelp) {
+        limitsHelp.textContent = inst?.limits ? `Limits: ${inst.limits.min_amount} – ${inst.limits.max_amount} ${inst.limits.currency}` : '';
+    }
+
+    if (fieldsBox) {
+        renderWizardFields(fieldsBox, wizardState.fromAsset, 'fromField_', (name, value) => {
+            wizardState.fromFields[name] = value;
+            const valid = fieldsValidForAsset(wizardState.fromAsset, wizardState.fromFields, true);
+            document.getElementById('wizardSourceNext').disabled = !valid.valid;
+        }, true);
+
+        // Picked from a saved source: auto-fill and lock the identifier so
+        // the person isn't retyping an account/card/voucher number they've
+        // already linked before.
+        if (prefillSource) {
+            const idField = (getAssetConfig(wizardState.fromAsset)?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+            if (idField) {
+                const identifier = prefillSource.identifier || prefillSource.source_identifier || '';
+                const input = document.getElementById('fromField_' + idField.name);
+                if (input) { input.value = identifier; input.disabled = true; input.style.background = 'var(--surface-muted)'; input.style.color = 'var(--text-dim)'; }
+                wizardState.fromFields[idField.name] = identifier;
+            }
+        }
+    }
+
+    const valid = fieldsValidForAsset(wizardState.fromAsset, wizardState.fromFields, true);
+    document.getElementById('wizardSourceNext').disabled = !valid.valid;
+}
+```
+
+---
+
+## 3. Fix — "My Card" strategy picker (Smart / Equal / Ratio / Manual)
+
+**REPLACE** your existing `renderVmCardBreakdownWizard()` with this:
+
+```js
+async function renderVmCardBreakdownWizard() {
+    const panel = document.getElementById('sourceDetailPanel');
+    const nextBtn = document.getElementById('wizardSourceNext');
+    if (panel) {
+        panel.style.display = 'block';
+        panel.innerHTML = `<div style="text-align:center;padding:16px 0;"><div class="spinner" style="border-color:rgba(16,30,27,0.15);border-top-color:var(--primary);"></div> Loading your card…</div>`;
+    }
+    if (nextBtn) nextBtn.disabled = true;
+
+    if (!myCard) {
+        const result = await callApiGet(CONFIG.API_BASE + '/api/v1/cards/My.php');
+        if (!result.ok) {
+            if (panel) panel.innerHTML = `<div class="tab-status-line bad">Couldn't load your card: ${escapeHtml(friendlyApiError(result.error))}</div>`;
+            return;
+        }
+        myCard = result.body.data;
+    }
+    if (!myCard.is_active) {
+        if (panel) panel.innerHTML = `<div class="tab-status-line warn">Your VouchMorph Card isn't active yet — activate it from the Card page first.</div>`;
+        return;
+    }
+
+    const sourcesResult = await callApi(CONFIG.API_BASE + '/api/v1/cards/GetCardSources.php', { card_suffix: myCard.card_suffix });
+    if (!sourcesResult.ok) {
+        if (panel) panel.innerHTML = `<div class="tab-status-line warn">${escapeHtml(friendlyApiError(sourcesResult.error))}</div>`;
+        vmCardSources = null;
+        return;
+    }
+    const sources = sourcesResult.body.data?.sources || sourcesResult.body.data || [];
+    vmCardSources = sources;
+    if (!sources.length) {
+        if (panel) panel.innerHTML = `<div class="tab-status-line warn">Nothing is hooked to your card yet — go hook a source from the Card page first.</div>`;
+        return;
+    }
+
+    if (nextBtn) nextBtn.disabled = false;
+    renderVmCardStrategyPanel();
+}
+
+// Breakdown + Smart/Equal/Ratio/Manual picker — the same strategies Combine
+// Sources offers, applied to whatever's currently hooked to the card.
+function renderVmCardStrategyPanel() {
+    const panel = document.getElementById('sourceDetailPanel');
+    if (!panel || !vmCardSources) return;
+    const currency = myCard.hook?.currency || myCard.currency;
+    const total = vmCardSources.reduce((s, c) => s + (c.available_balance ?? c.authorized_amount ?? 0), 0);
+    const rows = vmCardSources.map(c => `
+        <div class="card-source-breakdown-row">
+            <span>${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)} · ${escapeHtml(c.identifier || '')}</span>
+            <span style="font-family:var(--font-mono);font-weight:700;">${formatMoney(c.available_balance ?? c.authorized_amount, currency)}</span>
+        </div>`).join('');
+    panel.innerHTML = `
+        <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Drawing from everything hooked to your card. Pick how it should split across those sources:</div>
+        <div class="strategy-row">
+            <button class="${wizardState.vmCardStrategy === 'SMART' ? 'active' : ''}" onclick="setWizardVmCardStrategy('SMART')">Smart</button>
+            <button class="${wizardState.vmCardStrategy === 'EQUAL' ? 'active' : ''}" onclick="setWizardVmCardStrategy('EQUAL')">Equal</button>
+            <button class="${wizardState.vmCardStrategy === 'RATIO' ? 'active' : ''}" onclick="setWizardVmCardStrategy('RATIO')">Ratio</button>
+            <button class="${wizardState.vmCardStrategy === 'MANUAL' ? 'active' : ''}" onclick="setWizardVmCardStrategy('MANUAL')">Manual</button>
+        </div>
+        <div class="tab-strategy-hint">Not sure? Smart is recommended — we'll balance it for you.</div>
+        <div class="card-source-breakdown">
+            ${rows}
+            <div class="card-source-breakdown-row" style="border-bottom:none;padding-top:10px;font-weight:700;">
+                <span>Max available to swap</span><span style="font-family:var(--font-mono);color:var(--accent);">${formatMoney(total, currency)}</span>
+            </div>
+        </div>`;
+}
+
+function setWizardVmCardStrategy(s) {
+    wizardState.vmCardStrategy = s;
+    renderVmCardStrategyPanel();
+}
+```
+
+Then, inside `buildWizardPayload()`, find the `VMCARD` branch — it currently
+has this line hardcoding the strategy:
+
+```js
+wizardState.vmCardStrategy = 'SMART';
+return { type: 'VMCARD', payload: {
+    ...
+    strategy: 'SMART',
+```
+
+**DELETE** the `wizardState.vmCardStrategy = 'SMART';` line entirely, and
+**CHANGE** `strategy: 'SMART',` to:
+
+```js
+    strategy: wizardState.vmCardStrategy,
+```
+
+so whatever the person picked in Step 2 is what actually gets sent.
+
+---
+
+## 4. Fix — "Use a saved source" inside Combine Sources
+
+Inside `renderCombineSummaryWizard()`, find this line (the "Source N" header
+row):
+
+```js
+<span style="font-size:11px;font-weight:700;color:var(--text-dim);">Source ${idx + 1}</span>
+```
+
+Right **after** the closing `</div>` of that header row (and before the
+"Institution" `field-group`), **INSERT**:
+
+```js
+${userSources.length ? `<div style="margin-bottom:8px;">
+    <span class="quick-link muted" onclick="toggleCombineSavedPicker(${s.id})">Use a saved source &rsaquo;</span>
+    <div id="combineSavedPicker${s.id}" style="display:none;margin-top:6px;border:1px solid var(--border-strong);">
+        ${userSources.filter(u => u.status === 'active').map(u => `<div class="saved-source-row" onclick="applyCombineSavedSource(${s.id}, '${u.id}')"><div class="row-main"><div class="row-inst">${escapeHtml(PARTICIPANTS[u.institution]?.name || u.institution)}</div><div class="row-ident">${escapeHtml(u.identifier || u.source_identifier || '')}</div></div></div>`).join('')}
+    </div>
+</div>` : ''}
+```
+
+And **ADD** these two new functions anywhere near `renderCombineSummaryWizard`:
+
+```js
+function toggleCombineSavedPicker(rowId) {
+    const el = document.getElementById('combineSavedPicker' + rowId);
+    if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+function applyCombineSavedSource(rowId, sourceId) {
+    const source = userSources.find(u => u.id === sourceId);
+    const row = wizardState.multiSources.find(s => s.id === rowId);
+    if (!source || !row) return;
+    row.institution = source.institution;
+    row.assetType = String(source.asset_type).toUpperCase();
+    row.fields = {};
+    const idField = (getAssetConfig(row.assetType)?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+    if (idField) row.fields[idField.name] = source.identifier || source.source_identifier || '';
+    renderCombineSummaryWizard();
+}
+```
+
+---
+
+## 5. New — "Hook all my saved sources at once"
+
+**In the HTML**, inside the Hook Builder view (`<div class="view" id="hookView">`),
+right after the `hookModeRow` div, **ADD** one line:
+
+```html
+<div style="text-align:center;margin-bottom:14px;">
+    <span class="quick-link" onclick="addAllSavedSourcesToHook()">⚡ Hook all my saved sources at once</span>
+</div>
+```
+
+**ADD** these functions near your other hook-builder functions
+(`addHookRow`, `removeHookRow`, `renderHookRows`, etc):
+
+```js
+// One tap: turn every currently-linked, active source into a hook row,
+// switch to multi mode, and let the person just fill in an amount for
+// each — instead of retyping institution + identifier from scratch.
+function addAllSavedSourcesToHook() {
+    const eligible = userSources.filter(s => s.status === 'active');
+    if (!eligible.length) { showMessage("You don't have any saved sources yet — add one from Toolbox first.", 'info'); return; }
+    hookRows = eligible.map(s => ({
+        id: ++hookRowSeq,
+        instName: PARTICIPANTS[s.institution]?.name || s.institution,
+        institution: s.institution,
+        assetType: s.asset_type,
+        identifier: s.identifier || s.source_identifier || '',
+        pin: '', amount: '', locked: true
+    }));
+    hookMode = 'multi';
+    document.getElementById('hookModeSingleBtn')?.classList.remove('active');
+    document.getElementById('hookModeMultiBtn')?.classList.add('active');
+    document.getElementById('addHookRowBtn').style.display = 'block';
+    renderHookRows();
+    showMessage(`Added all ${eligible.length} of your saved sources — just fill in an amount for each.`, 'success');
+}
+
+function pickHookRowFromSaved(rowId) {
+    const el = document.getElementById('hookSavedPicker' + rowId);
+    if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+function applyHookRowSavedSource(rowId, sourceId) {
+    const source = userSources.find(s => s.id === sourceId);
+    const row = hookRows.find(r => r.id === rowId);
+    if (!source || !row) return;
+    row.institution = source.institution;
+    row.assetType = String(source.asset_type).toUpperCase();
+    row.identifier = source.identifier || source.source_identifier || '';
+    row.locked = true;
+    row.instName = PARTICIPANTS[source.institution]?.name || source.institution;
+    renderHookRows();
+}
+```
+
+Finally, inside `renderHookRows()`, find the **unlocked-row** branch — the
+part that starts with:
+
+```js
+const typeOptions = HOOK_ASSET_TYPES.map(t => `<div class="source-type-opt ...
+```
+
+Right **before** that line, **INSERT**:
+
+```js
+const savedPickerHtml = userSources.filter(u => u.status === 'active').length ? `
+    <div style="margin-bottom:10px;">
+        <span class="quick-link muted" onclick="pickHookRowFromSaved(${row.id})">Use a saved source &rsaquo;</span>
+        <div id="hookSavedPicker${row.id}" style="display:none;margin-top:6px;border:1px solid var(--border-strong);">
+            ${userSources.filter(u => u.status === 'active').map(u => `<div class="saved-source-row" onclick="applyHookRowSavedSource(${row.id}, '${u.id}')"><div class="row-main"><div class="row-inst">${escapeHtml(PARTICIPANTS[u.institution]?.name || u.institution)}</div><div class="row-ident">${escapeHtml(u.identifier || u.source_identifier || '')}</div></div></div>`).join('')}
+        </div>
+    </div>` : '';
+```
+
+and then **INSERT** `${savedPickerHtml}` as the very first thing inside the
+returned template string for that row (right after `<div class="hook-row-head">...</div>`,
+before `<div class="source-type-picker">`).
+
+---
+
+## Why these five
+
+- **1** was the actual bug behind "card and voucher forms are missing" — the
+  form was there in the DOM, just invisible.
+- **2 & the payload change** is what "option to hook all sources" partly
+  meant on the spending side — Smart/Equal/Ratio/Manual across everything
+  hooked, not just a silent Smart-only assumption.
+- **4 & 5** are the other half of "hook all sources" — reusing sources you've
+  already linked instead of re-entering them, both when combining sources for
+  a swap and when hooking sources to your Card.
+
+Nothing else in the wizard needs to change — `wizardState`, `userSources`,
+`getAssetConfig`, `escapeHtml`, `formatMoney`, `showMessage`, and the
+`.dropdown-select` / `.saved-source-row` CSS you already have are all reused
+as-is.
 function populateInstitutionsForAsset(assetType, sel) {
     if (!sel) return;
     const codes = Object.keys(PARTICIPANTS).filter(code =>
@@ -2111,12 +2512,11 @@ function buildWizardPayload() {
     const idempotencyKey = 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
 
     if (wizardState.source === 'VMCARD') {
-        wizardState.vmCardStrategy = 'SMART';
         return { type: 'VMCARD', payload: {
             card_suffix: myCard.card_suffix,
             target_amount: wizardState.amount,
             currency: wizardState.currency,
-            strategy: 'SMART',
+            strategy: wizardState.vmCardStrategy,
             identity_type: wizardState.destType === 'IDENTITY' ? wizardState.identityType : undefined,
             identity_value: wizardState.destType === 'IDENTITY' ? wizardState.identityValue : undefined,
             beneficiary_phone: wizardState.destType === 'IDENTITY' ? wizardState.identitySms : wizardState.beneficiaryPhone,
@@ -2471,6 +2871,23 @@ async function startVmCardSwapWizard(payload) {
     goView('card');
 }
 
+function toggleCombineSavedPicker(rowId) {
+    const el = document.getElementById('combineSavedPicker' + rowId);
+    if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+function applyCombineSavedSource(rowId, sourceId) {
+    const source = userSources.find(u => u.id === sourceId);
+    const row = wizardState.multiSources.find(s => s.id === rowId);
+    if (!source || !row) return;
+    row.institution = source.institution;
+    row.assetType = String(source.asset_type).toUpperCase();
+    row.fields = {};
+    const idField = (getAssetConfig(row.assetType)?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+    if (idField) row.fields[idField.name] = source.identifier || source.source_identifier || '';
+    renderCombineSummaryWizard();
+}
+
 // COMBINE SOURCES HELPERS (WIZARD)
 function renderCombineSummaryWizard() {
     const panel = document.getElementById('sourceDetailPanel');
@@ -2507,6 +2924,12 @@ function renderCombineSummaryWizard() {
                     <span style="font-size:11px;font-weight:700;color:var(--text-dim);">Source ${idx + 1}</span>
                     ${wizardState.multiSources.length > 2 ? `<button class="btn-danger-outline" onclick="removeCombineRow(${s.id})" style="background:transparent;border:1px solid rgba(198,40,40,0.4);color:var(--danger);padding:2px 10px;font-size:10px;cursor:pointer;">Remove</button>` : ''}
                 </div>
+                ${userSources.length ? `<div style="margin-bottom:8px;">
+    <span class="quick-link muted" onclick="toggleCombineSavedPicker(${s.id})">Use a saved source &rsaquo;</span>
+    <div id="combineSavedPicker${s.id}" style="display:none;margin-top:6px;border:1px solid var(--border-strong);">
+        ${userSources.filter(u => u.status === 'active').map(u => `<div class="saved-source-row" onclick="applyCombineSavedSource(${s.id}, '${u.id}')"><div class="row-main"><div class="row-inst">${escapeHtml(PARTICIPANTS[u.institution]?.name || u.institution)}</div><div class="row-ident">${escapeHtml(u.identifier || u.source_identifier || '')}</div></div></div>`).join('')}
+    </div>
+</div>` : ''}
                 <div class="field-group" style="margin-bottom:8px;">
                     <label>Institution</label>
                     <select onchange="setCombineInst(${s.id}, this.value)"><option value="">Select</option>${instOptions}</select>
@@ -3229,6 +3652,45 @@ function addHookRow(prefill) {
     renderHookRows();
 }
 
+// One tap: turn every currently-linked, active source into a hook row,
+// switch to multi mode, and let the person just fill in an amount for
+// each — instead of retyping institution + identifier from scratch.
+function addAllSavedSourcesToHook() {
+    const eligible = userSources.filter(s => s.status === 'active');
+    if (!eligible.length) { showMessage("You don't have any saved sources yet — add one from Toolbox first.", 'info'); return; }
+    hookRows = eligible.map(s => ({
+        id: ++hookRowSeq,
+        instName: PARTICIPANTS[s.institution]?.name || s.institution,
+        institution: s.institution,
+        assetType: s.asset_type,
+        identifier: s.identifier || s.source_identifier || '',
+        pin: '', amount: '', locked: true
+    }));
+    hookMode = 'multi';
+    document.getElementById('hookModeSingleBtn')?.classList.remove('active');
+    document.getElementById('hookModeMultiBtn')?.classList.add('active');
+    document.getElementById('addHookRowBtn').style.display = 'block';
+    renderHookRows();
+    showMessage(`Added all ${eligible.length} of your saved sources — just fill in an amount for each.`, 'success');
+}
+
+function pickHookRowFromSaved(rowId) {
+    const el = document.getElementById('hookSavedPicker' + rowId);
+    if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+function applyHookRowSavedSource(rowId, sourceId) {
+    const source = userSources.find(s => s.id === sourceId);
+    const row = hookRows.find(r => r.id === rowId);
+    if (!source || !row) return;
+    row.institution = source.institution;
+    row.assetType = String(source.asset_type).toUpperCase();
+    row.identifier = source.identifier || source.source_identifier || '';
+    row.locked = true;
+    row.instName = PARTICIPANTS[source.institution]?.name || source.institution;
+    renderHookRows();
+}
+
 function removeHookRow(id) { hookRows = hookRows.filter(r => r.id !== id); renderHookRows(); }
 
 function setHookRowAssetType(id, type) {
@@ -3245,6 +3707,13 @@ function renderHookRows() {
         if (row.locked) {
             return `<div class="hook-row-card"><div class="hook-row-head"><span class="hook-row-label">Source ${idx + 1} — from My sources</span></div><div style="font-size:13px;font-weight:700;">${escapeHtml(row.instName)}</div><div style="font-size:11px;color:var(--text-dim);margin-bottom:10px;">${escapeHtml(row.identifier)}</div><div class="field-group"><label>Amount to authorize</label><input type="number" placeholder="0.00" value="${row.amount}" oninput="hookRows.find(r=>r.id===${row.id}).amount=this.value"></div></div>`;
         }
+        const savedPickerHtml = userSources.filter(u => u.status === 'active').length ? `
+    <div style="margin-bottom:10px;">
+        <span class="quick-link muted" onclick="pickHookRowFromSaved(${row.id})">Use a saved source &rsaquo;</span>
+        <div id="hookSavedPicker${row.id}" style="display:none;margin-top:6px;border:1px solid var(--border-strong);">
+            ${userSources.filter(u => u.status === 'active').map(u => `<div class="saved-source-row" onclick="applyHookRowSavedSource(${row.id}, '${u.id}')"><div class="row-main"><div class="row-inst">${escapeHtml(PARTICIPANTS[u.institution]?.name || u.institution)}</div><div class="row-ident">${escapeHtml(u.identifier || u.source_identifier || '')}</div></div></div>`).join('')}
+        </div>
+    </div>` : '';
         const typeOptions = HOOK_ASSET_TYPES.map(t => `<div class="source-type-opt ${row.assetType === t.key ? 'active' : ''}" onclick="setHookRowAssetType(${row.id}, '${t.key}')"><span class="icon">${t.icon}</span>${t.label}</div>`).join('');
         let extraFields = '';
         let institutionField = '';
