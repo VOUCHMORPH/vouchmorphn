@@ -94,6 +94,91 @@ function flattenDeptTree(array $nodes, int $depth = 0): array {
 $departmentTree = $deptService->getDepartmentTree($orgId);
 $flatDepartments = flattenDeptTree($departmentTree);
 
+/**
+ * One user row + its inline edit form. Extracted out of what used to
+ * be one giant flat <table> so it can be reused inside Headquarters'
+ * section, every department's section, and every sub-department's
+ * section without three copies of the same markup.
+ */
+function renderUserRow(array $u, array $flatDepartments, string $csrfToken): string {
+    $rc = UserManagementService::ROLE_CATALOG[$u['role']] ?? null;
+    $pillClass = $rc && $rc['category'] === 'Executive' ? 'exec' : ($rc && $rc['category'] === 'Administration' ? 'admin' : '');
+    $rowId = 'u' . (int)$u['user_id'];
+    $searchBlob = strtolower($u['full_name'] . ' ' . $u['email']);
+
+    $html = '<div class="staff-row" data-search="' . safeHtmlU($searchBlob) . '">';
+    $html .= '<div class="staff-row-main">';
+    $html .= '<div><span class="role-pill ' . $pillClass . '">' . safeHtmlU(getRoleLabelU($u['role'])) . '</span> <strong>' . safeHtmlU($u['full_name']) . '</strong> <span style="opacity:.6;font-size:12px;">' . safeHtmlU($u['email']) . '</span> <span class="status status-' . ($u['is_active'] ? 'completed' : 'rejected') . '" style="margin-left:6px;">' . ($u['is_active'] ? 'Active' : 'Inactive') . '</span></div>';
+    $html .= '<div class="staff-row-actions">';
+    $html .= '<button type="button" class="toggle-edit-btn" onclick="toggleStaffEdit(\'' . $rowId . '\')">Edit</button>';
+    $html .= '<form method="post" style="display:inline;" onsubmit="return confirm(\'Reset password for ' . safeHtmlU(addslashes($u['full_name'])) . '? A new temporary password will be generated.\')">';
+    $html .= '<input type="hidden" name="csrf_token" value="' . safeHtmlU($csrfToken) . '"><input type="hidden" name="action" value="reset_password"><input type="hidden" name="target_user_id" value="' . (int)$u['user_id'] . '">';
+    $html .= '<button type="submit" class="btn-mini outline">Reset PW</button></form>';
+    if ($u['is_active']) {
+        $html .= '<form method="post" style="display:inline;" onsubmit="return confirm(\'Deactivate ' . safeHtmlU(addslashes($u['full_name'])) . '? They will lose access immediately. This can be undone.\')">';
+        $html .= '<input type="hidden" name="csrf_token" value="' . safeHtmlU($csrfToken) . '"><input type="hidden" name="action" value="deactivate_user"><input type="hidden" name="target_user_id" value="' . (int)$u['user_id'] . '">';
+        $html .= '<button type="submit" class="btn-mini danger">Deactivate</button></form>';
+    } else {
+        $html .= '<form method="post" style="display:inline;">';
+        $html .= '<input type="hidden" name="csrf_token" value="' . safeHtmlU($csrfToken) . '"><input type="hidden" name="action" value="reactivate_user"><input type="hidden" name="target_user_id" value="' . (int)$u['user_id'] . '">';
+        $html .= '<button type="submit" class="btn-mini outline">Reactivate</button></form>';
+    }
+    $html .= '</div></div>';
+
+    $html .= '<form method="post" class="staff-edit-form" id="edit-' . $rowId . '">';
+    $html .= '<input type="hidden" name="csrf_token" value="' . safeHtmlU($csrfToken) . '"><input type="hidden" name="action" value="update_user"><input type="hidden" name="target_user_id" value="' . (int)$u['user_id'] . '">';
+    $html .= '<div class="form-group"><label>Role</label><select name="role" id="roleSelect_' . $rowId . '" onchange="onRoleChange(\'' . $rowId . '\')">';
+    foreach (UserManagementService::ROLE_CATALOG as $key => $info) {
+        $html .= '<option value="' . safeHtmlU($key) . '"' . ($key === $u['role'] ? ' selected' : '') . '>' . safeHtmlU($info['label']) . '</option>';
+    }
+    $html .= '</select></div>';
+    $html .= '<div class="form-group dept-field" id="deptField_' . $rowId . '"><label>Department</label><select name="department_id" id="deptSelect_' . $rowId . '"><option value="">— None / Organization-wide —</option>';
+    foreach ($flatDepartments as $d) {
+        $html .= '<option value="' . $d['id'] . '"' . ((int)$u['department_id'] === $d['id'] ? ' selected' : '') . '>' . str_repeat('— ', $d['depth']) . safeHtmlU($d['name']) . '</option>';
+    }
+    $html .= '</select></div>';
+    $html .= '<div class="role-desc-panel" id="roleDescPanel_' . $rowId . '" style="grid-column:1/-1;"></div>';
+    $html .= '<div style="grid-column:1/-1;display:flex;gap:8px;"><button type="submit" class="btn btn-primary btn-sm">Save Changes</button><button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById(\'edit-' . $rowId . '\').classList.remove(\'open-row\')">Cancel</button></div>';
+    $html .= '</form></div>';
+    return $html;
+}
+
+/**
+ * One department's accordion: its own directly-assigned staff, an
+ * "+ Add here" shortcut into the Create form at the top of the page,
+ * then every sub-department nested one level deeper, recursively —
+ * exactly the Headquarters → Department → Sub-department shape a
+ * large government structure actually has, browsable without
+ * rendering thousands of rows open at once.
+ */
+function renderDeptUserAccordion(array $node, array $usersByDepartment, array $flatDepartments, string $csrfToken, int $depth = 0): string {
+    $deptId = (int)$node['id'];
+    $people = $usersByDepartment[$deptId] ?? [];
+    $childCount = count($node['children'] ?? []);
+    $totalUnder = count($people); // direct only — shown alongside child accordions, not double-counted
+
+    $html = '<details class="org-accordion" data-search-scope data-dept-name="' . safeHtmlU(strtolower($node['name'])) . '"' . ($depth === 0 ? ' open' : '') . '>';
+    $html .= '<summary class="org-accordion-summary"><span><span class="arrow">&rsaquo;</span> ' . safeHtmlU($node['name']) . '</span><span class="count">' . $totalUnder . ' direct' . ($childCount > 0 ? ' &middot; ' . $childCount . ' sub-dept' . ($childCount > 1 ? 's' : '') : '') . '</span></summary>';
+    $html .= '<div class="org-accordion-body">';
+    $html .= '<button type="button" class="org-add-link" onclick="addToDepartment(' . $deptId . ', ' . json_encode($node['name']) . ')">+ Add a member to ' . safeHtmlU($node['name']) . '</button>';
+    if (!empty($people)) {
+        $html .= '<div style="margin-top:10px;">';
+        foreach ($people as $person) { $html .= renderUserRow($person, $flatDepartments, $csrfToken); }
+        $html .= '</div>';
+    } else {
+        $html .= '<div class="org-accordion-empty">No staff assigned directly to this department.</div>';
+    }
+    if (!empty($node['children'])) {
+        $html .= '<div class="org-accordion-children">';
+        foreach ($node['children'] as $child) {
+            $html .= renderDeptUserAccordion($child, $usersByDepartment, $flatDepartments, $csrfToken, $depth + 1);
+        }
+        $html .= '</div>';
+    }
+    $html .= '</div></details>';
+    return $html;
+}
+
 // ============================================================
 // HANDLE ACTIONS — completely unchanged real logic.
 // ============================================================
@@ -243,6 +328,11 @@ $currentNavKey = 'team';
         .role-desc-panel .cat { font-weight: 700; font-family: var(--f-display); text-transform: uppercase; font-size: 10px; letter-spacing: .05em; display: block; margin-bottom: 4px; color: var(--sky-deep); }
         .dept-field-note { font-size: 11.5px; opacity: .55; margin-top: 4px; }
         .toggle-edit-btn { background: none; border: none; color: var(--sky-deep); cursor: pointer; font-family: var(--f-display); font-size: 11px; text-transform: uppercase; font-weight: 700; letter-spacing: .04em; padding: 0; }
+        .btn-mini { display: inline-flex; align-items: center; height: 26px; padding: 0 10px; border: var(--border) solid var(--ink); background: var(--paper); color: var(--ink); font-family: var(--f-display); font-weight: 700; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; cursor: pointer; }
+        .btn-mini:hover { background: var(--ink); color: var(--paper); }
+        .btn-mini.outline { background: var(--paper); }
+        .btn-mini.danger { background: var(--danger); color: var(--paper); border-color: var(--danger); }
+        .roster-search { max-width: 480px; margin-bottom: var(--u4); }
         .edit-row { display: none; background: var(--paper-dim); }
         .edit-row.show { display: table-row; }
         .edit-row td { padding: var(--u3); }
@@ -327,99 +417,40 @@ $currentNavKey = 'team';
             </form>
         </div>
 
-        <!-- Roster -->
+        <!-- Roster — organized by Headquarters / Department / Sub-department,
+             not one flat table. For an org the size of a national
+             government, a flat list of every staffer is unusable; this
+             is the same shape the Departments page's org chart already
+             uses, just browsable and editable for account management. -->
         <div class="card">
             <div class="card-header"><span class="card-title">Staff Roster (<?php echo count($users); ?>)</span></div>
             <?php if (empty($users)): ?>
             <div class="empty-state">No staff accounts yet — create the first one above.</div>
-            <?php else: ?>
-            <div class="table-responsive">
-            <table>
-                <thead>
-                    <tr><th>Name</th><th>Email</th><th>Role</th><th>Scope</th><th>Status</th><th>Actions</th></tr>
-                </thead>
-                <tbody>
-                    <?php foreach ($users as $u):
-                        $rc = UserManagementService::ROLE_CATALOG[$u['role']] ?? null;
-                        $pillClass = $rc && $rc['category'] === 'Executive' ? 'exec' : ($rc && $rc['category'] === 'Administration' ? 'admin' : '');
-                        $mode = $rc['department_mode'] ?? 'none';
-                        $rowId = 'u' . (int)$u['user_id'];
-                    ?>
-                    <tr>
-                        <td><?php echo safeHtmlU($u['full_name']); ?></td>
-                        <td><?php echo safeHtmlU($u['email']); ?></td>
-                        <td><span class="role-pill <?php echo $pillClass; ?>"><?php echo safeHtmlU(getRoleLabelU($u['role'])); ?></span></td>
-                        <td>
-                            <?php if ($mode === 'none'): ?>
-                            <span class="scope-tag">— (always org-wide)</span>
-                            <?php elseif ($u['department_id'] === null): ?>
-                            <span class="scope-tag unrestricted">&#9888; Org-wide (unscoped)</span>
-                            <?php else: ?>
-                            <span class="scope-tag"><?php echo safeHtmlU($u['department_name'] ?? 'Unknown department'); ?> + sub-departments</span>
-                            <?php endif; ?>
-                        </td>
-                        <td><span class="status status-<?php echo $u['is_active'] ? 'completed' : 'rejected'; ?>"><?php echo $u['is_active'] ? 'Active' : 'Inactive'; ?></span></td>
-                        <td>
-                            <div class="row-actions">
-                                <button type="button" class="toggle-edit-btn" onclick="toggleEdit('<?php echo $rowId; ?>')">Edit</button>
-                                <form method="POST" style="display:inline;" onsubmit="return confirm('Reset password for <?php echo safeHtmlU(addslashes($u['full_name'])); ?>? A new temporary password will be generated.')">
-                                    <input type="hidden" name="csrf_token" value="<?php echo safeHtmlU($csrfToken); ?>">
-                                    <input type="hidden" name="action" value="reset_password">
-                                    <input type="hidden" name="target_user_id" value="<?php echo (int)$u['user_id']; ?>">
-                                    <button type="submit" class="btn btn-secondary btn-sm">Reset PW</button>
-                                </form>
-                                <?php if ($u['is_active']): ?>
-                                <form method="POST" style="display:inline;" onsubmit="return confirm('Deactivate <?php echo safeHtmlU(addslashes($u['full_name'])); ?>? They will lose access immediately. This can be undone.')">
-                                    <input type="hidden" name="csrf_token" value="<?php echo safeHtmlU($csrfToken); ?>">
-                                    <input type="hidden" name="action" value="deactivate_user">
-                                    <input type="hidden" name="target_user_id" value="<?php echo (int)$u['user_id']; ?>">
-                                    <button type="submit" class="btn btn-secondary btn-sm" style="border-color:var(--danger);color:var(--danger);">Deactivate</button>
-                                </form>
-                                <?php else: ?>
-                                <form method="POST" style="display:inline;">
-                                    <input type="hidden" name="csrf_token" value="<?php echo safeHtmlU($csrfToken); ?>">
-                                    <input type="hidden" name="action" value="reactivate_user">
-                                    <input type="hidden" name="target_user_id" value="<?php echo (int)$u['user_id']; ?>">
-                                    <button type="submit" class="btn btn-secondary btn-sm">Reactivate</button>
-                                </form>
-                                <?php endif; ?>
-                            </div>
-                        </td>
-                    </tr>
-                    <tr class="edit-row" id="edit_<?php echo $rowId; ?>">
-                        <td colspan="6">
-                            <form method="POST">
-                                <input type="hidden" name="csrf_token" value="<?php echo safeHtmlU($csrfToken); ?>">
-                                <input type="hidden" name="action" value="update_user">
-                                <input type="hidden" name="target_user_id" value="<?php echo (int)$u['user_id']; ?>">
-                                <div class="form-grid">
-                                    <div class="form-group">
-                                        <label>Role</label>
-                                        <select name="role" id="roleSelect_<?php echo $rowId; ?>" onchange="onRoleChange('<?php echo $rowId; ?>')">
-                                            <?php foreach (UserManagementService::ROLE_CATALOG as $key => $info): ?>
-                                            <option value="<?php echo safeHtmlU($key); ?>" <?php echo $key === $u['role'] ? 'selected' : ''; ?>><?php echo safeHtmlU($info['label']); ?></option>
-                                            <?php endforeach; ?>
-                                        </select>
-                                    </div>
-                                    <div class="form-group dept-field" id="deptField_<?php echo $rowId; ?>">
-                                        <label>Department</label>
-                                        <select name="department_id" id="deptSelect_<?php echo $rowId; ?>">
-                                            <option value="">— None / Organization-wide —</option>
-                                            <?php foreach ($flatDepartments as $d): ?>
-                                            <option value="<?php echo $d['id']; ?>" <?php echo ((int)$u['department_id'] === $d['id']) ? 'selected' : ''; ?>><?php echo str_repeat('— ', $d['depth']) . safeHtmlU($d['name']); ?></option>
-                                            <?php endforeach; ?>
-                                        </select>
-                                    </div>
-                                </div>
-                                <div class="role-desc-panel" id="roleDescPanel_<?php echo $rowId; ?>"></div>
-                                <button type="submit" class="btn btn-primary btn-sm">Save Changes</button>
-                                <button type="button" class="btn btn-secondary btn-sm" onclick="toggleEdit('<?php echo $rowId; ?>')">Cancel</button>
-                            </form>
-                        </td>
-                    </tr>
-                    <?php endforeach; ?>
-                </tbody>
-            </table>
+            <?php else:
+                $usersByDepartment = [];
+                $hqUsers = [];
+                foreach ($users as $u) {
+                    if ($u['department_id'] === null) { $hqUsers[] = $u; }
+                    else { $usersByDepartment[(int)$u['department_id']][] = $u; }
+                }
+            ?>
+            <div class="field roster-search">
+                <input type="text" id="rosterSearch" placeholder="Search by department, name, or email&hellip;" oninput="filterRoster(this.value)">
+            </div>
+            <div id="rosterTree">
+                <details class="org-accordion" data-search-scope data-dept-name="headquarters" open>
+                    <summary class="org-accordion-summary"><span><span class="arrow">&rsaquo;</span> Headquarters</span><span class="count"><?php echo count($hqUsers); ?> direct</span></summary>
+                    <div class="org-accordion-body">
+                        <button type="button" class="org-add-link" onclick="addToDepartment(null, 'Headquarters')">+ Add a member to Headquarters</button>
+                        <?php if (!empty($hqUsers)): ?>
+                        <div style="margin-top:10px;"><?php foreach ($hqUsers as $person) { echo renderUserRow($person, $flatDepartments, $csrfToken); } ?></div>
+                        <?php else: ?>
+                        <div class="org-accordion-empty">No staff assigned directly to Headquarters.</div>
+                        <?php endif; ?>
+                    </div>
+                </details>
+                <?php foreach ($departmentTree as $rootNode) { echo renderDeptUserAccordion($rootNode, $usersByDepartment, $flatDepartments, $csrfToken); } ?>
+                <div class="org-search-empty" id="rosterSearchEmpty">No departments or staff match that search.</div>
             </div>
             <?php endif; ?>
         </div>
@@ -457,12 +488,11 @@ $currentNavKey = 'team';
             }
         }
 
-        function toggleEdit(rowId) {
-            const row = document.getElementById('edit_' + rowId);
-            row.classList.toggle('show');
-            if (row.classList.contains('show')) {
-                onRoleChange(rowId);
-            }
+        function toggleStaffEdit(rowId) {
+            const row = document.getElementById('edit-' + rowId);
+            if (!row) return;
+            row.classList.toggle('open-row');
+            if (row.classList.contains('open-row')) onRoleChange(rowId);
         }
 
         function copyTempPassword() {
@@ -471,6 +501,77 @@ $currentNavKey = 'team';
                 event.target.textContent = 'Copied';
                 setTimeout(() => { event.target.textContent = 'Copy'; }, 1500);
             });
+        }
+
+        // ------------------------------------------------------------
+        // "+ Add a member to X" — scrolls to the existing Create form
+        // and pre-fills its department. Doesn't fight the role-based
+        // show/hide logic above: if the currently-selected role has no
+        // department concept, the field stays hidden until a role that
+        // needs one is picked, exactly like manual entry would.
+        // ------------------------------------------------------------
+        function addToDepartment(deptId, deptName) {
+            document.getElementById('createUserForm').scrollIntoView({ behavior: 'smooth', block: 'start' });
+            const sel = document.getElementById('deptSelect_create');
+            if (sel) {
+                sel.value = (deptId === null) ? '' : String(deptId);
+                sel.style.outline = '3px solid var(--sky)';
+                setTimeout(() => { sel.style.outline = ''; }, 1500);
+            }
+            const nameInput = document.querySelector('#createUserForm input[name="full_name"]');
+            if (nameInput) nameInput.focus();
+        }
+
+        // ------------------------------------------------------------
+        // REAL-TIME HIERARCHY SEARCH — matches a department by name OR
+        // any staff member's name/email inside it, at any depth. A
+        // department stays visible if IT matches, if any of its own
+        // staff match, or if any sub-department beneath it matches —
+        // so searching "Kano" surfaces the State, its LGAs, and every
+        // matching staffer, not just an exact hit.
+        //
+        // HONEST LIMIT: this filters what's already in the page's DOM.
+        // For a handful of departments and a few hundred staff this is
+        // instant. For a roster in the many-thousands (genuinely
+        // possible at national-government scale), the page itself would
+        // need server-side, paginated search instead of shipping every
+        // row up front — a real next step if this roster ever gets
+        // that large, not something to pretend this already handles.
+        // ------------------------------------------------------------
+        function filterRoster(query) {
+            const q = query.trim().toLowerCase();
+            const tree = document.getElementById('rosterTree');
+            const emptyMsg = document.getElementById('rosterSearchEmpty');
+            if (!tree) return;
+
+            function evalAccordion(acc) {
+                const deptName = acc.dataset.deptName || '';
+                const selfMatch = !q || deptName.includes(q);
+                const body = acc.querySelector(':scope > .org-accordion-body');
+                const staffRows = body ? Array.from(body.querySelectorAll(':scope > div > .staff-row')) : [];
+                let anyStaffMatch = false;
+                staffRows.forEach(function (row) {
+                    const matches = !q || selfMatch || (row.dataset.search || '').includes(q);
+                    row.style.display = matches ? '' : 'none';
+                    if (matches) anyStaffMatch = true;
+                });
+
+                const childWrap = body ? body.querySelector(':scope > .org-accordion-children') : null;
+                const childAccordions = childWrap ? Array.from(childWrap.querySelectorAll(':scope > .org-accordion')) : [];
+                let anyChildVisible = false;
+                childAccordions.forEach(function (child) { if (evalAccordion(child)) anyChildVisible = true; });
+
+                const visible = !q || selfMatch || anyStaffMatch || anyChildVisible;
+                acc.style.display = visible ? '' : 'none';
+                if (q && visible) acc.open = true;
+                return visible;
+            }
+
+            let anyVisible = false;
+            Array.from(tree.querySelectorAll(':scope > .org-accordion')).forEach(function (acc) {
+                if (evalAccordion(acc)) anyVisible = true;
+            });
+            if (emptyMsg) emptyMsg.style.display = (q && !anyVisible) ? 'block' : 'none';
         }
     </script>
 <?php
