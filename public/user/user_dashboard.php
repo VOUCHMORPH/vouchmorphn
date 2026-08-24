@@ -1,6 +1,3 @@
-I've applied all the fixes and improvements from the comments to create a clean, production-ready `dashboard.php` file. Here's the cleaned-up code with all comments removed:
-
-```php
 <?php
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 use Application\Utils\SessionManager;
@@ -4027,4 +4024,3 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (docume
 </script>
 </body>
 </html>
-```
