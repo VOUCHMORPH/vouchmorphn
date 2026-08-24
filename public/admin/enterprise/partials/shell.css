@@ -500,6 +500,39 @@ textarea { height: auto; padding: var(--u1) var(--u2); }
 .field input:focus, .field select:focus, .field textarea:focus { outline: none; border-color: var(--sky-deep); box-shadow: 0 0 0 2px var(--sky-tint); }
 
 /* ============================================================
+   STAFF ROWS — one editable person: name, role, Edit toggle +
+   inline reassignment form, Deactivate/Reactivate. Originally
+   built once for the Departments org-chart; promoted here because
+   Team (settings/users.php) needed the exact same thing for its
+   own roster — one definition, not a second copy that can drift.
+   ============================================================ */
+.staff-row { padding: var(--u2) 0; border-bottom: 1px dashed var(--ink); }
+.staff-row:last-child { border-bottom: none; }
+.staff-row-main { display: flex; justify-content: space-between; align-items: center; gap: var(--u2); flex-wrap: wrap; }
+.staff-row-actions { display: flex; gap: 6px; flex-shrink: 0; flex-wrap: wrap; }
+.staff-edit-form { display: none; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: var(--u2); margin: var(--u2) 0; padding: var(--u2) var(--u3); background: var(--paper-dim); border: var(--border) solid var(--ink); }
+.staff-edit-form.open-row { display: grid; }
+
+/* ============================================================
+   ACCORDION — for browsing a large hierarchy (Headquarters, then
+   every department, then every sub-department) without rendering
+   it all open at once. Native <details>/<summary>, so open/close
+   needs no JS — only the search-filter behavior does.
+   ============================================================ */
+.org-accordion { border: var(--border) solid var(--ink); margin-bottom: var(--u2); background: var(--paper); }
+.org-accordion + .org-accordion { margin-top: var(--u2); }
+.org-accordion-summary { list-style: none; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: var(--u2); padding: var(--u2) var(--u3); font-family: var(--f-display); font-weight: 700; font-size: 13px; text-transform: uppercase; letter-spacing: .03em; }
+.org-accordion-summary::-webkit-details-marker { display: none; }
+.org-accordion-summary .count { font-family: var(--f-mono); font-size: 10.5px; font-weight: 700; background: var(--ink); color: var(--sky); padding: 1px 8px; }
+.org-accordion-summary .arrow { font-family: var(--f-mono); font-size: 13px; opacity: .6; transition: transform .15s ease; }
+.org-accordion[open] > .org-accordion-summary .arrow { transform: rotate(90deg); }
+.org-accordion-body { padding: var(--u3); border-top: var(--border) solid var(--ink); }
+.org-accordion-children { padding-left: var(--u4); border-left: var(--border) dashed var(--ink); margin-top: var(--u3); }
+.org-accordion-empty { font-family: var(--f-mono); font-size: 11.5px; opacity: .5; padding: var(--u2) 0; }
+.org-add-link { font-family: var(--f-mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--sky-deep); background: none; border: none; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; padding: 0; }
+.org-search-empty { display: none; }
+
+/* ============================================================
    BANNER / INFO
    ============================================================ */
 .banner { border: var(--border) solid var(--ink); border-left-width: var(--u1); padding: var(--u2) var(--u3); margin-bottom: var(--u3); background: var(--paper); }
