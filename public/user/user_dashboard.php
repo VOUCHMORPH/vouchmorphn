@@ -726,40 +726,48 @@ input[type=number] { -moz-appearance: textfield; }
                     <button class="btn btn-primary" id="wizardDestNext" onclick="wizardNext()" disabled>Next: Review →</button>
                 </div>
             </div>
-
-            <div class="swap-step" data-step="4">
-                <div class="swap-step-header">
-                    <div class="swap-step-number">Step 4 of 4</div>
-                    <div class="swap-step-title">Review</div>
-                    <div class="swap-step-sub">Check everything before you confirm</div>
-                </div>
-                <div id="reviewPanel" style="background:var(--surface-muted);padding:16px;border:1px solid var(--border);margin-bottom:16px;">
-                    <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);">
-                        <span style="font-size:12px;color:var(--text-dim);">Amount</span>
-                        <span style="font-weight:700;font-family:var(--font-mono);" id="reviewAmount">—</span>
-                    </div>
-                    <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);">
-                        <span style="font-size:12px;color:var(--text-dim);">From</span>
-                        <span style="font-weight:700;" id="reviewSource">—</span>
-                    </div>
-                    <div style="display:flex;justify-content:space-between;padding:8px 0;">
-                        <span style="font-size:12px;color:var(--text-dim);">To</span>
-                        <span style="font-weight:700;" id="reviewDest">—</span>
-                    </div>
-                </div>
-                <div class="preview-security" style="margin:0 0 16px;">
-                    <div class="preview-security-icon">🔒</div>
-                    <div class="preview-security-text">
-                        <strong>Your money is protected</strong>
-                        <p>Nothing moves until you tap Confirm below.</p>
-                    </div>
-                </div>
-                <div class="swap-step-actions">
-                    <button class="btn btn-secondary" onclick="wizardPrev()">← Back</button>
-                    <button class="btn btn-primary" id="wizardConfirmBtn" onclick="wizardConfirm()">Confirm swap</button>
-                </div>
-            </div>
+<div class="swap-step" data-step="4">
+    <div class="swap-step-header">
+        <div class="swap-step-number">Step 4 of 4</div>
+        <div class="swap-step-title">Review</div>
+        <div class="swap-step-sub">Preview the fee, then confirm</div>
+    </div>
+ 
+    <div id="reviewPanel" style="background:var(--surface-muted);padding:16px;border:1px solid var(--border);margin-bottom:16px;">
+        <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);">
+            <span style="font-size:12px;color:var(--text-dim);">Amount</span>
+            <span style="font-weight:700;font-family:var(--font-mono);" id="reviewAmount">—</span>
         </div>
+        <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);">
+            <span style="font-size:12px;color:var(--text-dim);">From</span>
+            <span style="font-weight:700;" id="reviewSource">—</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;padding:8px 0;">
+            <span style="font-size:12px;color:var(--text-dim);">To</span>
+            <span style="font-weight:700;" id="reviewDest">—</span>
+        </div>
+    </div>
+ 
+    <div id="reviewPreviewResult" style="display:none;background:var(--surface);border:1px solid var(--accent);padding:14px 16px;margin-bottom:16px;"></div>
+ 
+    <div class="preview-security" style="margin:0 0 16px;">
+        <div class="preview-security-icon">🔒</div>
+        <div class="preview-security-text">
+            <strong>Your money is protected</strong>
+            <p>Nothing moves until you tap Confirm below.</p>
+        </div>
+    </div>
+ 
+    <div class="swap-step-actions" id="wizardPreviewRow">
+        <button class="btn btn-secondary" onclick="wizardPrev()">← Back</button>
+        <button class="btn btn-primary" id="wizardPreviewBtn" onclick="wizardPreview()">Preview swap</button>
+    </div>
+    <div class="swap-step-actions" id="wizardConfirmRow" style="display:none;">
+        <button class="btn btn-secondary" onclick="wizardPrev()">← Back</button>
+        <button class="btn btn-primary" id="wizardConfirmBtn" onclick="wizardConfirm()">Confirm & swap</button>
+    </div>
+</div>
+
         <div style="margin-top:20px;text-align:center;">
             <button type="button" class="ledger-link" onclick="viewWalletBalance()">View balance</button>
         </div>
@@ -1349,15 +1357,38 @@ function executePendingAction() {
     cb();
 }
 
+/* ============================================================
+   SWAP WIZARD — CLEAN DROP-IN (v2)
+   ============================================================
+   WHERE THIS GOES: replace everything in your dashboard.php from
+   the line
+       // WIZARD — CORE LOGIC (NEW)
+   through the end of
+       function loadCardDataWizard() { ... }
+   with this file's contents. It also folds in the hook-builder
+   fixes from the previous patch (addAllSavedSourcesToHook, etc)
+   and the Combine "use a saved source" shortcut — you don't need
+   to apply those separately if you paste this whole block in.
+
+   TWO SMALL HTML EDITS STILL NEEDED (see bottom of this file for
+   the exact markup) — Step 4's action row and reviewPanel need a
+   couple of new elements for the Preview button to render into.
+
+   CSS: if you haven't already added the .strategy-row /
+   .card-source-breakdown / .tab-strategy-hint / .tab-status-line
+   rules from the previous patch, they're repeated at the bottom
+   of this file too.
+   ============================================================ */
+
 let wizardState = {
     step: 1,
     amount: 0,
     currency: 'BWP',
-    source: null,
+    source: null,      // 'WALLET' | 'CARD' | 'VOUCHER' | 'VMCARD' | 'COMBINE'
     fromInst: null,
     fromAsset: null,
     fromFields: {},
-    destType: null,
+    destType: null,    // 'DEPOSIT' | 'CASHOUT' | 'IDENTITY'
     toInst: null,
     toAsset: null,
     toFields: {},
@@ -1376,18 +1407,20 @@ let wizardState = {
 
 let multiSourceSeq = 0;
 
+// ============================================================
+// STEP NAVIGATION
+// ============================================================
 function wizardNext() {
     const current = wizardState.step;
     if (current === 1 && !validateStep1()) return;
     if (current === 2 && !validateStep2()) return;
     if (current === 3 && !validateStep3()) return;
-    if (current === 4) { wizardConfirm(); return; }
+    if (current === 4) return; // step 4 has its own Preview/Confirm buttons now
 
     const next = current + 1;
     if (next > 4) return;
     wizardState.step = next;
     renderStep(next);
-    if (next === 4) updateReviewPanel();
 }
 
 function wizardPrev() {
@@ -1408,9 +1441,12 @@ function renderStep(step) {
     });
 
     if (step === 1) setTimeout(() => document.getElementById('wizardAmount')?.focus(), 100);
-    if (step === 4) updateReviewPanel();
+    if (step === 4) enterReviewStep();
 }
 
+// ============================================================
+// STEP VALIDATION
+// ============================================================
 function validateStep1() {
     const input = document.getElementById('wizardAmount');
     wizardState.amount = parseFloat(input.value) || 0;
@@ -1509,6 +1545,9 @@ function validateStep3() {
     return true;
 }
 
+// ============================================================
+// STEP 2 — SOURCE SELECTION
+// ============================================================
 function selectSource(type) {
     wizardState.source = type;
 
@@ -1535,6 +1574,11 @@ function selectSource(type) {
     renderWizardSourcePicker(panel, type);
 }
 
+// Shows any already-linked sources of this asset type first (one tap to
+// reuse), with "link a new one" underneath. This replaces the old
+// approach of cloning the whole #fromSection node, whose institution
+// dropdown lived inside a display:none wrapper that never got switched
+// on — which is why Wallet/Card/Voucher forms looked empty before.
 function renderWizardSourcePicker(panel, type) {
     const eligible = userSources.filter(s => s.status === 'active' && String(s.asset_type).toUpperCase() === String(type).toUpperCase());
     let html = '';
@@ -1579,6 +1623,19 @@ function wizardSelectSavedSource(sourceId) {
     showMessage(`${PARTICIPANTS[source.institution]?.name || source.institution} selected.`, 'success');
 }
 
+function populateInstitutionsForAsset(assetType, sel) {
+    if (!sel) return;
+    const codes = Object.keys(PARTICIPANTS).filter(code =>
+        (PARTICIPANTS[code].asset_types || []).map(t => String(t).toUpperCase()).includes(assetType)
+    );
+    if (codes.length === 0) {
+        sel.innerHTML = `<option value="">No institutions support ${assetType}</option>`;
+        return;
+    }
+    sel.innerHTML = '<option value="">Select institution</option>' +
+        codes.map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('');
+}
+
 function wizardSelectFromInst(code, prefillSource) {
     wizardState.fromInst = code || null;
     wizardState.fromFields = {};
@@ -1621,19 +1678,9 @@ function wizardSelectFromInst(code, prefillSource) {
     document.getElementById('wizardSourceNext').disabled = !valid.valid;
 }
 
-function populateInstitutionsForAsset(assetType, sel) {
-    if (!sel) return;
-    const codes = Object.keys(PARTICIPANTS).filter(code =>
-        (PARTICIPANTS[code].asset_types || []).map(t => String(t).toUpperCase()).includes(assetType)
-    );
-    if (codes.length === 0) {
-        sel.innerHTML = `<option value="">No institutions support ${assetType}</option>`;
-        return;
-    }
-    sel.innerHTML = '<option value="">Select institution</option>' +
-        codes.map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('');
-}
-
+// ============================================================
+// STEP 3 — DESTINATION SELECTION (unchanged from your version)
+// ============================================================
 function selectDestination(type) {
     wizardState.destType = type;
 
@@ -1750,6 +1797,11 @@ function wizardSelectToAsset(type) {
     }
 }
 
+function updateWizardCurrency() { /* currency lives in wizardState.currency */ }
+
+// ============================================================
+// SHARED FIELD RENDERER / VALIDATOR
+// ============================================================
 function renderWizardFields(container, assetType, prefix, onChange, includePin) {
     const config = getAssetConfig(assetType);
     if (!config) {
@@ -1823,34 +1875,135 @@ function assetHasAmountField(assetType) {
     return (getAssetConfig(assetType)?.fields || []).some(f => f.name === 'amount');
 }
 
-function updateReviewPanel() {
+// ============================================================
+// STEP 4 — REVIEW + PREVIEW + CONFIRM
+// ============================================================
+// Entering step 4: show the static summary immediately (no network
+// call needed for this part), reset the preview/confirm buttons to
+// their "not previewed yet" state.
+function enterReviewStep() {
     document.getElementById('reviewAmount').textContent = formatMoney(wizardState.amount, wizardState.currency);
 
     const sourceLabels = {
-        'WALLET': 'Wallet / Account',
-        'CARD': 'Card',
-        'VOUCHER': 'Voucher',
-        'VMCARD': 'My Card (hooked sources)',
-        'COMBINE': 'Combined sources'
+        'WALLET': 'Wallet / Account', 'CARD': 'Card', 'VOUCHER': 'Voucher',
+        'VMCARD': 'My Card (hooked sources)', 'COMBINE': 'Combined sources'
     };
     document.getElementById('reviewSource').textContent = sourceLabels[wizardState.source] || wizardState.source;
 
     const destLabels = {
-        'DEPOSIT': 'Deposit',
-        'CASHOUT': 'Cashout',
+        'DEPOSIT': 'Deposit', 'CASHOUT': 'Cashout',
         'IDENTITY': `Identity: ${wizardState.identityValue || '—'}`
     };
     document.getElementById('reviewDest').textContent = destLabels[wizardState.destType] || wizardState.destType;
+
+    const resultBox = document.getElementById('reviewPreviewResult');
+    if (resultBox) { resultBox.style.display = 'none'; resultBox.innerHTML = ''; }
+    wizardState.lastPreview = null;
+    wizardState.swapPayload = null;
+
+    const previewRow = document.getElementById('wizardPreviewRow');
+    const confirmRow = document.getElementById('wizardConfirmRow');
+
+    // "My Card" has no fee-quote endpoint in this app — starting it IS
+    // the action (same as the Card page's "Start a swap" button), so
+    // skip straight to a single "Start swap" button instead of a
+    // Preview/Confirm pair that would have nothing to show.
+    if (wizardState.source === 'VMCARD') {
+        if (previewRow) previewRow.style.display = 'none';
+        if (confirmRow) {
+            confirmRow.style.display = 'flex';
+            document.getElementById('wizardConfirmBtn').textContent = 'Start swap';
+        }
+        return;
+    }
+
+    if (previewRow) previewRow.style.display = 'flex';
+    if (confirmRow) confirmRow.style.display = 'none';
+    if (document.getElementById('wizardConfirmBtn')) document.getElementById('wizardConfirmBtn').textContent = 'Confirm & swap';
 }
 
-function wizardConfirm() {
-    const payload = buildWizardPayload();
-    if (!payload) return;
+// The actual "Preview" button — fetches a real fee/net-amount quote
+// from preview.php and shows it inline, right on this screen, instead
+// of hiding it inside a popup you only see after clicking Confirm.
+async function wizardPreview() {
+    const built = buildWizardPayload();
+    wizardState.swapPayload = built;
 
-    wizardState.swapPayload = payload;
-    showSwapPreview(payload);
+    const btn = document.getElementById('wizardPreviewBtn');
+    const original = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>Getting quote…';
+
+    const result = await callApi(CONFIG.PREVIEW_ENDPOINT, built.payload);
+    btn.disabled = false;
+    btn.innerHTML = original;
+
+    if (!result.ok) {
+        showMessage('Preview failed: ' + friendlyApiError(result.error), 'error');
+        return;
+    }
+
+    wizardState.lastPreview = result.body;
+    renderReviewPreviewResult(result.body);
+    document.getElementById('wizardConfirmRow').style.display = 'flex';
 }
 
+function renderReviewPreviewResult(previewData) {
+    const data = previewData.preview || {};
+    const netAmount = data.net_amount_destination_currency || data.net_amount;
+    const destCurrency = data.destination_currency || data.source_currency || wizardState.currency;
+    const box = document.getElementById('reviewPreviewResult');
+    if (!box) return;
+    box.style.display = 'block';
+    box.innerHTML = `
+        <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);">
+            <span style="font-size:12px;color:var(--text-dim);">Fee</span>
+            <span style="font-weight:700;font-family:var(--font-mono);">${formatMoney(data.total_fee, data.source_currency)}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;padding:8px 0;">
+            <span style="font-size:12px;color:var(--text-dim);">Destination gets</span>
+            <span style="font-weight:700;font-family:var(--font-mono);color:var(--accent);">${formatMoney(netAmount, destCurrency)}</span>
+        </div>
+        <div style="text-align:center;font-size:11px;color:var(--text-dim);margin-top:6px;">Quote locked in for a few minutes — tap Confirm below to swap.</div>`;
+}
+
+// Final button. For a normal swap, this executes the payload that was
+// already previewed (no second quote fetch, no popup). For VMCARD it
+// starts the contribution session directly, same as before.
+async function wizardConfirm() {
+    if (wizardState.source === 'VMCARD') {
+        const built = buildWizardPayload();
+        await startVmCardSwapWizard(built.payload);
+        return;
+    }
+
+    if (!wizardState.swapPayload || !wizardState.lastPreview) {
+        showMessage('Tap "Preview swap" first so you can see the fee before confirming.', 'warning');
+        return;
+    }
+
+    const btn = document.getElementById('wizardConfirmBtn');
+    const original = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>Swapping…';
+
+    const result = await callApi(CONFIG.EXECUTE_ENDPOINT, wizardState.swapPayload.payload);
+    btn.disabled = false;
+    btn.innerHTML = original;
+
+    if (!result.ok) {
+        showMessage('Swap failed: ' + friendlyApiError(result.error), 'error');
+        return;
+    }
+
+    const journeyData = Journey.recordSwap(wizardState.swapPayload.payload, wizardState.lastPreview);
+    renderRepeatCard(); renderProgressCard();
+    showWizardResultModal(result.body, journeyData);
+}
+
+// ============================================================
+// PAYLOAD BUILDER
+// ============================================================
 function buildWizardPayload() {
     const reference = 'SWAP_' + Date.now();
     const idempotencyKey = 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
@@ -1860,7 +2013,7 @@ function buildWizardPayload() {
             card_suffix: myCard.card_suffix,
             target_amount: wizardState.amount,
             currency: wizardState.currency,
-            strategy: wizardState.vmCardStrategy,
+            strategy: wizardState.vmCardStrategy, // FIXED — was hardcoded to 'SMART'
             identity_type: wizardState.destType === 'IDENTITY' ? wizardState.identityType : undefined,
             identity_value: wizardState.destType === 'IDENTITY' ? wizardState.identityValue : undefined,
             beneficiary_phone: wizardState.destType === 'IDENTITY' ? wizardState.identitySms : wizardState.beneficiaryPhone,
@@ -2000,93 +2153,9 @@ function buildWizardPayload() {
     return { type: 'SWAP', payload };
 }
 
-async function showSwapPreview(wizardPayload) {
-    if (wizardPayload.type === 'VMCARD') {
-        await startVmCardSwapWizard(wizardPayload.payload);
-        return;
-    }
-
-    const payload = wizardPayload.payload;
-    const btn = document.getElementById('wizardConfirmBtn');
-    const original = btn.innerHTML;
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span>Calculating…';
-
-    const result = await callApi(CONFIG.PREVIEW_ENDPOINT, payload);
-    btn.disabled = false;
-    btn.innerHTML = original;
-
-    if (!result.ok) {
-        showMessage('Preview failed: ' + friendlyApiError(result.error), 'error');
-        return;
-    }
-
-    wizardState.lastPreview = result.body;
-    showPreviewModalWizard(result.body, payload);
-}
-
-function showPreviewModalWizard(previewData, payload) {
-    const data = previewData.preview || {};
-    const swapType = payload.swap_type || 'DEPOSIT';
-    const netAmount = data.net_amount_destination_currency || data.net_amount;
-    const destCurrency = data.destination_currency || data.source_currency || wizardState.currency;
-    const swapTypeLabel = { DEPOSIT: 'Deposit', CASHOUT: 'Cashout', IDENTITY: 'To an identity', MULTI_SOURCE: 'Combined sources' }[swapType] || swapType.replace(/_/g, ' ');
-
-    const bodyHtml = `
-        <div class="review-hero">
-            <div class="review-hero-label">You'll receive</div>
-            <div class="review-hero-amount">${formatMoney(netAmount, destCurrency)}</div>
-            <div class="review-hero-note">Live quote — locked in for a few minutes</div>
-        </div>
-        <div class="preview-box">
-            <div class="preview-row"><span>Swap type</span><span class="value">${escapeHtml(swapTypeLabel)}</span></div>
-            <div class="preview-row"><span>From</span><span class="value">${escapeHtml(data.source_institution || '—')}</span></div>
-            <div class="preview-row"><span>To</span><span class="value">${escapeHtml(data.destination_institution || '—')}</span></div>
-            <div class="preview-row"><span>Amount</span><span class="value">${formatMoney(data.amount_requested, data.source_currency)}</span></div>
-            <div class="preview-row"><span>Fee</span><span class="value">${formatMoney(data.total_fee, data.source_currency)}</span></div>
-        </div>
-        <div class="preview-security">
-            <div class="preview-security-icon">🔒</div>
-            <div class="preview-security-text">
-                <strong>Your money is protected</strong>
-                <p>This swap is encrypted and only moves once you tap Confirm below.</p>
-            </div>
-        </div>
-        <div class="preview-reassure">Nothing is final until you confirm — you can still back out.</div>`;
-
-    pendingExecution = {
-        type: 'swap',
-        payload: { payload, previewData },
-        callback: () => executeWizardSwap()
-    };
-    showPreviewModal('Review swap', bodyHtml, null, 'Confirm and swap');
-}
-
-async function executeWizardSwap() {
-    const payload = wizardState.swapPayload?.payload || pendingExecution.payload?.payload;
-    if (!payload) { showMessage('No swap to execute', 'error'); return; }
-
-    closeModal();
-
-    const btn = document.getElementById('wizardConfirmBtn');
-    const original = btn.innerHTML;
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span>Executing…';
-
-    const result = await callApi(CONFIG.EXECUTE_ENDPOINT, payload);
-    btn.disabled = false;
-    btn.innerHTML = original;
-
-    if (!result.ok) {
-        showMessage('Swap failed: ' + friendlyApiError(result.error), 'error');
-        return;
-    }
-
-    const journeyData = Journey.recordSwap(payload, wizardState.lastPreview);
-    renderRepeatCard(); renderProgressCard();
-    showWizardResultModal(result.body, journeyData);
-}
-
+// ============================================================
+// RESULT MODAL
+// ============================================================
 function showWizardResultModal(response, journeyData) {
     const data = response.data || {};
     const reference = response.swap_reference || data.reference || '—';
@@ -2121,8 +2190,8 @@ function showWizardResultModal(response, journeyData) {
     }
 
     const swapCount = journeyData?.swapsThisMonth || 1;
-    const statLine = swapCount > 1 
-        ? `<div class="result-stat">You've made ${swapCount} swaps this month. You've got the hang of this. 🎉</div>` 
+    const statLine = swapCount > 1
+        ? `<div class="result-stat">You've made ${swapCount} swaps this month. You've got the hang of this. 🎉</div>`
         : `<div class="result-stat">That's your swap — nicely done. It'll show up in Activity any time you want to check on it.</div>`;
 
     const fullHtml = `${inner}${statLine}
@@ -2155,6 +2224,8 @@ function resetWizard() {
     wizardState.beneficiaryPhone = '';
     wizardState.multiSources = [];
     wizardState.tabTotalAmount = 0;
+    wizardState.lastPreview = null;
+    wizardState.swapPayload = null;
     document.getElementById('wizardAmount').value = '';
     document.querySelectorAll('.source-option').forEach(el => el.classList.remove('active'));
     document.querySelectorAll('.dest-option').forEach(el => el.classList.remove('active'));
@@ -2163,35 +2234,48 @@ function resetWizard() {
     renderStep(1);
 }
 
+// ============================================================
+// VMCARD — breakdown + Smart/Equal/Ratio/Manual strategy picker
+// (this whole render was previously missing: selectSource() just
+// toasted "N sources hooked" and never showed anything).
+// ============================================================
 async function renderVmCardBreakdownWizard() {
+    const panel = document.getElementById('sourceDetailPanel');
+    const nextBtn = document.getElementById('wizardSourceNext');
+    if (panel) {
+        panel.style.display = 'block';
+        panel.innerHTML = `<div style="text-align:center;padding:16px 0;"><div class="spinner" style="border-color:rgba(16,30,27,0.15);border-top-color:var(--primary);"></div> Loading your card…</div>`;
+    }
+    if (nextBtn) nextBtn.disabled = true;
+
     if (!myCard) {
         const result = await callApiGet(CONFIG.API_BASE + '/api/v1/cards/My.php');
         if (!result.ok) {
-            showMessage("Couldn't load your card: " + friendlyApiError(result.error), 'error');
+            if (panel) panel.innerHTML = `<div class="tab-status-line bad">Couldn't load your card: ${escapeHtml(friendlyApiError(result.error))}</div>`;
             return;
         }
         myCard = result.body.data;
     }
     if (!myCard.is_active) {
-        showMessage('Your VouchMorph Card is not active yet.', 'warning');
-        document.getElementById('wizardSourceNext').disabled = true;
+        if (panel) panel.innerHTML = `<div class="tab-status-line warn">Your VouchMorph Card isn't active yet — activate it from the Card page first.</div>`;
         return;
     }
+
     const sourcesResult = await callApi(CONFIG.API_BASE + '/api/v1/cards/GetCardSources.php', { card_suffix: myCard.card_suffix });
     if (!sourcesResult.ok) {
-        showMessage("Couldn't load card sources: " + friendlyApiError(sourcesResult.error), 'warning');
-        document.getElementById('wizardSourceNext').disabled = true;
+        if (panel) panel.innerHTML = `<div class="tab-status-line warn">${escapeHtml(friendlyApiError(sourcesResult.error))}</div>`;
+        vmCardSources = null;
         return;
     }
     const sources = sourcesResult.body.data?.sources || sourcesResult.body.data || [];
     vmCardSources = sources;
     if (!sources.length) {
-        showMessage('Nothing is hooked to your card yet.', 'warning');
-        document.getElementById('wizardSourceNext').disabled = true;
+        if (panel) panel.innerHTML = `<div class="tab-status-line warn">Nothing is hooked to your card yet — go hook a source from the Card page first.</div>`;
         return;
     }
-    document.getElementById('wizardSourceNext').disabled = false;
-    showMessage(`Card has ${sources.length} source(s) hooked — ready to swap.`, 'success');
+
+    if (nextBtn) nextBtn.disabled = false;
+    renderVmCardStrategyPanel();
 }
 
 function renderVmCardStrategyPanel() {
@@ -2245,6 +2329,11 @@ async function startVmCardSwapWizard(payload) {
     goView('card');
 }
 
+// ============================================================
+// COMBINE SOURCES — with "use a saved source" per row (previously
+// every row had to be typed from scratch, even for accounts already
+// linked in Toolbox).
+// ============================================================
 function renderCombineSummaryWizard() {
     const panel = document.getElementById('sourceDetailPanel');
     if (!panel) return;
@@ -2263,10 +2352,10 @@ function renderCombineSummaryWizard() {
             <label>Total amount to swap</label>
             <input type="number" id="combineTotal" placeholder="0.00" step="0.01" value="${wizardState.tabTotalAmount || ''}" oninput="updateCombineTotal(this.value)">
         </div>
-        <div class="strategy-row" style="display:flex;border:1px solid var(--border-strong);margin-bottom:10px;">
-            <button class="${wizardState.contributionStrategy === 'SMART' ? 'active' : ''}" style="flex:1;padding:8px;background:transparent;border:none;border-right:1px solid var(--border-strong);cursor:pointer;font-family:var(--font);font-size:10px;font-weight:700;text-transform:uppercase;" onclick="setCombineStrategy('SMART')">Smart</button>
-            <button class="${wizardState.contributionStrategy === 'EQUAL' ? 'active' : ''}" style="flex:1;padding:8px;background:transparent;border:none;border-right:1px solid var(--border-strong);cursor:pointer;font-family:var(--font);font-size:10px;font-weight:700;text-transform:uppercase;" onclick="setCombineStrategy('EQUAL')">Equal</button>
-            <button class="${wizardState.contributionStrategy === 'RATIO' ? 'active' : ''}" style="flex:1;padding:8px;background:transparent;border:none;cursor:pointer;font-family:var(--font);font-size:10px;font-weight:700;text-transform:uppercase;" onclick="setCombineStrategy('RATIO')">Ratio</button>
+        <div class="strategy-row" style="margin-bottom:10px;">
+            <button class="${wizardState.contributionStrategy === 'SMART' ? 'active' : ''}" onclick="setCombineStrategy('SMART')">Smart</button>
+            <button class="${wizardState.contributionStrategy === 'EQUAL' ? 'active' : ''}" onclick="setCombineStrategy('EQUAL')">Equal</button>
+            <button class="${wizardState.contributionStrategy === 'RATIO' ? 'active' : ''}" onclick="setCombineStrategy('RATIO')">Ratio</button>
         </div>
         <div id="combineSourceRows">`;
 
@@ -2274,18 +2363,20 @@ function renderCombineSummaryWizard() {
         const instOptions = Object.keys(PARTICIPANTS).map(code =>
             `<option value="${code}" ${s.institution === code ? 'selected' : ''}>${PARTICIPANTS[code]?.name || code}</option>`
         ).join('');
+        const savedPickerHtml = userSources.filter(u => u.status === 'active').length ? `
+            <div style="margin-bottom:8px;">
+                <span class="quick-link muted" onclick="toggleCombineSavedPicker(${s.id})">Use a saved source &rsaquo;</span>
+                <div id="combineSavedPicker${s.id}" style="display:none;margin-top:6px;border:1px solid var(--border-strong);">
+                    ${userSources.filter(u => u.status === 'active').map(u => `<div class="saved-source-row" onclick="applyCombineSavedSource(${s.id}, '${u.id}')"><div class="row-main"><div class="row-inst">${escapeHtml(PARTICIPANTS[u.institution]?.name || u.institution)}</div><div class="row-ident">${escapeHtml(u.identifier || u.source_identifier || '')}</div></div></div>`).join('')}
+                </div>
+            </div>` : '';
         html += `
             <div style="border:1px solid var(--border);padding:12px;margin-bottom:8px;background:var(--surface);">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                     <span style="font-size:11px;font-weight:700;color:var(--text-dim);">Source ${idx + 1}</span>
                     ${wizardState.multiSources.length > 2 ? `<button class="btn-danger-outline" onclick="removeCombineRow(${s.id})" style="background:transparent;border:1px solid rgba(198,40,40,0.4);color:var(--danger);padding:2px 10px;font-size:10px;cursor:pointer;">Remove</button>` : ''}
                 </div>
-                ${userSources.length ? `<div style="margin-bottom:8px;">
-    <span class="quick-link muted" onclick="toggleCombineSavedPicker(${s.id})">Use a saved source &rsaquo;</span>
-    <div id="combineSavedPicker${s.id}" style="display:none;margin-top:6px;border:1px solid var(--border-strong);">
-        ${userSources.filter(u => u.status === 'active').map(u => `<div class="saved-source-row" onclick="applyCombineSavedSource(${s.id}, '${u.id}')"><div class="row-main"><div class="row-inst">${escapeHtml(PARTICIPANTS[u.institution]?.name || u.institution)}</div><div class="row-ident">${escapeHtml(u.identifier || u.source_identifier || '')}</div></div></div>`).join('')}
-    </div>
-</div>` : ''}
+                ${savedPickerHtml}
                 <div class="field-group" style="margin-bottom:8px;">
                     <label>Institution</label>
                     <select onchange="setCombineInst(${s.id}, this.value)"><option value="">Select</option>${instOptions}</select>
@@ -2327,6 +2418,23 @@ function renderCombineFieldsWizard(s) {
             <input placeholder="${f.placeholder || ''}" value="${s.fields[f.name] || ''}" oninput="setCombineField(${s.id}, '${f.name}', this.value)">
         </div>
     `).join('');
+}
+
+function toggleCombineSavedPicker(rowId) {
+    const el = document.getElementById('combineSavedPicker' + rowId);
+    if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+function applyCombineSavedSource(rowId, sourceId) {
+    const source = userSources.find(u => u.id === sourceId);
+    const row = wizardState.multiSources.find(s => s.id === rowId);
+    if (!source || !row) return;
+    row.institution = source.institution;
+    row.assetType = String(source.asset_type).toUpperCase();
+    row.fields = {};
+    const idField = (getAssetConfig(row.assetType)?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+    if (idField) row.fields[idField.name] = source.identifier || source.source_identifier || '';
+    renderCombineSummaryWizard();
 }
 
 function addCombineRow() {
@@ -2402,23 +2510,50 @@ function multiSourcesValid() {
     });
 }
 
-function toggleCombineSavedPicker(rowId) {
-    const el = document.getElementById('combineSavedPicker' + rowId);
+// ============================================================
+// HOOK BUILDER — "hook all my saved sources at once" + per-row
+// "use a saved source" (needs the HTML button already added under
+// #hookModeRow in your file).
+// ============================================================
+function addAllSavedSourcesToHook() {
+    const eligible = userSources.filter(s => s.status === 'active');
+    if (!eligible.length) { showMessage("You don't have any saved sources yet — add one from Toolbox first.", 'info'); return; }
+    hookRows = eligible.map(s => ({
+        id: ++hookRowSeq,
+        instName: PARTICIPANTS[s.institution]?.name || s.institution,
+        institution: s.institution,
+        assetType: s.asset_type,
+        identifier: s.identifier || s.source_identifier || '',
+        pin: '', amount: '', locked: true
+    }));
+    hookMode = 'multi';
+    document.getElementById('hookModeSingleBtn')?.classList.remove('active');
+    document.getElementById('hookModeMultiBtn')?.classList.add('active');
+    document.getElementById('addHookRowBtn').style.display = 'block';
+    renderHookRows();
+    showMessage(`Added all ${eligible.length} of your saved sources — just fill in an amount for each.`, 'success');
+}
+
+function pickHookRowFromSaved(rowId) {
+    const el = document.getElementById('hookSavedPicker' + rowId);
     if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
 }
 
-function applyCombineSavedSource(rowId, sourceId) {
-    const source = userSources.find(u => u.id === sourceId);
-    const row = wizardState.multiSources.find(s => s.id === rowId);
+function applyHookRowSavedSource(rowId, sourceId) {
+    const source = userSources.find(s => s.id === sourceId);
+    const row = hookRows.find(r => r.id === rowId);
     if (!source || !row) return;
     row.institution = source.institution;
     row.assetType = String(source.asset_type).toUpperCase();
-    row.fields = {};
-    const idField = (getAssetConfig(row.assetType)?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
-    if (idField) row.fields[idField.name] = source.identifier || source.source_identifier || '';
-    renderCombineSummaryWizard();
+    row.identifier = source.identifier || source.source_identifier || '';
+    row.locked = true;
+    row.instName = PARTICIPANTS[source.institution]?.name || source.institution;
+    renderHookRows();
 }
 
+// ============================================================
+// WIZARD INIT
+// ============================================================
 function initWizard() {
     const toSelect = document.getElementById('toInstSelect');
     if (toSelect) {
