@@ -1664,6 +1664,8 @@ function selectSource(type) {
 // on — which is why Wallet/Card/Voucher forms looked empty before.
 function renderWizardSourcePicker(panel, type) {
     const eligible = userSources.filter(s => s.status === 'active' && assetTypeMatchesTile(s.asset_type, type));
+    const isCard = type === 'CARD';
+
     let html = '';
     if (eligible.length > 0) {
         html += `
@@ -1681,13 +1683,65 @@ function renderWizardSourcePicker(panel, type) {
                 </div>
             </div>
         </div>
-        <div style="text-align:center;font-size:11px;color:var(--text-dim);margin:10px 0 16px;">— or link a new one —</div>`;
+        <div style="text-align:center;font-size:11px;color:var(--text-dim);margin:10px 0 16px;">— or ${isCard ? 'enter a new card' : 'link a new one'} —</div>`;
+    } else if (isCard) {
+        html += `<div style="text-align:center;font-size:12px;color:var(--text-dim);margin-bottom:14px;">Enter your card details below.</div>`;
     } else {
         html += `<div class="empty-source-box" style="margin-bottom:16px;">
             <p style="margin-bottom:8px;">You don't have a ${escapeHtml((getAssetConfig(type)?.label || type).toLowerCase())} linked yet.</p>
             <span class="quick-link" onclick="goView('toolbox')">+ Add one from Toolbox</span>
         </div>`;
     }
+
+    if (isCard) {
+        const cardMatches = institutionsForTile('CARD');
+
+        if (cardMatches.length === 0) {
+            html += `<div class="help" style="color:var(--danger);">Card swaps aren't configured for this country yet.</div>`;
+            panel.innerHTML = html;
+            document.getElementById('wizardSourceNext').disabled = true;
+            panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            return;
+        }
+
+        // One acquirer/network configured (the normal case) — no choice
+        // to make, go straight to the card form.
+        if (cardMatches.length === 1) {
+            html += `<div id="wizardFromFieldsBox"></div><div class="help" id="wizardFromLimitsHelp"></div>`;
+            panel.innerHTML = html;
+            const { institution, matchedAssetType } = cardMatches[0];
+            wizardState.fromAsset = matchedAssetType; // CARD or VISA_MASTERCARD_CARD — picks the right field set
+            wizardSelectFromInst(institution);
+            const limitsHelp = panel.querySelector('#wizardFromLimitsHelp');
+            if (limitsHelp) limitsHelp.textContent = (limitsHelp.textContent ? limitsHelp.textContent + ' — ' : '') + `Processed via ${PARTICIPANTS[institution]?.name || institution}`;
+            panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            return;
+        }
+
+        // More than one card network/acquirer configured — THIS is a real
+        // choice ("which network do we have a handshake with"), unlike
+        // "which bank issued your card", which is never asked.
+        html += `
+            <div class="field-group">
+                <label>Card network / processor</label>
+                <select id="wizardFromInstSelect"><option value="">Select</option>
+                    ${cardMatches.map(m => `<option value="${m.institution}" data-asset-type="${m.matchedAssetType}">${PARTICIPANTS[m.institution]?.name || m.institution}</option>`).join('')}
+                </select>
+            </div>
+            <div id="wizardFromFieldsBox"></div>
+            <div class="help" id="wizardFromLimitsHelp"></div>`;
+        panel.innerHTML = html;
+        const sel = panel.querySelector('#wizardFromInstSelect');
+        sel.onchange = function () {
+            const opt = this.options[this.selectedIndex];
+            wizardState.fromAsset = opt?.dataset.assetType || 'CARD';
+            wizardSelectFromInst(this.value);
+        };
+        panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        return;
+    }
+
+    // WALLET / VOUCHER — genuinely need an institution.
     html += `
         <div class="field-group">
             <label>Institution</label>
@@ -1701,7 +1755,6 @@ function renderWizardSourcePicker(panel, type) {
     populateInstitutionsForAsset(type, sel);
     panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
-
 function wizardSelectSavedSource(sourceId) {
     const source = userSources.find(s => s.id === sourceId);
     if (!source) return;
@@ -1712,18 +1765,26 @@ function wizardSelectSavedSource(sourceId) {
     showMessage(`${PARTICIPANTS[source.institution]?.name || source.institution} selected.`, 'success');
 }
 
-// Fuzzy-matches a participant's raw asset_type (e.g. "CARD-ACQUIRING",
-// "CASHOUT-VOUCHER", "MNO-WALLET") against one of Swap's tiles. The
-// WALLET tile is "Wallet / Account" so it must also catch plain ACCOUNT
-// institutions, not just ones literally called WALLET.
+// Maps a Swap wizard tile to every real asset_type key in assets.yaml that
+// counts as a match for it. WALLET's tile is "Wallet / Account" so it also
+// matches ACCOUNT-family types. CARD's tile means "any card we can swipe" —
+// VouchMorph's own vaulted CARD type (test/sim participants) or a real
+// acquirer's VISA_MASTERCARD_CARD network type — never "which bank issued
+// it", since neither needs institution selection the way Wallet/Account
+// and Voucher genuinely do.
+const TILE_ASSET_ALIASES = {
+    WALLET: ['WALLET', 'ACCOUNT', 'MNO-WALLET', 'BANK-WALLET', 'MOBILE_WALLET'],
+    CARD: ['CARD', 'VISA_MASTERCARD_CARD'],
+    VOUCHER: ['VOUCHER'],
+};
+
 function assetTypeMatchesTile(participantAssetType, tileType) {
     const norm = s => String(s || '').toUpperCase().replace(/[-_\s]/g, '');
     const p = norm(participantAssetType);
-    const t = norm(tileType);
-    if (!p || !t) return false;
-    if (p === t) return true;
-    if (t === 'WALLET' && ['ACCOUNT', 'MNOWALLET', 'BANKWALLET', 'MOBILEWALLET'].includes(p)) return true;
-    return p.includes(t) || t.includes(p);
+    const aliases = (TILE_ASSET_ALIASES[tileType] || [tileType]).map(norm);
+    if (!p) return false;
+    if (aliases.includes(p)) return true;
+    return aliases.some(a => p.includes(a) || a.includes(p));
 }
 
 function populateInstitutionsForAsset(assetType, sel) {
@@ -1737,6 +1798,21 @@ function populateInstitutionsForAsset(assetType, sel) {
     }
     sel.innerHTML = '<option value="">Select institution</option>' +
         codes.map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('');
+}
+
+// For CARD only: returns [{institution, matchedAssetType}] — the REAL
+// asset_type key each institution actually declared (CARD or
+// VISA_MASTERCARD_CARD), so the right field set (with or without a PIN)
+// renders per acquirer instead of assuming one fixed shape.
+function institutionsForTile(type) {
+    const results = [];
+    const aliases = (TILE_ASSET_ALIASES[type] || [type]).map(a => String(a).toUpperCase());
+    Object.keys(PARTICIPANTS).forEach(code => {
+        const assetTypes = PARTICIPANTS[code].asset_types || [];
+        const match = assetTypes.find(t => aliases.includes(String(t).toUpperCase().replace(/[-_\s]/g, '')));
+        if (match) results.push({ institution: code, matchedAssetType: match });
+    });
+    return results;
 }
 
 function wizardSelectFromInst(code, prefillSource) {
