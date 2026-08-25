@@ -1965,8 +1965,6 @@ function selectDestination(type) {
         const cashoutFields = panel.querySelector('#cashoutFields');
         if (cashoutFields) cashoutFields.style.display = type === 'CASHOUT' ? 'block' : 'none';
 
-        const assetSection = panel.querySelector('#toAssetSection');
-    if (assetSection) assetSection.style.display = type === 'CASHOUT' ? 'none' : assetSection.style.display;
 
         const instSel = panel.querySelector('#toInstSelect');
         if (instSel) {
@@ -1992,6 +1990,7 @@ if (phoneInput) phoneInput.oninput = function() {
         wizardState.toInst = null;
         wizardState.toAsset = null;
         wizardState.toFields = {};
+        
         const assetSection = panel.querySelector('#toAssetSection');
         if (assetSection) assetSection.style.display = 'none';
         const fieldsBox = panel.querySelector('#toFields');
