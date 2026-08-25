@@ -875,6 +875,7 @@ input[type=number] { -moz-appearance: textfield; }
         </div>
     </div>
 </div>
+</div>
 
 <div class="view" id="cardView">
     <div class="product-view-inner wide">
@@ -885,7 +886,6 @@ input[type=number] { -moz-appearance: textfield; }
         <div id="cardViewBody"><div style="text-align:center;padding:40px 0;"><div class="spinner" style="border-color:rgba(16,30,27,0.15);border-top-color:var(--primary);"></div> Loading...</div></div>
     </div>
 </div>
-</div>    
 
 <div class="view" id="qrfullView">
     <div class="qr-full-wrap">
