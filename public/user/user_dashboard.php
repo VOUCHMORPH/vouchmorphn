@@ -625,6 +625,7 @@ input[type=number] { -moz-appearance: textfield; }
     .combine-col-right { margin-top: 0; position: sticky; top: 88px; }
 }
 
+.msb-card{background:var(--surface);border:1px solid var(--border-strong);padding:1.25rem}    
 .combine-row-card { display: flex; align-items: center; gap: 12px; border: 1px solid var(--border); padding: 12px; margin-bottom: 8px; background: var(--surface); }
 .combine-row-main { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
 .combine-row-icon { font-size: 18px; flex-shrink: 0; }
@@ -1964,6 +1965,9 @@ function selectDestination(type) {
         const cashoutFields = panel.querySelector('#cashoutFields');
         if (cashoutFields) cashoutFields.style.display = type === 'CASHOUT' ? 'block' : 'none';
 
+        const assetSection = panel.querySelector('#toAssetSection');
+    if (assetSection) assetSection.style.display = type === 'CASHOUT' ? 'none' : assetSection.style.display;
+
         const instSel = panel.querySelector('#toInstSelect');
         if (instSel) {
             instSel.onchange = function() { wizardSelectToInst(this.value); };
@@ -1978,8 +1982,13 @@ function selectDestination(type) {
         if (delSel) delSel.onchange = function() { wizardState.deliveryMethod = this.value; };
 
         const phoneInput = panel.querySelector('#beneficiaryPhone');
-        if (phoneInput) phoneInput.oninput = function() { wizardState.beneficiaryPhone = this.value; };
-
+if (phoneInput) phoneInput.oninput = function() {
+    wizardState.beneficiaryPhone = this.value;
+    if (wizardState.destType === 'CASHOUT') {
+        document.getElementById('wizardDestNext').disabled =
+            !(wizardState.toInst && wizardState.beneficiaryPhone);
+    }
+};
         wizardState.toInst = null;
         wizardState.toAsset = null;
         wizardState.toFields = {};
@@ -1997,6 +2006,12 @@ function wizardSelectToInst(code) {
     wizardState.toFields = {};
     const panel = document.getElementById('destDetailPanel');
     if (!panel) return;
+
+    if (wizardState.destType === 'CASHOUT') {
+        document.getElementById('wizardDestNext').disabled =
+            !(wizardState.toInst && wizardState.beneficiaryPhone);
+        return;
+    }
 
     const assetSection = panel.querySelector('#toAssetSection');
     const assetSel = panel.querySelector('#toAssetSelect');
@@ -2570,27 +2585,38 @@ function renderVmCardStrategyPanel() {
     const currency = myCard.hook?.currency || myCard.currency;
     const merged = dedupeVmCardSources(vmCardSources);
     const total = merged.reduce((s, c) => s + c.amount, 0);
+    const covered = Math.min(wizardState.amount || 0, total);
+    const canExecute = (wizardState.amount || 0) > 0 && total >= wizardState.amount;
+
+    const STRATEGIES = [
+        {id:'SMART', label:'Smart'}, {id:'EQUAL', label:'Equal'}, {id:'RATIO', label:'Ratio'},
+        {id:'PRIORITY', label:'Priority'}, {id:'USER_SPECIFIED', label:'Manual'}, {id:'DRAIN_SMALLEST', label:'Drain smallest'}
+    ];
+
     const rows = merged.map(c => `
         <div class="card-source-breakdown-row">
             <span>${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)} · ${escapeHtml(c.identifier || '')}</span>
-            <span style="font-family:var(--font-mono);font-weight:700;">${formatMoney(c.amount, currency)}</span>
+            <span style="font-family:var(--font-mono);font-weight:700">${formatMoney(c.amount, currency)}</span>
         </div>`).join('');
+
     panel.innerHTML = `
-        <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Drawing from everything hooked to your card. Pick how it should split across those sources:</div>
-        <div class="strategy-row">
-            <button class="${wizardState.vmCardStrategy === 'SMART' ? 'active' : ''}" onclick="setWizardVmCardStrategy('SMART')">Smart</button>
-            <button class="${wizardState.vmCardStrategy === 'EQUAL' ? 'active' : ''}" onclick="setWizardVmCardStrategy('EQUAL')">Equal</button>
-            <button class="${wizardState.vmCardStrategy === 'RATIO' ? 'active' : ''}" onclick="setWizardVmCardStrategy('RATIO')">Ratio</button>
-            <button class="${wizardState.vmCardStrategy === 'MANUAL' ? 'active' : ''}" onclick="setWizardVmCardStrategy('MANUAL')">Manual</button>
-        </div>
-        <div class="tab-strategy-hint">Not sure? Smart is recommended — we'll balance it for you.</div>
-        <div class="card-source-breakdown">
-            ${rows}
-            <div class="card-source-breakdown-row" style="border-bottom:none;padding-top:10px;font-weight:700;">
-                <span>Max available to swap</span><span style="font-family:var(--font-mono);color:var(--accent);">${formatMoney(total, currency)}</span>
+        <div class="msb-card">
+            <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px">Drawing from everything hooked to your card. Pick how it should split:</div>
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px">
+                ${STRATEGIES.map(s => `<button type="button" class="quick-link${wizardState.vmCardStrategy===s.id?' selected':''}" style="justify-content:center;padding:8px 4px;font-size:10px" onclick="setWizardVmCardStrategy('${s.id}')">${s.label}</button>`).join('')}
+            </div>
+            <div class="card-source-breakdown">
+                ${rows}
+                <div class="card-source-breakdown-row" style="border-bottom:none;padding-top:10px;font-weight:700">
+                    <span>Max available</span><span style="font-family:var(--font-mono);color:var(--accent)">${formatMoney(total, currency)}</span>
+                </div>
+            </div>
+            <div style="margin-top:12px;padding:10px;border:1px solid ${canExecute ? 'var(--success)' : 'var(--border)'};text-align:center;font-size:12px;font-weight:600;color:${canExecute ? 'var(--success)' : 'var(--text-muted)'}">
+                ${canExecute ? 'can_execute: true — ready to swipe' : 'Enter an amount at or below what\u2019s hooked to continue'}
             </div>
         </div>`;
 }
+    
 function setWizardVmCardStrategy(s) {
     wizardState.vmCardStrategy = s;
     renderVmCardStrategyPanel();
@@ -2718,63 +2744,76 @@ function renderCombineSummaryWizard() {
     }
     panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
-
 function renderCombineList(panel) {
-    const rows = wizardState.multiSources;
-    const rowsHtml = rows.length
-        ? rows.map(r => renderCombineRowSummary(r)).join('')
-        : `<div class="empty-source-box"><p>No sources added yet.</p></div>`;
+    const rows = wizardState.multiSources.filter(r => !r._draft);
+    const total = wizardState.tabTotalAmount || 0;
+    const covered = rows.reduce((s, r) => s + (r.amount || 0), 0);
+    const remaining = Math.max(0, total - covered);
+    const canExecute = total > 0 && covered >= total && rows.length >= 2;
+
+    const STRATEGIES = [
+        {id:'SMART', label:'Smart'}, {id:'EQUAL', label:'Equal'}, {id:'RATIO', label:'Ratio'},
+        {id:'PRIORITY', label:'Priority'}, {id:'USER_SPECIFIED', label:'Manual'}, {id:'DRAIN_SMALLEST', label:'Drain smallest'}
+    ];
 
     panel.innerHTML = `
         ${sourceTypeBackLinkHtml()}
-        <div class="field-group">
-            <label>Total amount to swap</label>
-            <input type="number" id="combineTotal" placeholder="0.00" step="0.01" value="${wizardState.tabTotalAmount || ''}" oninput="updateCombineTotal(this.value)">
-        </div>
-        <div class="strategy-row">
-            <button class="${wizardState.contributionStrategy === 'SMART' ? 'active' : ''}" onclick="setCombineStrategy('SMART')">Smart</button>
-            <button class="${wizardState.contributionStrategy === 'EQUAL' ? 'active' : ''}" onclick="setCombineStrategy('EQUAL')">Equal</button>
-            <button class="${wizardState.contributionStrategy === 'RATIO' ? 'active' : ''}" onclick="setCombineStrategy('RATIO')">Ratio</button>
-        </div>
-        <div class="combine-layout">
-            <div class="combine-col-left">
-                <div id="combineRowsList">${rowsHtml}</div>
-                <button class="quick-link" style="width:100%;justify-content:center;padding:12px;margin-top:8px;" onclick="openCombineAddRow()">+ Add source</button>
-                <div style="margin-top:8px;font-size:11px;color:var(--text-dim);text-align:center;">${rows.length} source(s) added — need at least 2</div>
+        <div class="msb-card">
+            <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
+                <span style="font-size:13px;color:var(--text-dim)">Combined total</span>
+                <span style="font-size:13px;color:var(--text-dim)">Target</span>
             </div>
-            <div class="combine-col-right">${renderCircuitDiagram()}</div>
+            <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:14px">
+                <span style="font-family:var(--font-mono);font-size:24px;font-weight:700" id="combineCoveredNum">${covered.toFixed(2)}</span>
+                <span style="display:flex;align-items:center;gap:4px">
+                    <input type="number" id="combineTotal" value="${total || ''}" placeholder="0.00" step="0.01"
+                        style="font-family:var(--font-mono);width:100px;text-align:right;font-size:16px;border:1px solid var(--border-strong);padding:6px 8px;background:var(--surface)"
+                        oninput="updateCombineTotal(this.value)">
+                    <span style="font-size:13px;color:var(--text-dim)">${wizardState.currency}</span>
+                </span>
+            </div>
+            <div class="msb-seg" style="height:10px;background:var(--surface-muted);border:1px solid var(--border);border-radius:4px;overflow:hidden;display:flex;margin-bottom:14px">
+                <div style="width:${total > 0 ? Math.min(100, (covered/total)*100) : 0}%;background:var(--accent)"></div>
+            </div>
+            <div style="font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:6px">Contribution strategy</div>
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px">
+                ${STRATEGIES.map(s => `<button type="button" class="quick-link${wizardState.contributionStrategy===s.id?' selected':''}" style="justify-content:center;padding:8px 4px;font-size:10px" onclick="setCombineStrategy('${s.id}')">${s.label}</button>`).join('')}
+            </div>
+            <div style="font-size:11px;color:var(--text-dim);text-align:center;margin-bottom:16px" id="combineStratHint"></div>
+
+            <div id="combineRowsList">${rows.map(r => renderCombineConsoleRow(r)).join('') || '<div class="empty-source-box"><p>No sources added yet.</p></div>'}</div>
+            <button class="quick-link" style="width:100%;justify-content:center;padding:12px;margin-top:8px" onclick="openCombineAddRow()">+ Add source</button>
+
+            <div style="margin-top:16px;padding:10px;border:1px solid ${canExecute ? 'var(--success)' : 'var(--border)'};text-align:center;font-size:12px;font-weight:600;color:${canExecute ? 'var(--success)' : 'var(--text-muted)'}">
+                ${canExecute ? 'can_execute: true — ready to swap. Tap Next to choose where it goes.' : `remaining: ${remaining.toFixed(2)} ${wizardState.currency} — can_execute: false`}
+            </div>
         </div>`;
 
+    const hints = {SMART:'VouchMorph balances contributions across your sources automatically.', EQUAL:'Splits the target evenly across every source.', RATIO:'Proportional to each source\u2019s available balance.', PRIORITY:'Draws fully from the first source before moving to the next.', USER_SPECIFIED:'Edit each source\u2019s amount yourself below.', DRAIN_SMALLEST:'Empties the smallest available balance first.'};
+    document.getElementById('combineStratHint').textContent = hints[wizardState.contributionStrategy] || '';
     document.getElementById('wizardSourceNext').disabled = !multiSourcesValid();
 }
 
-function renderCombineRowSummary(row) {
-    let icon = '💠', title = '', sub = '';
-    if (row.type === 'saved') {
-        icon = assetIcon(row.assetType);
-        title = PARTICIPANTS[row.institution]?.name || row.institution;
-        const idField = (getAssetConfig(row.assetType)?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
-        sub = idField ? (row.fields[idField.name] || '') : '';
-    } else if (row.type === 'voucher') {
-        icon = '🎟️';
-        title = 'Voucher' + (row.institution ? ` · ${PARTICIPANTS[row.institution]?.name || row.institution}` : '');
-        sub = row.fields.voucher_number || '';
-    } else if (row.type === 'mycard') {
-        icon = '🧩';
-        title = 'My Card';
-        sub = 'From hooked sources';
-    }
+function renderCombineConsoleRow(row) {
+    let title = '', sub = '';
+    if (row.type === 'saved') { title = PARTICIPANTS[row.institution]?.name || row.institution; const idField = (getAssetConfig(row.assetType)?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount'); sub = idField ? (row.fields[idField.name] || '') : ''; }
+    else if (row.type === 'voucher') { title = 'Voucher' + (row.institution ? ` · ${PARTICIPANTS[row.institution]?.name || row.institution}` : ''); sub = row.fields.voucher_number || ''; }
+    else if (row.type === 'mycard') { title = 'My Card'; sub = 'From hooked sources'; }
+    const editable = wizardState.contributionStrategy === 'USER_SPECIFIED';
     return `<div class="combine-row-card">
-        <div class="combine-row-main">
-            <span class="combine-row-icon">${icon}</span>
-            <div><div class="combine-row-title">${escapeHtml(title)}</div><div class="combine-row-sub">${escapeHtml(sub)}</div></div>
-        </div>
-        <div class="combine-row-amt">${formatMoney(row.amount, wizardState.currency)}</div>
-        <div class="combine-row-actions">
-            <button class="quick-link muted" onclick="openCombineAddRow(${row.id})">Edit</button>
-            <button class="quick-link danger" onclick="removeCombineRow(${row.id})">Remove</button>
-        </div>
+        <div class="combine-row-main"><div><div class="combine-row-title">${escapeHtml(title)}</div><div class="combine-row-sub">${escapeHtml(sub)}</div></div></div>
+        ${editable
+            ? `<input type="number" step="0.01" value="${row.amount || ''}" style="width:80px;text-align:right;font-family:var(--font-mono);border:1px solid var(--border-strong);padding:6px" oninput="setConsoleRowAmount(${row.id}, this.value)">`
+            : `<div class="combine-row-amt">${row.amount.toFixed(2)}</div>`}
+        <div class="combine-row-actions"><button class="quick-link danger" onclick="removeCombineRow(${row.id})">Remove</button></div>
     </div>`;
+}
+
+function setConsoleRowAmount(id, value) {
+    const row = wizardState.multiSources.find(r => r.id === id);
+    if (!row) return;
+    row.amount = Math.max(0, parseFloat(value) || 0);
+    renderCombineSummaryWizard();
 }
 
 // Opens the focused single-row form. Pass an existing row's id to edit it
