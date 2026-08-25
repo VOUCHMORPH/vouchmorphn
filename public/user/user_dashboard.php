@@ -1504,6 +1504,13 @@ function wizardPrev() {
     renderStep(wizardState.step);
 }
 
+function institutionInitials(code) {
+    const name = PARTICIPANTS[code]?.name || code || '';
+    const parts = name.trim().split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+    return name.slice(0, 2).toUpperCase() || '??';
+}
+
 function renderStep(step) {
     document.querySelectorAll('.swap-step').forEach(el => el.classList.remove('active'));
     const target = document.querySelector(`.swap-step[data-step="${step}"]`);
@@ -1515,6 +1522,7 @@ function renderStep(step) {
         else if (i + 1 < step) dot.classList.add('done');
     });
 
+    document.querySelector('.swap-wizard')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     if (step === 1) setTimeout(() => document.getElementById('wizardAmount')?.focus(), 100);
     if (step === 4) enterReviewStep();
 }
@@ -1655,7 +1663,7 @@ function selectSource(type) {
 // dropdown lived inside a display:none wrapper that never got switched
 // on — which is why Wallet/Card/Voucher forms looked empty before.
 function renderWizardSourcePicker(panel, type) {
-    const eligible = userSources.filter(s => s.status === 'active' && String(s.asset_type).toUpperCase() === String(type).toUpperCase());
+    const eligible = userSources.filter(s => s.status === 'active' && assetTypeMatchesTile(s.asset_type, type));
     let html = '';
     if (eligible.length > 0) {
         html += `
@@ -1674,6 +1682,11 @@ function renderWizardSourcePicker(panel, type) {
             </div>
         </div>
         <div style="text-align:center;font-size:11px;color:var(--text-dim);margin:10px 0 16px;">— or link a new one —</div>`;
+    } else {
+        html += `<div class="empty-source-box" style="margin-bottom:16px;">
+            <p style="margin-bottom:8px;">You don't have a ${escapeHtml((getAssetConfig(type)?.label || type).toLowerCase())} linked yet.</p>
+            <span class="quick-link" onclick="goView('toolbox')">+ Add one from Toolbox</span>
+        </div>`;
     }
     html += `
         <div class="field-group">
@@ -1686,6 +1699,7 @@ function renderWizardSourcePicker(panel, type) {
     const sel = document.getElementById('wizardFromInstSelect');
     sel.onchange = function () { wizardSelectFromInst(this.value); };
     populateInstitutionsForAsset(type, sel);
+    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function wizardSelectSavedSource(sourceId) {
@@ -1698,10 +1712,24 @@ function wizardSelectSavedSource(sourceId) {
     showMessage(`${PARTICIPANTS[source.institution]?.name || source.institution} selected.`, 'success');
 }
 
+// Fuzzy-matches a participant's raw asset_type (e.g. "CARD-ACQUIRING",
+// "CASHOUT-VOUCHER", "MNO-WALLET") against one of Swap's tiles. The
+// WALLET tile is "Wallet / Account" so it must also catch plain ACCOUNT
+// institutions, not just ones literally called WALLET.
+function assetTypeMatchesTile(participantAssetType, tileType) {
+    const norm = s => String(s || '').toUpperCase().replace(/[-_\s]/g, '');
+    const p = norm(participantAssetType);
+    const t = norm(tileType);
+    if (!p || !t) return false;
+    if (p === t) return true;
+    if (t === 'WALLET' && ['ACCOUNT', 'MNOWALLET', 'BANKWALLET', 'MOBILEWALLET'].includes(p)) return true;
+    return p.includes(t) || t.includes(p);
+}
+
 function populateInstitutionsForAsset(assetType, sel) {
     if (!sel) return;
     const codes = Object.keys(PARTICIPANTS).filter(code =>
-        (PARTICIPANTS[code].asset_types || []).map(t => String(t).toUpperCase()).includes(assetType)
+        (PARTICIPANTS[code].asset_types || []).some(t => assetTypeMatchesTile(t, assetType))
     );
     if (codes.length === 0) {
         sel.innerHTML = `<option value="">No institutions support ${assetType}</option>`;
@@ -2353,15 +2381,27 @@ async function renderVmCardBreakdownWizard() {
     renderVmCardStrategyPanel();
 }
 
+function dedupeVmCardSources(sources) {
+    const map = new Map();
+    sources.forEach(c => {
+        const key = `${c.institution}|${c.identifier}|${c.asset_type}`;
+        const amt = c.available_balance ?? c.authorized_amount ?? 0;
+        if (map.has(key)) map.get(key).amount += amt;
+        else map.set(key, { institution: c.institution, identifier: c.identifier, asset_type: c.asset_type, amount: amt });
+    });
+    return Array.from(map.values());
+}
+
 function renderVmCardStrategyPanel() {
     const panel = document.getElementById('sourceDetailPanel');
     if (!panel || !vmCardSources) return;
     const currency = myCard.hook?.currency || myCard.currency;
-    const total = vmCardSources.reduce((s, c) => s + (c.available_balance ?? c.authorized_amount ?? 0), 0);
-    const rows = vmCardSources.map(c => `
+    const merged = dedupeVmCardSources(vmCardSources);
+    const total = merged.reduce((s, c) => s + c.amount, 0);
+    const rows = merged.map(c => `
         <div class="card-source-breakdown-row">
             <span>${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)} · ${escapeHtml(c.identifier || '')}</span>
-            <span style="font-family:var(--font-mono);font-weight:700;">${formatMoney(c.available_balance ?? c.authorized_amount, currency)}</span>
+            <span style="font-family:var(--font-mono);font-weight:700;">${formatMoney(c.amount, currency)}</span>
         </div>`).join('');
     panel.innerHTML = `
         <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Drawing from everything hooked to your card. Pick how it should split across those sources:</div>
@@ -2379,7 +2419,6 @@ function renderVmCardStrategyPanel() {
             </div>
         </div>`;
 }
-
 function setWizardVmCardStrategy(s) {
     wizardState.vmCardStrategy = s;
     renderVmCardStrategyPanel();
@@ -2427,6 +2466,7 @@ function renderCombineSummaryWizard() {
             <label>Total amount to swap</label>
             <input type="number" id="combineTotal" placeholder="0.00" step="0.01" value="${wizardState.tabTotalAmount || ''}" oninput="updateCombineTotal(this.value)">
         </div>
+       ${renderCircuitDiagram()}
         <div class="strategy-row" style="margin-bottom:10px;">
             <button class="${wizardState.contributionStrategy === 'SMART' ? 'active' : ''}" onclick="setCombineStrategy('SMART')">Smart</button>
             <button class="${wizardState.contributionStrategy === 'EQUAL' ? 'active' : ''}" onclick="setCombineStrategy('EQUAL')">Equal</button>
@@ -2483,6 +2523,68 @@ function renderCombineSummaryWizard() {
     document.getElementById('wizardSourceNext').disabled = !multiSourcesValid();
 }
 
+function renderCircuitDiagram() {
+    const total = wizardState.tabTotalAmount || wizardState.multiSources.reduce((s, r) => s + (r.amount || 0), 0);
+    const maxAmt = Math.max(...wizardState.multiSources.map(s => s.amount || 0), 1);
+    const n = wizardState.multiSources.length || 1;
+    const hubX = 230, hubY = 60, hubW = 100, hubH = 90;
+    const chipX = 20, chipH = 26;
+    const destX = 420, destW = 46, destH = 36;
+    function layoutY(count, r0, r1) { const usable = r1 - r0; return Array.from({ length: count }, (_, i) => r0 + ((i + 0.5) * usable) / count); }
+    const srcYs = layoutY(n, 12, 228);
+    const pinYs = layoutY(n, hubY + 12, hubY + hubH - 12);
+    let html = '';
+    wizardState.multiSources.forEach((s, i) => {
+        const has = !!s.institution;
+        const amt = s.amount || 0;
+        const w = has ? 34 + Math.round((amt / maxAmt) * 40) : 30;
+        const y = srcYs[i], pinY = pinYs[i], midX = 145 + i * 7;
+        if (has) html += `<path d="M${chipX + w},${y} H${midX} V${pinY} H${hubX}" fill="none" stroke="var(--border-strong)" stroke-width="1.5" opacity="0.75" stroke-dasharray="400" stroke-dashoffset="400" id="bcTrace${i}"><animate attributeName="stroke-dashoffset" from="400" to="0" dur="0.5s" begin="${i * 0.08}s" fill="freeze" /></path>`;
+        html += `<rect x="${hubX - 4}" y="${pinY - 2}" width="4" height="4" fill="var(--border-strong)" />`;
+    });
+    wizardState.multiSources.forEach((s, i) => {
+        const has = !!s.institution;
+        const amt = s.amount || 0;
+        const w = has ? 34 + Math.round((amt / maxAmt) * 40) : 30;
+        const y = srcYs[i];
+        const pct = total > 0 ? amt / total : 0;
+        if (has) {
+            const label = institutionInitials(s.institution);
+            html += `
+                <rect x="${chipX}" y="${y - chipH / 2}" width="0" height="${chipH}" fill="var(--primary)"><animate attributeName="width" from="0" to="${w}" dur="0.35s" begin="${0.25 + i * 0.08}s" fill="freeze" /></rect>
+                <text x="${chipX + w / 2}" y="${y - 3}" text-anchor="middle" font-size="10" fill="var(--surface)" font-weight="700" font-family="var(--font-mono)">${escapeHtml(label)}</text>
+                <text x="${chipX + w / 2}" y="${y + 10}" text-anchor="middle" font-size="8" fill="var(--surface)" opacity="0.75">${amt.toFixed(0)}</text>
+                <rect x="${chipX}" y="${y + chipH / 2 + 3}" width="${w}" height="3" fill="var(--surface-muted)" />
+                <rect x="${chipX}" y="${y + chipH / 2 + 3}" width="0" height="3" fill="var(--primary)"><animate attributeName="width" from="0" to="${(w * pct).toFixed(1)}" dur="0.4s" begin="${0.5 + i * 0.08}s" fill="freeze" /></rect>
+                <rect width="5" height="5" fill="var(--primary)"><animateMotion dur="${1.6 + i * 0.3}s" repeatCount="indefinite" begin="${1 + i * 0.15}s"><mpath href="#bcTrace${i}" /></animateMotion></rect>`;
+        } else {
+            html += `<rect x="${chipX}" y="${y - chipH / 2}" width="${w}" height="${chipH}" fill="none" stroke="var(--border-strong)" stroke-width="1.5" stroke-dasharray="4 3" /><text x="${chipX + w / 2}" y="${y + 4}" text-anchor="middle" font-size="12" fill="var(--text-dim)">?</text>`;
+        }
+    });
+    html += `
+        <rect x="${hubX}" y="${hubY}" width="${hubW}" height="${hubH}" fill="var(--surface)" stroke="var(--border-strong)" stroke-width="1.5" />
+        <rect x="${hubX + 6}" y="${hubY + 6}" width="${hubW - 12}" height="2" fill="var(--border)"><animate attributeName="opacity" values="1;0.2;1" dur="2.2s" repeatCount="indefinite" /></rect>
+        <text x="${hubX + hubW / 2}" y="${hubY + hubH / 2 - 2}" text-anchor="middle" font-size="17" font-weight="700" fill="var(--text)" font-family="var(--font-mono)">${total.toFixed(0)}</text>
+        <text x="${hubX + hubW / 2}" y="${hubY + hubH / 2 + 15}" text-anchor="middle" font-size="8" fill="var(--text-dim)">total</text>`;
+    const hubPinY = hubY + hubH / 2;
+    let destLabel = null;
+    if (wizardState.destType === 'IDENTITY' && wizardState.identityValue) destLabel = maskIdentifier(wizardState.identityValue).replace(/[^A-Za-z0-9]/g, '').slice(0, 2).toUpperCase() || 'ID';
+    else if (wizardState.destType && wizardState.destType !== 'IDENTITY' && wizardState.toInst) destLabel = institutionInitials(wizardState.toInst);
+    if (destLabel) {
+        const midX = hubX + hubW + 60;
+        html += `
+            <rect x="${hubX + hubW}" y="${hubPinY - 2}" width="4" height="4" fill="var(--border-strong)" />
+            <path d="M${hubX + hubW},${hubPinY} H${midX} V${hubPinY} H${destX}" fill="none" stroke="var(--border-strong)" stroke-width="1.5" opacity="0.75" stroke-dasharray="260" stroke-dashoffset="260" id="bcDestTrace"><animate attributeName="stroke-dashoffset" from="260" to="0" dur="0.5s" fill="freeze" /></path>
+            <rect x="${destX}" y="${hubPinY - destH / 2}" width="${destW}" height="${destH}" fill="var(--primary)" />
+            <text x="${destX + destW / 2}" y="${hubPinY - 2}" text-anchor="middle" font-size="10" fill="var(--surface)" font-weight="700" font-family="var(--font-mono)">${escapeHtml(destLabel)}</text>
+            <text x="${destX + destW / 2}" y="${hubPinY + 12}" text-anchor="middle" font-size="7" fill="var(--surface)" opacity="0.75">dest</text>
+            <rect width="5" height="5" fill="var(--text-dim)"><animateMotion dur="1.3s" repeatCount="indefinite" begin="1.5s"><mpath href="#bcDestTrace" /></animateMotion></rect>`;
+    } else {
+        html += `<rect x="${destX}" y="${hubPinY - destH / 2}" width="${destW}" height="${destH}" fill="none" stroke="var(--border-strong)" stroke-width="1.5" stroke-dasharray="4 3" /><text x="${destX + destW / 2}" y="${hubPinY + 4}" text-anchor="middle" font-size="14" fill="var(--text-dim)">?</text>`;
+    }
+    return `<svg width="100%" height="240" viewBox="0 0 480 240" style="margin-bottom:14px;overflow:visible;">${html}</svg>`;
+}
+    
 function renderCombineFieldsWizard(s) {
     const config = getAssetConfig(s.assetType);
     if (!config) return '';
