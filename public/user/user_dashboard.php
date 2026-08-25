@@ -625,6 +625,25 @@ input[type=number] { -moz-appearance: textfield; }
     .combine-col-right { margin-top: 0; position: sticky; top: 88px; }
 }
 
+.arcade-console{background:#0b0f10;border:3px solid #2c3a3d;padding:16px;font-family:var(--font-mono);color:#d8f5df}
+.arcade-readout{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:6px}
+.arcade-num{font-size:30px;font-weight:700;color:#39ff6a;letter-spacing:1px}
+.arcade-target-input{background:#000;color:#39ff6a;border:2px solid #39ff6a;font-family:var(--font-mono);font-size:16px;width:90px;text-align:right;padding:4px 6px}
+.arcade-strip{display:flex;gap:2px;margin:12px 0}
+.arcade-seg{flex:1;height:14px;background:#12181a;border:1px solid #2c3a3d}
+.arcade-seg.on{background:#39ff6a}
+.arcade-strat-row{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-bottom:6px}
+.arcade-strat-btn{background:#000;color:#8ee6a3;border:1px solid #2c3a3d;font-family:var(--font-mono);font-size:9px;padding:7px 2px;text-transform:uppercase;cursor:pointer}
+.arcade-strat-btn.active{background:#39ff6a;color:#04240f;border-color:#39ff6a}
+.arcade-hint{font-size:10px;color:#6f9c7d;text-align:center;margin:6px 0 14px}
+.arcade-row{display:flex;align-items:center;gap:8px;padding:8px 6px;border:1px solid #2c3a3d;margin-bottom:6px;background:#0f1517}
+.arcade-row .swatch{width:10px;height:10px;flex-shrink:0}
+.arcade-row .title{font-size:11px;color:#d8f5df}
+.arcade-row .sub{font-size:9px;color:#6f9c7d}
+.arcade-row .amt{font-family:var(--font-mono);font-weight:700;color:#39ff6a}
+.arcade-status{margin-top:12px;padding:9px;text-align:center;font-size:11px;font-weight:700;border:2px solid #2c3a3d;letter-spacing:0.5px}
+.arcade-status.ready{border-color:#39ff6a;color:#39ff6a;background:rgba(57,255,106,0.08)}
+.arcade-add-btn{width:100%;padding:10px;background:#000;border:1px dashed #2c3a3d;color:#8ee6a3;font-family:var(--font-mono);font-size:10px;text-transform:uppercase;cursor:pointer;margin-top:6px}    
 .msb-card{background:var(--surface);border:1px solid var(--border-strong);padding:1.25rem}    
 .combine-row-card { display: flex; align-items: center; gap: 12px; border: 1px solid var(--border); padding: 12px; margin-bottom: 8px; background: var(--surface); }
 .combine-row-main { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
@@ -2584,34 +2603,41 @@ function renderVmCardStrategyPanel() {
     const currency = myCard.hook?.currency || myCard.currency;
     const merged = dedupeVmCardSources(vmCardSources);
     const total = merged.reduce((s, c) => s + c.amount, 0);
-    const covered = Math.min(wizardState.amount || 0, total);
-    const canExecute = (wizardState.amount || 0) > 0 && total >= wizardState.amount;
+    const target = wizardState.amount || 0;
+    const covered = Math.min(target, total);
+    const canExecute = target > 0 && total >= target;
+    const SEGCOUNT = 24;
+    const filled = target > 0 ? Math.min(SEGCOUNT, Math.round((covered/target)*SEGCOUNT)) : 0;
 
     const STRATEGIES = [
         {id:'SMART', label:'Smart'}, {id:'EQUAL', label:'Equal'}, {id:'RATIO', label:'Ratio'},
         {id:'PRIORITY', label:'Priority'}, {id:'USER_SPECIFIED', label:'Manual'}, {id:'DRAIN_SMALLEST', label:'Drain smallest'}
     ];
 
-    const rows = merged.map(c => `
-        <div class="card-source-breakdown-row">
-            <span>${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)} · ${escapeHtml(c.identifier || '')}</span>
-            <span style="font-family:var(--font-mono);font-weight:700">${formatMoney(c.amount, currency)}</span>
-        </div>`).join('');
+    const rows = merged.map(c => `<div class="arcade-row">
+        <div class="swatch" style="background:#00A878"></div>
+        <div style="flex:1;min-width:0"><div class="title">${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)}</div><div class="sub">${escapeHtml(c.identifier || '')}</div></div>
+        <div class="amt">${formatMoney(c.amount, currency)}</div>
+    </div>`).join('');
 
     panel.innerHTML = `
-        <div class="msb-card">
-            <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px">Drawing from everything hooked to your card. Pick how it should split:</div>
-            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px">
-                ${STRATEGIES.map(s => `<button type="button" class="quick-link${wizardState.vmCardStrategy===s.id?' selected':''}" style="justify-content:center;padding:8px 4px;font-size:10px" onclick="setWizardVmCardStrategy('${s.id}')">${s.label}</button>`).join('')}
+        <div class="arcade-console">
+            <div class="arcade-readout">
+                <span class="arcade-num">${covered.toFixed(2)}</span>
+                <span style="font-size:10px;color:#6f9c7d">MAX ${formatMoney(total, currency)}</span>
             </div>
-            <div class="card-source-breakdown">
-                ${rows}
-                <div class="card-source-breakdown-row" style="border-bottom:none;padding-top:10px;font-weight:700">
-                    <span>Max available</span><span style="font-family:var(--font-mono);color:var(--accent)">${formatMoney(total, currency)}</span>
-                </div>
+            <div style="font-size:9px;color:#6f9c7d;margin-bottom:6px">DRAWING / TARGET ${formatMoney(target, currency)}</div>
+            <div class="arcade-strip">${Array.from({length:SEGCOUNT},(_,i)=>`<div class="arcade-seg${i<filled?' on':''}"></div>`).join('')}</div>
+
+            <div class="arcade-strat-row">
+                ${STRATEGIES.map(s => `<button type="button" class="arcade-strat-btn${wizardState.vmCardStrategy===s.id?' active':''}" onclick="setWizardVmCardStrategy('${s.id}')">${s.label}</button>`).join('')}
             </div>
-            <div style="margin-top:12px;padding:10px;border:1px solid ${canExecute ? 'var(--success)' : 'var(--border)'};text-align:center;font-size:12px;font-weight:600;color:${canExecute ? 'var(--success)' : 'var(--text-muted)'}">
-                ${canExecute ? 'can_execute: true — ready to swipe' : 'Enter an amount at or below what\u2019s hooked to continue'}
+            <div style="font-size:9px;color:#6f9c7d;text-align:center;margin-bottom:10px">Drawing from everything hooked to your card.</div>
+
+            ${rows}
+
+            <div class="arcade-status${canExecute ? ' ready' : ''}">
+                ${canExecute ? 'CAN_EXECUTE: TRUE — READY TO SWIPE' : 'ENTER AN AMOUNT AT OR BELOW WHAT\u2019S HOOKED'}
             </div>
         </div>`;
 }
@@ -2743,68 +2769,67 @@ function renderCombineSummaryWizard() {
     }
     panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
+    
 function renderCombineList(panel) {
     const rows = wizardState.multiSources.filter(r => !r._draft);
     const total = wizardState.tabTotalAmount || 0;
     const covered = rows.reduce((s, r) => s + (r.amount || 0), 0);
     const remaining = Math.max(0, total - covered);
     const canExecute = total > 0 && covered >= total && rows.length >= 2;
+    const SEGCOUNT = 24;
+    const filled = total > 0 ? Math.min(SEGCOUNT, Math.round((covered/total)*SEGCOUNT)) : 0;
 
     const STRATEGIES = [
         {id:'SMART', label:'Smart'}, {id:'EQUAL', label:'Equal'}, {id:'RATIO', label:'Ratio'},
         {id:'PRIORITY', label:'Priority'}, {id:'USER_SPECIFIED', label:'Manual'}, {id:'DRAIN_SMALLEST', label:'Drain smallest'}
     ];
+    const SWATCH = {saved:'#ffb300', voucher:'#ff2fa0', mycard:'#39ff6a'};
 
     panel.innerHTML = `
         ${sourceTypeBackLinkHtml()}
-        <div class="msb-card">
-            <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
-                <span style="font-size:13px;color:var(--text-dim)">Combined total</span>
-                <span style="font-size:13px;color:var(--text-dim)">Target</span>
-            </div>
-            <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:14px">
-                <span style="font-family:var(--font-mono);font-size:24px;font-weight:700" id="combineCoveredNum">${covered.toFixed(2)}</span>
-                <span style="display:flex;align-items:center;gap:4px">
-                    <input type="number" id="combineTotal" value="${total || ''}" placeholder="0.00" step="0.01"
-                        style="font-family:var(--font-mono);width:100px;text-align:right;font-size:16px;border:1px solid var(--border-strong);padding:6px 8px;background:var(--surface)"
-                        oninput="updateCombineTotal(this.value)">
-                    <span style="font-size:13px;color:var(--text-dim)">${wizardState.currency}</span>
+        <div class="arcade-console">
+            <div class="arcade-readout">
+                <span class="arcade-num" id="combineCoveredNum">${covered.toFixed(2)}</span>
+                <span style="display:flex;align-items:center;gap:6px">
+                    <input type="number" class="arcade-target-input" id="combineTotal" value="${total || ''}" placeholder="0.00" step="0.01" oninput="updateCombineTotal(this.value)">
+                    <span style="font-size:10px;color:#6f9c7d">${wizardState.currency}</span>
                 </span>
             </div>
-            <div class="msb-seg" style="height:10px;background:var(--surface-muted);border:1px solid var(--border);border-radius:4px;overflow:hidden;display:flex;margin-bottom:14px">
-                <div style="width:${total > 0 ? Math.min(100, (covered/total)*100) : 0}%;background:var(--accent)"></div>
-            </div>
-            <div style="font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:6px">Contribution strategy</div>
-            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px">
-                ${STRATEGIES.map(s => `<button type="button" class="quick-link${wizardState.contributionStrategy===s.id?' selected':''}" style="justify-content:center;padding:8px 4px;font-size:10px" onclick="setCombineStrategy('${s.id}')">${s.label}</button>`).join('')}
-            </div>
-            <div style="font-size:11px;color:var(--text-dim);text-align:center;margin-bottom:16px" id="combineStratHint"></div>
+            <div style="font-size:9px;color:#6f9c7d;margin-bottom:6px">COVERED / TARGET</div>
+            <div class="arcade-strip">${Array.from({length:SEGCOUNT},(_,i)=>`<div class="arcade-seg${i<filled?' on':''}"></div>`).join('')}</div>
 
-            <div id="combineRowsList">${rows.map(r => renderCombineConsoleRow(r)).join('') || '<div class="empty-source-box"><p>No sources added yet.</p></div>'}</div>
-            <button class="quick-link" style="width:100%;justify-content:center;padding:12px;margin-top:8px" onclick="openCombineAddRow()">+ Add source</button>
+            <div class="arcade-strat-row">
+                ${STRATEGIES.map(s => `<button type="button" class="arcade-strat-btn${wizardState.contributionStrategy===s.id?' active':''}" onclick="setCombineStrategy('${s.id}')">${s.label}</button>`).join('')}
+            </div>
+            <div class="arcade-hint" id="combineStratHint"></div>
 
-            <div style="margin-top:16px;padding:10px;border:1px solid ${canExecute ? 'var(--success)' : 'var(--border)'};text-align:center;font-size:12px;font-weight:600;color:${canExecute ? 'var(--success)' : 'var(--text-muted)'}">
-                ${canExecute ? 'can_execute: true — ready to swap. Tap Next to choose where it goes.' : `remaining: ${remaining.toFixed(2)} ${wizardState.currency} — can_execute: false`}
+            <div id="combineRowsList">${rows.map(r => renderCombineConsoleRow(r, SWATCH)).join('') || '<div class="empty-source-box"><p>No sources added yet.</p></div>'}</div>
+            <button type="button" class="arcade-add-btn" onclick="openCombineAddRow()">+ ADD SOURCE</button>
+
+            <div class="arcade-status${canExecute ? ' ready' : ''}">
+                ${canExecute ? 'CAN_EXECUTE: TRUE — READY TO SWAP' : `REMAINING ${remaining.toFixed(2)} ${wizardState.currency} — CAN_EXECUTE: FALSE`}
             </div>
         </div>`;
 
-    const hints = {SMART:'VouchMorph balances contributions across your sources automatically.', EQUAL:'Splits the target evenly across every source.', RATIO:'Proportional to each source\u2019s available balance.', PRIORITY:'Draws fully from the first source before moving to the next.', USER_SPECIFIED:'Edit each source\u2019s amount yourself below.', DRAIN_SMALLEST:'Empties the smallest available balance first.'};
+    const hints = {SMART:'VouchMorph balances contributions automatically.', EQUAL:'Splits the target evenly across every source.', RATIO:'Proportional to each source\u2019s available balance.', PRIORITY:'Draws fully from the first source before moving on.', USER_SPECIFIED:'Edit each source\u2019s amount yourself below.', DRAIN_SMALLEST:'Empties the smallest available balance first.'};
     document.getElementById('combineStratHint').textContent = hints[wizardState.contributionStrategy] || '';
     document.getElementById('wizardSourceNext').disabled = !multiSourcesValid();
 }
 
-function renderCombineConsoleRow(row) {
+function renderCombineConsoleRow(row, SWATCH) {
     let title = '', sub = '';
     if (row.type === 'saved') { title = PARTICIPANTS[row.institution]?.name || row.institution; const idField = (getAssetConfig(row.assetType)?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount'); sub = idField ? (row.fields[idField.name] || '') : ''; }
-    else if (row.type === 'voucher') { title = 'Voucher' + (row.institution ? ` · ${PARTICIPANTS[row.institution]?.name || row.institution}` : ''); sub = row.fields.voucher_number || ''; }
-    else if (row.type === 'mycard') { title = 'My Card'; sub = 'From hooked sources'; }
+    else if (row.type === 'voucher') { title = 'VOUCHER' + (row.institution ? ` \u00b7 ${PARTICIPANTS[row.institution]?.name || row.institution}` : ''); sub = row.fields.voucher_number || ''; }
+    else if (row.type === 'mycard') { title = 'MY CARD'; sub = 'From hooked sources'; }
     const editable = wizardState.contributionStrategy === 'USER_SPECIFIED';
-    return `<div class="combine-row-card">
-        <div class="combine-row-main"><div><div class="combine-row-title">${escapeHtml(title)}</div><div class="combine-row-sub">${escapeHtml(sub)}</div></div></div>
+    const color = SWATCH[row.type] || '#8ee6a3';
+    return `<div class="arcade-row">
+        <div class="swatch" style="background:${color}"></div>
+        <div style="flex:1;min-width:0"><div class="title">${escapeHtml(title)}</div><div class="sub">${escapeHtml(sub)}</div></div>
         ${editable
-            ? `<input type="number" step="0.01" value="${row.amount || ''}" style="width:80px;text-align:right;font-family:var(--font-mono);border:1px solid var(--border-strong);padding:6px" oninput="setConsoleRowAmount(${row.id}, this.value)">`
-            : `<div class="combine-row-amt">${row.amount.toFixed(2)}</div>`}
-        <div class="combine-row-actions"><button class="quick-link danger" onclick="removeCombineRow(${row.id})">Remove</button></div>
+            ? `<input type="number" step="0.01" value="${row.amount || ''}" style="width:70px;text-align:right;font-family:var(--font-mono);background:#000;color:#39ff6a;border:1px solid #2c3a3d;padding:5px" oninput="setConsoleRowAmount(${row.id}, this.value)">`
+            : `<div class="amt">${row.amount.toFixed(2)}</div>`}
+        <button type="button" class="quick-link danger" style="padding:4px 8px;font-size:9px" onclick="removeCombineRow(${row.id})">X</button>
     </div>`;
 }
 
@@ -3596,7 +3621,7 @@ function renderHookRows() {
     if (!holder) return;
     holder.innerHTML = hookRows.map((row, idx) => {
         if (row.locked) {
-            return `<div class="hook-row-card"><div class="hook-row-head"><span class="hook-row-label">Source ${idx + 1} — from My sources</span></div><div style="font-size:13px;font-weight:700;">${escapeHtml(row.instName)}</div><div style="font-size:11px;color:var(--text-dim);margin-bottom:10px;">${escapeHtml(row.identifier)}</div><div class="field-group"><label>Amount to authorize</label><input type="number" placeholder="0.00" value="${row.amount}" oninput="hookRows.find(r=>r.id===${row.id}).amount=this.value"></div></div>`;
+            return `<div class="hook-row-card"><div class="hook-row-head"><span class="hook-row-label">Source ${idx + 1} — from My sources</span><button class="hook-row-remove" onclick="removeHookRow(${row.id})">Remove</button></div><div style="font-size:13px;font-weight:700;">${escapeHtml(row.instName)}</div><div style="font-size:11px;color:var(--text-dim);margin-bottom:10px;">${escapeHtml(row.identifier)}</div><div class="field-group"><label>Amount to authorize</label><input type="number" placeholder="0.00" value="${row.amount}" oninput="hookRows.find(r=>r.id===${row.id}).amount=this.value"></div></div>`;
         }
         const savedPickerHtml = userSources.filter(u => u.status === 'active').length ? `
     <div style="margin-bottom:10px;">
