@@ -609,6 +609,33 @@ input[type=number] { -moz-appearance: textfield; }
 .confirm-box p { font-size: 13px; color: var(--text); margin-bottom: 16px; line-height: 1.5; }
 .confirm-box .cta-row { margin-top: 0; }
 
+/* Source-type grid hides once a tile is picked — the detail panel then
+   owns the whole space, with its own "change source type" link back. */
+.source-grid.hidden { display: none; }
+.source-type-back-link { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; color: var(--text-muted); background: none; border: none; cursor: pointer; margin-bottom: 16px; padding: 0; text-transform: uppercase; letter-spacing: 0.04em; }
+.source-type-back-link:hover { color: var(--text); }
+
+/* Combine: mobile stacks; desktop splits into "build it" (left) and
+   "watch it happen" (right, sticky) — this is the two-column layout
+   from your request. */
+.combine-layout { display: block; }
+.combine-col-right { margin-top: 16px; }
+@media (min-width: 900px) {
+    .combine-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; align-items: start; }
+    .combine-col-right { margin-top: 0; position: sticky; top: 88px; }
+}
+
+.combine-row-card { display: flex; align-items: center; gap: 12px; border: 1px solid var(--border); padding: 12px; margin-bottom: 8px; background: var(--surface); }
+.combine-row-main { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
+.combine-row-icon { font-size: 18px; flex-shrink: 0; }
+.combine-row-title { font-size: 13px; font-weight: 700; }
+.combine-row-sub { font-size: 11px; color: var(--text-dim); }
+.combine-row-amt { font-family: var(--font-mono); font-weight: 700; flex-shrink: 0; }
+.combine-row-actions { display: flex; gap: 8px; flex-shrink: 0; }
+
+.combine-type-picker { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 16px; }
+.combine-type-picker .source-type-opt.disabled { opacity: 0.35; cursor: not-allowed; }
+
 .review-hero { text-align: center; padding: 6px 0 18px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
 .review-hero-label { font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-dim); margin-bottom: 8px; font-family: var(--font-mono); }
 .review-hero-amount { font-size: 42px; font-weight: 600; color: var(--text); font-family: var(--font-mono); }
@@ -1637,6 +1664,7 @@ function selectSource(type) {
     document.querySelectorAll('.source-option').forEach(el => {
         el.classList.toggle('active', el.dataset.source === type);
     });
+    document.getElementById('sourceGrid')?.classList.add('hidden');
 
     const panel = document.getElementById('sourceDetailPanel');
     const nextBtn = document.getElementById('wizardSourceNext');
@@ -1644,7 +1672,7 @@ function selectSource(type) {
     if (type === 'VMCARD' || type === 'COMBINE') {
         panel.style.display = 'none';
         if (type === 'VMCARD') renderVmCardBreakdownWizard();
-        if (type === 'COMBINE') renderCombineSummaryWizard();
+        if (type === 'COMBINE') { wizardState.combineView = wizardState.combineView || 'list'; renderCombineSummaryWizard(); }
         nextBtn.disabled = false;
         return;
     }
@@ -1657,16 +1685,69 @@ function selectSource(type) {
     renderWizardSourcePicker(panel, type);
 }
 
+// The one way back to the tile grid from anywhere inside Step 2's detail
+// area — every picker (Wallet/Card/Voucher/My Card/Combine) gets this
+// same link at its top so nothing is ever a dead end.
+function wizardBackToSourceGrid() {
+    wizardState.source = null;
+    document.getElementById('sourceGrid')?.classList.remove('hidden');
+    document.querySelectorAll('.source-option').forEach(el => el.classList.remove('active'));
+    const panel = document.getElementById('sourceDetailPanel');
+    panel.style.display = 'none';
+    panel.innerHTML = '';
+    document.getElementById('wizardSourceNext').disabled = true;
+    document.querySelector('.swap-wizard')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function sourceTypeBackLinkHtml() {
+    return `<button type="button" class="source-type-back-link" onclick="wizardBackToSourceGrid()">&larr; Change source type</button>`;
+}
 // Shows any already-linked sources of this asset type first (one tap to
 // reuse), with "link a new one" underneath. This replaces the old
 // approach of cloning the whole #fromSection node, whose institution
 // dropdown lived inside a display:none wrapper that never got switched
 // on — which is why Wallet/Card/Voucher forms looked empty before.
 function renderWizardSourcePicker(panel, type) {
+    if (type === 'WALLET') {
+        const eligible = userSources.filter(s => s.status === 'active' && assetTypeMatchesTile(s.asset_type, type));
+        let html = sourceTypeBackLinkHtml();
+        if (eligible.length === 0) {
+            html += `<div class="empty-source-box">
+                <p style="margin-bottom:8px;">You don't have a wallet or account linked yet.</p>
+                <span class="quick-link" onclick="goView('toolbox')">+ Add one from Toolbox</span>
+            </div>`;
+            panel.innerHTML = html;
+            document.getElementById('wizardSourceNext').disabled = true;
+            panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            return;
+        }
+        html += `<div class="dropdown-select" id="wizardSavedDropdown">
+            <div class="dropdown-select-trigger" onclick="document.getElementById('wizardSavedDropdown').classList.toggle('open')">
+                <span class="placeholder" id="wizardWalletChosenLabel">Select a saved source &rsaquo;</span>
+                <span class="dropdown-select-chevron">&#9662;</span>
+            </div>
+            <div class="dropdown-select-panel">
+                ${eligible.map(s => `<div class="saved-source-row" onclick="wizardSelectSavedSource('${s.id}')">
+                    <div class="row-main"><div class="row-inst">${escapeHtml(PARTICIPANTS[s.institution]?.name || s.institution)}</div><div class="row-ident">${escapeHtml(s.identifier || s.source_identifier || '')}</div></div>
+                </div>`).join('')}
+            </div>
+        </div>
+        <div style="text-align:center;margin-top:12px;"><span class="quick-link muted" onclick="goView('toolbox')">+ Add another source</span></div>
+        <div id="wizardFromFieldsBox"></div>
+        <div class="help" id="wizardFromLimitsHelp"></div>`;
+        panel.innerHTML = html;
+        document.getElementById('wizardSourceNext').disabled = true;
+        panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        return;
+    }
+
+    // CARD / VOUCHER unchanged from the previous patch (institution-aware
+    // Card handling, real institution picker for Voucher) — just add the
+    // same back link at the top of whatever those branches render.
     const eligible = userSources.filter(s => s.status === 'active' && assetTypeMatchesTile(s.asset_type, type));
     const isCard = type === 'CARD';
+    let html = sourceTypeBackLinkHtml();
 
-    let html = '';
     if (eligible.length > 0) {
         html += `
         <div class="field-group">
@@ -1695,7 +1776,6 @@ function renderWizardSourcePicker(panel, type) {
 
     if (isCard) {
         const cardMatches = institutionsForTile('CARD');
-
         if (cardMatches.length === 0) {
             html += `<div class="help" style="color:var(--danger);">Card swaps aren't configured for this country yet.</div>`;
             panel.innerHTML = html;
@@ -1703,24 +1783,17 @@ function renderWizardSourcePicker(panel, type) {
             panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
             return;
         }
-
-        // One acquirer/network configured (the normal case) — no choice
-        // to make, go straight to the card form.
         if (cardMatches.length === 1) {
             html += `<div id="wizardFromFieldsBox"></div><div class="help" id="wizardFromLimitsHelp"></div>`;
             panel.innerHTML = html;
             const { institution, matchedAssetType } = cardMatches[0];
-            wizardState.fromAsset = matchedAssetType; // CARD or VISA_MASTERCARD_CARD — picks the right field set
+            wizardState.fromAsset = matchedAssetType;
             wizardSelectFromInst(institution);
             const limitsHelp = panel.querySelector('#wizardFromLimitsHelp');
             if (limitsHelp) limitsHelp.textContent = (limitsHelp.textContent ? limitsHelp.textContent + ' — ' : '') + `Processed via ${PARTICIPANTS[institution]?.name || institution}`;
             panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
             return;
         }
-
-        // More than one card network/acquirer configured — THIS is a real
-        // choice ("which network do we have a handshake with"), unlike
-        // "which bank issued your card", which is never asked.
         html += `
             <div class="field-group">
                 <label>Card network / processor</label>
@@ -1741,7 +1814,6 @@ function renderWizardSourcePicker(panel, type) {
         return;
     }
 
-    // WALLET / VOUCHER — genuinely need an institution.
     html += `
         <div class="field-group">
             <label>Institution</label>
@@ -1755,6 +1827,7 @@ function renderWizardSourcePicker(panel, type) {
     populateInstitutionsForAsset(type, sel);
     panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
+    
 function wizardSelectSavedSource(sourceId) {
     const source = userSources.find(s => s.id === sourceId);
     if (!source) return;
@@ -2204,65 +2277,85 @@ function buildWizardPayload() {
     }
 
     if (wizardState.source === 'COMBINE') {
-        const activeRows = wizardState.multiSources.filter(s => s.institution && s.assetType);
-        const sources = activeRows.map(s => {
-            const pin = extractPinFromFields(s.assetType, s.fields);
-            const identifierField = (ASSETS[s.assetType]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
-            return {
-                institution: s.institution,
-                asset_type: s.assetType,
-                identifier: identifierField ? s.fields[identifierField.name] : null,
-                amount: s.amount,
+    const rows = wizardState.multiSources.filter(r => !r._draft && combineRowIsComplete(r));
+    const sources = [];
+
+    rows.forEach(r => {
+        if (r.type === 'saved' || r.type === 'voucher') {
+            const pin = extractPinFromFields(r.assetType, r.fields);
+            const identifierField = (ASSETS[r.assetType]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+            sources.push({
+                institution: r.institution,
+                asset_type: r.assetType,
+                identifier: identifierField ? r.fields[identifierField.name] : null,
+                amount: r.amount,
                 wallet_pin: pin || undefined,
                 pin: pin || undefined,
-                asset_fields: { ...s.fields }
-            };
-        });
-        const totalAmount = wizardState.tabTotalAmount || sources.reduce((sum, s) => sum + s.amount, 0);
-        const sourceCurrency = activeRows.length ? (PARTICIPANTS[activeRows[0].institution]?.limits?.currency || wizardState.currency) : wizardState.currency;
-        const payload = {
-            swap_type: 'MULTI_SOURCE',
-            reference,
-            idempotency_key: idempotencyKey,
-            user_id: CONFIG.USER_ID,
-            amount: totalAmount,
-            currency: sourceCurrency,
-            contribution_strategy: wizardState.contributionStrategy,
-            sources
-        };
-
-        if (wizardState.destType === 'IDENTITY') {
-            payload.identity_type = wizardState.identityType;
-            payload.identity_value = wizardState.identityValue;
-            if (wizardState.identitySms) payload.notification_phone = wizardState.identitySms;
-            payload.destination_currency = sourceCurrency;
-            return { type: 'SWAP', payload };
+                asset_fields: { ...r.fields },
+            });
+        } else if (r.type === 'mycard' && vmCardSources) {
+            // Flattens "My Card" into the real hooked sources behind it so
+            // the backend still just sees a normal sources[] array. NOTE:
+            // this assumes execute.php's MULTI_SOURCE path recognizes these
+            // identifiers as already-authorized/hooked and doesn't demand a
+            // PIN for them — worth confirming against the backend before
+            // relying on this in production; SwapService has an `_is_hooked`
+            // concept for single-source swaps but I can't confirm it's wired
+            // into individual entries of a multi-source sources[] array.
+            const merged = dedupeVmCardSources(vmCardSources);
+            const totalHooked = merged.reduce((s, c) => s + c.amount, 0) || 1;
+            let allocated = 0;
+            merged.forEach((c, i) => {
+                const share = i === merged.length - 1
+                    ? Math.round((r.amount - allocated) * 100) / 100
+                    : Math.round((r.amount * (c.amount / totalHooked)) * 100) / 100;
+                allocated += share;
+                if (share > 0) {
+                    sources.push({ institution: c.institution, asset_type: c.asset_type, identifier: c.identifier, amount: share, _is_hooked: true });
+                }
+            });
         }
+    });
 
-        const destCurrency = PARTICIPANTS[wizardState.toInst]?.limits?.currency || sourceCurrency;
-        payload.currency = payload.currency || destCurrency;
-        payload.destination_currency = destCurrency;
-        payload.to_institution = wizardState.toInst;
-        payload.destination_institution = wizardState.toInst;
+    const totalAmount = wizardState.tabTotalAmount || sources.reduce((sum, s) => sum + s.amount, 0);
+    const sourceCurrency = sources.length ? (PARTICIPANTS[sources[0].institution]?.limits?.currency || wizardState.currency) : wizardState.currency;
+    const payload = {
+        swap_type: 'MULTI_SOURCE', reference, idempotency_key: idempotencyKey, user_id: CONFIG.USER_ID,
+        amount: totalAmount, currency: sourceCurrency, contribution_strategy: wizardState.contributionStrategy, sources
+    };
 
-        if (wizardState.destType === 'CASHOUT') {
-            payload.delivery_method = wizardState.deliveryMethod || 'ATM';
-            const beneficiaryPhone = wizardState.beneficiaryPhone || wizardState.toFields?.phone || wizardState.toFields?.recipient_phone || null;
-            if (beneficiaryPhone) payload.beneficiary_phone = beneficiaryPhone;
-            payload.destination_asset_type = 'WALLET';
-            payload.destination_asset_fields = { phone: beneficiaryPhone };
-            payload.destination_identifier = beneficiaryPhone;
-            return { type: 'SWAP', payload };
-        }
-
-        const destFields = { ...wizardState.toFields };
-        if (assetHasAmountField(wizardState.toAsset)) destFields.amount = totalAmount;
-        const destIdField = (ASSETS[wizardState.toAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
-        payload.destination_asset_type = wizardState.toAsset;
-        payload.destination_asset_fields = destFields;
-        if (destIdField) payload.destination_identifier = wizardState.toFields[destIdField.name];
+    if (wizardState.destType === 'IDENTITY') {
+        payload.identity_type = wizardState.identityType;
+        payload.identity_value = wizardState.identityValue;
+        if (wizardState.identitySms) payload.notification_phone = wizardState.identitySms;
+        payload.destination_currency = sourceCurrency;
         return { type: 'SWAP', payload };
     }
+
+    const destCurrency = PARTICIPANTS[wizardState.toInst]?.limits?.currency || sourceCurrency;
+    payload.currency = payload.currency || destCurrency;
+    payload.destination_currency = destCurrency;
+    payload.to_institution = wizardState.toInst;
+    payload.destination_institution = wizardState.toInst;
+
+    if (wizardState.destType === 'CASHOUT') {
+        payload.delivery_method = wizardState.deliveryMethod || 'ATM';
+        const beneficiaryPhone = wizardState.beneficiaryPhone || wizardState.toFields?.phone || wizardState.toFields?.recipient_phone || null;
+        if (beneficiaryPhone) payload.beneficiary_phone = beneficiaryPhone;
+        payload.destination_asset_type = 'WALLET';
+        payload.destination_asset_fields = { phone: beneficiaryPhone };
+        payload.destination_identifier = beneficiaryPhone;
+        return { type: 'SWAP', payload };
+    }
+
+    const destFields = { ...wizardState.toFields };
+    if (assetHasAmountField(wizardState.toAsset)) destFields.amount = totalAmount;
+    const destIdField = (ASSETS[wizardState.toAsset]?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+    payload.destination_asset_type = wizardState.toAsset;
+    payload.destination_asset_fields = destFields;
+    if (destIdField) payload.destination_identifier = wizardState.toFields[destIdField.name];
+    return { type: 'SWAP', payload };
+}
 
     const pin = extractPinFromFields(wizardState.fromAsset, wizardState.fromFields);
     const sourceAssetFields = { ...wizardState.fromFields };
@@ -2403,6 +2496,8 @@ function resetWizard() {
     wizardState.beneficiaryPhone = '';
     wizardState.multiSources = [];
     wizardState.tabTotalAmount = 0;
+    wizardState.combineView = 'list';
+    wizardState.combineEditingRowId = null;
     wizardState.lastPreview = null;
     wizardState.swapPayload = null;
     document.getElementById('wizardAmount').value = '';
@@ -2519,86 +2614,6 @@ async function startVmCardSwapWizard(payload) {
     goView('card');
 }
 
-// ============================================================
-// COMBINE SOURCES — with "use a saved source" per row (previously
-// every row had to be typed from scratch, even for accounts already
-// linked in Toolbox).
-// ============================================================
-function renderCombineSummaryWizard() {
-    const panel = document.getElementById('sourceDetailPanel');
-    if (!panel) return;
-    panel.style.display = 'block';
-
-    if (wizardState.multiSources.length === 0) {
-        wizardState.multiSources = [
-            { id: ++multiSourceSeq, institution: null, assetType: null, fields: {}, amount: 0 },
-            { id: ++multiSourceSeq, institution: null, assetType: null, fields: {}, amount: 0 }
-        ];
-    }
-
-    let html = `
-        <div style="font-size:12px;color:var(--text-dim);margin-bottom:12px;">Combine multiple sources to pay one amount. Smart strategy balances it for you.</div>
-        <div class="field-group">
-            <label>Total amount to swap</label>
-            <input type="number" id="combineTotal" placeholder="0.00" step="0.01" value="${wizardState.tabTotalAmount || ''}" oninput="updateCombineTotal(this.value)">
-        </div>
-       ${renderCircuitDiagram()}
-        <div class="strategy-row" style="margin-bottom:10px;">
-            <button class="${wizardState.contributionStrategy === 'SMART' ? 'active' : ''}" onclick="setCombineStrategy('SMART')">Smart</button>
-            <button class="${wizardState.contributionStrategy === 'EQUAL' ? 'active' : ''}" onclick="setCombineStrategy('EQUAL')">Equal</button>
-            <button class="${wizardState.contributionStrategy === 'RATIO' ? 'active' : ''}" onclick="setCombineStrategy('RATIO')">Ratio</button>
-        </div>
-        <div id="combineSourceRows">`;
-
-    wizardState.multiSources.forEach((s, idx) => {
-        const instOptions = Object.keys(PARTICIPANTS).map(code =>
-            `<option value="${code}" ${s.institution === code ? 'selected' : ''}>${PARTICIPANTS[code]?.name || code}</option>`
-        ).join('');
-        const savedPickerHtml = userSources.filter(u => u.status === 'active').length ? `
-            <div style="margin-bottom:8px;">
-                <span class="quick-link muted" onclick="toggleCombineSavedPicker(${s.id})">Use a saved source &rsaquo;</span>
-                <div id="combineSavedPicker${s.id}" style="display:none;margin-top:6px;border:1px solid var(--border-strong);">
-                    ${userSources.filter(u => u.status === 'active').map(u => `<div class="saved-source-row" onclick="applyCombineSavedSource(${s.id}, '${u.id}')"><div class="row-main"><div class="row-inst">${escapeHtml(PARTICIPANTS[u.institution]?.name || u.institution)}</div><div class="row-ident">${escapeHtml(u.identifier || u.source_identifier || '')}</div></div></div>`).join('')}
-                </div>
-            </div>` : '';
-        html += `
-            <div style="border:1px solid var(--border);padding:12px;margin-bottom:8px;background:var(--surface);">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-                    <span style="font-size:11px;font-weight:700;color:var(--text-dim);">Source ${idx + 1}</span>
-                    ${wizardState.multiSources.length > 2 ? `<button class="btn-danger-outline" onclick="removeCombineRow(${s.id})" style="background:transparent;border:1px solid rgba(198,40,40,0.4);color:var(--danger);padding:2px 10px;font-size:10px;cursor:pointer;">Remove</button>` : ''}
-                </div>
-                ${savedPickerHtml}
-                <div class="field-group" style="margin-bottom:8px;">
-                    <label>Institution</label>
-                    <select onchange="setCombineInst(${s.id}, this.value)"><option value="">Select</option>${instOptions}</select>
-                </div>
-                <div class="field-group" style="margin-bottom:8px;">
-                    <label>Asset type</label>
-                    <select onchange="setCombineAsset(${s.id}, this.value)">
-                        <option value="">Select</option>
-                        <option value="ACCOUNT" ${s.assetType === 'ACCOUNT' ? 'selected' : ''}>Account</option>
-                        <option value="WALLET" ${s.assetType === 'WALLET' ? 'selected' : ''}>Wallet</option>
-                        <option value="CARD" ${s.assetType === 'CARD' ? 'selected' : ''}>Card</option>
-                        <option value="VOUCHER" ${s.assetType === 'VOUCHER' ? 'selected' : ''}>Voucher</option>
-                    </select>
-                </div>
-                ${s.assetType ? renderCombineFieldsWizard(s) : ''}
-                <div class="field-group" style="margin-bottom:0;">
-                    <label>Amount from this source</label>
-                    <input type="number" step="0.01" placeholder="0.00" value="${s.amount || ''}" oninput="setCombineAmount(${s.id}, this.value)">
-                </div>
-            </div>`;
-    });
-
-    html += `
-        </div>
-        <button class="quick-link" style="width:100%;justify-content:center;padding:10px;margin-top:8px;" onclick="addCombineRow()">+ Add another source</button>
-        <div style="margin-top:8px;font-size:11px;color:var(--text-dim);text-align:center;">${wizardState.multiSources.filter(s => s.institution && s.amount > 0).length} source(s) configured</div>`;
-
-    panel.innerHTML = html;
-    document.getElementById('wizardSourceNext').disabled = !multiSourcesValid();
-}
-
 function renderCircuitDiagram() {
     const total = wizardState.tabTotalAmount || wizardState.multiSources.reduce((s, r) => s + (r.amount || 0), 0);
     const maxAmt = Math.max(...wizardState.multiSources.map(s => s.amount || 0), 1);
@@ -2678,54 +2693,251 @@ function toggleCombineSavedPicker(rowId) {
     if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
 }
 
-function applyCombineSavedSource(rowId, sourceId) {
+
+// ============================================================
+// COMBINE SOURCES — redesigned so only one thing is ever on screen:
+//   'list'   → total amount, strategy, the running list of rows you've
+//              added (with Edit/Remove), the diagram — Wallet/Voucher/
+//              My Card row-forms are NOT shown here, only summaries.
+//   'addRow' → the add/edit form for exactly one row, alone, full width.
+// Rows can only be: a saved source, a fresh voucher, or "My Card" as one
+// lump draw from whatever's hooked. A brand-new (unadded) institution
+// can't be entered here directly — that has to go through hooking it to
+// My Card first, same as your instruction.
+// ============================================================
+function renderCombineSummaryWizard() {
+    const panel = document.getElementById('sourceDetailPanel');
+    if (!panel) return;
+    panel.style.display = 'block';
+
+    if (wizardState.combineView === 'addRow') {
+        renderCombineAddRow(panel);
+    } else {
+        renderCombineList(panel);
+    }
+    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function renderCombineList(panel) {
+    const rows = wizardState.multiSources;
+    const rowsHtml = rows.length
+        ? rows.map(r => renderCombineRowSummary(r)).join('')
+        : `<div class="empty-source-box"><p>No sources added yet.</p></div>`;
+
+    panel.innerHTML = `
+        ${sourceTypeBackLinkHtml()}
+        <div class="field-group">
+            <label>Total amount to swap</label>
+            <input type="number" id="combineTotal" placeholder="0.00" step="0.01" value="${wizardState.tabTotalAmount || ''}" oninput="updateCombineTotal(this.value)">
+        </div>
+        <div class="strategy-row">
+            <button class="${wizardState.contributionStrategy === 'SMART' ? 'active' : ''}" onclick="setCombineStrategy('SMART')">Smart</button>
+            <button class="${wizardState.contributionStrategy === 'EQUAL' ? 'active' : ''}" onclick="setCombineStrategy('EQUAL')">Equal</button>
+            <button class="${wizardState.contributionStrategy === 'RATIO' ? 'active' : ''}" onclick="setCombineStrategy('RATIO')">Ratio</button>
+        </div>
+        <div class="combine-layout">
+            <div class="combine-col-left">
+                <div id="combineRowsList">${rowsHtml}</div>
+                <button class="quick-link" style="width:100%;justify-content:center;padding:12px;margin-top:8px;" onclick="openCombineAddRow()">+ Add source</button>
+                <div style="margin-top:8px;font-size:11px;color:var(--text-dim);text-align:center;">${rows.length} source(s) added — need at least 2</div>
+            </div>
+            <div class="combine-col-right">${renderCircuitDiagram()}</div>
+        </div>`;
+
+    document.getElementById('wizardSourceNext').disabled = !multiSourcesValid();
+}
+
+function renderCombineRowSummary(row) {
+    let icon = '💠', title = '', sub = '';
+    if (row.type === 'saved') {
+        icon = assetIcon(row.assetType);
+        title = PARTICIPANTS[row.institution]?.name || row.institution;
+        const idField = (getAssetConfig(row.assetType)?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+        sub = idField ? (row.fields[idField.name] || '') : '';
+    } else if (row.type === 'voucher') {
+        icon = '🎟️';
+        title = 'Voucher' + (row.institution ? ` · ${PARTICIPANTS[row.institution]?.name || row.institution}` : '');
+        sub = row.fields.voucher_number || '';
+    } else if (row.type === 'mycard') {
+        icon = '🧩';
+        title = 'My Card';
+        sub = 'From hooked sources';
+    }
+    return `<div class="combine-row-card">
+        <div class="combine-row-main">
+            <span class="combine-row-icon">${icon}</span>
+            <div><div class="combine-row-title">${escapeHtml(title)}</div><div class="combine-row-sub">${escapeHtml(sub)}</div></div>
+        </div>
+        <div class="combine-row-amt">${formatMoney(row.amount, wizardState.currency)}</div>
+        <div class="combine-row-actions">
+            <button class="quick-link muted" onclick="openCombineAddRow(${row.id})">Edit</button>
+            <button class="quick-link danger" onclick="removeCombineRow(${row.id})">Remove</button>
+        </div>
+    </div>`;
+}
+
+// Opens the focused single-row form. Pass an existing row's id to edit it
+// (a snapshot is kept so Back-without-saving reverts cleanly); omit it to
+// add a new one.
+let combineEditSnapshot = null;
+function openCombineAddRow(rowId) {
+    wizardState.combineView = 'addRow';
+    if (rowId) {
+        wizardState.combineEditingRowId = rowId;
+        const row = wizardState.multiSources.find(r => r.id === rowId);
+        combineEditSnapshot = row ? JSON.parse(JSON.stringify(row)) : null;
+    } else {
+        wizardState.combineEditingRowId = ++multiSourceSeq;
+        combineEditSnapshot = null;
+        wizardState.multiSources.push({ id: wizardState.combineEditingRowId, type: null, institution: null, assetType: null, fields: {}, amount: 0, _draft: true });
+    }
+    renderCombineSummaryWizard();
+}
+
+function closeCombineAddRow(discard) {
+    const id = wizardState.combineEditingRowId;
+    if (discard) {
+        if (combineEditSnapshot) {
+            const idx = wizardState.multiSources.findIndex(r => r.id === id);
+            if (idx > -1) wizardState.multiSources[idx] = combineEditSnapshot;
+        } else {
+            wizardState.multiSources = wizardState.multiSources.filter(r => !(r.id === id && r._draft));
+        }
+    } else {
+        const row = wizardState.multiSources.find(r => r.id === id);
+        if (row) delete row._draft;
+    }
+    wizardState.combineEditingRowId = null;
+    combineEditSnapshot = null;
+    wizardState.combineView = 'list';
+    if (wizardState.contributionStrategy !== 'RATIO') autoSplitCombineEven();
+    renderCombineSummaryWizard();
+}
+
+function renderCombineAddRow(panel) {
+    const row = wizardState.multiSources.find(r => r.id === wizardState.combineEditingRowId);
+    if (!row) { wizardState.combineView = 'list'; renderCombineSummaryWizard(); return; }
+
+    const savedEligible = userSources.filter(u => u.status === 'active');
+    const hasMyCard = !!(myCard && myCard.is_active);
+
+    let html = `<button type="button" class="source-type-back-link" onclick="closeCombineAddRow(true)">&larr; Cancel, back to sources</button>`;
+    html += `<div class="combine-type-picker">
+        <div class="source-type-opt ${row.type === 'saved' ? 'active' : ''} ${savedEligible.length ? '' : 'disabled'}" onclick="${savedEligible.length ? "setCombineRowType('saved')" : ''}"><span class="icon">💳</span>Saved source</div>
+        <div class="source-type-opt ${row.type === 'voucher' ? 'active' : ''}" onclick="setCombineRowType('voucher')"><span class="icon">🎟️</span>Voucher</div>
+        <div class="source-type-opt ${row.type === 'mycard' ? 'active' : ''} ${hasMyCard ? '' : 'disabled'}" onclick="${hasMyCard ? "setCombineRowType('mycard')" : ''}"><span class="icon">🧩</span>My Card</div>
+    </div>`;
+
+    if (!row.type) {
+        html += `<div class="help" style="text-align:center;">Pick where this part of the swap comes from.</div>`;
+        panel.innerHTML = html;
+        return;
+    }
+
+    if (row.type === 'saved') {
+        html += `<div class="dropdown-select" id="combineSavedDropdown">
+            <div class="dropdown-select-trigger" onclick="document.getElementById('combineSavedDropdown').classList.toggle('open')">
+                <span class="${row.institution ? 'chosen' : 'placeholder'}">${row.institution ? escapeHtml(PARTICIPANTS[row.institution]?.name || row.institution) : 'Select a saved source &rsaquo;'}</span>
+                <span class="dropdown-select-chevron">&#9662;</span>
+            </div>
+            <div class="dropdown-select-panel">
+                ${savedEligible.map(u => `<div class="saved-source-row ${row.sourceId === u.id ? 'active' : ''}" onclick="applyCombineSavedSource('${u.id}')"><div class="row-main"><div class="row-inst">${escapeHtml(PARTICIPANTS[u.institution]?.name || u.institution)}</div><div class="row-ident">${escapeHtml(u.identifier || u.source_identifier || '')}</div></div></div>`).join('')}
+            </div>
+        </div>`;
+        if (row.institution) {
+            html += `<div class="field-group" style="margin-top:14px;"><label>Amount from this source</label><input type="number" step="0.01" placeholder="0.00" value="${row.amount || ''}" oninput="setCombineRowAmount(this.value)"></div>`;
+        }
+    } else if (row.type === 'voucher') {
+        html += `<div class="field-group"><label>Institution</label><select id="combineVoucherInst" onchange="setCombineVoucherInst(this.value)"><option value="">Select</option>${institutionsForTile('VOUCHER').map(m => `<option value="${m.institution}" ${row.institution === m.institution ? 'selected' : ''}>${PARTICIPANTS[m.institution]?.name || m.institution}</option>`).join('')}</select></div>`;
+        if (row.institution) {
+            html += `<div id="combineVoucherFields">${renderVoucherFieldsForCombine(row)}</div>`;
+        }
+    } else if (row.type === 'mycard') {
+        const currency = myCard?.hook?.currency || myCard?.currency || wizardState.currency;
+        html += `<div class="tab-status-line" style="margin-bottom:16px;">Draws from whatever's hooked to your card, split automatically.</div>
+            <div class="field-group"><label>Amount to draw from My Card</label><input type="number" step="0.01" placeholder="0.00" value="${row.amount || ''}" oninput="setCombineRowAmount(this.value)"></div>
+            <div style="text-align:center;"><span class="quick-link muted" onclick="goView('card')">Hook more to your card &rsaquo;</span></div>`;
+    }
+
+    html += `<div class="cta-row" style="margin-top:20px;"><button class="btn btn-secondary" onclick="closeCombineAddRow(true)">Cancel</button><button class="btn btn-primary" ${combineRowIsComplete(row) ? '' : 'disabled'} onclick="closeCombineAddRow(false)">Save source</button></div>`;
+    panel.innerHTML = html;
+}
+
+function combineRowIsComplete(row) {
+    if (!row.type) return false;
+    if (!(row.amount > 0) && row.type !== 'voucher') return false;
+    if (row.type === 'saved') return !!row.institution;
+    if (row.type === 'mycard') return true;
+    if (row.type === 'voucher') {
+        if (!row.institution) return false;
+        const required = (getAssetConfig('VOUCHER')?.fields || []).filter(f => f.required);
+        return required.every(f => row.fields[f.name] && String(row.fields[f.name]).trim().length > 0);
+    }
+    return false;
+}
+
+function setCombineRowType(type) {
+    const row = wizardState.multiSources.find(r => r.id === wizardState.combineEditingRowId);
+    if (!row) return;
+    row.type = type;
+    row.institution = null; row.assetType = type === 'voucher' ? 'VOUCHER' : null;
+    row.fields = {}; row.sourceId = null; row.amount = row.amount || 0;
+    renderCombineSummaryWizard();
+}
+
+function applyCombineSavedSource(sourceId) {
+    const row = wizardState.multiSources.find(r => r.id === wizardState.combineEditingRowId);
     const source = userSources.find(u => u.id === sourceId);
-    const row = wizardState.multiSources.find(s => s.id === rowId);
-    if (!source || !row) return;
+    if (!row || !source) return;
     row.institution = source.institution;
     row.assetType = String(source.asset_type).toUpperCase();
+    row.sourceId = sourceId;
     row.fields = {};
     const idField = (getAssetConfig(row.assetType)?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
     if (idField) row.fields[idField.name] = source.identifier || source.source_identifier || '';
     renderCombineSummaryWizard();
 }
 
-function addCombineRow() {
-    wizardState.multiSources.push({ id: ++multiSourceSeq, institution: null, assetType: null, fields: {}, amount: 0 });
+function setCombineRowAmount(value) {
+    const row = wizardState.multiSources.find(r => r.id === wizardState.combineEditingRowId);
+    if (row) row.amount = parseFloat(value) || 0;
+    document.querySelector('.combine-type-picker')?.parentElement && (function(){ const btn = document.querySelector('.cta-row .btn-primary'); if (btn) btn.disabled = !combineRowIsComplete(row); })();
+}
+
+function setCombineVoucherInst(code) {
+    const row = wizardState.multiSources.find(r => r.id === wizardState.combineEditingRowId);
+    if (!row) return;
+    row.institution = code || null;
+    row.fields = {};
     renderCombineSummaryWizard();
+}
+
+function renderVoucherFieldsForCombine(row) {
+    const fields = (getAssetConfig('VOUCHER')?.fields || []);
+    return fields.map(f => {
+        const inputType = f.vault_field === 'pin' ? 'password' : (f.type === 'number' ? 'number' : 'text');
+        return `<div class="field-group"><label>${f.label}${f.required ? ' *' : ''}</label><input type="${inputType}" placeholder="${f.placeholder || ''}" value="${row.fields[f.name] || ''}" oninput="setCombineVoucherField('${f.name}', this.value)"></div>`;
+    }).join('');
+}
+
+function setCombineVoucherField(name, value) {
+    const row = wizardState.multiSources.find(r => r.id === wizardState.combineEditingRowId);
+    if (!row) return;
+    row.fields[name] = name === 'amount' ? (parseFloat(value) || 0) : value;
+    if (name === 'amount') row.amount = row.fields.amount;
+    const btn = document.querySelector('.cta-row .btn-primary');
+    if (btn) btn.disabled = !combineRowIsComplete(row);
 }
 
 function removeCombineRow(id) {
     wizardState.multiSources = wizardState.multiSources.filter(s => s.id !== id);
+    if (wizardState.contributionStrategy !== 'RATIO') autoSplitCombineEven();
     renderCombineSummaryWizard();
-}
-
-function setCombineInst(id, code) {
-    const s = wizardState.multiSources.find(src => src.id === id);
-    if (s) { s.institution = code || null; s.assetType = null; s.fields = {}; renderCombineSummaryWizard(); }
-}
-
-function setCombineAsset(id, type) {
-    const s = wizardState.multiSources.find(src => src.id === id);
-    if (s) { s.assetType = type || null; s.fields = {}; renderCombineSummaryWizard(); }
-}
-
-function setCombineField(id, name, value) {
-    const s = wizardState.multiSources.find(src => src.id === id);
-    if (s) s.fields[name] = value;
-}
-
-function setCombineAmount(id, value) {
-    const s = wizardState.multiSources.find(src => src.id === id);
-    if (s) s.amount = parseFloat(value) || 0;
-    document.getElementById('wizardSourceNext').disabled = !multiSourcesValid();
 }
 
 function updateCombineTotal(value) {
     wizardState.tabTotalAmount = parseFloat(value) || 0;
-    if (wizardState.contributionStrategy === 'EQUAL' || wizardState.contributionStrategy === 'SMART') {
-        autoSplitCombineEven();
-    }
+    if (wizardState.contributionStrategy === 'EQUAL' || wizardState.contributionStrategy === 'SMART') autoSplitCombineEven();
     renderCombineSummaryWizard();
 }
 
@@ -2735,32 +2947,26 @@ function setCombineStrategy(strategy) {
     renderCombineSummaryWizard();
 }
 
+// Voucher rows are fixed at their own face value; the flexible pool
+// (saved sources + My Card) splits whatever's left.
 function autoSplitCombineEven() {
-    const rows = wizardState.multiSources.filter(s => s.institution && s.assetType !== 'VOUCHER');
-    const voucherTotal = wizardState.multiSources.filter(s => s.assetType === 'VOUCHER').reduce((sum, s) => sum + (s.amount || 0), 0);
+    const flexRows = wizardState.multiSources.filter(r => r.type === 'saved' || r.type === 'mycard');
+    const voucherTotal = wizardState.multiSources.filter(r => r.type === 'voucher').reduce((s, r) => s + (r.amount || 0), 0);
     const toSplit = Math.max(0, wizardState.tabTotalAmount - voucherTotal);
-    if (rows.length === 0) return;
-    const share = Math.floor((toSplit / rows.length) * 100) / 100;
+    if (flexRows.length === 0) return;
+    const share = Math.floor((toSplit / flexRows.length) * 100) / 100;
     let allocated = 0;
-    rows.forEach((s, i) => {
-        s.amount = (i === rows.length - 1) ? Math.round((toSplit - allocated) * 100) / 100 : share;
-        allocated += s.amount;
+    flexRows.forEach((r, i) => {
+        r.amount = (i === flexRows.length - 1) ? Math.round((toSplit - allocated) * 100) / 100 : share;
+        allocated += r.amount;
     });
 }
 
 function multiSourcesValid() {
-    const activeRows = wizardState.multiSources.filter(s => s.institution && s.assetType);
-    if (activeRows.length < 2) return false;
-    const totalConfigured = activeRows.reduce((sum, s) => sum + (s.amount || 0), 0);
-    const target = wizardState.tabTotalAmount || totalConfigured;
-    if (target <= 0) return false;
-    return activeRows.every(s => {
-        if (!(s.amount > 0)) return false;
-        const config = getAssetConfig(s.assetType);
-        if (!config) return false;
-        const requiredFields = (config.fields || []).filter(f => f.required && f.name !== 'amount' && f.vault_field !== 'pin');
-        return requiredFields.every(f => s.fields[f.name] && String(s.fields[f.name]).trim().length > 0);
-    });
+    const rows = wizardState.multiSources.filter(r => !r._draft && combineRowIsComplete(r));
+    if (rows.length < 2) return false;
+    const target = wizardState.tabTotalAmount || rows.reduce((s, r) => s + r.amount, 0);
+    return target > 0;
 }
 
 // ============================================================
