@@ -3017,7 +3017,11 @@ function renderCombineAddRow(panel) {
             </div>
         </div>`;
         if (row.institution) {
-            html += `<div class="field-group" style="margin-top:14px;"><label>Amount from this source</label><input type="number" step="0.01" placeholder="0.00" value="${row.amount || ''}" oninput="setCombineRowAmount(this.value)"></div>`;
+            if (wizardState.contributionStrategy === 'USER_SPECIFIED') {
+                html += `<div class="field-group" style="margin-top:14px;"><label>Amount from this source</label><input type="number" step="0.01" placeholder="0.00" value="${row.amount || ''}" oninput="setCombineRowAmount(this.value)"></div>`;
+            } else {
+                html += `<div class="help" style="margin-top:14px;">Amount is set automatically by your "${wizardState.contributionStrategy}" strategy after you save.</div>`;
+            }
         }
     } else if (row.type === 'voucher') {
         html += `<div class="field-group"><label>Institution</label><select id="combineVoucherInst" onchange="setCombineVoucherInst(this.value)"><option value="">Select</option>${institutionsForTile('VOUCHER').map(m => `<option value="${m.institution}" ${row.institution === m.institution ? 'selected' : ''}>${PARTICIPANTS[m.institution]?.name || m.institution}</option>`).join('')}</select></div>`;
