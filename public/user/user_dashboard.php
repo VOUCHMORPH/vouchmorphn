@@ -3039,6 +3039,7 @@ function renderCombineAddRow(panel) {
     panel.innerHTML = html;
 }
 
+
 function combineRowIsComplete(row) {
     if (!row.type) return false;
     const needsManualAmount = wizardState.contributionStrategy === 'USER_SPECIFIED';
@@ -3061,7 +3062,8 @@ function combineRowIsComplete(row) {
     }
     return false;
 }
-
+    }
+    
 function setCombineRowType(type) {
     const row = wizardState.multiSources.find(r => r.id === wizardState.combineEditingRowId);
     if (!row) return;
