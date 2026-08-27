@@ -2923,6 +2923,11 @@ function renderCombineSummaryWizard() {
     const container = document.getElementById('sourceDetailPanel');
     if (!container) return;
     const nextBtn = document.getElementById('wizardSourceNext');
+
+        if (wizardState.combineView === 'addRow') {
+        renderCombineAddRow(container);
+        return;
+    }
     
     const rows = wizardState.multiSources.filter(r => !r._draft);
     const total = wizardState.tabTotalAmount || 0;
@@ -3789,29 +3794,190 @@ function saveCardName() {
 }
 
 function openActivateCardModal() {
-    returnMovableNodesHome();
     const modalBody = document.getElementById('modalBody');
     if (!modalBody) return;
-    modalBody.innerHTML = '';
-    modalBody.appendChild(document.getElementById('fromSection'));
-    state.fromCategory = 'WALLET'; toggleSourcePanelInline('WALLET');
-    const feeNote = document.createElement('div');
-    feeNote.style.cssText = 'font-size:12px;color:var(--text-dim);text-align:center;margin-top:10px;';
-    feeNote.textContent = `A one-time ${formatMoney(myCard.activation_fee, myCard.currency)} activation fee will be charged from the source you select.`;
-    modalBody.appendChild(feeNote);
-    const btnRow = document.createElement('div');
-    btnRow.className = 'cta-row'; btnRow.style.marginTop = '14px';
-    btnRow.innerHTML = `<button type="button" class="btn btn-primary" onclick="confirmActivateCard('${myCard.card_suffix}')">Pay and activate</button>`;
-    modalBody.appendChild(btnRow);
+    
+    // Build the activation form directly in the modal
+    modalBody.innerHTML = `
+        <div style="margin-bottom:16px;">
+            <div style="font-weight:700;font-size:15px;margin-bottom:4px;">Activate your VouchMorph Card</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">A one-time ${formatMoney(myCard.activation_fee, myCard.currency)} activation fee will be charged from the source you select.</div>
+        </div>
+        <div class="field-group">
+            <label>Source institution</label>
+            <select id="activateInstSelect" onchange="onActivateInstChange(this.value)">
+                <option value="">Select institution</option>
+                ${Object.keys(PARTICIPANTS).map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('')}
+            </select>
+        </div>
+        <div id="activateAssetGroup" style="display:none;">
+            <div class="field-group">
+                <label>Asset type</label>
+                <select id="activateAssetSelect" onchange="onActivateAssetChange(this.value)"></select>
+            </div>
+        </div>
+        <div id="activateFieldsContainer"></div>
+        <div class="help" id="activateLimitsHelp" style="margin-top:8px;"></div>
+        <div class="cta-row" style="margin-top:16px;">
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" id="activateBtn" onclick="confirmActivateCard()" disabled>Pay and activate</button>
+        </div>
+    `;
+    
     document.getElementById('modalTitle').textContent = 'Activate your card';
     document.getElementById('modal').classList.add('active');
 }
 
-// ============================================================
-// SESSION / SWIPE
-// ============================================================
-let lastKnownSession = null;
+// Add these helper functions right after openActivateCardModal:
 
+function onActivateInstChange(code) {
+    const assetGroup = document.getElementById('activateAssetGroup');
+    const assetSelect = document.getElementById('activateAssetSelect');
+    const fieldsContainer = document.getElementById('activateFieldsContainer');
+    const limitsHelp = document.getElementById('activateLimitsHelp');
+    const btn = document.getElementById('activateBtn');
+    
+    if (!code) {
+        if (assetGroup) assetGroup.style.display = 'none';
+        if (fieldsContainer) fieldsContainer.innerHTML = '';
+        if (limitsHelp) limitsHelp.textContent = '';
+        if (btn) btn.disabled = true;
+        return;
+    }
+    
+    const inst = PARTICIPANTS[code];
+    if (limitsHelp) {
+        limitsHelp.textContent = inst?.limits ? `Limits: ${inst.limits.min_amount} – ${inst.limits.max_amount} ${inst.limits.currency}` : '';
+    }
+    
+    const assetTypes = inst?.asset_types || [];
+    if (assetSelect) {
+        assetSelect.innerHTML = '<option value="">Select asset type</option>' +
+            assetTypes.map(t => `<option value="${t}">${assetIcon(t)} ${ASSETS[normalizeAssetType(t)]?.label || t}</option>`).join('');
+    }
+    if (assetGroup) assetGroup.style.display = assetTypes.length ? 'block' : 'none';
+    if (fieldsContainer) fieldsContainer.innerHTML = '';
+    if (btn) btn.disabled = true;
+}
+
+function onActivateAssetChange(type) {
+    const fieldsContainer = document.getElementById('activateFieldsContainer');
+    const btn = document.getElementById('activateBtn');
+    
+    if (!type || !fieldsContainer) {
+        if (fieldsContainer) fieldsContainer.innerHTML = '';
+        if (btn) btn.disabled = true;
+        return;
+    }
+    
+    // Store selected values globally for the activation
+    window._activateSource = { assetType: type };
+    
+    // Render fields for this asset type
+    const config = getAssetConfig(type);
+    if (!config || !config.fields) {
+        fieldsContainer.innerHTML = '';
+        if (btn) btn.disabled = true;
+        return;
+    }
+    
+    fieldsContainer.innerHTML = config.fields.map(f => {
+        if (f.name === 'amount') return '';
+        const inputType = f.vault_field === 'pin' ? 'password' : (f.type === 'number' ? 'number' : 'text');
+        return `<div class="field-group">
+            <label>${f.label}${f.required ? ' *' : ''}</label>
+            <input type="${inputType}" id="activateField_${f.name}" placeholder="${f.placeholder || ''}" oninput="onActivateFieldChange()">
+            ${f.help_text ? `<div class="help">${f.help_text}</div>` : ''}
+        </div>`;
+    }).join('');
+    
+    // Check validity after fields render
+    setTimeout(onActivateFieldChange, 50);
+}
+
+function onActivateFieldChange() {
+    const btn = document.getElementById('activateBtn');
+    if (!btn) return;
+    
+    const inst = document.getElementById('activateInstSelect')?.value;
+    const assetType = document.getElementById('activateAssetSelect')?.value;
+    
+    if (!inst || !assetType) {
+        btn.disabled = true;
+        return;
+    }
+    
+    // Get all field values
+    const fields = {};
+    const config = getAssetConfig(assetType);
+    if (config && config.fields) {
+        config.fields.forEach(f => {
+            if (f.name === 'amount') return;
+            const el = document.getElementById('activateField_' + f.name);
+            if (el) fields[f.name] = el.value;
+        });
+    }
+    
+    // Validate required fields
+    const valid = fieldsValidForAsset(assetType, fields, true);
+    btn.disabled = !valid.valid;
+    
+    // Store for later
+    window._activateSource.fields = fields;
+    window._activateSource.inst = inst;
+}
+
+function confirmActivateCard() {
+    const inst = document.getElementById('activateInstSelect')?.value;
+    const assetType = document.getElementById('activateAssetSelect')?.value;
+    const fields = window._activateSource?.fields || {};
+    const pin = fields.pin || '';
+    
+    // Get identifier from fields
+    const config = getAssetConfig(assetType);
+    const idField = (config?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+    const identifier = idField ? fields[idField.name] : null;
+    
+    if (!inst || !assetType || !identifier) {
+        showMessage('Please complete all required fields.', 'warning');
+        return;
+    }
+    
+    const instName = PARTICIPANTS[inst]?.name || inst;
+    
+    const bodyHtml = `
+        <div class="review-hero">
+            <div class="review-hero-label">Activate your VouchMorph Card</div>
+            <div class="review-hero-amount">${formatMoney(myCard.activation_fee, myCard.currency)}</div>
+            <div class="review-hero-note">One-time fee</div>
+        </div>
+        <div class="preview-box">
+            <div class="preview-row">
+                <span>From</span>
+                <span class="value">${escapeHtml(instName)}</span>
+            </div>
+            <div class="preview-row" style="border-bottom:none;">
+                <span>Identifier</span>
+                <span class="value">${escapeHtml(identifier)}</span>
+            </div>
+        </div>
+        <div class="preview-reassure">This fee activates your card immediately.</div>`;
+
+    pendingExecution = {
+        type: 'activate',
+        payload: { 
+            cardSuffix: myCard.card_suffix, 
+            institution: inst, 
+            asset_type: assetType, 
+            identifier: identifier, 
+            pin: pin 
+        },
+        callback: () => executeActivateCard()
+    };
+    showPreviewModal('Activation preview', bodyHtml, null, 'Pay and activate');
+}
+
+// executeActivateCard already exists in your file - keep it as-is.
 function startSessionPolling(sessionId) {
     stopSessionPolling();
     activeSessionPollTimer = setInterval(async () => {
