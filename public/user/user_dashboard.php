@@ -1537,9 +1537,9 @@ function executePendingAction() {
         return;
     }
     const cb = pendingExecution.callback;
-    pendingExecution = { type: null, payload: null, callback: null };
     closeModal();
-    cb();
+    cb();  // ← runs first, while payload is still intact
+    pendingExecution = { type: null, payload: null, callback: null };  // ← reset after
 }
 
 // ============================================================
