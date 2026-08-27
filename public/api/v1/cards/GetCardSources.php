@@ -41,11 +41,13 @@ require_once ROOT_PATH . '/src/Application/Utils/SessionManager.php';
 use Application\Utils\SessionManager;
 
 SessionManager::start();
+error_log("[GetCardSources] cookie=" . json_encode($_COOKIE) . " session_id=" . session_id());
 if (!SessionManager::isLoggedIn()) {
     http_response_code(401);
     echo json_encode(['success' => false, 'error' => 'Not logged in']);
     exit();
 }
+
 
 $input = json_decode(file_get_contents('php://input'), true);
 if (json_last_error() !== JSON_ERROR_NONE || empty($input['card_suffix'])) {
