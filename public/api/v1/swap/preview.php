@@ -32,6 +32,8 @@ declare(strict_types=1);
  *    dedicated zero-balance test account. This mirrors the same
  *    balance-fetch pattern already used for multi-source, and throws
  *    the same style of exception on insufficiency.
+ *  - Multi-source swaps now use MultiSourceFeeCalculator instead of
+ *    FeeService for accurate per-source fixed-cut fee calculation.
  */
 require_once __DIR__ . '/../../../../vendor/autoload.php';
 require_once __DIR__ . '/../../../../src/bootstrap.php';
@@ -324,20 +326,6 @@ try {
     } elseif ($sourceInst && !empty($input['source_identifier'])) {
         // ============================================================
         // SINGLE-SOURCE: GET BALANCE & VALIDATE SUFFICIENCY
-        //
-        // NEW - this branch did not exist before. A single-source swap
-        // (DEPOSIT / CASHOUT / IDENTITY / MULTI_DESTINATION - anything
-        // without a 'sources' array) previously skipped straight to fee
-        // calculation with zero balance verification of any kind,
-        // because the only getBalance() call in this whole file lived
-        // inside the `if ($isMultiSource)` block above. A source with
-        // a real balance of 0.00 would return success:true regardless.
-        //
-        // Mirrors the multi-source balance-fetch call exactly (same
-        // GenericBankClient usage, same payload shape) and throws the
-        // same style of "insufficient balance" exception on failure,
-        // so callers get a consistent error shape regardless of
-        // whether the swap is single- or multi-source.
         // ============================================================
         $singleSourceAssetType = $input['asset_type'] ?? 'ACCOUNT';
         $singleSourceIdentifier = $input['source_identifier'];
@@ -393,10 +381,6 @@ try {
             'balance_error' => $balanceError
         ];
 
-        // A balance-fetch failure (network/auth error) is treated the
-        // same as balance=0 here - same convention the multi-source
-        // path already uses - so an unreachable source fails closed
-        // rather than silently passing through.
         if ($balance < $amount - 0.01) {
             throw new Exception(
                 sprintf(
@@ -434,26 +418,64 @@ try {
         $participants
     );
 
-    $feeService = new \Domain\Services\FeeService(
-        $countryConfig['fees'] ?? [],
-        $countryConfig,
-        $currency,
-        $forexService
-    );
-    $feeService->setParticipants($participants);
+    // ============================================================
+    // FEE CALCULATION BRANCH: Multi-source vs Single-source
+    // ============================================================
+    $msFeeResult = null; // used below to fill multi_source per_source_fees correctly
 
-    $feeResult = $feeService->calculateFees($swapType, $amount, $feePayload);
+    if ($isMultiSource && $multiSourceBreakdown) {
+        $deliveryMode = match (strtoupper($swapType)) {
+            'CASHOUT' => 'cashout',
+            'CARD_LOAD', 'CARD' => 'card_load',
+            default => 'deposit',
+        };
 
-    $totalFee = $feeResult['total_fee'] ?? 0;
-    $netAmountDestCurrency = $feeResult['net_amount_destination_currency'] ?? $amount;
-    $breakdown = $feeResult['breakdown'] ?? [];
-    $forexApplied = $feeResult['forex']['applied'] ?? false;
-    $exchangeRate = $feeResult['forex']['rate'] ?? 1.0;
-    $forexProfit = $feeResult['forex']['vouchmorph_profit'] ?? 0;
+        $msCalc = new \Domain\Services\MultiSourceFeeCalculator(
+            $countryConfig['fees'] ?? [],
+            $countryConfig['country_code'] ?? 'BW'
+        );
 
-    $destinationSplit = $feeResult['destination_split'] ?? null;
-    $generateCodeFee = $destinationSplit['generate_code_fee'] ?? 0;
-    $cashoutCompletionFee = $destinationSplit['cashout_completion_fee'] ?? 0;
+        $msFeeResult = $msCalc->calculateFees(
+            count($sourceContributions),
+            $deliveryMode,
+            $amount,
+            $sourceCurrency,
+            $destinationCurrency
+        );
+
+        $totalFee = $msFeeResult['total_fee'];
+        $netAmountDestCurrency = round($amount - $totalFee, 2);
+        $breakdown = $msFeeResult; // exposes pool/levy/per_source_cut/etc. directly
+        $forexApplied = false;
+        $exchangeRate = 1.0;
+        $forexProfit = 0;
+        $generateCodeFee = $msFeeResult['destination_immediate'] ?? 0;
+        $cashoutCompletionFee = $msFeeResult['destination_deferred'] ?? 0;
+        $destinationSplit = $generateCodeFee || $cashoutCompletionFee
+            ? ['generate_code_fee' => $generateCodeFee, 'cashout_completion_fee' => $cashoutCompletionFee]
+            : null;
+    } else {
+        $feeService = new \Domain\Services\FeeService(
+            $countryConfig['fees'] ?? [],
+            $countryConfig,
+            $currency,
+            $forexService
+        );
+        $feeService->setParticipants($participants);
+
+        $feeResult = $feeService->calculateFees($swapType, $amount, $feePayload);
+
+        $totalFee = $feeResult['total_fee'] ?? 0;
+        $netAmountDestCurrency = $feeResult['net_amount_destination_currency'] ?? $amount;
+        $breakdown = $feeResult['breakdown'] ?? [];
+        $forexApplied = $feeResult['forex']['applied'] ?? false;
+        $exchangeRate = $feeResult['forex']['rate'] ?? 1.0;
+        $forexProfit = $feeResult['forex']['vouchmorph_profit'] ?? 0;
+
+        $destinationSplit = $feeResult['destination_split'] ?? null;
+        $generateCodeFee = $destinationSplit['generate_code_fee'] ?? 0;
+        $cashoutCompletionFee = $destinationSplit['cashout_completion_fee'] ?? 0;
+    }
 
     $preview = [
         'success' => true,
@@ -493,12 +515,18 @@ try {
     if ($isMultiSource && $multiSourceBreakdown) {
         $preview['preview']['multi_source'] = $multiSourceBreakdown;
 
+        // ============================================================
+        // PER-SOURCE FEE SPLITTING — FIXED CUT FROM CALCULATOR
+        // ============================================================
         $perSourceFees = [];
         $totalPerSourceFees = 0;
 
+        // Use the fixed per-source cut from the calculator for multi-source
+        $fixedSourceFee = $msFeeResult['per_source_cut'] ?? 0;
+
         foreach ($sourceContributions as $idx => $contrib) {
             $sourceAmount = $contrib['contribution_amount'];
-            $sourceFee = ($amount > 0) ? ($sourceAmount / $amount) * $totalFee : 0;
+            $sourceFee = $fixedSourceFee;
             $totalPerSourceFees += $sourceFee;
 
             $perSourceFees[] = [
@@ -515,6 +543,17 @@ try {
 
         $preview['preview']['multi_source']['per_source_fees'] = $perSourceFees;
         $preview['preview']['multi_source']['total_per_source_fees'] = round($totalPerSourceFees, 2);
+
+        // Surface additional MultiSourceFeeCalculator fields in the response
+        if ($msFeeResult) {
+            $preview['preview']['multi_source']['immediate_charge'] = $msFeeResult['immediate_charge'] ?? 0;
+            $preview['preview']['multi_source']['deferred_charge'] = $msFeeResult['deferred_charge'] ?? 0;
+            $preview['preview']['multi_source']['swap_levy_total'] = $msFeeResult['swap_levy_total'] ?? 0;
+            $preview['preview']['multi_source']['pool_charge_total'] = $msFeeResult['pool_charge_total'] ?? 0;
+            $preview['preview']['multi_source']['per_source_cut'] = $msFeeResult['per_source_cut'] ?? 0;
+            $preview['preview']['multi_source']['pool_fee'] = $msFeeResult['pool_fee'] ?? 0;
+            $preview['preview']['multi_source']['levy_fee'] = $msFeeResult['levy_fee'] ?? 0;
+        }
 
         $strategyDescriptions = [
             'RATIO' => 'Contributions are proportional to each source\'s available balance',
