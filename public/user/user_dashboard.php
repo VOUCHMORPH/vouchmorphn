@@ -1111,7 +1111,6 @@ input[type=number] { -moz-appearance: textfield; }
 
 <script>
 const CONFIG = {
-    API_KEY: '<?php echo htmlspecialchars($apiKey); ?>',
     COUNTRY_CODE: '<?php echo htmlspecialchars($userCountry); ?>',
     API_BASE: '<?php echo htmlspecialchars($apiBase); ?>',
     IS_TEST_MODE: <?php echo $isTestMode ? 'true' : 'false'; ?>,
@@ -1434,7 +1433,6 @@ async function repeatLastSwap() {
 function buildHeaders() {
     const headers = { 'Content-Type': 'application/json' };
     if (CONFIG.COUNTRY_CODE) headers['X-Country-Code'] = CONFIG.COUNTRY_CODE;
-    if (CONFIG.API_KEY && !CONFIG.IS_TEST_MODE) headers['X-API-Key'] = CONFIG.API_KEY;
     return headers;
 }
 
