@@ -4255,7 +4255,7 @@ function openTermsModal() {
 }
 
 // ============================================================
-// STUB FUNCTIONS (kept for compatibility)
+// STUB FUNCTIONS (kept for compatibility) - REPLACE THESE
 // ============================================================
 function restoreSwapSourceUI() { initWizard(); }
 function setSwapSourceMode(mode) {}
@@ -4268,7 +4268,15 @@ function selectToInst(code) {}
 function selectToAsset(type) {}
 function updateToField(name, value) {}
 function setDeliveryMethod(method) {}
-function setSwapType(type) {}
+function setSwapType(type) {
+    state.swapType = type;
+    const depositBtn = document.getElementById('depositToggleBtn');
+    const cashoutBtn = document.getElementById('cashoutToggleBtn');
+    if (depositBtn) depositBtn.classList.toggle('selected', type === 'DEPOSIT');
+    if (cashoutBtn) cashoutBtn.classList.toggle('selected', type === 'CASHOUT');
+    const cashoutFields = document.getElementById('cashoutFields');
+    if (cashoutFields) cashoutFields.style.display = type === 'CASHOUT' ? 'block' : 'none';
+}
 function updateIdentityHelp() {}
 function setSwapDestCategory(cat) {}
 function openDestinationModal() {}
@@ -4295,12 +4303,174 @@ function toggleSavedSourceDropdown() {}
 function closeSavedSourceDropdown() {}
 function selectSavedSource(sourceId) {}
 function clearSourceSelection() {}
-function useSourceForSwap(sourceId) {}
+function useSourceForSwap(sourceId) {
+    const source = userSources.find(s => s.id === sourceId);
+    if (!source) { showMessage('Source not found.', 'error'); return; }
+    goView('swap');
+    setTimeout(() => {
+        let tileType = 'WALLET';
+        const assetType = String(source.asset_type).toUpperCase();
+        if (assetType.includes('CARD')) tileType = 'CARD';
+        else if (assetType.includes('VOUCHER')) tileType = 'VOUCHER';
+        const tile = document.querySelector(`.source-option[data-source="${tileType}"]`);
+        if (tile) {
+            tile.click();
+            setTimeout(() => {
+                const savedSourceRows = document.querySelectorAll('.saved-source-row');
+                savedSourceRows.forEach(row => {
+                    if (row.textContent.includes(source.identifier || '')) {
+                        row.click();
+                    }
+                });
+            }, 200);
+        }
+    }, 100);
+}
 function hookSelectedSourceToCard() {}
 function openFinalizeIdentityModal() { openModal('Finalize identity swap', renderFinalizeIdentityModal()); }
 function renderFinalizeIdentityModal() { return `<div style="font-size:12px;color:var(--text-dim);">No pending claims.</div>`; }
 function openAgentFinalizeIdentityModal() { openFinalizeIdentityModal(); }
+    
+// ============================================================
+// MISSING FUNCTIONS - ADD THESE
+// ============================================================
 
+const IDENTITY_TYPE_LABELS = { 
+    national_id: 'National ID', 
+    birth_certificate: 'Birth Certificate', 
+    voter_id: 'Voter ID', 
+    phone: 'Phone Number', 
+    email: 'Email' 
+};
+
+async function fetchBalance(institution, identifier, identifierType = 'auto') {
+    try {
+        const response = await fetch(CONFIG.API_BASE + '/api/v1/user/balance.php', { 
+            method: 'POST', 
+            headers: buildHeaders(), 
+            body: JSON.stringify({ institution, identifier, identifier_type: identifierType }), 
+            credentials: 'include' 
+        });
+        return await response.json();
+    } catch (error) { 
+        console.error('Balance fetch error:', error); 
+        return { success: false, error: error.message }; 
+    }
+}
+
+async function fetchAllBalances() {
+    try {
+        const response = await fetch(CONFIG.API_BASE + '/api/v1/user/all_balances.php', { 
+            method: 'GET', 
+            headers: buildHeaders(), 
+            credentials: 'include' 
+        });
+        return await response.json();
+    } catch (error) { 
+        console.error('Fetch all balances error:', error); 
+        return { success: false, error: error.message }; 
+    }
+}
+
+async function viewWalletBalance() {
+    openModal('Balances', '<div style="text-align:center;padding:20px;"><div class="spinner"></div> Loading balances...</div>');
+    const result = await fetchAllBalances();
+    if (!result.success) {
+        document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger);"><div style="font-weight:700;">Couldn't load your balances</div><div style="font-size:12px;color:var(--text-muted);margin-top:8px;">${escapeHtml(friendlyApiError(result.error))}</div><button class="btn btn-primary btn-sm" onclick="viewWalletBalance()" style="margin-top:12px;">Retry</button></div>`;
+        return;
+    }
+    const data = result.data || {}; 
+    const sources = data.sources || []; 
+    const totals = data.total || {};
+    if (sources.length === 0) {
+        document.getElementById('modalBody').innerHTML = `<div style="text-align:center;padding:30px;color:var(--text-muted);"><div style="font-weight:700;">No sources linked yet</div><div style="font-size:12px;margin-top:8px;">Add a source to see your balance</div><button class="btn btn-primary btn-sm" onclick="closeModal();goView('toolbox');" style="margin-top:12px;">Add source</button></div>`;
+        return;
+    }
+    let html = `<div style="margin-bottom:16px;"><div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">Your total balance across all linked sources</div>`;
+    if (Object.keys(totals).length > 0) {
+        html += `<div style="background:var(--primary);color:#fff;padding:16px;margin-bottom:12px;">`;
+        Object.keys(totals).forEach(cur => { html += `<div style="display:flex;justify-content:space-between;align-items:center;"><span style="font-size:12px;opacity:0.7;">Total ${cur}</span><span style="font-size:22px;font-weight:600;font-family:var(--font-mono);">${formatMoney(totals[cur], cur)}</span></div>`; });
+        html += `</div>`;
+    }
+    html += `<div style="max-height:50vh;overflow-y:auto;">`;
+    sources.forEach(item => {
+        const source = item.source, balance = item.balance;
+        const instName = PARTICIPANTS[source.institution]?.name || source.institution;
+        const assetLabel = ASSETS[source.asset_type]?.label || source.asset_type;
+        let balanceDisplay = '—';
+        if (balance.success) balanceDisplay = formatMoney(balance.balance, balance.currency);
+        else balanceDisplay = `<span style="color:var(--text-muted);font-size:12px;">${escapeHtml(friendlyApiError(balance.error) || 'Unavailable')}</span>`;
+        html += `<div style="border:1px solid var(--border);padding:13px;margin-bottom:8px;background:#fff;"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;"><div style="display:flex;align-items:center;gap:10px;"><span class="row-icon" style="font-size:18px;">${assetIcon(source.asset_type)}</span><div><div style="font-weight:700;">${escapeHtml(instName)}</div><div style="font-size:12px;color:var(--text-muted);">${escapeHtml(assetLabel)} · ${escapeHtml(source.identifier)}${source.account_name ? ` · ${escapeHtml(source.account_name)}` : ''}</div></div></div><div style="text-align:right;"><div style="font-size:16px;font-weight:600;font-family:var(--font-mono);">${balanceDisplay}</div><div style="font-size:10px;color:var(--text-dim);text-transform:uppercase;">${source.status}</div></div></div><div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);display:flex;gap:8px;flex-wrap:wrap;"><button class="btn-primary btn-sm" onclick="refreshSourceBalance('${source.id}')">Refresh</button></div></div>`;
+    });
+    html += `</div><div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border);display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-primary btn-sm" onclick="refreshAllBalances()">Refresh all</button><button class="btn btn-secondary btn-sm" onclick="closeModal();goView('toolbox');">Add source</button><button class="btn btn-secondary btn-sm" onclick="closeModal()">Close</button></div>`;
+    document.getElementById('modalBody').innerHTML = html;
+}
+
+function openHowItWorks(key) {
+    const info = {
+        swap: { title: 'How Swap works', body: '<div style="font-size:13px;line-height:1.7;color:var(--text);"><p style="font-weight:700;margin-bottom:6px;">How Swap works</p><ol style="padding-left:18px;margin-bottom:16px;"><li>Enter the amount you want to swap.</li><li>Choose where the money comes from (Wallet, Card, Voucher, My Card, or Combine).</li><li>Choose where the money goes (Deposit, Cashout, or Identity).</li><li>Review the fee and confirm.</li></ol></div>' },
+        card: { title: 'How the Card works', body: '<div style="font-size:13px;line-height:1.7;color:var(--text);"><p style="font-weight:700;margin-bottom:6px;">How the VouchMorph Card works</p><ol style="padding-left:18px;margin-bottom:16px;"><li>Every account gets a VouchMorph Card automatically.</li><li>It starts inactive — activate it once with a small one-time fee from any linked source.</li><li>Hook one or many sources to your card.</li><li>Share your QR code so others can hook sources to your card.</li><li>Start a swap from the Card view or use "My Card" as a source in Swap.</li></ol></div>' }
+    };
+    const data = info[key];
+    if (!data) return;
+    openModal(data.title, data.body);
+}
+
+function openHelpModal() {
+    openModal('Help', `<div style="font-size:13px;line-height:1.7;color:var(--text);">
+        <p style="font-weight:700;margin-bottom:6px;">Swapping money</p>
+        <ol style="padding-left:18px;margin-bottom:16px;"><li>From the hub, tap Swap.</li><li>Follow the 4 steps: amount → source → destination → confirm.</li></ol>
+        <p style="font-weight:700;margin-bottom:6px;">Your VouchMorph Card</p>
+        <ol style="padding-left:18px;margin-bottom:16px;"><li>From the hub, tap Card. Every account gets one automatically.</li><li>It starts inactive — activate it once with a small one-time fee from any linked source.</li><li>Hook one or many sources — from the Card view ("Hook a source"), or from Toolbox.</li></ol>
+        <p style="font-weight:700;margin-bottom:6px;">Claiming money sent to you</p>
+        <ol style="padding-left:18px;margin-bottom:16px;"><li>Toolbox → Finalize identity swap.</li><li>Enter your claim PIN and choose how to receive it.</li></ol>
+    </div>`);
+}
+
+function openTermsModal() {
+    openModal('Terms and conditions', `<div style="font-size:13px;line-height:1.7;color:var(--text);">
+        <p style="font-weight:700;margin-bottom:6px;">1. The service</p><p style="margin-bottom:14px;">VouchMorph facilitates transfers, cashouts, and identity-based payments between participating institutions on your instruction. We act as an intermediary; the underlying funds remain with the institutions holding your linked sources until a swap completes.</p>
+        <p style="font-weight:700;margin-bottom:6px;">2. Your responsibilities</p><p style="margin-bottom:14px;">You are responsible for keeping your PIN, claim codes, and linked source credentials confidential. VouchMorph staff will never ask for your PIN.</p>
+        <p style="font-weight:700;margin-bottom:6px;">3. Fees</p><p style="margin-bottom:14px;">Applicable fees are shown before you confirm any swap. Fees vary by swap type, delivery method, and destination institution.</p>
+        <p style="font-weight:700;margin-bottom:6px;">4. Identity swaps</p><p style="margin-bottom:14px;">Money sent to an identity (national ID, phone, email, etc.) is held for the recipient for a limited window and requires verification to claim.</p>
+        <p style="margin-top:16px;color:var(--danger);font-size:11px;font-weight:700;">⚠ Placeholder — replace with reviewed legal terms and a recorded consent flow before this goes live with real funds.</p>
+    </div>`);
+}
+
+function setSwapType(type) {
+    state.swapType = type;
+    const depositBtn = document.getElementById('depositToggleBtn');
+    const cashoutBtn = document.getElementById('cashoutToggleBtn');
+    if (depositBtn) depositBtn.classList.toggle('selected', type === 'DEPOSIT');
+    if (cashoutBtn) cashoutBtn.classList.toggle('selected', type === 'CASHOUT');
+    const cashoutFields = document.getElementById('cashoutFields');
+    if (cashoutFields) cashoutFields.style.display = type === 'CASHOUT' ? 'block' : 'none';
+}
+
+function useSourceForSwap(sourceId) {
+    const source = userSources.find(s => s.id === sourceId);
+    if (!source) { showMessage('Source not found.', 'error'); return; }
+    goView('swap');
+    setTimeout(() => {
+        let tileType = 'WALLET';
+        const assetType = String(source.asset_type).toUpperCase();
+        if (assetType.includes('CARD')) tileType = 'CARD';
+        else if (assetType.includes('VOUCHER')) tileType = 'VOUCHER';
+        const tile = document.querySelector(`.source-option[data-source="${tileType}"]`);
+        if (tile) {
+            tile.click();
+            setTimeout(() => {
+                const savedSourceRows = document.querySelectorAll('.saved-source-row');
+                savedSourceRows.forEach(row => {
+                    if (row.textContent.includes(source.identifier || '')) {
+                        row.click();
+                    }
+                });
+            }, 200);
+        }
+    }, 100);
+}
+    
 // ============================================================
 // ASYNC INIT FUNCTIONS - DEFINED BEFORE DOM READY
 // ============================================================
