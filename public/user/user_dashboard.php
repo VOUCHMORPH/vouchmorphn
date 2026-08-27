@@ -1861,7 +1861,6 @@ function wizardBackToSourceGrid() {
 function sourceTypeBackLinkHtml() {
     return `<button type="button" class="source-type-back-link" onclick="wizardBackToSourceGrid()">&larr; Change source type</button>`;
 }
-
 // ---- SINGLE-SOURCE PICKER (FIXED) ----
 function renderWizardSourcePicker(panel, type) {
     // WALLET - Enhanced to show saved sources AND allow new entry
@@ -1891,19 +1890,26 @@ function renderWizardSourcePicker(panel, type) {
         }
         
         // Always show institution selector for entering new sources
+        // Only show institutions that support WALLET/ACCOUNT asset types
+        const supportedInstitutions = Object.keys(PARTICIPANTS).filter(code => {
+            const types = PARTICIPANTS[code].asset_types || [];
+            return types.some(t => {
+                const upper = String(t).toUpperCase();
+                const normalized = normalizeAssetType(t);
+                // Check if this institution supports any wallet/account type
+                return ['ACCOUNT', 'WALLET', 'MNO-WALLET', 'BANK-WALLET', 'MOBILE_WALLET']
+                    .some(walletType => normalized === walletType || upper.includes(walletType) || upper === walletType);
+            });
+        });
+        
         html += `
             <div class="field-group" style="margin-top:12px;">
                 <label>${eligible.length > 0 ? 'Or select an institution' : 'Select institution'}</label>
                 <select id="wizardFromInstSelect" onchange="wizardSelectFromInst(this.value)">
                     <option value="">Select institution</option>
-                    ${Object.keys(PARTICIPANTS).map(code => {
-                        const types = PARTICIPANTS[code].asset_types || [];
-                        const hasWallet = types.some(t => 
-                            ['ACCOUNT', 'WALLET', 'MNO-WALLET', 'BANK-WALLET', 'MOBILE_WALLET']
-                                .includes(String(t).toUpperCase())
-                        );
-                        return hasWallet ? `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>` : '';
-                    }).filter(Boolean).join('')}
+                    ${supportedInstitutions.map(code => 
+                        `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`
+                    ).join('')}
                 </select>
             </div>
             <div id="wizardFromFieldsBox"></div>
@@ -1918,20 +1924,30 @@ function renderWizardSourcePicker(panel, type) {
     // VOUCHER - Fixed institution population
     if (type === 'VOUCHER') {
         let html = sourceTypeBackLinkHtml();
+        
+        // Only show institutions that support VOUCHER
+        const voucherInstitutions = Object.keys(PARTICIPANTS).filter(code => {
+            const types = PARTICIPANTS[code].asset_types || [];
+            return types.some(t => {
+                const upper = String(t).toUpperCase();
+                const normalized = normalizeAssetType(t);
+                // Check if this institution supports voucher types
+                return normalized === 'VOUCHER' || 
+                       upper === 'VOUCHER' || 
+                       upper === 'CASHOUT-VOUCHER' || 
+                       upper.includes('VOUCHER');
+            });
+        });
+        
         html += `
             <div style="text-align:center;font-size:12px;color:var(--text-dim);margin-bottom:14px;">Enter your voucher details below.</div>
             <div class="field-group">
                 <label>Institution</label>
                 <select id="wizardFromInstSelect" onchange="wizardSelectFromInst(this.value)">
                     <option value="">Select institution</option>
-                    ${Object.keys(PARTICIPANTS).map(code => {
-                        const types = PARTICIPANTS[code].asset_types || [];
-                        const hasVoucher = types.some(t => {
-                            const upper = String(t).toUpperCase();
-                            return upper === 'VOUCHER' || upper === 'CASHOUT-VOUCHER' || upper.includes('VOUCHER');
-                        });
-                        return hasVoucher ? `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>` : '';
-                    }).filter(Boolean).join('')}
+                    ${voucherInstitutions.map(code => 
+                        `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`
+                    ).join('')}
                 </select>
             </div>
             <div id="wizardFromFieldsBox"></div>
@@ -1944,6 +1960,69 @@ function renderWizardSourcePicker(panel, type) {
         panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
         return;
     }
+
+    // CARD - Only show institutions that support CARD
+    if (type === 'CARD') {
+        const eligible = userSources.filter(s => s.status === 'active' && assetTypeMatchesTile(s.asset_type, type));
+        let html = sourceTypeBackLinkHtml();
+
+        if (eligible.length > 0) {
+            html += `
+            <div class="field-group">
+                <label>Use a saved card</label>
+                <div class="dropdown-select" id="wizardSavedDropdown">
+                    <div class="dropdown-select-trigger" onclick="document.getElementById('wizardSavedDropdown').classList.toggle('open')">
+                        <span class="placeholder">Select a saved source &rsaquo;</span>
+                        <span class="dropdown-select-chevron">&#9662;</span>
+                    </div>
+                    <div class="dropdown-select-panel">
+                        ${eligible.map(s => `<div class="saved-source-row" onclick="wizardSelectSavedSource('${s.id}')">
+                            <div class="row-main"><div class="row-inst">${escapeHtml(PARTICIPANTS[s.institution]?.name || s.institution)}</div>
+                            <div class="row-ident">${assetIcon(s.asset_type)} ${escapeHtml(ASSETS[s.asset_type]?.label || s.asset_type)} · ${escapeHtml(s.identifier || s.source_identifier || '')}</div></div>
+                        </div>`).join('')}
+                    </div>
+                </div>
+            </div>
+            <div style="text-align:center;font-size:11px;color:var(--text-dim);margin:10px 0 16px;">— or enter a new card —</div>`;
+        } else {
+            html += `<div style="text-align:center;font-size:12px;color:var(--text-dim);margin-bottom:14px;">Enter your card details below.</div>`;
+        }
+
+        // Get card matches - only institutions that support CARD
+        const cardMatches = institutionsForTile('CARD');
+        if (cardMatches.length === 0) {
+            html += `<div class="help" style="color:var(--danger);">Card swaps aren't configured for this country yet.</div>`;
+            panel.innerHTML = html;
+            document.getElementById('wizardSourceNext').disabled = true;
+            panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            return;
+        }
+        
+        if (cardMatches.length === 1) {
+            html += `<div id="wizardFromFieldsBox"></div><div class="help" id="wizardFromLimitsHelp"></div>`;
+            panel.innerHTML = html;
+            const { institution, matchedAssetType } = cardMatches[0];
+            wizardState.fromAsset = matchedAssetType;
+            wizardSelectFromInst(institution);
+            panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            return;
+        }
+        
+        html += `
+            <div class="field-group">
+                <label>Card network / processor</label>
+                <select id="wizardFromInstSelect" onchange="wizardSelectFromInst(this.value)">
+                    <option value="">Select</option>
+                    ${cardMatches.map(m => `<option value="${m.institution}" data-asset-type="${m.matchedAssetType}">${PARTICIPANTS[m.institution]?.name || m.institution}</option>`).join('')}
+                </select>
+            </div>
+            <div id="wizardFromFieldsBox"></div>
+            <div class="help" id="wizardFromLimitsHelp"></div>`;
+        panel.innerHTML = html;
+        panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        return;
+    }
+}
 
     // CARD
     const eligible = userSources.filter(s => s.status === 'active' && assetTypeMatchesTile(s.asset_type, type));
@@ -2045,8 +2124,25 @@ function wizardSelectFromInstWithAsset(code, prefillSource, assetType) {
         limitsHelp.textContent = inst?.limits ? `Limits: ${inst.limits.min_amount} – ${inst.limits.max_amount} ${inst.limits.currency}` : '';
     }
 
+    // Validate that the institution supports this asset type
+    const supportedAssetTypes = inst?.asset_types || [];
+    const normalizedAssetType = normalizeAssetType(assetType);
+    const isSupported = supportedAssetTypes.some(t => {
+        const normalized = normalizeAssetType(t);
+        return normalized === normalizedAssetType || 
+               normalized.includes(normalizedAssetType) ||
+               normalizedAssetType.includes(normalized);
+    });
+
+    if (!isSupported) {
+        if (fieldsBox) {
+            fieldsBox.innerHTML = `<div class="help" style="color:var(--danger);">This institution does not support ${assetType} as a source.</div>`;
+        }
+        document.getElementById('wizardSourceNext').disabled = true;
+        return;
+    }
+
     if (fieldsBox) {
-        // Use the actual asset type
         renderWizardFields(fieldsBox, wizardState.fromAsset, 'fromField_', (name, value) => {
             wizardState.fromFields[name] = value;
             const valid = fieldsValidForAsset(wizardState.fromAsset, wizardState.fromFields, true);
@@ -2074,41 +2170,63 @@ function wizardSelectFromInstWithAsset(code, prefillSource, assetType) {
     document.getElementById('wizardSourceNext').disabled = !valid.valid;
 }
 
-// ---- Original wizardSelectFromInst now calls the new function ----
 function wizardSelectFromInst(code, prefillSource) {
     if (prefillSource && prefillSource.asset_type) {
         wizardSelectFromInstWithAsset(code, prefillSource, prefillSource.asset_type);
-    } else {
-        wizardState.fromInst = code || null;
-        wizardState.fromFields = {};
-        const panel = document.getElementById('sourceDetailPanel');
-        if (!panel) return;
-        const fieldsBox = panel.querySelector('#wizardFromFieldsBox');
-        const limitsHelp = panel.querySelector('#wizardFromLimitsHelp');
-
-        if (!code) {
-            if (fieldsBox) fieldsBox.innerHTML = '';
-            if (limitsHelp) limitsHelp.textContent = '';
-            document.getElementById('wizardSourceNext').disabled = true;
-            return;
-        }
-
-        const inst = PARTICIPANTS[code];
-        if (limitsHelp) {
-            limitsHelp.textContent = inst?.limits ? `Limits: ${inst.limits.min_amount} – ${inst.limits.max_amount} ${inst.limits.currency}` : '';
-        }
-
-        if (fieldsBox) {
-            renderWizardFields(fieldsBox, wizardState.fromAsset, 'fromField_', (name, value) => {
-                wizardState.fromFields[name] = value;
-                const valid = fieldsValidForAsset(wizardState.fromAsset, wizardState.fromFields, true);
-                document.getElementById('wizardSourceNext').disabled = !valid.valid;
-            }, true);
-        }
-
-        const valid = fieldsValidForAsset(wizardState.fromAsset, wizardState.fromFields, true);
-        document.getElementById('wizardSourceNext').disabled = !valid.valid;
+        return;
     }
+    
+    wizardState.fromInst = code || null;
+    wizardState.fromFields = {};
+    const panel = document.getElementById('sourceDetailPanel');
+    if (!panel) return;
+    const fieldsBox = panel.querySelector('#wizardFromFieldsBox');
+    const limitsHelp = panel.querySelector('#wizardFromLimitsHelp');
+
+    if (!code) {
+        if (fieldsBox) fieldsBox.innerHTML = '';
+        if (limitsHelp) limitsHelp.textContent = '';
+        document.getElementById('wizardSourceNext').disabled = true;
+        return;
+    }
+
+    const inst = PARTICIPANTS[code];
+    if (limitsHelp) {
+        limitsHelp.textContent = inst?.limits ? `Limits: ${inst.limits.min_amount} – ${inst.limits.max_amount} ${inst.limits.currency}` : '';
+    }
+
+    if (fieldsBox) {
+        // Determine which asset types this institution supports
+        const supportedAssetTypes = inst?.asset_types || [];
+        
+        // If the user selected a specific source type (WALLET, CARD, VOUCHER),
+        // check if this institution supports it
+        if (wizardState.fromAsset) {
+            const normalizedFromAsset = normalizeAssetType(wizardState.fromAsset);
+            const isSupported = supportedAssetTypes.some(t => {
+                const normalized = normalizeAssetType(t);
+                return normalized === normalizedFromAsset || 
+                       normalized.includes(normalizedFromAsset) ||
+                       normalizedFromAsset.includes(normalized);
+            });
+            
+            if (!isSupported) {
+                // The institution doesn't support this asset type
+                fieldsBox.innerHTML = `<div class="help" style="color:var(--danger);">This institution does not support ${wizardState.fromAsset} as a source.</div>`;
+                document.getElementById('wizardSourceNext').disabled = true;
+                return;
+            }
+        }
+        
+        renderWizardFields(fieldsBox, wizardState.fromAsset, 'fromField_', (name, value) => {
+            wizardState.fromFields[name] = value;
+            const valid = fieldsValidForAsset(wizardState.fromAsset, wizardState.fromFields, true);
+            document.getElementById('wizardSourceNext').disabled = !valid.valid;
+        }, true);
+    }
+
+    const valid = fieldsValidForAsset(wizardState.fromAsset, wizardState.fromFields, true);
+    document.getElementById('wizardSourceNext').disabled = !valid.valid;
 }
 
 // ---- TILE MATCHING ----
@@ -2129,14 +2247,26 @@ function assetTypeMatchesTile(participantAssetType, tileType) {
 
 function institutionsForTile(type) {
     const results = [];
+    const normalizedType = normalizeAssetType(type);
     const aliases = (TILE_ASSET_ALIASES[type] || [type]).map(a => String(a).toUpperCase().replace(/[-_\s]/g, ''));
+    
     Object.keys(PARTICIPANTS).forEach(code => {
         const assetTypes = PARTICIPANTS[code].asset_types || [];
         const match = assetTypes.find(t => {
             const normalized = String(t).toUpperCase().replace(/[-_\s]/g, '');
-            return aliases.includes(normalized) || aliases.some(a => normalized.includes(a) || a.includes(normalized));
+            // Check if this asset type matches the tile type
+            const normalizedAsset = normalizeAssetType(t);
+            return normalizedAsset === normalizedType || 
+                   aliases.includes(normalized) || 
+                   aliases.some(a => normalized.includes(a) || a.includes(normalized));
         });
-        if (match) results.push({ institution: code, matchedAssetType: match });
+        if (match) {
+            results.push({ 
+                institution: code, 
+                matchedAssetType: match,
+                matchedNormalized: normalizeAssetType(match)
+            });
+        }
     });
     return results;
 }
@@ -2230,18 +2360,48 @@ function wizardSelectToInst(code) {
 
     const inst = PARTICIPANTS[code];
     if (!inst) return;
+    
+    // Get the actual asset types supported by this institution
     let assetTypes = inst.asset_types || [];
     
+    // For DEPOSIT destination, filter out VOUCHER (vouchers can't be deposited to)
     if (wizardState.destType === 'DEPOSIT') {
         assetTypes = assetTypes.filter(t => {
             const upper = String(t).toUpperCase();
-            return upper !== 'VOUCHER' && upper !== 'CASHOUT-VOUCHER';
+            // Filter out voucher types for deposit
+            return upper !== 'VOUCHER' && 
+                   upper !== 'CASHOUT-VOUCHER' && 
+                   upper !== 'GIFT-VOUCHER';
+        });
+    }
+    
+    // Also filter out any other asset types that don't make sense for deposit
+    // For example, if it's a withdrawal-only type, filter it out
+    if (wizardState.destType === 'DEPOSIT') {
+        // Only allow account, wallet, and card types for deposit
+        assetTypes = assetTypes.filter(t => {
+            const upper = String(t).toUpperCase();
+            return ['ACCOUNT', 'WALLET', 'CARD', 'MNO-WALLET', 'BANK-WALLET'].some(allowed => 
+                upper === allowed || upper.includes(allowed)
+            );
         });
     }
     
     if (assetSel) {
+        if (assetTypes.length === 0) {
+            assetSel.innerHTML = `<option value="">No ${wizardState.destType === 'DEPOSIT' ? 'deposit' : ''} asset types supported</option>`;
+            assetSection.style.display = 'block';
+            document.getElementById('wizardDestNext').disabled = true;
+            return;
+        }
+        
         assetSel.innerHTML = '<option value="">Select asset type</option>' +
-            assetTypes.map(t => `<option value="${t}">${getAssetConfig(t)?.label || t}</option>`).join('');
+            assetTypes.map(t => {
+                const config = getAssetConfig(t);
+                const label = config?.label || t;
+                const icon = assetIcon(t);
+                return `<option value="${t}">${icon} ${label}</option>`;
+            }).join('');
     }
     if (assetSection) assetSection.style.display = 'block';
 
