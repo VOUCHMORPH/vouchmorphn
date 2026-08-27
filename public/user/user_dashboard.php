@@ -3024,7 +3024,6 @@ function addCombineRow(type) {
     const panel = document.getElementById('sourceDetailPanel');
     if (!panel) return;
     
-    // Build a temporary form inside the panel
     const eligibleInstitutions = Object.keys(PARTICIPANTS).filter(code => {
         const types = PARTICIPANTS[code].asset_types || [];
         return types.some(t => assetTypeMatchesTile(t, type));
@@ -3052,7 +3051,6 @@ function addCombineRow(type) {
         </div>
     `;
     
-    // Insert at the top of the panel
     const existingContent = panel.innerHTML;
     panel.innerHTML = html + existingContent;
     document.getElementById('wizardSourceNext').disabled = true;
@@ -3070,7 +3068,6 @@ function updateCombineFields(institution) {
     const type = assetTypes[0] || 'ACCOUNT';
     
     renderWizardFields(container, type, 'combineField_', (name, value) => {
-        // Store in a temporary object
         window._combineTempFields = window._combineTempFields || {};
         window._combineTempFields[name] = value;
     }, true);
@@ -3135,11 +3132,9 @@ function multiSourcesValid() {
 }
 
 function openAddSourceModalForCombine() {
-    // Reuse the add source modal but with a callback
     const originalSubmit = window.submitAddSource;
     window.submitAddSource = async function() {
         await originalSubmit.call(this);
-        // After adding, refresh combine
         setTimeout(() => {
             renderCombineSummaryWizard();
         }, 500);
@@ -4161,16 +4156,91 @@ function renderFinalizeIdentityModal() { return `<div style="font-size:12px;colo
 function openAgentFinalizeIdentityModal() { openFinalizeIdentityModal(); }
 
 // ============================================================
+// ASYNC INIT FUNCTIONS (defined before DOM ready)
+// ============================================================
+async function getCurrentUserRole() {
+    if (SessionUser) return SessionUser;
+    const result = await callApi(CONFIG.API_BASE + '/user/whoami.php', {});
+    SessionUser = (result.ok && result.body) ? result.body : { success: false, role: 'user', is_agent: false, is_admin: false, permissions: [] };
+    renderProgressCard();
+    return SessionUser;
+}
+
+async function loadUserSources() {
+    if (!CONFIG.USER_ID) return;
+    const result = await callApi(CONFIG.API_BASE + '/user/sources.php', {});
+    if (result.ok) {
+        userSources = result.body.data?.sources || [];
+        renderProgressCard();
+    }
+    const pendingResult = await callApi(CONFIG.API_BASE + '/api/v1/sources/pending.php', {});
+    if (pendingResult.ok) { pendingSources = pendingResult.body.data || []; updateToolboxBadge(); }
+}
+
+async function checkPendingClaims() {
+    if (!CONFIG.USER_ID) return;
+    try { 
+        const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/pending_claims.php', {}); 
+        if (!result.ok) return; 
+        pendingClaims = result.body.data || []; 
+        updateToolboxBadge(); 
+    } catch (e) { 
+        console.warn('[claims] Failed to check pending claims:', e); 
+    }
+}
+
+function updateToolboxBadge() {
+    const badge = document.getElementById('toolboxBadge');
+    if (!badge) return;
+    const totalPending = pendingSources.length + pendingClaims.length;
+    if (totalPending > 0) { badge.style.display = 'inline-flex'; badge.textContent = totalPending; } 
+    else { badge.style.display = 'none'; }
+}
+
+async function loadAgentStatus() {
+    if (!CONFIG.USER_ID) return;
+    await getCurrentUserRole();
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/status.php', {});
+    if (!result.ok) return;
+    agentStatus = result.body.data; 
+    agentStatus.is_agent = SessionUser.is_agent;
+}
+
+function openProfileModal() { openModal('My profile', renderProfileModal()); }
+
+function renderProfileModal() {
+    const rows = savedIdentities.length ? savedIdentities.map((id, i) => `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);"><div><div style="font-size:11px;color:var(--text-muted);">${escapeHtml(IDENTITY_TYPE_LABELS[id.type] || id.type)}</div><div style="font-size:14px;font-weight:700;">${escapeHtml(id.value)}</div></div><div class="quick-actions" style="margin:0;"><span class="quick-link" onclick="useSavedIdentity(${i})">Use</span><span class="quick-link danger" onclick="removeSavedIdentity(${i})">Remove</span></div></div>`).join('') : `<div style="font-size:12px;color:var(--text-dim);">No saved identities yet.</div>`;
+    return `<div style="margin-bottom:12px;"><div style="font-weight:700;margin-bottom:4px;">Your registered identities</div>${rows}</div><div style="border-top:1px solid var(--border);padding-top:16px;"><div class="field-label" style="margin-bottom:8px;">Transaction PIN</div><div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Required to claim money sent to your verified identity. Never share it.</div><div class="field-group"><label>New PIN (4-6 digits)</label><input type="password" id="newPin" inputmode="numeric" maxlength="6" placeholder="••••"></div><div class="field-group"><label>Confirm PIN</label><input type="password" id="confirmPin" inputmode="numeric" maxlength="6" placeholder="••••"></div><div class="cta-row"><button class="btn btn-primary" onclick="setTransactionPin()">Set PIN</button></div></div><div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px;"><span class="quick-link" onclick="closeModal();openAddIdentityModal();">Add a new identity</span><span class="quick-link muted" onclick="closeModal();openFinalizeIdentityModal();">Finalize an identity swap</span></div>`;
+}
+
+async function setTransactionPin() {
+    const pin = document.getElementById('newPin').value.trim();
+    const confirmPin = document.getElementById('confirmPin').value.trim();
+    if (!/^\d{4,6}$/.test(pin)) { showMessage('Your PIN should be 4 to 6 digits.', 'warning'); return; }
+    if (pin !== confirmPin) { showMessage('Those two PINs don\'t match — try again.', 'warning'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/set_pin.php', { pin, confirm_pin: confirmPin });
+    if (!result.ok) { showMessage('Could not set your PIN: ' + friendlyApiError(result.error), 'error'); return; }
+    if (SessionUser) SessionUser.has_pin = true;
+    showMessage('Transaction PIN set. Keep it private. 🎉', 'success');
+    renderProgressCard(); closeModal();
+}
+
+// ============================================================
 // DOM READY
 // ============================================================
 document.addEventListener('DOMContentLoaded', function() {
     loadSavedTheme();
+    
     const toSelect = document.getElementById('toInstSelect');
     const instOptions = Object.keys(PARTICIPANTS);
     if (toSelect && instOptions.length > 0) {
         toSelect.innerHTML = '<option value="">Select institution</option>';
-        instOptions.forEach(code => { toSelect.insertAdjacentHTML('beforeend', `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`); });
+        instOptions.forEach(code => { 
+            toSelect.insertAdjacentHTML('beforeend', `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`); 
+        });
     }
+    
+    // All async init functions are defined above, so we can call them safely
     checkPendingClaims();
     loadAgentStatus();
     loadUserSources();
@@ -4179,10 +4249,13 @@ document.addEventListener('DOMContentLoaded', function() {
     renderView();
 });
 
-document.addEventListener('keydown', e => { 
+document.addEventListener('keydown', function(e) { 
     if (e.key === 'Escape') { 
-        if (document.getElementById('modal').classList.contains('active')) closeModal(); 
-        else if (viewStack.length > 1) goBack(); 
+        if (document.getElementById('modal')?.classList.contains('active')) {
+            closeModal(); 
+        } else if (viewStack.length > 1) {
+            goBack(); 
+        }
     } 
 });
 </script>
