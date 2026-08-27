@@ -2563,18 +2563,29 @@ async function wizardPreview() {
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span>Getting quote…';
 
-    const result = await callApi(CONFIG.PREVIEW_ENDPOINT, built.payload);
-    btn.disabled = false;
-    btn.innerHTML = original;
+    try {
+        const result = await callApi(CONFIG.PREVIEW_ENDPOINT, built.payload);
+        btn.disabled = false;
+        btn.innerHTML = original;
 
-    if (!result.ok) {
-        showMessage('Preview failed: ' + friendlyApiError(result.error), 'error');
-        return;
+        if (!result.ok) {
+            // Show the actual error from the server
+            const errorMsg = result.body?.error || result.error || 'Preview failed';
+            showMessage('Preview failed: ' + friendlyApiError(errorMsg), 'error');
+            console.error('[PREVIEW] Error:', result);
+            return;
+        }
+
+        wizardState.lastPreview = result.body;
+        renderReviewPreviewResult(result.body);
+        document.getElementById('wizardConfirmRow').style.display = 'flex';
+        
+    } catch (e) {
+        btn.disabled = false;
+        btn.innerHTML = original;
+        showMessage('Network error: ' + e.message, 'error');
+        console.error('[PREVIEW] Exception:', e);
     }
-
-    wizardState.lastPreview = result.body;
-    renderReviewPreviewResult(result.body);
-    document.getElementById('wizardConfirmRow').style.display = 'flex';
 }
 
 function renderReviewPreviewResult(previewData) {
