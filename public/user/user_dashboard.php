@@ -1802,11 +1802,11 @@ function wizardBackToSourceGrid() {
 function sourceTypeBackLinkHtml() {
     return `<button type="button" class="source-type-back-link" onclick="wizardBackToSourceGrid()">&larr; Change source type</button>`;
 }
-
 // ============================================================
 // SINGLE-SOURCE PICKER (WALLET, CARD, VOUCHER)
 // ============================================================
 function renderWizardSourcePicker(panel, type) {
+    // WALLET - uses saved sources only
     if (type === 'WALLET') {
         const eligible = userSources.filter(s => s.status === 'active' && assetTypeMatchesTile(s.asset_type, type));
         let html = sourceTypeBackLinkHtml();
@@ -1840,8 +1840,34 @@ function renderWizardSourcePicker(panel, type) {
         return;
     }
 
-    const eligible = userSources.filter(s => s.status === 'active' && assetTypeMatchesTile(s.asset_type, type));
+    // VOUCHER - always show form directly (no saved sources check)
+    if (type === 'VOUCHER') {
+        let html = sourceTypeBackLinkHtml();
+        html += `
+            <div style="text-align:center;font-size:12px;color:var(--text-dim);margin-bottom:14px;">Enter your voucher details below.</div>
+            <div class="field-group">
+                <label>Institution</label>
+                <select id="wizardFromInstSelect"><option value="">Select institution</option></select>
+            </div>
+            <div id="wizardFromFieldsBox"></div>
+            <div class="help" id="wizardFromLimitsHelp"></div>
+            <div style="margin-top:12px;font-size:11px;color:var(--text-dim);">
+                <span class="quick-link muted" onclick="openHookBuilder('swapwizard', {instName: 'Voucher', institution: document.getElementById('wizardFromInstSelect')?.value, assetType: 'VOUCHER', identifier: document.getElementById('fromField_voucher_number')?.value})">Hook this voucher to My Card after entering it →</span>
+            </div>`;
+        panel.innerHTML = html;
+        const sel = document.getElementById('wizardFromInstSelect');
+        if (sel) {
+            sel.onchange = function () { wizardSelectFromInst(this.value); };
+            populateInstitutionsForAsset('VOUCHER', sel);
+        }
+        document.getElementById('wizardSourceNext').disabled = true;
+        panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        return;
+    }
+
+    // CARD - can use saved cards OR enter new card
     const isCard = type === 'CARD';
+    const eligible = userSources.filter(s => s.status === 'active' && assetTypeMatchesTile(s.asset_type, type));
     let html = sourceTypeBackLinkHtml();
 
     if (eligible.length > 0) {
@@ -1860,67 +1886,47 @@ function renderWizardSourcePicker(panel, type) {
                 </div>
             </div>
         </div>
-        <div style="text-align:center;font-size:11px;color:var(--text-dim);margin:10px 0 16px;">— or ${isCard ? 'enter a new card' : 'link a new one'} —</div>`;
-    } else if (isCard) {
-        html += `<div style="text-align:center;font-size:12px;color:var(--text-dim);margin-bottom:14px;">Enter your card details below.</div>`;
+        <div style="text-align:center;font-size:11px;color:var(--text-dim);margin:10px 0 16px;">— or enter a new card —</div>`;
     } else {
-        html += `<div class="empty-source-box" style="margin-bottom:16px;">
-            <p style="margin-bottom:8px;">You don't have a ${escapeHtml((getAssetConfig(type)?.label || type).toLowerCase())} linked yet.</p>
-            <span class="quick-link" onclick="goView('toolbox')">+ Add one from Toolbox</span>
-        </div>`;
+        html += `<div style="text-align:center;font-size:12px;color:var(--text-dim);margin-bottom:14px;">Enter your card details below.</div>`;
     }
 
-    if (isCard) {
-        const cardMatches = institutionsForTile('CARD');
-        if (cardMatches.length === 0) {
-            html += `<div class="help" style="color:var(--danger);">Card swaps aren't configured for this country yet.</div>`;
-            panel.innerHTML = html;
-            document.getElementById('wizardSourceNext').disabled = true;
-            panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            return;
-        }
-        if (cardMatches.length === 1) {
-            html += `<div id="wizardFromFieldsBox"></div><div class="help" id="wizardFromLimitsHelp"></div>`;
-            panel.innerHTML = html;
-            const { institution, matchedAssetType } = cardMatches[0];
-            wizardState.fromAsset = matchedAssetType;
-            wizardSelectFromInst(institution);
-            const limitsHelp = panel.querySelector('#wizardFromLimitsHelp');
-            if (limitsHelp) limitsHelp.textContent = (limitsHelp.textContent ? limitsHelp.textContent + ' — ' : '') + `Processed via ${PARTICIPANTS[institution]?.name || institution}`;
-            panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            return;
-        }
-        html += `
-            <div class="field-group">
-                <label>Card network / processor</label>
-                <select id="wizardFromInstSelect"><option value="">Select</option>
-                    ${cardMatches.map(m => `<option value="${m.institution}" data-asset-type="${m.matchedAssetType}">${PARTICIPANTS[m.institution]?.name || m.institution}</option>`).join('')}
-                </select>
-            </div>
-            <div id="wizardFromFieldsBox"></div>
-            <div class="help" id="wizardFromLimitsHelp"></div>`;
+    // Card form
+    const cardMatches = institutionsForTile('CARD');
+    if (cardMatches.length === 0) {
+        html += `<div class="help" style="color:var(--danger);">Card swaps aren't configured for this country yet.</div>`;
         panel.innerHTML = html;
-        const sel = panel.querySelector('#wizardFromInstSelect');
-        sel.onchange = function () {
-            const opt = this.options[this.selectedIndex];
-            wizardState.fromAsset = opt?.dataset.assetType || 'CARD';
-            wizardSelectFromInst(this.value);
-        };
+        document.getElementById('wizardSourceNext').disabled = true;
         panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
         return;
     }
-
+    if (cardMatches.length === 1) {
+        html += `<div id="wizardFromFieldsBox"></div><div class="help" id="wizardFromLimitsHelp"></div>`;
+        panel.innerHTML = html;
+        const { institution, matchedAssetType } = cardMatches[0];
+        wizardState.fromAsset = matchedAssetType;
+        wizardSelectFromInst(institution);
+        const limitsHelp = panel.querySelector('#wizardFromLimitsHelp');
+        if (limitsHelp) limitsHelp.textContent = (limitsHelp.textContent ? limitsHelp.textContent + ' — ' : '') + `Processed via ${PARTICIPANTS[institution]?.name || institution}`;
+        panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        return;
+    }
     html += `
         <div class="field-group">
-            <label>Institution</label>
-            <select id="wizardFromInstSelect"><option value="">Select institution</option></select>
+            <label>Card network / processor</label>
+            <select id="wizardFromInstSelect"><option value="">Select</option>
+                ${cardMatches.map(m => `<option value="${m.institution}" data-asset-type="${m.matchedAssetType}">${PARTICIPANTS[m.institution]?.name || m.institution}</option>`).join('')}
+            </select>
         </div>
         <div id="wizardFromFieldsBox"></div>
         <div class="help" id="wizardFromLimitsHelp"></div>`;
     panel.innerHTML = html;
-    const sel = document.getElementById('wizardFromInstSelect');
-    sel.onchange = function () { wizardSelectFromInst(this.value); };
-    populateInstitutionsForAsset(type, sel);
+    const sel = panel.querySelector('#wizardFromInstSelect');
+    sel.onchange = function () {
+        const opt = this.options[this.selectedIndex];
+        wizardState.fromAsset = opt?.dataset.assetType || 'CARD';
+        wizardSelectFromInst(this.value);
+    };
     panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
@@ -2142,8 +2148,13 @@ function wizardSelectToAsset(type) {
             wizardState.toFields[name] = value;
             const valid = fieldsValidForAsset(wizardState.toAsset, wizardState.toFields, false);
             document.getElementById('wizardDestNext').disabled = !valid.valid;
+            // Debug log
+            console.log('[DEBUG] Field changed:', name, value, 'valid:', valid);
         }, false);
     }
+    
+    // Debug after render
+    debugDestinationState();
 }
 
 function updateWizardCurrency() {}
@@ -2179,42 +2190,81 @@ function renderWizardFields(container, assetType, prefix, onChange, includePin) 
     }).join('');
 }
 
+
 window._wizardFieldChange = function(name, value) {
     const activeSourcePanel = document.getElementById('sourceDetailPanel');
+    const activeDestPanel = document.getElementById('destDetailPanel');
+    
+    // Check if source panel is visible
     if (activeSourcePanel && activeSourcePanel.style.display !== 'none') {
         wizardState.fromFields[name] = value;
         const valid = fieldsValidForAsset(wizardState.fromAsset, wizardState.fromFields, true);
         document.getElementById('wizardSourceNext').disabled = !valid.valid;
         return;
     }
-    const activeDestPanel = document.getElementById('destDetailPanel');
+    
+    // Check if destination panel is visible
     if (activeDestPanel && activeDestPanel.style.display !== 'none') {
         wizardState.toFields[name] = value;
         const valid = fieldsValidForAsset(wizardState.toAsset, wizardState.toFields, false);
-        document.getElementById('wizardDestNext').disabled = !valid.valid;
+        const nextBtn = document.getElementById('wizardDestNext');
+        if (nextBtn) {
+            nextBtn.disabled = !valid.valid;
+            // Log for debugging
+            if (!valid.valid) {
+                console.log('[DEBUG] Destination validation failed:', valid.friendlyMessage);
+            }
+        }
+        return;
     }
 };
+
+function debugDestinationState() {
+    console.log('[DEBUG] Destination state:', {
+        toInst: wizardState.toInst,
+        toAsset: wizardState.toAsset,
+        toFields: wizardState.toFields,
+        valid: fieldsValidForAsset(wizardState.toAsset, wizardState.toFields, false)
+    });
+}
+
+
 
 function fieldsValidForAsset(assetType, values, includePin) {
     const config = getAssetConfig(assetType);
     if (!config) return { valid: false, friendlyMessage: "That account type isn't supported yet." };
+    
     let fields = config.fields || [];
+    // Remove amount field if present
     fields = fields.filter(f => f.name !== 'amount');
-    fields = fields.filter(f => f.vault_field !== 'pin');
+    // Remove pin field if not included
+    if (!includePin) fields = fields.filter(f => f.vault_field !== 'pin');
+    
+    // Get required fields
     const requiredFields = fields.filter(f => f.required === true);
+    
+    // Check each required field
     let failedField = null;
     const result = requiredFields.every(f => {
         const val = values[f.name];
-        if (!val || String(val).trim().length === 0) { failedField = f.name; return false; }
+        // Check if value exists and is not empty
+        if (val === undefined || val === null || String(val).trim().length === 0) {
+            failedField = f.name;
+            return false;
+        }
         return true;
     });
+    
     if (!result) {
         const field = requiredFields.find(f => f.name === failedField);
-        return { valid: false, friendlyMessage: `${field?.label || failedField} is required.` };
+        return { 
+            valid: false, 
+            friendlyMessage: `${field?.label || failedField} is required.`
+        };
     }
+    
     return { valid: true };
 }
-
 function extractPinFromFields(assetType, values) {
     const pinField = (getAssetConfig(assetType)?.fields || []).find(f => f.vault_field === 'pin');
     return pinField ? (values[pinField.name] || '') : '';
