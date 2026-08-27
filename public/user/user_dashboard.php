@@ -1861,6 +1861,7 @@ function wizardBackToSourceGrid() {
 function sourceTypeBackLinkHtml() {
     return `<button type="button" class="source-type-back-link" onclick="wizardBackToSourceGrid()">&larr; Change source type</button>`;
 }
+    
 // ---- SINGLE-SOURCE PICKER (FIXED) ----
 function renderWizardSourcePicker(panel, type) {
     // WALLET - Enhanced to show saved sources AND allow new entry
@@ -2004,6 +2005,8 @@ function renderWizardSourcePicker(panel, type) {
             const { institution, matchedAssetType } = cardMatches[0];
             wizardState.fromAsset = matchedAssetType;
             wizardSelectFromInst(institution);
+            const limitsHelp = panel.querySelector('#wizardFromLimitsHelp');
+            if (limitsHelp) limitsHelp.textContent = (limitsHelp.textContent ? limitsHelp.textContent + ' — ' : '') + `Processed via ${PARTICIPANTS[institution]?.name || institution}`;
             panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
             return;
         }
@@ -2019,70 +2022,23 @@ function renderWizardSourcePicker(panel, type) {
             <div id="wizardFromFieldsBox"></div>
             <div class="help" id="wizardFromLimitsHelp"></div>`;
         panel.innerHTML = html;
-        panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        return;
-    }
-}
-
-    // CARD
-    const eligible = userSources.filter(s => s.status === 'active' && assetTypeMatchesTile(s.asset_type, type));
-    let html = sourceTypeBackLinkHtml();
-
-    if (eligible.length > 0) {
-        html += `
-        <div class="field-group">
-            <label>Use a saved card</label>
-            <div class="dropdown-select" id="wizardSavedDropdown">
-                <div class="dropdown-select-trigger" onclick="document.getElementById('wizardSavedDropdown').classList.toggle('open')">
-                    <span class="placeholder">Select a saved source &rsaquo;</span>
-                    <span class="dropdown-select-chevron">&#9662;</span>
-                </div>
-                <div class="dropdown-select-panel">
-                    ${eligible.map(s => `<div class="saved-source-row" onclick="wizardSelectSavedSource('${s.id}')">
-                        <div class="row-main"><div class="row-inst">${escapeHtml(PARTICIPANTS[s.institution]?.name || s.institution)}</div>
-                        <div class="row-ident">${assetIcon(s.asset_type)} ${escapeHtml(ASSETS[s.asset_type]?.label || s.asset_type)} · ${escapeHtml(s.identifier || s.source_identifier || '')}</div></div>
-                    </div>`).join('')}
-                </div>
-            </div>
-        </div>
-        <div style="text-align:center;font-size:11px;color:var(--text-dim);margin:10px 0 16px;">— or enter a new card —</div>`;
-    } else {
-        html += `<div style="text-align:center;font-size:12px;color:var(--text-dim);margin-bottom:14px;">Enter your card details below.</div>`;
-    }
-
-    const cardMatches = institutionsForTile('CARD');
-    if (cardMatches.length === 0) {
-        html += `<div class="help" style="color:var(--danger);">Card swaps aren't configured for this country yet.</div>`;
-        panel.innerHTML = html;
-        document.getElementById('wizardSourceNext').disabled = true;
+        const sel = panel.querySelector('#wizardFromInstSelect');
+        if (sel) {
+            sel.onchange = function () {
+                const opt = this.options[this.selectedIndex];
+                wizardState.fromAsset = opt?.dataset.assetType || 'CARD';
+                wizardSelectFromInst(this.value);
+            };
+        }
         panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
         return;
     }
     
-    if (cardMatches.length === 1) {
-        html += `<div id="wizardFromFieldsBox"></div><div class="help" id="wizardFromLimitsHelp"></div>`;
-        panel.innerHTML = html;
-        const { institution, matchedAssetType } = cardMatches[0];
-        wizardState.fromAsset = matchedAssetType;
-        wizardSelectFromInst(institution);
-        panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        return;
-    }
-    
-    html += `
-        <div class="field-group">
-            <label>Card network / processor</label>
-            <select id="wizardFromInstSelect" onchange="wizardSelectFromInst(this.value)">
-                <option value="">Select</option>
-                ${cardMatches.map(m => `<option value="${m.institution}" data-asset-type="${m.matchedAssetType}">${PARTICIPANTS[m.institution]?.name || m.institution}</option>`).join('')}
-            </select>
-        </div>
-        <div id="wizardFromFieldsBox"></div>
-        <div class="help" id="wizardFromLimitsHelp"></div>`;
-    panel.innerHTML = html;
-    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // Fallback for any other type (should not happen)
+    panel.innerHTML = `<div class="help" style="color:var(--danger);">Unsupported source type: ${type}</div>`;
+    document.getElementById('wizardSourceNext').disabled = true;
 }
-
+    
 // ---- FIXED: Preserve asset type from saved source ----
 function wizardSelectSavedSource(sourceId) {
     const source = userSources.find(s => s.id === sourceId);
