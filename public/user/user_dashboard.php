@@ -3642,49 +3642,7 @@ function renderHookRows() {
     }).join('');
 }
 
-async function confirmHookBuilder() {
-    const valid = hookRows.length > 0 && hookRows.every(r => (r.locked || r.assetType) && r.amount && parseFloat(r.amount) > 0 && r.identifier && (r.locked || r.institution));
-    if (!valid) { showMessage('Fill in each source completely — institution, identifier, and amount — before hooking.', 'warning'); return; }
 
-    const sources = hookRows.map(r => ({
-        institution: r.institution || undefined,
-        asset_type: r.assetType,
-        identifier: r.identifier,
-        authorized_amount: parseFloat(r.amount),
-        pin: r.pin || undefined,
-        wallet_pin: r.pin || undefined,
-    }));
-
-    const totalAmount = sources.reduce((sum, s) => sum + s.authorized_amount, 0);
-    const currency = sources.length ? (PARTICIPANTS[sources[0].institution]?.limits?.currency || 'BWP') : 'BWP';
-    
-    const bodyHtml = `
-        <div class="review-hero">
-            <div class="review-hero-label">You're about to hook</div>
-            <div class="review-hero-amount">${formatMoney(totalAmount, currency)}</div>
-            <div class="review-hero-note">${sources.length} source${sources.length > 1 ? 's' : ''} will be hooked for 24 hours</div>
-        </div>
-        <div class="preview-box">
-            ${sources.map(s => `
-                <div class="preview-row">
-                    <span>${escapeHtml(PARTICIPANTS[s.institution]?.name || s.institution)}</span>
-                    <span class="value">${formatMoney(s.authorized_amount, currency)}</span>
-                </div>
-            `).join('')}
-            <div class="preview-row" style="border-bottom:none;font-weight:700;">
-                <span>Total held</span>
-                <span class="value highlight">${formatMoney(totalAmount, currency)}</span>
-            </div>
-        </div>
-        <div class="preview-reassure">These sources will be held for up to 24 hours. Nothing moves until you spend them.</div>`;
-
-    pendingExecution = {
-        type: 'hook',
-        payload: { sources, cardSuffix: hookEntry.targetCardSuffix },
-        callback: () => executeHook()
-    };
-    showPreviewModal('Preview hook', bodyHtml, null, 'Confirm hook');
-}
 
 async function executeHook() {
     const { sources, cardSuffix } = pendingExecution.payload;
