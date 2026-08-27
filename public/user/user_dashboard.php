@@ -1764,11 +1764,29 @@ function validateStep3() {
         }
         
         if (wizardState.fromInst === wizardState.toInst) {
-            // Same institution, different accounts - this is allowed
-            // Show a friendly info message (non-blocking)
             showMessage('Transferring between different accounts at ' + (PARTICIPANTS[wizardState.toInst]?.name || wizardState.toInst) + '.', 'info');
         }
     }
+
+    // ============================================================
+    // 👇👇👇 PASTE THE NEW BLOCK RIGHT HERE 👇👇👇
+    // ============================================================
+    const destIdField = (getAssetConfig(wizardState.toAsset)?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+    const destIdentifier = destIdField ? wizardState.toFields[destIdField.name] : null;
+    if (wizardState.toInst && destIdentifier) {
+        const hookedMatch = isDestinationCurrentlyHooked(wizardState.toInst, destIdentifier);
+        if (hookedMatch) {
+            showMessage(
+                `That exact account is currently hooked to your VouchMorph Card as a funding source — it's held right now, not free to receive into. ` +
+                `Pick a different destination, or unhook it first from Card → Unhook everything if you want to use it this way.`,
+                'warning'
+            );
+            return false;
+        }
+    }
+    // ============================================================
+    // 👆👆👆 END NEW BLOCK 👆👆👆
+    // ============================================================
     
     const valid = fieldsValidForAsset(wizardState.toAsset, wizardState.toFields, false);
     if (!valid.valid) {
@@ -1776,6 +1794,15 @@ function validateStep3() {
         return false;
     }
     return true;
+}
+    
+
+function isDestinationCurrentlyHooked(destInst, destIdentifier) {
+    if (!vmCardSources) return null;
+    return vmCardSources.find(c =>
+        String(c.institution).toUpperCase() === String(destInst).toUpperCase() &&
+        normalizeIdent(c.identifier) === normalizeIdent(destIdentifier)
+    ) || null;
 }
 
 // ---- STEP 2 — SOURCE SELECTION ----
@@ -1851,6 +1878,34 @@ function renderVmCardEmptyState(panel) {
             <button class="btn btn-primary" onclick="openHookBuilder('swapwizard')">+ Hook a source now</button>
         </div>`;
 }
+
+function normalizeIdent(v) { return String(v || '').trim().replace(/[^0-9a-zA-Z]/g, '').toLowerCase(); }
+
+function findAlreadyHooked(institution, identifier, assetType) {
+    if (!vmCardSources) return null;
+    return vmCardSources.find(c =>
+        String(c.institution).toUpperCase() === String(institution).toUpperCase() &&
+        normalizeIdent(c.identifier) === normalizeIdent(identifier)
+    ) || null;
+}
+
+async function confirmHookBuilder() {
+    const valid = hookRows.length > 0 && hookRows.every(r => (r.locked || r.assetType) && r.amount && parseFloat(r.amount) > 0 && r.identifier && (r.locked || r.institution));
+    if (!valid) { showMessage('Fill in each source completely — institution, identifier, and amount — before hooking.', 'warning'); return; }
+
+    // NEW: block duplicate hooks with an educational message
+    for (const r of hookRows) {
+        const dupe = findAlreadyHooked(r.institution, r.identifier, r.assetType);
+        if (dupe) {
+            const instName = PARTICIPANTS[r.institution]?.name || r.institution;
+            showMessage(
+                `${instName} · ${r.identifier} is already hooked to your card with ${formatMoney(dupe.available_balance ?? dupe.authorized_amount ?? 0, myCard?.currency || 'BWP')} held. ` +
+                `You don't need to hook it again — it's already contributing. Unhook it first if you want to change the authorized amount.`,
+                'info'
+            );
+            return;
+        }
+    }
 
 function wizardBackToSourceGrid() {
     wizardState.source = null;
@@ -3596,10 +3651,18 @@ async function executeHook() {
     if (!sources || !cardSuffix) return;
     const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/hook.php', { card_suffix: cardSuffix, sources });
     if (!result.ok) { showMessage('That hook didn\'t go through: ' + friendlyApiError(result.error), 'error'); return; }
-    showHookSuccess(sources.length);
+
+    // Refetch real state instead of trusting the count we sent
+    const cardResult = await callApiGet(CONFIG.API_BASE + '/api/v1/cards/My.php');
+    if (cardResult.ok) myCard = cardResult.body.data;
+    const sourcesResult = await callApi(CONFIG.API_BASE + '/api/v1/cards/GetCardSources.php', { card_suffix: cardSuffix });
+    const freshSources = sourcesResult.ok ? (sourcesResult.body.data?.sources || sourcesResult.body.data || []) : [];
+    vmCardSources = freshSources;
+
+    showHookSuccess(sources.length, freshSources);
 }
 
-function showHookSuccess(count) {
+function showHookSuccess(count, freshSources = []) {
     document.getElementById('hookEyebrow').textContent = 'Done';
     document.getElementById('hookViewTitle').textContent = 'Hooked!';
     document.getElementById('hookEntryNote').textContent = '';
@@ -3610,16 +3673,37 @@ function showHookSuccess(count) {
     const existingHolder = document.getElementById('hookExistingSummary');
     if (existingHolder) existingHolder.innerHTML = '';
 
+    const currency = myCard?.hook?.currency || myCard?.currency || '';
+    const totalHeld = freshSources.reduce((s, c) => s + (c.available_balance ?? c.authorized_amount ?? 0), 0);
+
+    const statusHtml = `
+        <div class="myc-panel" style="margin-bottom:16px;">
+            <div class="myc-panel-head">
+                <span class="myc-panel-title">Your card right now</span>
+                <span class="myc-panel-total">${formatMoney(totalHeld, currency)} held</span>
+            </div>
+            <div class="help" style="margin-bottom:10px;">This is everything currently hooked, across every time you've hooked a source — held for 24 hours per source unless spent first.</div>
+            ${freshSources.map(c => `
+                <div class="myc-source-row">
+                    <div class="myc-source-tile">${escapeHtml(institutionInitials(c.institution))}</div>
+                    <div class="myc-source-info">
+                        <div class="myc-source-inst">${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)}</div>
+                        <div class="myc-source-ident">${escapeHtml(c.identifier || '')}</div>
+                    </div>
+                    <div class="myc-source-amt">${formatMoney(c.available_balance ?? c.authorized_amount ?? 0, currency)}</div>
+                </div>`).join('')}
+        </div>`;
+
     const summaryHtml = `
         <div class="unhook-summary" style="border-color:var(--accent);">
             <div style="font-size:36px;margin-bottom:8px;">✓</div>
             <div style="font-size:16px;font-weight:700;color:var(--text);">${count} source${count > 1 ? 's' : ''} hooked for 24 hours</div>
-            <div style="font-size:12px;color:var(--text-muted);margin-top:6px;">It's ready to use right away.</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-top:6px;">It's ready to use right away — anywhere you'd pick a source in Swap, "My Card" now covers this.</div>
         </div>`;
 
     if (hookEntry.source === 'swapwizard') {
         document.getElementById('hookRowsHolder').innerHTML = `
-            ${summaryHtml}
+            ${summaryHtml}${statusHtml}
             <div style="font-size:13px;color:var(--text-muted);text-align:center;margin:14px 0;">What do you want to do with it?</div>
             <div class="cta-row" style="flex-direction:column;gap:10px;">
                 <button class="btn btn-primary" onclick="viewStack=['hub']; goView('swap'); setTimeout(()=>{ initWizard(); setTimeout(()=>selectSource('VMCARD'), 60); }, 30);">Swap with it now</button>
@@ -3631,12 +3715,13 @@ function showHookSuccess(count) {
     const cameFromLabel = hookEntry.source === 'source' ? 'My sources' : 'Card';
     const cameFromAction = hookEntry.source === 'source' ? "goView('toolbox')" : "goView('card')";
     document.getElementById('hookRowsHolder').innerHTML = `
-        ${summaryHtml}
+        ${summaryHtml}${statusHtml}
         <div class="cta-row" style="flex-direction:column;gap:10px;">
             <button class="btn btn-primary" onclick="viewStack=['hub']; ${cameFromAction};">&larr; Back to ${cameFromLabel}</button>
             <button class="btn secondary" onclick="goView('hub')">Go to Home</button>
         </div>`;
 }
+    
 
 function promptHookThisSource(prefill) {
     pendingHookPrefill = prefill;
