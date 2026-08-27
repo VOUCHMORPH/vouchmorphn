@@ -4806,6 +4806,209 @@ async function setTransactionPin() {
 }
 
 // ============================================================
+// ADD SOURCE - opens the modal to add a new source
+// ============================================================
+function openAddSource() {
+    const instOptions = Object.keys(PARTICIPANTS).map(code => 
+        `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`
+    ).join('');
+    
+    const bodyHtml = `
+        <div style="margin-bottom:16px;">
+            <div style="font-size:13px;font-weight:700;margin-bottom:4px;">Link a new source</div>
+            <div style="font-size:12px;color:var(--text-muted);">Your bank will verify ownership via OTP or OAuth.</div>
+        </div>
+        <div class="field-group">
+            <label>Institution</label>
+            <select id="addSourceInst" onchange="onAddSourceInstChange(this.value)">
+                <option value="">Select institution</option>
+                ${instOptions}
+            </select>
+        </div>
+        <div class="field-group" id="addSourceAssetGroup" style="display:none;">
+            <label>Asset type</label>
+            <select id="addSourceAssetType" onchange="onAddSourceAssetTypeChange(this.value)"></select>
+            <div class="help">Users can only add Accounts, Wallets, or Cards.</div>
+        </div>
+        <div class="field-group">
+            <label>Identifier</label>
+            <input id="addSourceIdentifier" placeholder="Account number, phone, or card number">
+            <div class="help" id="addSourceIdentifierHelp">The number that identifies your account at this institution.</div>
+        </div>
+        <div class="field-group">
+            <label>Account name (optional)</label>
+            <input id="addSourceAccountName" placeholder="e.g. My Main Account">
+        </div>
+        <div style="background:var(--accent-soft);border-left:3px solid var(--accent);padding:10px 14px;font-size:12px;margin-bottom:14px;color:var(--primary);">
+            🔒 Your details are encrypted and only used to verify you own this account — VouchMorph never stores your bank password.
+        </div>
+        <div id="addSourceOtpFields" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+            <div style="font-size:12px;font-weight:700;margin-bottom:8px;">Verify with OTP</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;" id="otpMessage">A verification code has been sent to your registered phone.</div>
+            <div class="otp-input-group">
+                <input type="text" id="addSourceOtp" placeholder="Enter code" inputmode="numeric" maxlength="8">
+                <button class="btn btn-primary btn-sm" onclick="completeSourceOtp()">Verify</button>
+            </div>
+        </div>
+        <div class="cta-row">
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" id="addSourceSubmitBtn" onclick="submitAddSource()">Link source</button>
+        </div>
+    `;
+    
+    openModal('Add source — step 1 of 2: Link', bodyHtml);
+}
+
+// ============================================================
+// ADD SOURCE - helper functions
+// ============================================================
+let addSourceState = { 
+    attemptId: null, 
+    requiresOtp: false, 
+    requiresRedirect: false, 
+    redirectUrl: null, 
+    institution: null, 
+    assetType: null, 
+    identifier: null 
+};
+
+function onAddSourceInstChange(code) {
+    const group = document.getElementById('addSourceAssetGroup');
+    const sel = document.getElementById('addSourceAssetType');
+    if (!code) {
+        if (group) group.style.display = 'none';
+        if (sel) sel.innerHTML = '';
+        return;
+    }
+    const inst = PARTICIPANTS[code];
+    const allTypes = inst?.asset_types || [];
+    const eligible = allTypes.filter(t => 
+        ['ACCOUNT', 'WALLET', 'CARD', 'MNO-WALLET', 'BANK-WALLET'].includes(String(t).toUpperCase())
+    );
+    if (eligible.length === 0) {
+        if (sel) sel.innerHTML = `<option value="">This institution doesn't support self-service linking yet</option>`;
+        if (group) group.style.display = 'block';
+        return;
+    }
+    if (sel) sel.innerHTML = eligible.map(t => 
+        `<option value="${t}">${assetIcon(t)} ${getAssetConfig(t)?.label || t}</option>`
+    ).join('');
+    if (group) group.style.display = 'block';
+    onAddSourceAssetTypeChange(eligible[0]);
+}
+
+function onAddSourceAssetTypeChange(type) {
+    const idInput = document.getElementById('addSourceIdentifier');
+    const help = document.getElementById('addSourceIdentifierHelp');
+    if (!idInput) return;
+    const t = String(type).toUpperCase();
+    const copy = { 
+        'ACCOUNT': ['e.g. 0011223344', 'Your bank account number.'],
+        'CARD': ['e.g. 16-digit card number', 'The number on the front of your card.'],
+        'WALLET': ['e.g. +267 71 234 567', 'The phone number your wallet is registered to.'],
+        'MNO-WALLET': ['e.g. +267 71 234 567', 'The phone number your mobile wallet is registered to.'],
+        'BANK-WALLET': ['e.g. 0011223344', 'Your bank wallet account number.']
+    };
+    const [ph, h] = copy[t] || ['Account number, phone, or card number', 'The number that identifies your account at this institution.'];
+    idInput.placeholder = ph;
+    if (help) help.textContent = h;
+}
+
+async function submitAddSource() {
+    const institution = document.getElementById('addSourceInst')?.value;
+    const assetType = document.getElementById('addSourceAssetType')?.value;
+    const identifier = document.getElementById('addSourceIdentifier')?.value.trim();
+    const accountName = document.getElementById('addSourceAccountName')?.value.trim();
+    
+    if (!institution) { showMessage('Select an institution.', 'warning'); return; }
+    if (!assetType) { showMessage('Select an asset type.', 'warning'); return; }
+    if (!identifier) { showMessage('Enter your account identifier.', 'warning'); return; }
+    
+    const btn = document.getElementById('addSourceSubmitBtn');
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Registering...';
+    
+    const result = await callApi(CONFIG.API_BASE + '/user/add_source.php', { 
+        institution, 
+        asset_type: assetType, 
+        identifier, 
+        account_name: accountName || undefined 
+    });
+    
+    btn.disabled = false;
+    btn.textContent = original;
+    
+    if (!result.ok) {
+        showMessage('Could not add that source: ' + friendlyApiError(result.error), 'error');
+        return;
+    }
+    
+    const data = result.body.data || {};
+    addSourceState = { 
+        attemptId: data.attempt_id || null, 
+        requiresOtp: data.requires_otp || false, 
+        requiresRedirect: data.requires_redirect || false, 
+        redirectUrl: data.redirect_url || null, 
+        institution, 
+        assetType, 
+        identifier 
+    };
+    
+    if (data.requires_redirect) {
+        showMessage('Redirecting to your bank for verification...', 'info');
+        setTimeout(() => { window.location.href = data.redirect_url; }, 1500);
+        return;
+    }
+    
+    if (data.requires_otp) {
+        document.getElementById('modalTitle').textContent = 'Add source — step 2 of 2: Verify';
+        document.getElementById('addSourceOtpFields').style.display = 'block';
+        document.getElementById('otpMessage').textContent = data.message || 'A verification code has been sent to your registered phone.';
+        document.getElementById('addSourceSubmitBtn').style.display = 'none';
+        showMessage('OTP sent! Enter the code to verify.', 'success');
+        return;
+    }
+    
+    showMessage(data.message || 'Source added!', 'success');
+    setTimeout(() => { 
+        loadUserSources(); 
+        loadToolboxView(); 
+    }, 1500);
+}
+
+async function completeSourceOtp() {
+    const otp = document.getElementById('addSourceOtp')?.value.trim();
+    if (!otp) { showMessage('Enter the verification code.', 'warning'); return; }
+    if (!addSourceState.attemptId) { showMessage('No pending verification attempt.', 'error'); return; }
+    
+    const btn = document.querySelector('#addSourceOtpFields .btn-primary');
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Verifying...';
+    
+    const result = await callApi(CONFIG.API_BASE + '/user/verify_source.php', { 
+        attempt_id: addSourceState.attemptId, 
+        otp, 
+        user_id: CONFIG.USER_ID 
+    });
+    
+    btn.disabled = false;
+    btn.textContent = original;
+    
+    if (!result.ok) {
+        showMessage('That code didn\'t work: ' + friendlyApiError(result.error), 'error');
+        return;
+    }
+    
+    showMessage('Source verified and activated! 🎉', 'success');
+    setTimeout(() => { 
+        loadUserSources(); 
+        loadToolboxView(); 
+    }, 1500);
+}
+    
+// ============================================================
 // DOM READY - NO AWAIT HERE
 // ============================================================
 document.addEventListener('DOMContentLoaded', function() {
