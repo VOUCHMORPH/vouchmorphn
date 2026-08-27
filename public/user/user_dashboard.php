@@ -1810,6 +1810,7 @@ function selectSource(type) {
         }
         if (type === 'COMBINE') {
             wizardState.combineView = wizardState.combineView || 'list';
+            if (!wizardState.tabTotalAmount) wizardState.tabTotalAmount = wizardState.amount;
             renderCombineSummaryWizard();
         }
         nextBtn.disabled = false;
@@ -2865,10 +2866,12 @@ function setWizardVmCardStrategy(s) {
 function renderVmCardBreakdownWizard() {
     const panel = document.getElementById('sourceDetailPanel');
     const nextBtn = document.getElementById('wizardSourceNext');
+    if (panel) panel.style.display = 'block';
     if (!panel || !vmCardSources) {
         if (panel) panel.innerHTML = `<div style="text-align:center;padding:16px;"><div class="spinner"></div> Loading...</div>`;
         return;
     }
+    panel.style.display = 'block';
     const currency = myCard.hook?.currency || myCard.currency || wizardState.currency;
     const merged = dedupeVmCardSources(vmCardSources);
     const total = merged.reduce((s, c) => s + c.amount, 0);
@@ -3143,6 +3146,9 @@ function applyCombineSavedSource(sourceId) {
     row.fields = {};
     const idField = (getAssetConfig(row.assetType)?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
     if (idField) row.fields[idField.name] = source.identifier || source.source_identifier || '';
+    if (wizardState.contributionStrategy !== 'USER_SPECIFIED') {
+        autoSplitCombineEven();
+    }
     renderCombineSummaryWizard();
 }
 
