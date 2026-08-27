@@ -2894,26 +2894,32 @@ function resetWizard() {
     wizardState.toInst = null;
     wizardState.toAsset = null;
     wizardState.toFields = {};
+    wizardState.deliveryMethod = 'ATM';
+    wizardState.beneficiaryPhone = '';
+    wizardState.identityType = 'national_id';
     wizardState.identityValue = '';
     wizardState.identitySms = '';
-    wizardState.beneficiaryPhone = '';
     wizardState.multiSources = [];
+    wizardState.contributionStrategy = 'SMART';
     wizardState.tabTotalAmount = 0;
+    wizardState.vmCardStrategy = 'SMART';
     wizardState.combineView = 'list';
     wizardState.combineEditingRowId = null;
     wizardState.lastPreview = null;
     wizardState.swapPayload = null;
+
     document.getElementById('wizardAmount').value = '';
     document.querySelectorAll('.source-option').forEach(el => el.classList.remove('active'));
     document.querySelectorAll('.dest-option').forEach(el => el.classList.remove('active'));
-    document.getElementById('sourceDetailPanel').style.display = 'none';
-    document.getElementById('destDetailPanel').style.display = 'none';
+
+    document.getElementById('sourceGrid')?.classList.remove('hidden');
+    const sourcePanel = document.getElementById('sourceDetailPanel');
+    if (sourcePanel) { sourcePanel.style.display = 'none'; sourcePanel.innerHTML = ''; }
+    const destPanel = document.getElementById('destDetailPanel');
+    if (destPanel) { destPanel.style.display = 'none'; destPanel.innerHTML = ''; }
+
     renderStep(1);
 }
-
-// ---- COMBINE SOURCES (Keep existing, already functional) ----
-// The combine functions are already in your code and work well.
-// I'll keep them as-is since they're already comprehensive.
 
 // ---- WIZARD INIT ----
 function initWizard() {
