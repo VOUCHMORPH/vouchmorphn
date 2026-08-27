@@ -4677,6 +4677,56 @@ function hookSelectedSourceToCard() {}
 function openFinalizeIdentityModal() { openModal('Finalize identity swap', renderFinalizeIdentityModal()); }
 function renderFinalizeIdentityModal() { return `<div style="font-size:12px;color:var(--text-dim);">No pending claims.</div>`; }
 function openAgentFinalizeIdentityModal() { openFinalizeIdentityModal(); }
+
+function openPendingSources() {
+    openModal('Pending sources', renderPendingSourcesModal());
+}
+
+function renderPendingSourcesModal() {
+    if (!pendingSources || pendingSources.length === 0) {
+        return `<div style="text-align:center;padding:20px;color:var(--text-dim);font-size:13px;">
+            Nothing pending right now.
+        </div>`;
+    }
+
+    const rows = pendingSources.map(p => {
+        const instName = PARTICIPANTS[p.institution]?.name || p.institution || 'Unknown institution';
+        const status = p.status || 'pending';
+        const isAwaitingReview = status === 'pending_confirmation';
+        const isOtpPending = status === 'otp_pending';
+        const isOauthPending = status === 'oauth_pending';
+
+        let statusLabel = 'Pending';
+        let statusColor = 'var(--warning)';
+        let explanation = p.message || 'This source is still being processed.';
+
+        if (isAwaitingReview) {
+            statusLabel = 'Awaiting manual review';
+            explanation = `${instName} doesn't support instant verification, so VouchMorph needs to confirm ownership manually before this source can be used. This can take a little while — you don't need to do anything else.`;
+        } else if (isOtpPending) {
+            statusLabel = 'Waiting for your code';
+            statusColor = 'var(--accent)';
+            explanation = `${instName} sent a verification code — enter it to finish linking this source.`;
+        } else if (isOauthPending) {
+            statusLabel = 'Waiting for bank login';
+            statusColor = 'var(--accent)';
+            explanation = `You started logging into ${instName} to confirm ownership but didn't finish. Try again to complete it.`;
+        }
+
+        return `
+            <div class="myc-panel" style="margin-bottom:10px;">
+                <div class="myc-panel-head">
+                    <span class="myc-panel-title">${escapeHtml(instName)}</span>
+                    <span style="font-size:11px;font-weight:700;color:${statusColor};text-transform:uppercase;">${statusLabel}</span>
+                </div>
+                <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">${escapeHtml(p.identifier || '')}</div>
+                <div style="font-size:12px;color:var(--text-dim);line-height:1.5;">${escapeHtml(explanation)}</div>
+                ${isOtpPending ? `<div class="cta-row" style="margin-top:10px;"><button class="btn btn-primary btn-sm" onclick="closeModal(); openOtpEntryModal(${p.attempt_id || p.id})">Enter code</button></div>` : ''}
+            </div>`;
+    }).join('');
+
+    return `<div>${rows}</div>`;
+}
     
 // ============================================================
 // MISSING FUNCTIONS - ADD THESE
