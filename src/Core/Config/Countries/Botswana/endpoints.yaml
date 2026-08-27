@@ -4,7 +4,7 @@
 # Capability facts (hold_model, settlement_confirmation,
 # source/deposit/cashout) live in participants.yaml.
 # ============================================
-version: "3.3.0"
+version: "3.3.1"
 
 ZURUBANK:
   base_url: "https://zurubank-production.up.railway.app/Backend"
@@ -13,9 +13,32 @@ ZURUBANK:
   adapter_class: "GenericFinancialInstitutionAdapter"
 
   auth:
-    type: MUTUAL_TLS
+    # NOTE: type was "MUTUAL_TLS" in the 3.3.0 file, but this block still
+    # carries header_name/secret_source (an API_KEY shape), which mTLS
+    # doesn't use. That mismatch will fail auth on its own. Restored to
+    # API_KEY to match the fields present — swap back to MUTUAL_TLS only
+    # once this block also has cert/key paths instead of a header key.
+    type: API_KEY
     header_name: "X-API-KEY"
     secret_source: { type: env_var, name: "ZURUBANK_VOUCHMORPH_API_KEY" }
+
+  oauth:
+    client_id: "VOUCHMORPH_APP_ID"
+    client_secret: "YOUR_BANK_SECRET"
+    redirect_uri: "https://vouchmorphn-production.up.railway.app/api/v1/agent/oauth_callback.php"
+    authorization_url: "/api/v1/oauth/authorize.php"
+    token_url: "/api/v1/oauth/token.php"
+    refresh_url: "/api/v1/oauth/refresh.php"
+    revoke_url: "/api/v1/oauth/revoke.php"
+    userinfo_url: "/api/v1/oauth/userinfo.php"
+    scopes: ["balance", "transactions", "payments"]
+
+  source_linking:
+    initiate: "/api/v1/oauth/authorize.php"
+    verify: "/api/v1/oauth/token.php"
+    refresh: "/api/v1/oauth/refresh.php"
+    revoke: "/api/v1/oauth/revoke.php"
+    use: "/api/v1/verify_asset.php"
 
   endpoints:
     source:
@@ -107,6 +130,21 @@ SACCUSSALIS:
     header_name: "X-API-KEY"
     secret_source: { type: env_var, name: "SACCUSSALIS_VOUCHMORPH_API_KEY" }
 
+  source_linking:
+    initiate: "/api/v1/auth/initiate.php"
+    verify: "/api/v1/auth/verify.php"
+    refresh: "/api/v1/auth/refresh.php"
+    revoke: "/api/v1/auth/revoke.php"
+    use: "/api/v1/verify_asset.php"
+
+  oauth:
+    authorization_url: "/oauth/authorize"
+    token_url: "/oauth/token"
+    refresh_url: "/oauth/refresh"
+    revoke_url: "/oauth/revoke"
+    userinfo_url: "/oauth/userinfo"
+    scopes: ["balance", "transactions", "payments"]
+
   endpoints:
     source:
       verify_asset: "/api/v1/verify_asset.php"
@@ -195,7 +233,7 @@ CAZACOM:
 
 # ------------------------------------------------------------
 MTN:
-  base_url: "https://cazacom-production.up.railway.app" 
+  base_url: "https://cazacom-production.up.railway.app"
   timeout_ms: 5000
   sandbox_mode: true
   adapter_class: "MobileMoneyAdapter"
@@ -266,7 +304,7 @@ FNBB_ACQUIRER:
       get_balance: "/n-a"
     destination_deposit:
       process_deposit: "/api/Cardload.php"
-   common:
+    common:
       health: "/health.php"
 
   retry_policy:
