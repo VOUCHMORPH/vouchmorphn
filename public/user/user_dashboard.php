@@ -4326,6 +4326,9 @@ async function loadAgentStatus() {
     agentStatus = result.body.data; 
     agentStatus.is_agent = SessionUser.is_agent;
 }
+// ============================================================
+// ASYNC INIT FUNCTIONS - DEFINED BEFORE DOM READY
+// ============================================================
 async function getCurrentUserRole() {
     if (SessionUser) return SessionUser;
     const result = await callApi(CONFIG.API_BASE + '/user/whoami.php', {});
@@ -4333,6 +4336,7 @@ async function getCurrentUserRole() {
     renderProgressCard();
     return SessionUser;
 }
+
 async function loadUserSources() {
     if (!CONFIG.USER_ID) return;
     const result = await callApi(CONFIG.API_BASE + '/user/sources.php', {});
@@ -4344,8 +4348,56 @@ async function loadUserSources() {
     if (pendingResult.ok) { pendingSources = pendingResult.body.data || []; updateToolboxBadge(); }
 }
 
+async function checkPendingClaims() {
+    if (!CONFIG.USER_ID) return;
+    try { 
+        const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/pending_claims.php', {}); 
+        if (!result.ok) return; 
+        pendingClaims = result.body.data || []; 
+        updateToolboxBadge(); 
+    } catch (e) { 
+        console.warn('[claims] Failed to check pending claims:', e); 
+    }
+}
+
+function updateToolboxBadge() {
+    const badge = document.getElementById('toolboxBadge');
+    if (!badge) return;
+    const totalPending = pendingSources.length + pendingClaims.length;
+    if (totalPending > 0) { badge.style.display = 'inline-flex'; badge.textContent = totalPending; } 
+    else { badge.style.display = 'none'; }
+}
+
+async function loadAgentStatus() {
+    if (!CONFIG.USER_ID) return;
+    await getCurrentUserRole();
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/status.php', {});
+    if (!result.ok) return;
+    agentStatus = result.body.data; 
+    agentStatus.is_agent = SessionUser.is_agent;
+}
+
+function openProfileModal() { openModal('My profile', renderProfileModal()); }
+
+function renderProfileModal() {
+    const rows = savedIdentities.length ? savedIdentities.map((id, i) => `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);"><div><div style="font-size:11px;color:var(--text-muted);">${escapeHtml(IDENTITY_TYPE_LABELS[id.type] || id.type)}</div><div style="font-size:14px;font-weight:700;">${escapeHtml(id.value)}</div></div><div class="quick-actions" style="margin:0;"><span class="quick-link" onclick="useSavedIdentity(${i})">Use</span><span class="quick-link danger" onclick="removeSavedIdentity(${i})">Remove</span></div></div>`).join('') : `<div style="font-size:12px;color:var(--text-dim);">No saved identities yet.</div>`;
+    return `<div style="margin-bottom:12px;"><div style="font-weight:700;margin-bottom:4px;">Your registered identities</div>${rows}</div><div style="border-top:1px solid var(--border);padding-top:16px;"><div class="field-label" style="margin-bottom:8px;">Transaction PIN</div><div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Required to claim money sent to your verified identity. Never share it.</div><div class="field-group"><label>New PIN (4-6 digits)</label><input type="password" id="newPin" inputmode="numeric" maxlength="6" placeholder="••••"></div><div class="field-group"><label>Confirm PIN</label><input type="password" id="confirmPin" inputmode="numeric" maxlength="6" placeholder="••••"></div><div class="cta-row"><button class="btn btn-primary" onclick="setTransactionPin()">Set PIN</button></div></div><div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px;"><span class="quick-link" onclick="closeModal();openAddIdentityModal();">Add a new identity</span><span class="quick-link muted" onclick="closeModal();openFinalizeIdentityModal();">Finalize an identity swap</span></div>`;
+}
+
+async function setTransactionPin() {
+    const pin = document.getElementById('newPin').value.trim();
+    const confirmPin = document.getElementById('confirmPin').value.trim();
+    if (!/^\d{4,6}$/.test(pin)) { showMessage('Your PIN should be 4 to 6 digits.', 'warning'); return; }
+    if (pin !== confirmPin) { showMessage('Those two PINs don\'t match — try again.', 'warning'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/set_pin.php', { pin, confirm_pin: confirmPin });
+    if (!result.ok) { showMessage('Could not set your PIN: ' + friendlyApiError(result.error), 'error'); return; }
+    if (SessionUser) SessionUser.has_pin = true;
+    showMessage('Transaction PIN set. Keep it private. 🎉', 'success');
+    renderProgressCard(); closeModal();
+}
+
 // ============================================================
-// DOM READY
+// DOM READY - NO AWAIT HERE
 // ============================================================
 document.addEventListener('DOMContentLoaded', function() {
     loadSavedTheme();
@@ -4359,7 +4411,7 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
     
-    // All async init functions are defined above, so we can call them safely
+    // Call async functions without await - they handle their own errors
     checkPendingClaims();
     loadAgentStatus();
     loadUserSources();
