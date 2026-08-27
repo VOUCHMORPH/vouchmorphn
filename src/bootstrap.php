@@ -415,6 +415,32 @@ $container->setFactory('Domain\Services\SwapService', function ($c) {
     );
 });
 
+$container->setFactory('Infrastructure\Crypto\CertificateManager', function ($c) {
+    return \Infrastructure\Crypto\CertificateManagerFactory::get('VOUCHMORPH');
+});
+
+$container->setFactory('Infrastructure\Crypto\SignatureVerifier', function ($c) {
+    return new \Infrastructure\Crypto\SignatureVerifier($c->get(PDO::class));
+});
+
+$container->setFactory('Infrastructure\Crypto\AggregateSigner', function ($c) {
+    return new \Infrastructure\Crypto\AggregateSigner(
+        $c->get('Infrastructure\Crypto\CertificateManager'),
+        $c->get('Infrastructure\Crypto\SignatureVerifier')
+    );
+});
+
+$container->setFactory('Domain\Services\MultiSource\PoolCoordinator', function ($c) {
+    return new \Domain\Services\MultiSource\PoolCoordinator(
+        $c->get(PDO::class),
+        $c->get('Domain\Services\SwapService'),
+        $c->get('Domain\Services\Settlement\HybridSettlementStrategy'),
+        $c->get('Infrastructure\Crypto\AggregateSigner'),
+        $c->get('countryConfig'),
+        $c->get('countryCode')
+    );
+});
+
 $container->setFactory('Domain\Services\MultiSourceSwapExecutor', function ($c) {
     return new \Domain\Services\MultiSourceSwapExecutor(
         $c->get(PDO::class),
