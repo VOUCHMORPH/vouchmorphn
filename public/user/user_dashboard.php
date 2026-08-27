@@ -2388,14 +2388,31 @@ function wizardSelectToAsset(type) {
         renderWizardFields(fieldsBox, type, 'toField_', (name, value) => {
             wizardState.toFields[name] = value;
             const valid = fieldsValidForAsset(wizardState.toAsset, wizardState.toFields, false);
-            document.getElementById('wizardDestNext').disabled = !valid.valid;
+            const nextBtn = document.getElementById('wizardDestNext');
+            if (nextBtn) {
+                // IMPORTANT: Set both the property AND the attribute
+                nextBtn.disabled = !valid.valid;
+                if (valid.valid) {
+                    nextBtn.removeAttribute('disabled');  // ← Add this line!
+                }
+                console.log('[DEBUG] Button disabled property:', nextBtn.disabled);
+            }
         }, false);
     }
     
+    // Validate fields immediately
     const valid = fieldsValidForAsset(wizardState.toAsset, wizardState.toFields, false);
-    document.getElementById('wizardDestNext').disabled = !valid.valid;
+    const nextBtn = document.getElementById('wizardDestNext');
+    if (nextBtn) {
+        // IMPORTANT: Set both the property AND the attribute
+        nextBtn.disabled = !valid.valid;
+        if (valid.valid) {
+            nextBtn.removeAttribute('disabled');  // ← Add this line!
+        }
+        console.log('[DEBUG] Final button state - disabled:', nextBtn.disabled, 'has attribute?', nextBtn.hasAttribute('disabled'));
+    }
 }
-
+    
 function updateWizardCurrency() {}
 
 // ---- SHARED FIELD RENDERER ----
@@ -2452,6 +2469,9 @@ window._wizardFieldChange = function(name, value, prefix) {
         const nextBtn = document.getElementById('wizardDestNext');
         if (nextBtn) {
             nextBtn.disabled = !valid.valid;
+            if (valid.valid) {
+                nextBtn.removeAttribute('disabled');  
+            }
             console.log('[DEBUG] Destination validation:', valid, 'button disabled:', nextBtn.disabled);
         }
         return;
