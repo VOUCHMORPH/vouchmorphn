@@ -2959,16 +2959,6 @@ async function loadCardDataWizard() {
     }
 }
 
-// ============================================================
-// HOOK BUILDER (preserved from original)
-// ============================================================
-let hookMode = 'single';
-let hookRows = [];
-let hookRowSeq = 0;
-let hookEntry = { source: 'card', targetCardSuffix: null };
-let pendingHookPrefill = null;
-let unhookTarget = null;
-
 async function openHookBuilder(entryType, prefill) {
     if (!myCard) {
         const result = await callApiGet(CONFIG.API_BASE + '/api/v1/cards/My.php');
