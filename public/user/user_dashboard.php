@@ -2278,7 +2278,7 @@ function selectDestination(type) {
         nextBtn.disabled = true;
     }
 }
-
+    
 function wizardSelectToInst(code) {
     wizardState.toInst = code || null;
     wizardState.toAsset = null;
