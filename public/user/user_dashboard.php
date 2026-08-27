@@ -2969,13 +2969,6 @@ let hookEntry = { source: 'card', targetCardSuffix: null };
 let pendingHookPrefill = null;
 let unhookTarget = null;
 
-const HOOK_ASSET_TYPES = [
-    { key: 'ACCOUNT', label: 'Account', icon: '🏦' },
-    { key: 'WALLET', label: 'Wallet', icon: '📱' },
-    { key: 'CARD', label: 'Card (Visa/Mastercard)', icon: '🪪' },
-    { key: 'VOUCHER', label: 'Cashout voucher', icon: '🎟️' },
-];
-
 async function openHookBuilder(entryType, prefill) {
     if (!myCard) {
         const result = await callApiGet(CONFIG.API_BASE + '/api/v1/cards/My.php');
