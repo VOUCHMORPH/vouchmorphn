@@ -1660,27 +1660,14 @@ function validateStep2() {
             showMessage('Your VouchMorph Card is not active yet.', 'warning');
             return false;
         }
-        if (wizardState.multiSources.length === 0 && vmCardSources && vmCardSources.length > 0) {
-            wizardState.multiSources = vmCardSources.map((source, index) => ({
-                id: ++multiSourceSeq,
-                type: 'mycard',
-                institution: source.institution,
-                assetType: source.asset_type || 'ACCOUNT',
-                identifier: source.identifier || source.source_identifier || '',
-                amount: source.available_balance || source.authorized_amount || 0,
-                fields: {},
-                _draft: false,
-                _vmCardSource: true
-            }));
-            wizardState.tabTotalAmount = wizardState.multiSources.reduce((sum, s) => sum + s.amount, 0);
-        }
         if (!vmCardSources || vmCardSources.length === 0) {
             showMessage('Nothing is hooked to your card yet.', 'warning');
             return false;
         }
-        const total = wizardState.multiSources.reduce((s, c) => s + c.amount, 0);
+        const merged = dedupeVmCardSources(vmCardSources);
+        const total = merged.reduce((s, c) => s + c.amount, 0);
         if (wizardState.amount > total + 0.01) {
-            showMessage(`You have ${formatMoney(total, wizardState.currency)} hooked — enter a lower amount.`, 'warning');
+            showMessage(`You have ${formatMoney(total, wizardState.currency)} hooked — enter a lower amount, or hook more first.`, 'warning');
             return false;
         }
     }
@@ -1693,6 +1680,33 @@ function validateStep2() {
     }
 
     return true;
+}
+
+function getAccountIdentifier(assetType, fields) {
+    if (!assetType || !fields) return null;
+    const config = getAssetConfig(assetType);
+    if (!config) return null;
+    const idField = (config.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+    if (!idField) return null;
+    return fields[idField.name] || null;
+}
+
+function isSameAccount(inst1, inst2, assetType1, fields1, assetType2, fields2) {
+    // Must be same institution
+    if (inst1 !== inst2) return false;
+    
+    // Get identifiers
+    const id1 = getAccountIdentifier(assetType1, fields1);
+    const id2 = getAccountIdentifier(assetType2, fields2);
+    
+    // If either is missing, we can't compare
+    if (!id1 || !id2) return false;
+    
+    // Normalize and compare
+    const normalized1 = String(id1).trim().replace(/[^0-9a-zA-Z]/g, '');
+    const normalized2 = String(id2).trim().replace(/[^0-9a-zA-Z]/g, '');
+    
+    return normalized1 === normalized2;
 }
 
 function validateStep3() {
@@ -1729,6 +1743,33 @@ function validateStep3() {
         showMessage('Please select an asset type.', 'warning');
         return false;
     }
+    
+    // ============================================================
+    // FIXED VALIDATION: Same institution + Same identifier = NOT allowed
+    // Same institution + Different identifier = ALLOWED
+    // ============================================================
+    if (['WALLET', 'CARD', 'VOUCHER'].includes(wizardState.source) && wizardState.fromInst && wizardState.toInst) {
+        const isSame = isSameAccount(
+            wizardState.fromInst,
+            wizardState.toInst,
+            wizardState.fromAsset,
+            wizardState.fromFields,
+            wizardState.toAsset,
+            wizardState.toFields
+        );
+        
+        if (isSame) {
+            showMessage('You cannot send money from an account to itself. Please choose a different destination account, wallet, or card number.', 'warning');
+            return false;
+        }
+        
+        if (wizardState.fromInst === wizardState.toInst) {
+            // Same institution, different accounts - this is allowed
+            // Show a friendly info message (non-blocking)
+            showMessage('Transferring between different accounts at ' + (PARTICIPANTS[wizardState.toInst]?.name || wizardState.toInst) + '.', 'info');
+        }
+    }
+    
     const valid = fieldsValidForAsset(wizardState.toAsset, wizardState.toFields, false);
     if (!valid.valid) {
         showMessage(valid.friendlyMessage || 'Please fill in all required destination fields.', 'warning');
@@ -1754,20 +1795,7 @@ function selectSource(type) {
             if (!vmCardSources || vmCardSources.length === 0) {
                 loadVmCardSources().then(() => {
                     if (vmCardSources && vmCardSources.length > 0) {
-                        wizardState.multiSources = vmCardSources.map((source, index) => ({
-                            id: ++multiSourceSeq,
-                            type: 'mycard',
-                            institution: source.institution,
-                            assetType: source.asset_type || 'ACCOUNT',
-                            identifier: source.identifier || source.source_identifier || '',
-                            amount: source.available_balance || source.authorized_amount || 0,
-                            fields: {},
-                            _draft: false,
-                            _vmCardSource: true
-                        }));
-                        wizardState.tabTotalAmount = wizardState.multiSources.reduce((sum, s) => sum + s.amount, 0);
-                        wizardState.combineView = 'list';
-                        renderCombineSummaryWizard();
+                        renderVmCardBreakdownWizard();
                         nextBtn.disabled = false;
                     } else {
                         renderVmCardEmptyState(panel);
@@ -1776,20 +1804,9 @@ function selectSource(type) {
                 });
                 return;
             }
-            wizardState.multiSources = vmCardSources.map((source, index) => ({
-                id: ++multiSourceSeq,
-                type: 'mycard',
-                institution: source.institution,
-                assetType: source.asset_type || 'ACCOUNT',
-                identifier: source.identifier || source.source_identifier || '',
-                amount: source.available_balance || source.authorized_amount || 0,
-                fields: {},
-                _draft: false,
-                _vmCardSource: true
-            }));
-            wizardState.tabTotalAmount = wizardState.multiSources.reduce((sum, s) => sum + s.amount, 0);
-            wizardState.combineView = 'list';
-            renderCombineSummaryWizard();
+            renderVmCardBreakdownWizard();
+            nextBtn.disabled = false;
+            return;
         }
         if (type === 'COMBINE') {
             wizardState.combineView = wizardState.combineView || 'list';
@@ -1827,7 +1844,7 @@ function renderVmCardEmptyState(panel) {
     if (!panel) return;
     panel.style.display = 'block';
     panel.innerHTML = `
-        ${sourceTypeBackLinkHtml()}
+        <button type="button" class="source-type-back-link" onclick="wizardBackToSourceGrid()">&larr; Change source type</button>
         <div class="empty-source-box">
             <p style="margin-bottom:10px;">Nothing is hooked to your card yet.</p>
             <button class="btn btn-primary" onclick="openHookBuilder('swapwizard')">+ Hook a source now</button>
@@ -1848,7 +1865,7 @@ function wizardBackToSourceGrid() {
 function sourceTypeBackLinkHtml() {
     return `<button type="button" class="source-type-back-link" onclick="wizardBackToSourceGrid()">&larr; Change source type</button>`;
 }
-    
+
 // ---- SINGLE-SOURCE PICKER ----
 function renderWizardSourcePicker(panel, type) {
     if (type === 'WALLET') {
@@ -2264,6 +2281,29 @@ function wizardSelectToInst(code) {
     wizardState.toFields = {};
     const panel = document.getElementById('destDetailPanel');
     if (!panel) return;
+
+    // ============================================================
+    // SAME INSTITUTION WARNING (non-blocking)
+    // ============================================================
+    if (code && wizardState.fromInst === code && ['WALLET', 'CARD', 'VOUCHER'].includes(wizardState.source)) {
+        const warningEl = document.createElement('div');
+        warningEl.id = 'sameInstitutionWarning';
+        warningEl.style.cssText = 'background: rgba(0,168,120,0.08); border-left: 3px solid var(--accent); padding: 12px 16px; margin-bottom: 12px; font-size: 12px; color: var(--text-muted);';
+        warningEl.innerHTML = '💡 You\'re sending money <strong>within the same institution</strong>. Make sure the destination account/wallet/card number is <strong>different</strong> from your source.';
+        
+        const existingWarning = panel.querySelector('#sameInstitutionWarning');
+        if (existingWarning) existingWarning.remove();
+        
+        const firstChild = panel.firstChild;
+        if (firstChild) {
+            panel.insertBefore(warningEl, firstChild);
+        } else {
+            panel.appendChild(warningEl);
+        }
+    } else {
+        const existingWarning = panel.querySelector('#sameInstitutionWarning');
+        if (existingWarning) existingWarning.remove();
+    }
 
     if (wizardState.destType === 'CASHOUT') {
         document.getElementById('wizardDestNext').disabled =
@@ -2806,6 +2846,345 @@ async function executeViaContributionSession() {
     showWizardResultModal({ data: { reference: execResult.body.data.swap_reference, amount: wizardState.amount } }, journeyData);
 }
 
+function dedupeVmCardSources(sources) {
+    const map = new Map();
+    sources.forEach(c => {
+        const key = `${c.institution}|${c.identifier}|${c.asset_type}`;
+        const amt = c.available_balance ?? c.authorized_amount ?? 0;
+        if (map.has(key)) map.get(key).amount += amt;
+        else map.set(key, { institution: c.institution, identifier: c.identifier, asset_type: c.asset_type, amount: amt });
+    });
+    return Array.from(map.values());
+}
+
+function setWizardVmCardStrategy(s) {
+    wizardState.vmCardStrategy = s;
+    renderVmCardBreakdownWizard();
+}
+
+function renderVmCardBreakdownWizard() {
+    const panel = document.getElementById('sourceDetailPanel');
+    const nextBtn = document.getElementById('wizardSourceNext');
+    if (!panel || !vmCardSources) {
+        if (panel) panel.innerHTML = `<div style="text-align:center;padding:16px;"><div class="spinner"></div> Loading...</div>`;
+        return;
+    }
+    const currency = myCard.hook?.currency || myCard.currency || wizardState.currency;
+    const merged = dedupeVmCardSources(vmCardSources);
+    const total = merged.reduce((s, c) => s + c.amount, 0);
+    const target = wizardState.amount || 0;
+    const covered = Math.min(target, total);
+    const canProceed = target > 0 && total >= target;
+    const SEGCOUNT = 24;
+    const filled = target > 0 ? Math.min(SEGCOUNT, Math.round((covered / target) * SEGCOUNT)) : 0;
+    const STRATEGIES = [
+        {id:'SMART', label:'Smart'}, {id:'EQUAL', label:'Equal'}, {id:'RATIO', label:'Ratio'},
+        {id:'PRIORITY', label:'Priority'}, {id:'USER_SPECIFIED', label:'Manual'}, {id:'DRAIN_SMALLEST', label:'Drain smallest'}
+    ];
+    const rows = merged.map(c => `<div class="arcade-row">
+        <div class="swatch" style="background:#00A878"></div>
+        <div style="flex:1;min-width:0"><div class="title">${escapeHtml(PARTICIPANTS[c.institution]?.name || c.institution)}</div><div class="sub">${escapeHtml(c.identifier || '')}</div></div>
+        <div class="amt">${formatMoney(c.amount, currency)}</div>
+    </div>`).join('');
+
+    panel.innerHTML = `
+        ${sourceTypeBackLinkHtml()}
+        <div class="arcade-console">
+            <div class="arcade-readout">
+                <span class="arcade-num">${covered.toFixed(2)}</span>
+                <span style="font-size:10px;color:#6f9c7d">HOOKED ${formatMoney(total, currency)}</span>
+            </div>
+            <div style="font-size:9px;color:#6f9c7d;margin-bottom:6px">DRAWING / TARGET ${formatMoney(target, currency)}</div>
+            <div class="arcade-strip">${Array.from({length:SEGCOUNT},(_,i)=>`<div class="arcade-seg${i<filled?' on':''}"></div>`).join('')}</div>
+            <div class="arcade-strat-row">
+                ${STRATEGIES.map(s => `<button type="button" class="arcade-strat-btn${wizardState.vmCardStrategy===s.id?' active':''}" onclick="setWizardVmCardStrategy('${s.id}')">${s.label}</button>`).join('')}
+            </div>
+            <div style="font-size:9px;color:#6f9c7d;text-align:center;margin-bottom:10px">Drawing from everything hooked to your card — this strategy is used when you start the swap.</div>
+            ${rows}
+            <div class="arcade-status${canProceed ? ' ready' : ''}">
+                ${canProceed ? 'CAN_PROCEED: TRUE' : 'ENTER AN AMOUNT AT OR BELOW WHAT\u2019S HOOKED'}
+            </div>
+        </div>
+        <div style="text-align:center;margin-top:10px;"><span class="quick-link muted" onclick="openHookBuilder('swapwizard')">+ Hook another source</span></div>`;
+
+    if (nextBtn) nextBtn.disabled = !canProceed;
+}
+
+// ---- COMBINE SOURCES ----
+function combineRowIsComplete(row) {
+    if (!row.institution || !row.assetType) return false;
+    const valid = fieldsValidForAsset(row.assetType, row.fields || {}, true);
+    if (!valid.valid) return false;
+    if (!row.amount || parseFloat(row.amount) <= 0) return false;
+    return true;
+}
+
+function renderCombineSummaryWizard() {
+    const container = document.getElementById('sourceDetailPanel');
+    if (!container) return;
+    const nextBtn = document.getElementById('wizardSourceNext');
+    
+    const rows = wizardState.multiSources.filter(r => !r._draft);
+    const total = wizardState.tabTotalAmount || 0;
+    const covered = rows.reduce((s, r) => s + (r.amount || 0), 0);
+    const remaining = Math.max(0, total - covered);
+    const canExecute = total > 0 && covered >= total && rows.length >= 2;
+    const SEGCOUNT = 24;
+    const filled = total > 0 ? Math.min(SEGCOUNT, Math.round((covered / total) * SEGCOUNT)) : 0;
+    const STRATEGIES = [
+        {id:'SMART', label:'Smart'}, {id:'EQUAL', label:'Equal'}, {id:'RATIO', label:'Ratio'},
+        {id:'PRIORITY', label:'Priority'}, {id:'USER_SPECIFIED', label:'Manual'}, {id:'DRAIN_SMALLEST', label:'Drain smallest'}
+    ];
+    const SWATCH = { saved: '#ffb300', voucher: '#ff2fa0' };
+
+    let html = sourceTypeBackLinkHtml();
+    html += `<div class="arcade-console">
+        <div class="arcade-readout">
+            <span class="arcade-num" id="combineCoveredNum">${covered.toFixed(2)}</span>
+            <span style="display:flex;align-items:center;gap:6px">
+                <input type="number" class="arcade-target-input" id="combineTotal" value="${total || ''}" placeholder="0.00" step="0.01" oninput="updateCombineTotal(this.value)">
+                <span style="font-size:10px;color:#6f9c7d">${wizardState.currency}</span>
+            </span>
+        </div>
+        <div style="font-size:9px;color:#6f9c7d;margin-bottom:6px">COVERED / TARGET</div>
+        <div class="arcade-strip">${Array.from({length:SEGCOUNT},(_,i)=>`<div class="arcade-seg${i<filled?' on':''}"></div>`).join('')}</div>
+        <div class="arcade-strat-row">
+            ${STRATEGIES.map(s => `<button type="button" class="arcade-strat-btn${wizardState.contributionStrategy===s.id?' active':''}" onclick="setCombineStrategy('${s.id}')">${s.label}</button>`).join('')}
+        </div>
+        <div class="arcade-hint" id="combineStratHint"></div>
+        <div id="combineRowsList">${rows.map(r => renderCombineConsoleRow(r, SWATCH)).join('') || '<div class="empty-source-box"><p>No sources added yet.</p></div>'}</div>
+        <button type="button" class="arcade-add-btn" onclick="openCombineAddRow()">+ ADD SOURCE</button>
+        <div class="arcade-status${canExecute ? ' ready' : ''}">
+            ${canExecute ? 'CAN_EXECUTE: TRUE — READY TO SWAP' : `REMAINING ${remaining.toFixed(2)} ${wizardState.currency} — CAN_EXECUTE: FALSE`}
+        </div>
+    </div>`;
+
+    container.style.display = 'block';
+    container.innerHTML = html;
+    
+    const hints = { SMART:'VouchMorph balances contributions automatically.', EQUAL:'Splits the target evenly across every source.', RATIO:'Proportional to each source\u2019s available balance.', PRIORITY:'Draws fully from the first source before moving on.', USER_SPECIFIED:'Edit each source\u2019s amount yourself below.', DRAIN_SMALLEST:'Empties the smallest available balance first.' };
+    const hintEl = document.getElementById('combineStratHint');
+    if (hintEl) hintEl.textContent = hints[wizardState.contributionStrategy] || '';
+    
+    if (nextBtn) nextBtn.disabled = !canExecute;
+}
+
+function renderCombineConsoleRow(row, SWATCH) {
+    let title = '', sub = '';
+    if (row.type === 'saved') { title = PARTICIPANTS[row.institution]?.name || row.institution; const idField = (getAssetConfig(row.assetType)?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount'); sub = idField ? (row.fields[idField.name] || '') : ''; }
+    else if (row.type === 'voucher') { title = 'VOUCHER' + (row.institution ? ` \u00b7 ${PARTICIPANTS[row.institution]?.name || row.institution}` : ''); sub = row.fields.voucher_number || ''; }
+    const editable = wizardState.contributionStrategy === 'USER_SPECIFIED';
+    const color = SWATCH[row.type] || '#8ee6a3';
+    return `<div class="arcade-row" data-row-id="${row.id}">
+        <div class="swatch" style="background:${color}"></div>
+        <div style="flex:1;min-width:0"><div class="title">${escapeHtml(title)}</div><div class="sub">${escapeHtml(sub)}</div></div>
+        ${editable
+            ? `<input type="number" step="0.01" value="${row.amount || ''}" style="width:70px;text-align:right;font-family:var(--font-mono);background:#000;color:#39ff6a;border:1px solid #2c3a3d;padding:5px" oninput="setConsoleRowAmount(${row.id}, this.value)">`
+            : `<div class="amt">${row.amount.toFixed(2)}</div>`}
+        <button type="button" class="quick-link danger" style="padding:4px 8px;font-size:9px" onclick="removeCombineRow(${row.id})">X</button>
+    </div>`;
+}
+
+function setConsoleRowAmount(id, value) {
+    const row = wizardState.multiSources.find(r => r.id === id);
+    if (!row) return;
+    row.amount = Math.max(0, parseFloat(value) || 0);
+    refreshCombineMetrics();
+}
+
+function refreshCombineMetrics() {
+    const rows = wizardState.multiSources.filter(r => !r._draft);
+    const total = wizardState.tabTotalAmount || 0;
+    const covered = rows.reduce((s, r) => s + (r.amount || 0), 0);
+    const remaining = Math.max(0, total - covered);
+    const canExecute = total > 0 && covered >= total && rows.length >= 2;
+    const SEGCOUNT = 24;
+    const filled = total > 0 ? Math.min(SEGCOUNT, Math.round((covered / total) * SEGCOUNT)) : 0;
+
+    const numEl = document.getElementById('combineCoveredNum');
+    if (numEl) numEl.textContent = covered.toFixed(2);
+
+    const strip = document.querySelector('#sourceDetailPanel .arcade-strip');
+    if (strip) strip.innerHTML = Array.from({length: SEGCOUNT}, (_, i) => `<div class="arcade-seg${i < filled ? ' on' : ''}"></div>`).join('');
+
+    const status = document.querySelector('#sourceDetailPanel .arcade-status');
+    if (status) {
+        status.className = 'arcade-status' + (canExecute ? ' ready' : '');
+        status.textContent = canExecute ? 'CAN_EXECUTE: TRUE — READY TO SWAP' : `REMAINING ${remaining.toFixed(2)} ${wizardState.currency} — CAN_EXECUTE: FALSE`;
+    }
+
+    rows.forEach(r => {
+        const el = document.querySelector(`.arcade-row[data-row-id="${r.id}"] .amt`);
+        if (el) el.textContent = r.amount.toFixed(2);
+    });
+
+    const nextBtn = document.getElementById('wizardSourceNext');
+    if (nextBtn) nextBtn.disabled = !multiSourcesValid();
+}
+
+function setCombineStrategy(strategy) {
+    wizardState.contributionStrategy = strategy;
+    if (strategy === 'EQUAL' || strategy === 'SMART') autoSplitCombineEven();
+    renderCombineSummaryWizard();
+}
+
+function autoSplitCombineEven() {
+    const flexRows = wizardState.multiSources.filter(r => r.type === 'saved');
+    const voucherTotal = wizardState.multiSources.filter(r => r.type === 'voucher').reduce((s, r) => s + (r.amount || 0), 0);
+    const toSplit = Math.max(0, wizardState.tabTotalAmount - voucherTotal);
+    if (flexRows.length === 0) return;
+    const share = Math.floor((toSplit / flexRows.length) * 100) / 100;
+    let allocated = 0;
+    flexRows.forEach((r, i) => {
+        r.amount = (i === flexRows.length - 1) ? Math.round((toSplit - allocated) * 100) / 100 : share;
+        allocated += r.amount;
+    });
+}
+
+function multiSourcesValid() {
+    const rows = wizardState.multiSources.filter(r => !r._draft && combineRowIsComplete(r));
+    if (rows.length < 2) return false;
+    const target = wizardState.tabTotalAmount || rows.reduce((s, r) => s + r.amount, 0);
+    return target > 0;
+}
+
+function openCombineAddRow(rowId) {
+    wizardState.combineView = 'addRow';
+    if (rowId) {
+        wizardState.combineEditingRowId = rowId;
+        const row = wizardState.multiSources.find(r => r.id === rowId);
+        combineEditSnapshot = row ? JSON.parse(JSON.stringify(row)) : null;
+    } else {
+        wizardState.combineEditingRowId = ++multiSourceSeq;
+        combineEditSnapshot = null;
+        wizardState.multiSources.push({ id: wizardState.combineEditingRowId, type: null, institution: null, assetType: null, fields: {}, amount: 0, _draft: true });
+    }
+    renderCombineSummaryWizard();
+}
+
+function closeCombineAddRow(discard) {
+    const id = wizardState.combineEditingRowId;
+    if (discard) {
+        if (combineEditSnapshot) {
+            const idx = wizardState.multiSources.findIndex(r => r.id === id);
+            if (idx > -1) wizardState.multiSources[idx] = combineEditSnapshot;
+        } else {
+            wizardState.multiSources = wizardState.multiSources.filter(r => !(r.id === id && r._draft));
+        }
+    } else {
+        const row = wizardState.multiSources.find(r => r.id === id);
+        if (row) delete row._draft;
+    }
+    wizardState.combineEditingRowId = null;
+    combineEditSnapshot = null;
+    wizardState.combineView = 'list';
+    if (wizardState.contributionStrategy !== 'RATIO') autoSplitCombineEven();
+    renderCombineSummaryWizard();
+}
+
+function renderCombineAddRow(panel) {
+    const row = wizardState.multiSources.find(r => r.id === wizardState.combineEditingRowId);
+    if (!row) { wizardState.combineView = 'list'; renderCombineSummaryWizard(); return; }
+    const savedEligible = userSources.filter(u => u.status === 'active');
+
+    let html = `<button type="button" class="source-type-back-link" onclick="closeCombineAddRow(true)">&larr; Cancel, back to sources</button>`;
+    html += `<div class="combine-type-picker">
+        <div class="source-type-opt ${row.type === 'saved' ? 'active' : ''} ${savedEligible.length ? '' : 'disabled'}" onclick="${savedEligible.length ? "setCombineRowType('saved')" : ''}"><span class="icon">💳</span>Saved source</div>
+        <div class="source-type-opt ${row.type === 'voucher' ? 'active' : ''}" onclick="setCombineRowType('voucher')"><span class="icon">🎟️</span>Voucher</div>
+    </div>`;
+
+    if (!row.type) { html += `<div class="help" style="text-align:center;">Pick where this part of the swap comes from.</div>`; panel.innerHTML = html; return; }
+
+    if (row.type === 'saved') {
+        html += `<div class="dropdown-select" id="combineSavedDropdown">
+            <div class="dropdown-select-trigger" onclick="document.getElementById('combineSavedDropdown').classList.toggle('open')">
+                <span class="${row.institution ? 'chosen' : 'placeholder'}">${row.institution ? escapeHtml(PARTICIPANTS[row.institution]?.name || row.institution) : 'Select a saved source &rsaquo;'}</span>
+                <span class="dropdown-select-chevron">&#9662;</span>
+            </div>
+            <div class="dropdown-select-panel">
+                ${savedEligible.map(u => `<div class="saved-source-row ${row.sourceId === u.id ? 'active' : ''}" onclick="applyCombineSavedSource('${u.id}')"><div class="row-main"><div class="row-inst">${escapeHtml(PARTICIPANTS[u.institution]?.name || u.institution)}</div><div class="row-ident">${escapeHtml(u.identifier || u.source_identifier || '')}</div></div></div>`).join('')}
+            </div>
+        </div>`;
+        if (row.institution && wizardState.contributionStrategy === 'USER_SPECIFIED') {
+            html += `<div class="field-group" style="margin-top:14px;"><label>Amount from this source</label><input type="number" step="0.01" placeholder="0.00" value="${row.amount || ''}" oninput="setCombineRowAmount(this.value)"></div>`;
+        } else if (row.institution) {
+            html += `<div class="help" style="margin-top:14px;">Amount is set automatically by your "${wizardState.contributionStrategy}" strategy after you save.</div>`;
+        }
+    } else if (row.type === 'voucher') {
+        html += `<div class="field-group"><label>Institution</label><select id="combineVoucherInst" onchange="setCombineVoucherInst(this.value)"><option value="">Select</option>${institutionsForTile('VOUCHER').map(m => `<option value="${m.institution}" ${row.institution === m.institution ? 'selected' : ''}>${PARTICIPANTS[m.institution]?.name || m.institution}</option>`).join('')}</select></div>`;
+        if (row.institution) html += `<div id="combineVoucherFields">${renderVoucherFieldsForCombine(row)}</div>`;
+    }
+
+    html += `<div class="cta-row" style="margin-top:20px;"><button class="btn btn-secondary" onclick="closeCombineAddRow(true)">Cancel</button><button class="btn btn-primary" ${combineRowIsComplete(row) ? '' : 'disabled'} onclick="closeCombineAddRow(false)">Save source</button></div>`;
+    panel.innerHTML = html;
+}
+
+function setCombineRowType(type) {
+    const row = wizardState.multiSources.find(r => r.id === wizardState.combineEditingRowId);
+    if (!row) return;
+    row.type = type;
+    row.institution = null; row.assetType = type === 'voucher' ? 'VOUCHER' : null;
+    row.fields = {}; row.sourceId = null; row.amount = row.amount || 0;
+    renderCombineSummaryWizard();
+}
+
+function applyCombineSavedSource(sourceId) {
+    const row = wizardState.multiSources.find(r => r.id === wizardState.combineEditingRowId);
+    const source = userSources.find(u => u.id === sourceId);
+    if (!row || !source) return;
+    row.institution = source.institution;
+    row.assetType = String(source.asset_type).toUpperCase();
+    row.sourceId = sourceId;
+    row.fields = {};
+    const idField = (getAssetConfig(row.assetType)?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+    if (idField) row.fields[idField.name] = source.identifier || source.source_identifier || '';
+    renderCombineSummaryWizard();
+}
+
+function setCombineRowAmount(value) {
+    const row = wizardState.multiSources.find(r => r.id === wizardState.combineEditingRowId);
+    if (row) row.amount = parseFloat(value) || 0;
+    const btn = document.querySelector('.cta-row .btn-primary');
+    if (btn) btn.disabled = !combineRowIsComplete(row);
+}
+
+function setCombineVoucherInst(code) {
+    const row = wizardState.multiSources.find(r => r.id === wizardState.combineEditingRowId);
+    if (!row) return;
+    row.institution = code || null;
+    row.fields = {};
+    renderCombineSummaryWizard();
+}
+
+function renderVoucherFieldsForCombine(row) {
+    const fields = (getAssetConfig('VOUCHER')?.fields || []);
+    return fields.map(f => {
+        const inputType = f.vault_field === 'pin' ? 'password' : (f.type === 'number' ? 'number' : 'text');
+        return `<div class="field-group"><label>${f.label}${f.required ? ' *' : ''}</label><input type="${inputType}" placeholder="${f.placeholder || ''}" value="${row.fields[f.name] || ''}" oninput="setCombineVoucherField('${f.name}', this.value)"></div>`;
+    }).join('');
+}
+
+function setCombineVoucherField(name, value) {
+    const row = wizardState.multiSources.find(r => r.id === wizardState.combineEditingRowId);
+    if (!row) return;
+    row.fields[name] = name === 'amount' ? (parseFloat(value) || 0) : value;
+    if (name === 'amount') row.amount = row.fields.amount;
+    const btn = document.querySelector('.cta-row .btn-primary');
+    if (btn) btn.disabled = !combineRowIsComplete(row);
+}
+
+function removeCombineRow(id) {
+    wizardState.multiSources = wizardState.multiSources.filter(s => s.id !== id);
+    if (wizardState.contributionStrategy !== 'RATIO') autoSplitCombineEven();
+    renderCombineSummaryWizard();
+}
+
+function updateCombineTotal(value) {
+    wizardState.tabTotalAmount = parseFloat(value) || 0;
+    if (wizardState.contributionStrategy === 'EQUAL' || wizardState.contributionStrategy === 'SMART') autoSplitCombineEven();
+    refreshCombineMetrics();
+}
+
 // ---- RESULT MODAL ----
 function showWizardResultModal(response, journeyData) {
     const data = response.data || {};
@@ -2906,240 +3285,7 @@ function initWizard() {
             instOptions.map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('');
     }
     resetWizard();
-    loadCardDataWizard();
-}
-
-async function loadCardDataWizard() {
-    const result = await callApiGet(CONFIG.API_BASE + '/api/v1/cards/My.php');
-    if (result.ok) {
-        myCard = result.body.data;
-        if (myCard.is_active) {
-            const sourcesResult = await callApi(CONFIG.API_BASE + '/api/v1/cards/GetCardSources.php', { card_suffix: myCard.card_suffix });
-            if (sourcesResult.ok) {
-                const sources = sourcesResult.body.data?.sources || sourcesResult.body.data || [];
-                vmCardSources = sources;
-            }
-        }
-    }
-}
-
-// ---- COMBINE SOURCES ----
-function combineRowIsComplete(row) {
-    if (!row.institution || !row.assetType) return false;
-    const valid = fieldsValidForAsset(row.assetType, row.fields || {}, true);
-    if (!valid.valid) return false;
-    if (!row.amount || parseFloat(row.amount) <= 0) return false;
-    return true;
-}
-
-function renderCombineSummaryWizard() {
-    const container = document.getElementById('sourceDetailPanel');
-    if (!container) return;
-    
-    const rows = wizardState.multiSources.filter(r => !r._draft);
-    const totalAmount = wizardState.tabTotalAmount || rows.reduce((sum, r) => sum + (parseFloat(r.amount) || 0), 0);
-    
-    if (!rows.length) {
-        container.style.display = 'block';
-        container.innerHTML = `
-            <div class="empty-source-box">
-                <p style="margin-bottom:8px;">No sources selected yet.</p>
-                <span class="quick-link" onclick="openAddSourceModalForCombine()">+ Add a source to combine</span>
-            </div>
-        `;
-        return;
-    }
-    
-    let html = `
-        <div class="combine-layout">
-            <div>
-                <div class="combine-type-picker">
-                    <div class="source-type-opt" onclick="addCombineRow('WALLET')">💳 Wallet/Account</div>
-                    <div class="source-type-opt" onclick="addCombineRow('CARD')">🪪 Card</div>
-                    <div class="source-type-opt" onclick="addCombineRow('VOUCHER')">🎟️ Voucher</div>
-                </div>
-                <div style="margin-bottom:12px;">
-                    <span class="quick-link muted" onclick="openAddSourceModalForCombine()">+ Add from saved sources</span>
-                </div>
-                <div id="combineRowsContainer">
-                    ${rows.map(r => `
-                        <div class="combine-row-card">
-                            <div class="combine-row-main">
-                                <span class="combine-row-icon">${assetIcon(r.assetType)}</span>
-                                <div>
-                                    <div class="combine-row-title">${escapeHtml(PARTICIPANTS[r.institution]?.name || r.institution)}</div>
-                                    <div class="combine-row-sub">${escapeHtml(r.assetType)} · ${escapeHtml(r.identifier || '')}</div>
-                                </div>
-                            </div>
-                            <div class="combine-row-amt">${formatMoney(r.amount, wizardState.currency)}</div>
-                            <div class="combine-row-actions">
-                                <button class="btn-danger-outline" onclick="removeCombineRow(${r.id})">✕</button>
-                            </div>
-                        </div>
-                    `).join('')}
-                </div>
-                <div style="display:flex;justify-content:space-between;padding:10px 0;border-top:1px solid var(--border);font-weight:700;">
-                    <span>Total</span>
-                    <span>${formatMoney(totalAmount, wizardState.currency)}</span>
-                </div>
-            </div>
-            <div class="combine-col-right">
-                <div class="arcade-console">
-                    <div class="arcade-readout">
-                        <span class="arcade-num">${formatMoney(totalAmount, wizardState.currency)}</span>
-                        <span style="font-size:10px;color:#6f9c7d;">combined</span>
-                    </div>
-                    <div class="arcade-strip">
-                        ${rows.map(r => `<div class="arcade-seg on"></div>`).join('')}
-                        ${rows.length < 5 ? Array(5 - rows.length).fill('<div class="arcade-seg"></div>').join('') : ''}
-                    </div>
-                    <div class="arcade-strat-row">
-                        <button class="arcade-strat-btn ${wizardState.contributionStrategy === 'SMART' ? 'active' : ''}" onclick="setCombineStrategy('SMART')">Smart</button>
-                        <button class="arcade-strat-btn ${wizardState.contributionStrategy === 'EQUAL' ? 'active' : ''}" onclick="setCombineStrategy('EQUAL')">Equal</button>
-                        <button class="arcade-strat-btn ${wizardState.contributionStrategy === 'RATIO' ? 'active' : ''}" onclick="setCombineStrategy('RATIO')">Ratio</button>
-                    </div>
-                    <div class="arcade-hint">${wizardState.contributionStrategy} — sources will be charged in this order</div>
-                    ${rows.map(r => `
-                        <div class="arcade-row">
-                            <div class="swatch" style="background:var(--accent);"></div>
-                            <div><div class="title">${escapeHtml(PARTICIPANTS[r.institution]?.name || r.institution)}</div><div class="sub">${escapeHtml(r.assetType)}</div></div>
-                            <div class="amt">${formatMoney(r.amount, wizardState.currency)}</div>
-                        </div>
-                    `).join('')}
-                    ${rows.length === 0 ? '<div style="font-size:10px;color:#6f9c7d;text-align:center;padding:10px;">Add sources above</div>' : ''}
-                    <div class="arcade-status ${totalAmount >= wizardState.amount ? 'ready' : ''}">
-                        ${totalAmount >= wizardState.amount ? '✅ Ready to swap' : `Need ${formatMoney(wizardState.amount - totalAmount, wizardState.currency)} more`}
-                    </div>
-                </div>
-            </div>
-        </div>
-    `;
-    
-    container.style.display = 'block';
-    container.innerHTML = html;
-    document.getElementById('wizardSourceNext').disabled = totalAmount < wizardState.amount || rows.length === 0;
-}
-
-function addCombineRow(type) {
-    const panel = document.getElementById('sourceDetailPanel');
-    if (!panel) return;
-    
-    const eligibleInstitutions = Object.keys(PARTICIPANTS).filter(code => {
-        const types = PARTICIPANTS[code].asset_types || [];
-        return types.some(t => assetTypeMatchesTile(t, type));
-    });
-    
-    const html = `
-        <div style="border:1px solid var(--border);padding:16px;margin-bottom:12px;background:var(--surface);">
-            <div style="font-weight:700;margin-bottom:8px;">Add ${type} source</div>
-            <div class="field-group">
-                <label>Institution</label>
-                <select id="combineInstSelect" onchange="updateCombineFields(this.value)">
-                    <option value="">Select institution</option>
-                    ${eligibleInstitutions.map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('')}
-                </select>
-            </div>
-            <div id="combineFieldsContainer"></div>
-            <div class="field-group">
-                <label>Amount</label>
-                <input type="number" id="combineAmount" placeholder="0.00" step="0.01" min="0.01">
-            </div>
-            <div class="cta-row" style="margin-top:12px;">
-                <button class="btn btn-secondary btn-sm" onclick="cancelCombineAdd()">Cancel</button>
-                <button class="btn btn-primary btn-sm" onclick="confirmCombineAdd('${type}')">Add source</button>
-            </div>
-        </div>
-    `;
-    
-    const existingContent = panel.innerHTML;
-    panel.innerHTML = html + existingContent;
-    document.getElementById('wizardSourceNext').disabled = true;
-}
-
-function updateCombineFields(institution) {
-    const container = document.getElementById('combineFieldsContainer');
-    if (!container || !institution) {
-        container.innerHTML = '';
-        return;
-    }
-    
-    const inst = PARTICIPANTS[institution];
-    const assetTypes = inst?.asset_types || [];
-    const type = assetTypes[0] || 'ACCOUNT';
-    
-    renderWizardFields(container, type, 'combineField_', (name, value) => {
-        window._combineTempFields = window._combineTempFields || {};
-        window._combineTempFields[name] = value;
-    }, true);
-}
-
-function confirmCombineAdd(type) {
-    const instSelect = document.getElementById('combineInstSelect');
-    const institution = instSelect?.value;
-    const amount = parseFloat(document.getElementById('combineAmount')?.value || 0);
-    
-    if (!institution) { showMessage('Select an institution.', 'warning'); return; }
-    if (amount <= 0) { showMessage('Enter a valid amount.', 'warning'); return; }
-    
-    const fields = window._combineTempFields || {};
-    const config = getAssetConfig(type);
-    const idField = (config?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
-    const identifier = idField ? fields[idField.name] : null;
-    
-    if (idField && !identifier) { showMessage(`Please enter ${idField.label}.`, 'warning'); return; }
-    
-    const valid = fieldsValidForAsset(type, fields, true);
-    if (!valid.valid) { showMessage(valid.friendlyMessage, 'warning'); return; }
-    
-    wizardState.multiSources.push({
-        id: ++multiSourceSeq,
-        type: 'saved',
-        institution: institution,
-        assetType: type,
-        identifier: identifier || '',
-        amount: amount,
-        fields: fields,
-        _draft: false
-    });
-    
-    wizardState.tabTotalAmount = wizardState.multiSources.reduce((sum, s) => sum + (parseFloat(s.amount) || 0), 0);
-    
-    window._combineTempFields = {};
-    renderCombineSummaryWizard();
-    document.getElementById('wizardSourceNext').disabled = wizardState.tabTotalAmount < wizardState.amount || wizardState.multiSources.length === 0;
-}
-
-function cancelCombineAdd() {
-    window._combineTempFields = {};
-    renderCombineSummaryWizard();
-}
-
-function removeCombineRow(id) {
-    wizardState.multiSources = wizardState.multiSources.filter(r => r.id !== id);
-    wizardState.tabTotalAmount = wizardState.multiSources.reduce((sum, s) => sum + (parseFloat(s.amount) || 0), 0);
-    renderCombineSummaryWizard();
-    document.getElementById('wizardSourceNext').disabled = wizardState.tabTotalAmount < wizardState.amount || wizardState.multiSources.length === 0;
-}
-
-function setCombineStrategy(strategy) {
-    wizardState.contributionStrategy = strategy;
-    renderCombineSummaryWizard();
-}
-
-function multiSourcesValid() {
-    const total = wizardState.multiSources.reduce((sum, s) => sum + (parseFloat(s.amount) || 0), 0);
-    return wizardState.multiSources.length > 0 && total >= wizardState.amount;
-}
-
-function openAddSourceModalForCombine() {
-    const originalSubmit = window.submitAddSource;
-    window.submitAddSource = async function() {
-        await originalSubmit.call(this);
-        setTimeout(() => {
-            renderCombineSummaryWizard();
-        }, 500);
-    };
-    openAddSource();
+    loadVmCardSources();
 }
 
 // ============================================================
@@ -4154,30 +4300,7 @@ function hookSelectedSourceToCard() {}
 function openFinalizeIdentityModal() { openModal('Finalize identity swap', renderFinalizeIdentityModal()); }
 function renderFinalizeIdentityModal() { return `<div style="font-size:12px;color:var(--text-dim);">No pending claims.</div>`; }
 function openAgentFinalizeIdentityModal() { openFinalizeIdentityModal(); }
-
-// ============================================================
-// ASYNC INIT FUNCTIONS (defined before DOM ready)
-// ============================================================
-async function getCurrentUserRole() {
-    if (SessionUser) return SessionUser;
-    const result = await callApi(CONFIG.API_BASE + '/user/whoami.php', {});
-    SessionUser = (result.ok && result.body) ? result.body : { success: false, role: 'user', is_agent: false, is_admin: false, permissions: [] };
-    renderProgressCard();
-    return SessionUser;
-}
-
-async function loadUserSources() {
-    if (!CONFIG.USER_ID) return;
-    const result = await callApi(CONFIG.API_BASE + '/user/sources.php', {});
-    if (result.ok) {
-        userSources = result.body.data?.sources || [];
-        renderProgressCard();
-    }
-    const pendingResult = await callApi(CONFIG.API_BASE + '/api/v1/sources/pending.php', {});
-    if (pendingResult.ok) { pendingSources = pendingResult.body.data || []; updateToolboxBadge(); }
-}
-
-async function checkPendingClaims() {
+function checkPendingClaims() {
     if (!CONFIG.USER_ID) return;
     try { 
         const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/pending_claims.php', {}); 
@@ -4188,7 +4311,6 @@ async function checkPendingClaims() {
         console.warn('[claims] Failed to check pending claims:', e); 
     }
 }
-
 function updateToolboxBadge() {
     const badge = document.getElementById('toolboxBadge');
     if (!badge) return;
@@ -4196,7 +4318,6 @@ function updateToolboxBadge() {
     if (totalPending > 0) { badge.style.display = 'inline-flex'; badge.textContent = totalPending; } 
     else { badge.style.display = 'none'; }
 }
-
 async function loadAgentStatus() {
     if (!CONFIG.USER_ID) return;
     await getCurrentUserRole();
@@ -4205,24 +4326,22 @@ async function loadAgentStatus() {
     agentStatus = result.body.data; 
     agentStatus.is_agent = SessionUser.is_agent;
 }
-
-function openProfileModal() { openModal('My profile', renderProfileModal()); }
-
-function renderProfileModal() {
-    const rows = savedIdentities.length ? savedIdentities.map((id, i) => `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);"><div><div style="font-size:11px;color:var(--text-muted);">${escapeHtml(IDENTITY_TYPE_LABELS[id.type] || id.type)}</div><div style="font-size:14px;font-weight:700;">${escapeHtml(id.value)}</div></div><div class="quick-actions" style="margin:0;"><span class="quick-link" onclick="useSavedIdentity(${i})">Use</span><span class="quick-link danger" onclick="removeSavedIdentity(${i})">Remove</span></div></div>`).join('') : `<div style="font-size:12px;color:var(--text-dim);">No saved identities yet.</div>`;
-    return `<div style="margin-bottom:12px;"><div style="font-weight:700;margin-bottom:4px;">Your registered identities</div>${rows}</div><div style="border-top:1px solid var(--border);padding-top:16px;"><div class="field-label" style="margin-bottom:8px;">Transaction PIN</div><div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Required to claim money sent to your verified identity. Never share it.</div><div class="field-group"><label>New PIN (4-6 digits)</label><input type="password" id="newPin" inputmode="numeric" maxlength="6" placeholder="••••"></div><div class="field-group"><label>Confirm PIN</label><input type="password" id="confirmPin" inputmode="numeric" maxlength="6" placeholder="••••"></div><div class="cta-row"><button class="btn btn-primary" onclick="setTransactionPin()">Set PIN</button></div></div><div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px;"><span class="quick-link" onclick="closeModal();openAddIdentityModal();">Add a new identity</span><span class="quick-link muted" onclick="closeModal();openFinalizeIdentityModal();">Finalize an identity swap</span></div>`;
+async function getCurrentUserRole() {
+    if (SessionUser) return SessionUser;
+    const result = await callApi(CONFIG.API_BASE + '/user/whoami.php', {});
+    SessionUser = (result.ok && result.body) ? result.body : { success: false, role: 'user', is_agent: false, is_admin: false, permissions: [] };
+    renderProgressCard();
+    return SessionUser;
 }
-
-async function setTransactionPin() {
-    const pin = document.getElementById('newPin').value.trim();
-    const confirmPin = document.getElementById('confirmPin').value.trim();
-    if (!/^\d{4,6}$/.test(pin)) { showMessage('Your PIN should be 4 to 6 digits.', 'warning'); return; }
-    if (pin !== confirmPin) { showMessage('Those two PINs don\'t match — try again.', 'warning'); return; }
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/set_pin.php', { pin, confirm_pin: confirmPin });
-    if (!result.ok) { showMessage('Could not set your PIN: ' + friendlyApiError(result.error), 'error'); return; }
-    if (SessionUser) SessionUser.has_pin = true;
-    showMessage('Transaction PIN set. Keep it private. 🎉', 'success');
-    renderProgressCard(); closeModal();
+async function loadUserSources() {
+    if (!CONFIG.USER_ID) return;
+    const result = await callApi(CONFIG.API_BASE + '/user/sources.php', {});
+    if (result.ok) {
+        userSources = result.body.data?.sources || [];
+        renderProgressCard();
+    }
+    const pendingResult = await callApi(CONFIG.API_BASE + '/api/v1/sources/pending.php', {});
+    if (pendingResult.ok) { pendingSources = pendingResult.body.data || []; updateToolboxBadge(); }
 }
 
 // ============================================================
