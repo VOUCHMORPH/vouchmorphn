@@ -2389,29 +2389,51 @@ function wizardSelectToAsset(type) {
             wizardState.toFields[name] = value;
             const valid = fieldsValidForAsset(wizardState.toAsset, wizardState.toFields, false);
             const nextBtn = document.getElementById('wizardDestNext');
-            if (nextBtn) {
-                // IMPORTANT: Set both the property AND the attribute
-                nextBtn.disabled = !valid.valid;
-                if (valid.valid) {
-                    nextBtn.removeAttribute('disabled');  // ← Add this line!
-                }
-                console.log('[DEBUG] Button disabled property:', nextBtn.disabled);
-            }
+            if (nextBtn) nextBtn.disabled = !valid.valid;
         }, false);
     }
-    
-    // Validate fields immediately
+
     const valid = fieldsValidForAsset(wizardState.toAsset, wizardState.toFields, false);
     const nextBtn = document.getElementById('wizardDestNext');
-    if (nextBtn) {
-        // IMPORTANT: Set both the property AND the attribute
-        nextBtn.disabled = !valid.valid;
-        if (valid.valid) {
-            nextBtn.removeAttribute('disabled');  // ← Add this line!
-        }
-        console.log('[DEBUG] Final button state - disabled:', nextBtn.disabled, 'has attribute?', nextBtn.hasAttribute('disabled'));
-    }
+    if (nextBtn) nextBtn.disabled = !valid.valid;
 }
+
+window._wizardFieldChange = function(name, value, prefix) {
+    if (prefix === 'fromField_') {
+        wizardState.fromFields[name] = value;
+        const valid = fieldsValidForAsset(wizardState.fromAsset, wizardState.fromFields, true);
+        document.getElementById('wizardSourceNext').disabled = !valid.valid;
+        return;
+    }
+
+    if (prefix === 'toField_') {
+        wizardState.toFields[name] = value;
+        const valid = fieldsValidForAsset(wizardState.toAsset, wizardState.toFields, false);
+        const nextBtn = document.getElementById('wizardDestNext');
+        if (nextBtn) nextBtn.disabled = !valid.valid;
+        return;
+    }
+
+    const activeSourcePanel = document.getElementById('sourceDetailPanel');
+    const activeDestPanel = document.getElementById('destDetailPanel');
+    const isSourceVisible = activeSourcePanel && activeSourcePanel.style.display !== 'none';
+    const isDestVisible = activeDestPanel && activeDestPanel.style.display !== 'none';
+
+    if (isSourceVisible) {
+        wizardState.fromFields[name] = value;
+        const valid = fieldsValidForAsset(wizardState.fromAsset, wizardState.fromFields, true);
+        document.getElementById('wizardSourceNext').disabled = !valid.valid;
+        return;
+    }
+
+    if (isDestVisible) {
+        wizardState.toFields[name] = value;
+        const valid = fieldsValidForAsset(wizardState.toAsset, wizardState.toFields, false);
+        const nextBtn = document.getElementById('wizardDestNext');
+        if (nextBtn) nextBtn.disabled = !valid.valid;
+        return;
+    }
+};
     
 function updateWizardCurrency() {}
 
