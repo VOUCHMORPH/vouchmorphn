@@ -2113,7 +2113,16 @@ function wizardSelectToInst(code) {
 
     const inst = PARTICIPANTS[code];
     if (!inst) return;
-    const assetTypes = inst.asset_types || [];
+    let assetTypes = inst.asset_types || [];
+    
+    // For DEPOSIT destination, filter out VOUCHER
+    if (wizardState.destType === 'DEPOSIT') {
+        assetTypes = assetTypes.filter(t => {
+            const upper = String(t).toUpperCase();
+            return upper !== 'VOUCHER' && upper !== 'CASHOUT-VOUCHER';
+        });
+    }
+    
     if (assetSel) {
         assetSel.innerHTML = '<option value="">Select asset type</option>' +
             assetTypes.map(t => `<option value="${t}">${getAssetConfig(t)?.label || t}</option>`).join('');
@@ -2128,7 +2137,6 @@ function wizardSelectToInst(code) {
         document.getElementById('wizardDestNext').disabled = true;
     }
 }
-
 function wizardSelectToAsset(type) {
     wizardState.toAsset = type || null;
     wizardState.toFields = {};
@@ -2148,13 +2156,17 @@ function wizardSelectToAsset(type) {
             wizardState.toFields[name] = value;
             const valid = fieldsValidForAsset(wizardState.toAsset, wizardState.toFields, false);
             document.getElementById('wizardDestNext').disabled = !valid.valid;
-            // Debug log
             console.log('[DEBUG] Field changed:', name, value, 'valid:', valid);
         }, false);
     }
     
-    // Debug after render
-    debugDestinationState();
+    // Debug state
+    console.log('[DEBUG] Destination state after selecting asset:', {
+        toInst: wizardState.toInst,
+        toAsset: wizardState.toAsset,
+        toFields: wizardState.toFields,
+        valid: fieldsValidForAsset(wizardState.toAsset, wizardState.toFields, false)
+    });
 }
 
 function updateWizardCurrency() {}
@@ -2186,39 +2198,45 @@ function renderWizardFields(container, assetType, prefix, onChange, includePin) 
             return `<div class="field-group"><label>${f.label} ${f.required ? '*' : ''}</label><select id="${prefix}${f.name}" onchange="window._wizardFieldChange('${f.name}', this.value)"><option value="">${f.placeholder || 'Select'}</option>${optionsHtml}</select>${f.help_text ? `<div class="help">${f.help_text}</div>` : ''}</div>`;
         }
         const inputType = f.vault_field === 'pin' || f.name.includes('pin') || f.name === 'cvv' ? 'password' : (f.type || 'text');
-        return `<div class="field-group"><label>${f.label} ${f.required ? '*' : ''}</label><input type="${inputType}" id="${prefix}${f.name}" placeholder="${f.placeholder || ''}" ${attrs.join(' ')} oninput="window._wizardFieldChange('${f.name}', this.value)">${f.help_text ? `<div class="help">${f.help_text}</div>` : ''}</div>`;
+        // Use oninput for text fields, onchange for selects
+        const eventAttr = f.type === 'select' ? 'onchange' : 'oninput';
+        return `<div class="field-group"><label>${f.label} ${f.required ? '*' : ''}</label><input type="${inputType}" id="${prefix}${f.name}" placeholder="${f.placeholder || ''}" ${attrs.join(' ')} ${eventAttr}="window._wizardFieldChange('${f.name}', this.value)">${f.help_text ? `<div class="help">${f.help_text}</div>` : ''}</div>`;
     }).join('');
+    
+    // Log for debugging
+    console.log('[DEBUG] Rendered fields for asset type:', assetType, 'fields:', fields);
 }
 
-
 window._wizardFieldChange = function(name, value) {
+    // Determine which panel is active
     const activeSourcePanel = document.getElementById('sourceDetailPanel');
     const activeDestPanel = document.getElementById('destDetailPanel');
+    const isSourceVisible = activeSourcePanel && activeSourcePanel.style.display !== 'none';
+    const isDestVisible = activeDestPanel && activeDestPanel.style.display !== 'none';
     
-    // Check if source panel is visible
-    if (activeSourcePanel && activeSourcePanel.style.display !== 'none') {
+    console.log('[DEBUG] _wizardFieldChange called:', name, value, 'isSourceVisible:', isSourceVisible, 'isDestVisible:', isDestVisible);
+    
+    if (isSourceVisible) {
         wizardState.fromFields[name] = value;
         const valid = fieldsValidForAsset(wizardState.fromAsset, wizardState.fromFields, true);
         document.getElementById('wizardSourceNext').disabled = !valid.valid;
+        console.log('[DEBUG] Source validation:', valid);
         return;
     }
     
-    // Check if destination panel is visible
-    if (activeDestPanel && activeDestPanel.style.display !== 'none') {
+    if (isDestVisible) {
         wizardState.toFields[name] = value;
         const valid = fieldsValidForAsset(wizardState.toAsset, wizardState.toFields, false);
         const nextBtn = document.getElementById('wizardDestNext');
         if (nextBtn) {
             nextBtn.disabled = !valid.valid;
-            // Log for debugging
-            if (!valid.valid) {
-                console.log('[DEBUG] Destination validation failed:', valid.friendlyMessage);
-            }
+            console.log('[DEBUG] Destination validation:', valid, 'disabled:', nextBtn.disabled);
         }
         return;
     }
+    
+    console.log('[DEBUG] No active panel found for field change');
 };
-
 function debugDestinationState() {
     console.log('[DEBUG] Destination state:', {
         toInst: wizardState.toInst,
