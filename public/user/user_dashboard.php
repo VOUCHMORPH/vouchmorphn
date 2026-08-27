@@ -3367,9 +3367,6 @@ function showTransactionReport(response, session) {
 }
 
 function showHookSuccess(count) {
-    const cameFromLabel = hookEntry.source === 'source' ? 'My sources' : 'Card';
-    const cameFromAction = hookEntry.source === 'source' ? "goView('toolbox')" : "goView('card')";
-
     document.getElementById('hookEyebrow').textContent = 'Done';
     document.getElementById('hookViewTitle').textContent = 'Hooked!';
     document.getElementById('hookEntryNote').textContent = '';
@@ -3377,36 +3374,38 @@ function showHookSuccess(count) {
     document.getElementById('addHookRowBtn').style.display = 'none';
     document.getElementById('hookSubmitBtn').style.display = 'none';
     document.getElementById('hookFinePrint').style.display = 'none';
-    document.getElementById('hookRowsHolder').innerHTML = `
+    const existingHolder = document.getElementById('hookExistingSummary');
+    if (existingHolder) existingHolder.innerHTML = '';
+
+    const summaryHtml = `
         <div class="unhook-summary" style="border-color:var(--accent);">
             <div style="font-size:36px;margin-bottom:8px;">✓</div>
             <div style="font-size:16px;font-weight:700;color:var(--text);">${count} source${count > 1 ? 's' : ''} hooked for 24 hours</div>
-            <div style="font-size:12px;color:var(--text-muted);margin-top:6px;">It's ready to use as a Swap source right away.</div>
-        </div>
+            <div style="font-size:12px;color:var(--text-muted);margin-top:6px;">It's ready to use right away.</div>
+        </div>`;
+
+    if (hookEntry.source === 'swapwizard') {
+        // Card was topped up while mid-swap — this is the two-way fork.
+        document.getElementById('hookRowsHolder').innerHTML = `
+            ${summaryHtml}
+            <div style="font-size:13px;color:var(--text-muted);text-align:center;margin:14px 0;">What do you want to do with it?</div>
+            <div class="cta-row" style="flex-direction:column;gap:10px;">
+                <button class="btn btn-primary" onclick="viewStack=['hub']; goView('swap'); setTimeout(()=>{ initWizard(); setTimeout(()=>selectSource('VMCARD'), 60); }, 30);">Swap with it now</button>
+                <button class="btn secondary" onclick="viewStack=['hub']; goView('card');">Done — just keep it loaded to swipe later</button>
+            </div>`;
+        return;
+    }
+
+    const cameFromLabel = hookEntry.source === 'source' ? 'My sources' : 'Card';
+    const cameFromAction = hookEntry.source === 'source' ? "goView('toolbox')" : "goView('card')";
+    document.getElementById('hookRowsHolder').innerHTML = `
+        ${summaryHtml}
         <div class="cta-row" style="flex-direction:column;gap:10px;">
             <button class="btn btn-primary" onclick="viewStack=['hub']; ${cameFromAction};">&larr; Back to ${cameFromLabel}</button>
             <button class="btn secondary" onclick="goView('hub')">Go to Home</button>
         </div>`;
 }
-
-const HOW_IT_WORKS = {
-    swap: {
-        title: 'How Swap works',
-        body: `<div style="font-size:13px;line-height:1.7;color:var(--text);">
-            <p style="margin-bottom:12px;">Follow the 4 steps: enter amount, pick source, pick destination, review and confirm.</p>
-            <p style="margin-bottom:12px;"><strong>My Card</strong> draws from whatever's hooked to your VouchMorph Card.</p>
-            <p>Nothing is final until you tap Confirm on the review screen — you can back out any time before that.</p>
-        </div>`,
-    },
-    card: {
-        title: 'How the Card works',
-        body: `<div style="font-size:13px;line-height:1.7;color:var(--text);">
-            <p style="margin-bottom:12px;">Every account gets a VouchMorph Card automatically. It starts inactive — a small one-time fee from any linked source turns it on.</p>
-            <p style="margin-bottom:12px;">Once active, <strong>hook</strong> sources to it — accounts, wallets, cashout vouchers, or a claimed identity balance. Each hook holds that amount for up to 24 hours.</p>
-            <p>Anything hooked becomes spendable right away as a Swap source ("My Card").</p>
-        </div>`,
-    },
-};
+    
 function openHowItWorks(key) {
     const info = HOW_IT_WORKS[key];
     if (!info) return;
