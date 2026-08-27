@@ -4300,32 +4300,7 @@ function hookSelectedSourceToCard() {}
 function openFinalizeIdentityModal() { openModal('Finalize identity swap', renderFinalizeIdentityModal()); }
 function renderFinalizeIdentityModal() { return `<div style="font-size:12px;color:var(--text-dim);">No pending claims.</div>`; }
 function openAgentFinalizeIdentityModal() { openFinalizeIdentityModal(); }
-function checkPendingClaims() {
-    if (!CONFIG.USER_ID) return;
-    try { 
-        const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/pending_claims.php', {}); 
-        if (!result.ok) return; 
-        pendingClaims = result.body.data || []; 
-        updateToolboxBadge(); 
-    } catch (e) { 
-        console.warn('[claims] Failed to check pending claims:', e); 
-    }
-}
-function updateToolboxBadge() {
-    const badge = document.getElementById('toolboxBadge');
-    if (!badge) return;
-    const totalPending = pendingSources.length + pendingClaims.length;
-    if (totalPending > 0) { badge.style.display = 'inline-flex'; badge.textContent = totalPending; } 
-    else { badge.style.display = 'none'; }
-}
-async function loadAgentStatus() {
-    if (!CONFIG.USER_ID) return;
-    await getCurrentUserRole();
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/status.php', {});
-    if (!result.ok) return;
-    agentStatus = result.body.data; 
-    agentStatus.is_agent = SessionUser.is_agent;
-}
+
 // ============================================================
 // ASYNC INIT FUNCTIONS - DEFINED BEFORE DOM READY
 // ============================================================
