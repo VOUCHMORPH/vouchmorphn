@@ -2420,15 +2420,44 @@ function renderWizardFields(container, assetType, prefix, onChange, includePin) 
         if (f.max !== undefined) attrs.push(`max="${f.max}"`);
         if (f.type === 'select' && f.options) {
             const optionsHtml = f.options.map(opt => `<option value="${opt}">${opt}</option>`).join('');
-            return `<div class="field-group"><label>${f.label} ${f.required ? '*' : ''}</label><select id="${prefix}${f.name}" onchange="window._wizardFieldChange('${f.name}', this.value)"><option value="">${f.placeholder || 'Select'}</option>${optionsHtml}</select>${f.help_text ? `<div class="help">${f.help_text}</div>` : ''}</div>`;
+            return `<div class="field-group"><label>${f.label} ${f.required ? '*' : ''}</label>
+                <select id="${prefix}${f.name}" onchange="window._wizardFieldChange('${f.name}', this.value)">
+                    <option value="">${f.placeholder || 'Select'}</option>${optionsHtml}
+                </select>${f.help_text ? `<div class="help">${f.help_text}</div>` : ''}</div>`;
         }
         const inputType = f.vault_field === 'pin' || f.name.includes('pin') || f.name === 'cvv' ? 'password' : (f.type || 'text');
         const eventAttr = f.type === 'select' ? 'onchange' : 'oninput';
-        return `<div class="field-group"><label>${f.label} ${f.required ? '*' : ''}</label><input type="${inputType}" id="${prefix}${f.name}" placeholder="${f.placeholder || ''}" ${attrs.join(' ')} ${eventAttr}="window._wizardFieldChange('${f.name}', this.value)">${f.help_text ? `<div class="help">${f.help_text}</div>` : ''}</div>`;
+        return `<div class="field-group"><label>${f.label} ${f.required ? '*' : ''}</label>
+            <input type="${inputType}" id="${prefix}${f.name}" placeholder="${f.placeholder || ''}" 
+                   ${attrs.join(' ')} ${eventAttr}="window._wizardFieldChange('${f.name}', this.value, '${prefix}')">
+            ${f.help_text ? `<div class="help">${f.help_text}</div>` : ''}</div>`;
     }).join('');
 }
 
-window._wizardFieldChange = function(name, value) {
+window._wizardFieldChange = function(name, value, prefix) {
+    console.log('[DEBUG] _wizardFieldChange:', { name, value, prefix });
+    
+    // Use the prefix to determine where to store the value
+    if (prefix === 'fromField_') {
+        wizardState.fromFields[name] = value;
+        const valid = fieldsValidForAsset(wizardState.fromAsset, wizardState.fromFields, true);
+        document.getElementById('wizardSourceNext').disabled = !valid.valid;
+        console.log('[DEBUG] Source validation:', valid);
+        return;
+    }
+    
+    if (prefix === 'toField_') {
+        wizardState.toFields[name] = value;
+        const valid = fieldsValidForAsset(wizardState.toAsset, wizardState.toFields, false);
+        const nextBtn = document.getElementById('wizardDestNext');
+        if (nextBtn) {
+            nextBtn.disabled = !valid.valid;
+            console.log('[DEBUG] Destination validation:', valid, 'button disabled:', nextBtn.disabled);
+        }
+        return;
+    }
+    
+    // Fallback: try to determine based on visible panels
     const activeSourcePanel = document.getElementById('sourceDetailPanel');
     const activeDestPanel = document.getElementById('destDetailPanel');
     const isSourceVisible = activeSourcePanel && activeSourcePanel.style.display !== 'none';
@@ -2449,7 +2478,6 @@ window._wizardFieldChange = function(name, value) {
         return;
     }
 };
-
 function fieldsValidForAsset(assetType, values, includePin) {
     const config = getAssetConfig(assetType);
     if (!config) return { valid: false, friendlyMessage: "That account type isn't supported yet." };
