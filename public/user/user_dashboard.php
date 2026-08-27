@@ -3931,9 +3931,10 @@ function confirmActivateCard() {
     const inst = document.getElementById('activateInstSelect')?.value;
     const assetType = document.getElementById('activateAssetSelect')?.value;
     const fields = window._activateSource?.fields || {};
-    const pin = fields.pin || '';
     
-    // Get identifier from fields
+    // FIX: Use extractPinFromFields instead of direct 'pin' lookup
+    const pin = extractPinFromFields(assetType, fields);
+    
     const config = getAssetConfig(assetType);
     const idField = (config?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
     const identifier = idField ? fields[idField.name] : null;
@@ -3975,6 +3976,30 @@ function confirmActivateCard() {
         callback: () => executeActivateCard()
     };
     showPreviewModal('Activation preview', bodyHtml, null, 'Pay and activate');
+}
+    
+// ============================================================
+// ADD THIS FUNCTION - executeActivateCard
+// ============================================================
+    
+async function executeActivateCard() {
+    const payload = pendingExecution.payload;
+    if (!payload) {
+        showMessage('No activation payload found.', 'error');
+        return;
+    }
+    
+    // Remove the redundant closeModal - executePendingAction already handles it
+    
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/Activate.php', payload);
+    
+    if (!result.ok) {
+        showMessage('Activation didn\'t go through: ' + friendlyApiError(result.error), 'error');
+        return;
+    }
+    
+    showMessage('Card activated! 🎉', 'success');
+    loadCardView();
 }
 
 // executeActivateCard already exists in your file - keep it as-is.
