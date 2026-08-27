@@ -1957,9 +1957,17 @@ function assetTypeMatchesTile(participantAssetType, tileType) {
 
 function populateInstitutionsForAsset(assetType, sel) {
     if (!sel) return;
-    const codes = Object.keys(PARTICIPANTS).filter(code =>
-        (PARTICIPANTS[code].asset_types || []).some(t => assetTypeMatchesTile(t, assetType))
-    );
+    const normalizedAssetType = String(assetType).toUpperCase();
+    const codes = Object.keys(PARTICIPANTS).filter(code => {
+        const types = PARTICIPANTS[code].asset_types || [];
+        return types.some(t => {
+            const typeStr = String(t).toUpperCase();
+            // Check exact match OR if the type contains the asset type
+            return typeStr === normalizedAssetType || 
+                   typeStr.includes(normalizedAssetType) ||
+                   normalizedAssetType.includes(typeStr);
+        });
+    });
     if (codes.length === 0) {
         sel.innerHTML = `<option value="">No institutions support ${assetType}</option>`;
         return;
