@@ -2239,7 +2239,9 @@ function selectDestination(type) {
     panel.style.display = 'block';
     const toSection = document.getElementById('toSection');
     if (toSection) {
+        // Clone the toSection content
         panel.innerHTML = toSection.cloneNode(true).innerHTML;
+        
         const cashoutFields = panel.querySelector('#cashoutFields');
         if (cashoutFields) cashoutFields.style.display = type === 'CASHOUT' ? 'block' : 'none';
 
@@ -2264,6 +2266,7 @@ function selectDestination(type) {
                     !(wizardState.toInst && wizardState.beneficiaryPhone);
             }
         };
+        
         wizardState.toInst = null;
         wizardState.toAsset = null;
         wizardState.toFields = {};
@@ -2798,22 +2801,75 @@ async function executeViaContributionSession() {
     btn.innerHTML = '<span class="spinner"></span>Starting…';
 
     const destPayload = { currency: wizardState.currency };
+    
     if (wizardState.destType === 'IDENTITY') {
         destPayload.identity_type = wizardState.identityType;
         destPayload.identity_value = wizardState.identityValue;
         if (wizardState.identitySms) destPayload.beneficiary_phone = wizardState.identitySms;
     } else {
+        // ============================================================
+        // FIX: Properly extract destination identifier from fields
+        // ============================================================
+        let destIdentifier = null;
+        
+        // Try to get identifier from toFields
+        if (wizardState.toFields) {
+            // Check common field names
+            destIdentifier = wizardState.toFields.account_number 
+                || wizardState.toFields.phone 
+                || wizardState.toFields.wallet_phone
+                || wizardState.toFields.card_number
+                || wizardState.toFields.card_token
+                || Object.values(wizardState.toFields)[0] 
+                || null;
+        }
+        
+        // If still null, try to get from the destination panel
+        if (!destIdentifier) {
+            const panel = document.getElementById('destDetailPanel');
+            if (panel) {
+                // Try to find any input field in the panel
+                const inputs = panel.querySelectorAll('input[type="text"], input[type="tel"], input[type="number"]');
+                for (const input of inputs) {
+                    if (input.value && input.value.trim().length > 0) {
+                        destIdentifier = input.value.trim();
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // If still null, try to get from the original destination identifier
+        if (!destIdentifier && wizardState._destIdentifier) {
+            destIdentifier = wizardState._destIdentifier;
+        }
+        
+        if (!destIdentifier) {
+            btn.disabled = false;
+            btn.innerHTML = original;
+            showMessage('Please enter a destination account number, phone, or wallet ID.', 'warning');
+            return;
+        }
+        
+        const destAssetType = normalizeAssetType(wizardState.toAsset) || 'WALLET';
+        const destIdentifierType = destAssetType === 'ACCOUNT' ? 'account' 
+            : (destAssetType === 'CARD' ? 'card' : 'phone');
+        
         destPayload.to_institution = wizardState.toInst;
-        destPayload.destination_identifier = wizardState.toFields?.phone
-            || wizardState.toFields?.account_number
-            || Object.values(wizardState.toFields || {})[0] || null;
-        destPayload.destination_identifier_type = wizardState.toAsset === 'ACCOUNT' ? 'account' : 'phone';
-        destPayload.destination_asset_type = normalizeAssetType(wizardState.toAsset) || 'WALLET';
+        destPayload.destination_institution = wizardState.toInst;
+        destPayload.destination_identifier = destIdentifier;
+        destPayload.destination_identifier_type = destIdentifierType;
+        destPayload.destination_asset_type = destAssetType;
         destPayload.delivery_method = wizardState.destType === 'CASHOUT' ? (wizardState.deliveryMethod || 'ATM') : 'DEPOSIT';
+        
         if (wizardState.destType === 'CASHOUT' && wizardState.beneficiaryPhone) {
             destPayload.beneficiary_phone = wizardState.beneficiaryPhone;
         }
     }
+
+    console.log('[DEBUG] toFields:', wizardState.toFields);
+console.log('[DEBUG] toAsset:', wizardState.toAsset);
+console.log('[DEBUG] toInst:', wizardState.toInst);
 
     const createResult = await callApi(CONFIG.API_BASE + '/api/v1/cards/Create.php', {
         card_suffix: myCard.card_suffix,
@@ -2857,7 +2913,7 @@ async function executeViaContributionSession() {
     renderRepeatCard(); renderProgressCard();
     showWizardResultModal({ data: { reference: execResult.body.data.swap_reference, amount: wizardState.amount } }, journeyData);
 }
-
+    
 function dedupeVmCardSources(sources) {
     const map = new Map();
     sources.forEach(c => {
