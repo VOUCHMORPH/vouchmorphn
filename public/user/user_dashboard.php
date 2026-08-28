@@ -817,6 +817,11 @@ input[type=number] { -moz-appearance: textfield; }
                 </div>
             </div>
 
+            <div id="pending-sources-section">
+  <h3>Pending Sources</h3>
+  <div id="pending-sources-list">Loading...</div>
+</div>
+
             <div class="swap-step" data-step="3">
                 <div class="swap-step-header">
                     <div class="swap-step-number">Step 3 of 4</div>
@@ -5138,6 +5143,66 @@ async function completeSourceOtp() {
         loadToolboxView(); 
     }, 1500);
 }
+
+async function loadPendingSources() {
+  const container = document.getElementById('pending-sources-list');
+  try {
+    const res = await fetch('/api/v1/sources/pending.php', {
+      method: 'GET',
+      credentials: 'same-origin'
+    });
+    const json = await res.json();
+
+    if (!json.success || !json.data.length) {
+      container.innerHTML = '<p>No pending sources.</p>';
+      return;
+    }
+
+    container.innerHTML = json.data.map(src => `
+      <div class="pending-source-row" style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid #eee;">
+        <span>${src.institution_name} — ${src.identifier} <em>(${src.status})</em></span>
+        <button class="delete-pending-btn" data-id="${src.id}" data-type="${src.type}">
+          Delete
+        </button>
+      </div>
+    `).join('');
+
+    container.querySelectorAll('.delete-pending-btn').forEach(btn => {
+      btn.addEventListener('click', () => deletePendingSource(btn.dataset.id, btn.dataset.type, btn));
+    });
+
+  } catch (err) {
+    container.innerHTML = '<p>Failed to load pending sources.</p>';
+    console.error(err);
+  }
+}
+
+async function deletePendingSource(sourceId, type, btnEl) {
+  if (!confirm('Remove this pending source?')) return;
+  btnEl.disabled = true;
+
+  try {
+    const res = await fetch('/api/v1/sources/delete.php', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ type, source_id: parseInt(sourceId, 10) })
+    });
+    const result = await res.json();
+
+    if (result.success) {
+      loadPendingSources(); // refresh
+    } else {
+      alert('Could not delete: ' + result.error);
+      btnEl.disabled = false;
+    }
+  } catch (err) {
+    alert('Network error while deleting.');
+    btnEl.disabled = false;
+  }
+}
+
+loadPendingSources();
     
 // ============================================================
 // DOM READY - NO AWAIT HERE
