@@ -817,10 +817,6 @@ input[type=number] { -moz-appearance: textfield; }
                 </div>
             </div>
 
-            <div id="pending-sources-section">
-  <h3>Pending Sources</h3>
-  <div id="pending-sources-list">Loading...</div>
-</div>
 
             <div class="swap-step" data-step="3">
                 <div class="swap-step-header">
@@ -4717,18 +4713,37 @@ function renderPendingSourcesModal() {
         }
 
         return `
-            <div class="myc-panel" style="margin-bottom:10px;">
+            <div class="myc-panel" style="margin-bottom:10px;" data-pending-id="${p.id}">
                 <div class="myc-panel-head">
                     <span class="myc-panel-title">${escapeHtml(instName)}</span>
                     <span style="font-size:11px;font-weight:700;color:${statusColor};text-transform:uppercase;">${statusLabel}</span>
                 </div>
                 <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">${escapeHtml(p.identifier || '')}</div>
                 <div style="font-size:12px;color:var(--text-dim);line-height:1.5;">${escapeHtml(explanation)}</div>
-                ${isOtpPending ? `<div class="cta-row" style="margin-top:10px;"><button class="btn btn-primary btn-sm" onclick="closeModal(); openOtpEntryModal(${p.attempt_id || p.id})">Enter code</button></div>` : ''}
+                <div class="cta-row" style="margin-top:10px;">
+                    ${isOtpPending ? `<button class="btn btn-primary btn-sm" onclick="closeModal(); openOtpEntryModal(${p.attempt_id || p.id})">Enter code</button>` : ''}
+                    <button class="btn-danger-outline" onclick="confirmDeletePendingSource(${p.id}, '${p.type}')">Remove</button>
+                </div>
             </div>`;
     }).join('');
 
     return `<div>${rows}</div>`;
+}
+
+function confirmDeletePendingSource(sourceId, type) {
+    showConfirm('Remove this pending source? You can add it again anytime.', async () => {
+        const result = await callApi(CONFIG.API_BASE + '/api/v1/sources/delete.php', {
+            type,
+            source_id: sourceId
+        });
+        if (!result.ok) {
+            showMessage('Could not remove that source: ' + friendlyApiError(result.error), 'error');
+            return;
+        }
+        showMessage('Pending source removed.', 'success');
+        await loadUserSources(); // refreshes the pendingSources array + badge
+        openPendingSources(); // re-render the modal with the updated list
+    });
 }
     
 // ============================================================
