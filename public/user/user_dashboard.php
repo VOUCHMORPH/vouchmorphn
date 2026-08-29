@@ -2330,6 +2330,21 @@ function selectDestination(type) {
         return;
     }
 
+    if (type === 'DEPOSIT') {
+    const eligible = userSources.filter(u => u.status === 'active');
+    if (eligible.length > 0) {
+        const savedPickerHtml = `
+            <div class="field-group">
+                <label>Use one of your saved accounts</label>
+                <select id="destSavedSourceSelect" onchange="applySavedSourceAsDestination(this.value)">
+                    <option value="">— or select an institution below —</option>
+                    ${eligible.map(u => `<option value="${u.id}">${PARTICIPANTS[u.institution]?.name || u.institution} — ${u.identifier || u.source_identifier || ''}</option>`).join('')}
+                </select>
+            </div>`;
+        panel.insertAdjacentHTML('afterbegin', savedPickerHtml);
+    }
+}
+    
     panel.style.display = 'block';
     const toSection = document.getElementById('toSection');
     if (toSection) {
@@ -2371,6 +2386,36 @@ function selectDestination(type) {
         if (fieldsBox) { fieldsBox.innerHTML = ''; fieldsBox.style.display = 'none'; }
         nextBtn.disabled = true;
     }
+}
+
+function applySavedSourceAsDestination(sourceId) {
+    const source = userSources.find(u => u.id === sourceId);
+    if (!source) return;
+    const panel = document.getElementById('destDetailPanel');
+    const instSel = panel.querySelector('#toInstSelect');
+    if (instSel) { instSel.value = source.institution; wizardSelectToInst(source.institution); }
+
+    setTimeout(() => {
+        const targetAsset = normalizeAssetType(source.asset_type);
+        const assetSel = panel.querySelector('#toAssetSelect');
+        if (assetSel && assetSel.options.length) {
+            const match = Array.from(assetSel.options).find(o => normalizeAssetType(o.value) === targetAsset);
+            if (match) { assetSel.value = match.value; wizardSelectToAsset(match.value); }
+        }
+        setTimeout(() => {
+            const cfg = getAssetConfig(wizardState.toAsset);
+            const idField = (cfg?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+            if (idField) {
+                const identifier = source.identifier || source.source_identifier || '';
+                const input = document.getElementById('toField_' + idField.name);
+                if (input) input.value = identifier;
+                wizardState.toFields[idField.name] = identifier;
+            }
+            const valid = fieldsValidForAsset(wizardState.toAsset, wizardState.toFields, false);
+            const nextBtn = document.getElementById('wizardDestNext');
+            if (nextBtn) nextBtn.disabled = !valid.valid;
+        }, 30);
+    }, 30);
 }
     
 function wizardSelectToInst(code) {
@@ -3476,6 +3521,100 @@ let hookEntry = { source: 'card', targetCardSuffix: null };
 let pendingHookPrefill = null;
 let unhookTarget = null;
 
+let scanHookState = { source: null, amount: null };
+
+// Entry point. Pass a prefill ({instName, institution, assetType, identifier})
+// when the source is already known (e.g. from a source row's "Hook to card"
+// link) — the source step is skipped and only the amount is asked.
+function openScanAndHook(prefill) {
+    scanHookState = { source: prefill ? { ...prefill, locked: true } : null, amount: null };
+    renderScanHookSetup();
+}
+
+function renderScanHookSetup() {
+    const eligible = userSources.filter(s => s.status === 'active');
+    const s = scanHookState.source;
+
+    const sourcePickerHtml = (s && s.locked)
+        ? `<div class="myc-panel" style="margin-bottom:14px;">
+               <div style="font-weight:700;font-size:13px;">${escapeHtml(s.instName)}</div>
+               <div style="font-size:11px;color:var(--text-dim);">${escapeHtml(s.identifier)}</div>
+           </div>`
+        : `<div class="field-group">
+               <label>Source to hook</label>
+               <select id="scanHookSourceSelect" onchange="onScanHookSourceChange(this.value)">
+                   <option value="">Select a saved source</option>
+                   ${eligible.map(u => `<option value="${u.id}">${PARTICIPANTS[u.institution]?.name || u.institution} — ${u.identifier || u.source_identifier || ''}</option>`).join('')}
+               </select>
+               <div class="help">Only sources you've already added can be hooked this way. <span class="quick-link muted" onclick="closeModal(); openAddSource();">Add a new source first &rarr;</span></div>
+           </div>`;
+
+    const bodyHtml = `
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:14px;">Pick what you're hooking and how much to authorize — then scan the card you're hooking it to.</div>
+        ${sourcePickerHtml}
+        <div class="field-group">
+            <label>Amount to authorize</label>
+            <input type="number" id="scanHookAmount" min="0.01" step="0.01" placeholder="0.00"
+                   oninput="scanHookState.amount = parseFloat(this.value) || null; refreshScanHookContinue();">
+        </div>
+        <div class="cta-row">
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" id="scanHookContinueBtn" onclick="proceedToScanForHook()" disabled>Continue to scan →</button>
+        </div>`;
+    openModal('Scan & hook', bodyHtml);
+}
+
+function onScanHookSourceChange(sourceId) {
+    const source = userSources.find(u => u.id === sourceId);
+    scanHookState.source = source ? {
+        instName: PARTICIPANTS[source.institution]?.name || source.institution,
+        institution: source.institution,
+        assetType: source.asset_type,
+        identifier: source.identifier || source.source_identifier || '',
+    } : null;
+    refreshScanHookContinue();
+}
+
+function refreshScanHookContinue() {
+    const btn = document.getElementById('scanHookContinueBtn');
+    if (btn) btn.disabled = !(scanHookState.source && scanHookState.amount > 0);
+}
+
+function proceedToScanForHook() {
+    openScanModal('scan_and_hook');
+}
+
+// Called from handleScannedQr's 'hook' case when context === 'scan_and_hook'.
+function confirmScanAndHook(cardSuffix, displayName) {
+    const s = scanHookState.source;
+    const bodyHtml = `
+        <div class="review-hero">
+            <div class="review-hero-label">Hook to ${escapeHtml(displayName)}'s card</div>
+            <div class="review-hero-amount">${formatMoney(scanHookState.amount, myCard?.currency || 'BWP')}</div>
+        </div>
+        <div class="preview-box">
+            <div class="preview-row"><span>Source</span><span class="value">${escapeHtml(s.instName)}</span></div>
+            <div class="preview-row" style="border-bottom:none;"><span>Identifier</span><span class="value">${escapeHtml(s.identifier)}</span></div>
+        </div>
+        <div class="preview-reassure">Held for 24 hours — nothing moves until it's spent.</div>`;
+
+    hookEntry = { source: 'scan_and_hook', targetCardSuffix: cardSuffix };
+    pendingExecution = {
+        type: 'hook',
+        payload: {
+            sources: [{
+                institution: s.institution,
+                asset_type: s.assetType,
+                identifier: s.identifier,
+                authorized_amount: scanHookState.amount,
+            }],
+            cardSuffix: cardSuffix,
+        },
+        callback: () => executeHook()
+    };
+    showPreviewModal('Confirm hook', bodyHtml, null, 'Hook it');
+}
+
 async function openHookBuilder(entryType, prefill) {
     if (!myCard) {
         const result = await callApiGet(CONFIG.API_BASE + '/api/v1/cards/My.php');
@@ -3727,8 +3866,7 @@ function promptHookThisSource(prefill) {
             <div style="font-size:13px;color:var(--text-muted);margin-bottom:18px;">Where should this source be hooked?</div>
             <div class="cta-row" style="flex-direction:column;gap:10px;">
                 <button class="btn btn-primary" onclick="closeModal(); openHookBuilder('source', pendingHookPrefill);">My VouchMorph Card</button>
-                <button class="btn btn-secondary" onclick="openAnotherCardChooser()">Another VouchMorph Card</button>
-            </div>
+          <button class="btn btn-secondary" onclick="closeModal(); openScanAndHook(pendingHookPrefill);">Another VouchMorph Card</button>            </div>
         </div>`;
     openModal('Hook this source', bodyHtml);
 }
@@ -3808,6 +3946,14 @@ async function resolveScannedQr(raw) {
     const data = result.body.data;
     switch (data.type) {
         case 'hook':
+    if (context === 'scan_and_hook') {
+        confirmScanAndHook(data.card_suffix, data.display_name);
+    } else if (context === 'agent_charge') {          // added in section 2 below
+        confirmAgentChargeCard(data.card_suffix, data.display_name);
+    } else {
+        confirmHookTargetCard(data.card_suffix, data.display_name);
+    }
+    break;
             confirmHookTargetCard(data.card_suffix, data.display_name);
             break;
         case 'payment_request':
@@ -3934,7 +4080,7 @@ function renderCardViewBody() {
                     ${hook && hook.contributors.length ? `<button class="btn btn-primary" onclick="openCreateSessionModal(myCard.card_suffix)">Start a swap</button>` : ''}
                 </div>
                 ${hook && hook.contributors.length ? `<button class="btn secondary" style="margin-top:10px;" onclick="goView('swap'); setTimeout(()=>initWizard(), 30);">Use this card as a Swap source</button>` : ''}
-                <div style="margin-top:14px;"><span class="quick-link muted" onclick="pendingHookPrefill=null; openScanToHookModal()">Hook to someone else's card (scan their QR)</span></div>
+                <div style="margin-top:14px;"><span class="quick-link muted" onclick="openScanAndHook(null)">📷 Scan & hook a source to another card</span>
             </div>
             <div>
                 <div class="myc-panel">
@@ -4535,8 +4681,11 @@ function renderToolboxBody() {
             { icon: '🪪', label: 'Register identity', action: 'openAddIdentityModal()' },
         ]},
     ];
-    if (isAgent) groups.push({ title: 'Agent', open: false, rows: [ { icon: '🧰', label: 'Agent tools', action: 'openAgentToolsModal()' }, { icon: '🏢', label: 'Agent destinations', action: 'openAgentModal()' } ] });
-    groups.push({ title: 'Account', open: false, rows: [ { icon: '👤', label: 'My profile', action: 'openProfileModal()' }, { icon: '❓', label: 'Help', action: 'openHelpModal()' }, { icon: '📄', label: 'Terms and conditions', action: 'openTermsModal()' } ] });
+if (isAgent) groups.push({ title: 'Agent', open: false, rows: [
+    { icon: '🧰', label: 'Agent tools', action: 'openAgentToolsModal()' },
+    { icon: '🏢', label: 'Agent destinations', action: 'openAgentModal()' },
+    { icon: '💳', label: "Charge a customer's card", action: 'openAgentCardPaymentModal()' },   // new
+] });    groups.push({ title: 'Account', open: false, rows: [ { icon: '👤', label: 'My profile', action: 'openProfileModal()' }, { icon: '❓', label: 'Help', action: 'openHelpModal()' }, { icon: '📄', label: 'Terms and conditions', action: 'openTermsModal()' } ] });
 
     const progressHtml = doneCount < steps.length ? `<div style="background:var(--surface-muted);border:1px solid var(--border);padding:14px 16px;margin-bottom:20px;"><div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:var(--text-dim);margin-bottom:8px;">Getting set up — ${doneCount}/${steps.length}</div>${steps.map(s => `<div style="font-size:13px;color:${s.done ? 'var(--success)' : 'var(--text-muted)'};padding:3px 0;">${s.done ? '✓' : '○'} ${s.label}</div>`).join('')}</div>` : '';
 
@@ -4567,6 +4716,108 @@ function renderToolboxBody() {
                 </div>
             </div>
         </details>`;
+}
+
+let agentCardPaymentState = { amount: null, currency: 'BWP', cardSuffix: null, displayName: null, destinationAccountId: null };
+
+function openAgentCardPaymentModal() {
+    if (!agentStatus.approved_destinations || agentStatus.approved_destinations.length === 0) {
+        openModal('Charge a card', '<div style="color:var(--danger);">You need an approved agent destination account first — register one from Toolbox → Agent destinations.</div>');
+        return;
+    }
+    agentCardPaymentState = { amount: null, currency: myCard?.currency || 'BWP', cardSuffix: null, displayName: null, destinationAccountId: null };
+    const bodyHtml = `
+        <div class="field-group">
+            <label>Amount to charge</label>
+            <input type="number" id="agentChargeAmount" min="0.01" step="0.01" placeholder="0.00"
+                   oninput="agentCardPaymentState.amount = parseFloat(this.value) || null;">
+        </div>
+        <div class="field-group">
+            <label>Deposit into</label>
+            <select id="agentChargeDestSelect">
+                ${agentStatus.approved_destinations.map(d => `<option value="${d.id}">${escapeHtml(PARTICIPANTS[d.institution]?.name || d.institution)} — ${escapeHtml(d.identifier)}</option>`).join('')}
+            </select>
+        </div>
+        <div class="cta-row">
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" onclick="proceedToChargeCard()">Continue: identify card →</button>
+        </div>`;
+    openModal("Charge a customer's card", bodyHtml);
+}
+
+function proceedToChargeCard() {
+    if (!(agentCardPaymentState.amount > 0)) { showMessage('Enter the amount to charge.', 'warning'); return; }
+    agentCardPaymentState.destinationAccountId = document.getElementById('agentChargeDestSelect')?.value;
+    const bodyHtml = `
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:14px;">Enter the customer's card number, or scan their VouchMorph Card QR.</div>
+        <div class="field-group"><label>Card number or suffix</label><input id="agentChargeCardManual" placeholder="e.g. last 4 digits or full number"></div>
+        <div class="cta-row"><button class="btn btn-primary" onclick="submitAgentChargeCardManual()">Continue</button></div>
+        <div style="text-align:center;margin:16px 0;font-size:11px;color:var(--text-dim);">or</div>
+        <button class="btn btn-secondary" onclick="openScanModal('agent_charge')">Scan their card instead</button>`;
+    openModal('Identify the card', bodyHtml);
+}
+
+async function submitAgentChargeCardManual() {
+    const raw = document.getElementById('agentChargeCardManual')?.value.trim();
+    if (!raw) { showMessage('Enter a card number.', 'warning'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/LookupBySuffix.php', { card_suffix: raw });
+    if (!result.ok) { showMessage("Couldn't find that card: " + friendlyApiError(result.error), 'error'); return; }
+    const { card_suffix, display_name } = result.body.data;
+    confirmAgentChargeCard(card_suffix, display_name);
+}
+
+function confirmAgentChargeCard(cardSuffix, displayName) {
+    agentCardPaymentState.cardSuffix = cardSuffix;
+    agentCardPaymentState.displayName = displayName;
+    const destOpt = agentStatus.approved_destinations.find(d => String(d.id) === String(agentCardPaymentState.destinationAccountId));
+    const bodyHtml = `
+        <div class="review-hero">
+            <div class="review-hero-label">Charge ${escapeHtml(displayName)}'s card</div>
+            <div class="review-hero-amount">${formatMoney(agentCardPaymentState.amount, agentCardPaymentState.currency)}</div>
+        </div>
+        <div class="preview-box">
+            <div class="preview-row"><span>Deposit into</span><span class="value">${destOpt ? escapeHtml(PARTICIPANTS[destOpt.institution]?.name || destOpt.institution) + ' — ' + escapeHtml(destOpt.identifier) : '—'}</span></div>
+        </div>
+        <div style="background:var(--accent-soft);border-left:3px solid var(--accent);padding:12px 14px;font-size:12px;margin:14px 0;color:var(--primary);">
+            To finalize, hand the device to the customer — they enter their own VouchMorph PIN to approve this. An agent can never finalize a charge without it.
+        </div>
+        <div class="field-group">
+            <label>Customer's VouchMorph PIN</label>
+            <input type="password" id="agentChargeOwnerPin" inputmode="numeric" maxlength="6" placeholder="Customer enters this">
+        </div>
+        <div class="cta-row">
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" onclick="executeAgentChargeCard()">Finalize payment</button>
+        </div>`;
+    openModal('Confirm charge', bodyHtml);
+}
+
+async function executeAgentChargeCard() {
+    const pin = document.getElementById('agentChargeOwnerPin')?.value.trim();
+    if (!pin) { showMessage("Enter the customer's PIN to finalize.", 'warning'); return; }
+    const destOpt = agentStatus.approved_destinations.find(d => String(d.id) === String(agentCardPaymentState.destinationAccountId));
+
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/charge_card.php', {
+        card_suffix: agentCardPaymentState.cardSuffix,
+        amount: agentCardPaymentState.amount,
+        currency: agentCardPaymentState.currency,
+        destination_account_id: destOpt?.id,
+        card_owner_pin: pin,
+    });
+
+    if (!result.ok) { showMessage("Payment didn't go through: " + friendlyApiError(result.error), 'error'); return; }
+
+    const data = result.body.data || {};
+    const bodyHtml = `
+        <div class="result-box" id="resultBoxRoot">
+            <div class="icon">✓</div>
+            <div class="result-title">Payment received</div>
+            <div class="result-sub">Reference: ${escapeHtml(data.reference || '—')}</div>
+            <div style="font-size:22px;font-weight:600;font-family:var(--font-mono);margin-top:12px;">${formatMoney(agentCardPaymentState.amount, agentCardPaymentState.currency)}</div>
+        </div>
+        <div class="cta-row" style="margin-top:16px;"><button class="btn btn-primary" onclick="closeModal();">Done</button></div>`;
+    openModal('Payment complete', bodyHtml);
+    setTimeout(() => fireConfetti(document.getElementById('resultBoxRoot')), 150);
 }
 
 function filterToolbox(query) {
