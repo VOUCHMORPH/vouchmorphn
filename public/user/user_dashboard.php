@@ -4675,9 +4675,451 @@ function useSourceForSwap(sourceId) {
     }, 100);
 }
 function hookSelectedSourceToCard() {}
-function openFinalizeIdentityModal() { openModal('Finalize identity swap', renderFinalizeIdentityModal()); }
-function renderFinalizeIdentityModal() { return `<div style="font-size:12px;color:var(--text-dim);">No pending claims.</div>`; }
-function openAgentFinalizeIdentityModal() { openFinalizeIdentityModal(); }
+// ============================================================
+// FINALIZE IDENTITY SWAP (self-service)
+// ============================================================
+function openFinalizeIdentityModal() {
+    openModal('Finalize identity swap', renderFinalizeIdentityModal());
+}
+
+function renderFinalizeIdentityModal() {
+    const claimsHtml = pendingClaims.length === 0
+        ? `<div style="font-size:12px;color:var(--text-dim);margin-bottom:16px;">No identity money is currently waiting for you.</div>`
+        : `<div style="margin-bottom:16px;">${pendingClaims.map((c, i) => {
+            const pinLabel = c.claim_type === 'otp_pin' ? 'the OTP PIN sent by SMS' : 'your transaction PIN';
+            const claimPin = c.claim_pin || null;
+            const code = c.voucher_number || null;
+            const pin = c.atm_pin || null;
+            const hasCode = !!(code || pin || claimPin);
+            const codeInlineHtml = hasCode ? `
+                <div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--border);display:flex;gap:16px;flex-wrap:wrap;">
+                    ${code ? `<div><div style="font-size:10px;color:var(--text-dim);">Code</div><div style="font-family:var(--font-mono);font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(code)}</div></div>` : ''}
+                    ${pin ? `<div><div style="font-size:10px;color:var(--text-dim);">PIN</div><div style="font-family:var(--font-mono);font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(pin)}</div></div>` : ''}
+                    ${claimPin ? `<div><div style="font-size:10px;color:var(--text-dim);">Claim PIN</div><div style="font-family:var(--font-mono);font-weight:700;font-size:14px;color:var(--accent);">${escapeHtml(claimPin)}</div></div>` : ''}
+                </div>` : '';
+            return `
+            <div class="myc-panel" style="margin-bottom:8px;">
+                <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
+                    <div style="flex:1;">
+                        <div style="font-weight:700;font-size:15px;color:var(--accent);font-family:var(--font-mono);">${formatMoney(c.amount, c.currency)}</div>
+                        <div style="font-size:12px;color:var(--text-muted);">From ${escapeHtml(c.source_institution || 'Unknown')}</div>
+                        <div style="font-size:11px;color:var(--text-dim);">Needs ${pinLabel} · Expires ${c.hold_expires_at ? new Date(c.hold_expires_at).toLocaleString() : 'soon'}</div>
+                    </div>
+                    <button class="btn btn-primary btn-sm" onclick="openClaimForm(${i})" style="flex-shrink:0;">Finalize</button>
+                </div>
+                ${codeInlineHtml}
+            </div>`;
+        }).join('')}</div>`;
+
+    return `
+        <div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">Money sent to your national ID, phone, or email shows up here.</div>
+        ${claimsHtml}
+        <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:4px;">
+            <div class="field-label" style="margin-bottom:6px;">Need to claim an identity swap?</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">If you received a swap notification, enter the claim PIN below to complete the transaction.</div>
+            <div class="field-group"><label>Swap reference</label><input id="directClaimRef" placeholder="e.g. SWAP_123456789"></div>
+            <div class="field-group"><label>Claim PIN</label><input type="password" id="directClaimPin" placeholder="Enter the PIN you received" maxlength="6"></div>
+            <div class="cta-row"><button class="btn btn-primary" onclick="submitDirectClaim()">Claim swap</button></div>
+        </div>
+        <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px;font-size:11px;color:var(--text-dim);">
+            <span class="quick-link muted" onclick="closeModal();openAddIdentityModal();">Need to register a new identity instead? Click here &rarr;</span>
+        </div>`;
+}
+
+function openClaimForm(idx) {
+    const claim = pendingClaims[idx];
+    if (!claim) return;
+    const pinHint = claim.claim_type === 'otp_pin' ? 'Use the one-time PIN sent by SMS when this money was sent.' : 'Use your VouchMorph transaction PIN.';
+    const body = `
+        <div style="background:var(--accent-soft);padding:14px;margin-bottom:14px;">
+            <div style="font-size:20px;font-weight:600;color:var(--accent);font-family:var(--font-mono);">${formatMoney(claim.amount, claim.currency)}</div>
+            <div style="font-size:12px;color:var(--text-muted);">From ${escapeHtml(claim.source_institution || 'Unknown')}</div>
+        </div>
+        <div class="field-group"><label>Claim PIN</label><input type="password" id="claimPin" inputmode="numeric" maxlength="6" placeholder="&bull;&bull;&bull;&bull;"><div class="help">${pinHint}</div></div>
+        <div class="field-group"><label>Receive as</label><select id="claimDestType" onchange="toggleClaimDestFields(this.value)"><option value="CASHOUT">Cashout (ATM / Agent code)</option><option value="DEPOSIT">Deposit to an account/wallet</option></select></div>
+        <div id="claimDepositFields" style="display:none;">
+            <div class="field-group"><label>Destination institution</label><select id="claimDestInst"><option value="">Select institution</option>${Object.keys(PARTICIPANTS).map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('')}</select></div>
+            <div class="field-group"><label>Account / wallet number</label><input id="claimDestIdentifier" placeholder="Account number or phone"></div>
+        </div>
+        <div class="cta-row"><button class="btn btn-secondary" onclick="openFinalizeIdentityModal()">Back</button><button class="btn btn-primary" onclick="submitClaim('${claim.swap_reference}')">Finalize</button></div>`;
+    openModal('Finalize identity swap', body);
+}
+
+function toggleClaimDestFields(type) {
+    const el = document.getElementById('claimDepositFields');
+    if (el) el.style.display = type === 'DEPOSIT' ? 'block' : 'none';
+}
+
+async function submitDirectClaim() {
+    const swapRef = document.getElementById('directClaimRef').value.trim();
+    const pin = document.getElementById('directClaimPin').value.trim();
+    if (!swapRef) { showMessage('Please enter the swap reference.', 'warning'); return; }
+    if (!pin) { showMessage('Please enter your claim PIN.', 'warning'); return; }
+    if (!/^\d{4,6}$/.test(pin)) { showMessage('PIN must be 4-6 digits.', 'warning'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/claim_identity.php', { swap_reference: swapRef, pin });
+    if (!result.ok) { showMessage('Claim failed: ' + friendlyApiError(result.error), 'error'); return; }
+    closeModal();
+    showMessage('Funds claimed successfully! 🎉', 'success');
+    checkPendingClaims();
+}
+
+// ============================================================
+// AGENT: Finalize identity swap (search-based)
+// ============================================================
+function openAgentFinalizeIdentityModal() {
+    openModal('Finalize identity swap', renderAgentFinalizeIdentitySearch());
+}
+
+function renderAgentFinalizeIdentitySearch() {
+    return `
+        <div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">Search for a client's pending identity payment. You'll need to physically verify their document and have them tell you the OTP PIN texted to them — never their personal VouchMorph transaction PIN — before you can finalize.</div>
+        <div class="field-group"><label>Document type</label><select id="agentSearchType"><option value="national_id">National ID</option><option value="birth_certificate">Birth Certificate</option><option value="voter_id">Voter ID</option></select></div>
+        <div class="field-group"><label>Document number</label><input id="agentSearchValue" placeholder="Enter the client's ID number"></div>
+        <div class="cta-row"><button class="btn btn-primary" onclick="searchAgentClaim()">Search</button></div>
+        <div id="agentSearchResults" style="margin-top:16px;"></div>
+        <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:20px;">
+            <div class="field-label" style="margin-bottom:6px;">Not what the client needs?</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">If the client wants this identity permanently registered to their VouchMorph account, you can do that here instead.</div>
+            <span class="quick-link muted" onclick="closeModal();openAddIdentityModal();">Register identity to client's account &rarr;</span>
+        </div>`;
+}
+
+function openAgentToolsModal() {
+    openModal('Agent tools', renderAgentToolsSearch());
+}
+
+function renderAgentToolsSearch() {
+    return `
+        <div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">Search for a client's pending identity payment.</div>
+        <div class="field-group"><label>Document type</label><select id="agentSearchType"><option value="national_id">National ID</option><option value="birth_certificate">Birth Certificate</option><option value="voter_id">Voter ID</option></select></div>
+        <div class="field-group"><label>Document number</label><input id="agentSearchValue" placeholder="Enter the client's ID number"></div>
+        <div class="cta-row"><button class="btn btn-primary" onclick="searchAgentClaim()">Search</button></div>
+        <div id="agentSearchResults" style="margin-top:16px;"></div>`;
+}
+
+async function searchAgentClaim() {
+    const identityType = document.getElementById('agentSearchType').value;
+    const identityValue = document.getElementById('agentSearchValue').value.trim();
+    const resultsBox = document.getElementById('agentSearchResults');
+    if (!identityValue) { showMessage('Enter the document number to search.', 'warning'); return; }
+    resultsBox.innerHTML = '<div style="text-align:center;padding:16px;"><div class="spinner" style="border-color:rgba(16,30,27,0.15);border-top-color:var(--primary);"></div> Searching...</div>';
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/search_claim.php', { identity_type: identityType, identity_value: identityValue });
+    if (!result.ok) { resultsBox.innerHTML = `<div style="color:var(--danger);">${escapeHtml(friendlyApiError(result.error))}</div>`; return; }
+    const data = result.body.data;
+    if (!data) { resultsBox.innerHTML = '<div style="font-size:12px;color:var(--text-dim);">No pending payment found for this identity.</div>'; return; }
+    agentSearchData = data;
+
+    function renderBalanceRow(b) {
+        const currency = escapeHtml(b.currency);
+        const totalAmount = parseFloat(b.total_amount).toFixed(2);
+        const swapCount = parseInt(b.swap_count);
+        const identityTypeEscaped = escapeHtml(b.identity_type || data.identity_type);
+        const identityValueEscaped = escapeHtml(b.identity_value || data.identity_value);
+        return `
+            <div class="myc-panel" style="margin-bottom:8px;">
+                <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
+                    <div>
+                        <div style="font-weight:700;font-size:16px;color:var(--accent);font-family:var(--font-mono);">${formatMoney(totalAmount, currency)}</div>
+                        <div style="font-size:12px;color:var(--text-muted);">From ${swapCount} different source(s)</div>
+                        <div style="font-size:11px;color:var(--text-dim);">Expires ${b.earliest_expires_at ? new Date(b.earliest_expires_at).toLocaleString() : 'soon'}</div>
+                    </div>
+                    <button class="btn btn-primary btn-sm" onclick="openAgentFinalizeFormAggregated('${identityTypeEscaped}', '${identityValueEscaped}', '${currency}', ${totalAmount}, ${swapCount})">Claim</button>
+                </div>
+            </div>`;
+    }
+
+    if (data.multi_currency) {
+        resultsBox.innerHTML = '<div style="margin-bottom:12px;"><strong>Multiple currencies found for this identity:</strong></div>' + data.balances.map(renderBalanceRow).join('');
+    } else {
+        resultsBox.innerHTML = renderBalanceRow(data);
+    }
+}
+
+function openAgentFinalizeFormAggregated(identityType, identityValue, currency, totalAmount, swapCount) {
+    const data = agentSearchData;
+    if (!data) { showMessage('Search data not found. Please search again.', 'error'); return; }
+    if (!agentStatus.approved_destinations || agentStatus.approved_destinations.length === 0) {
+        openModal('Agent tools', '<div style="color:var(--danger);">You have no approved agent destination account. Register one first from Toolbox → Agent destinations.</div>');
+        return;
+    }
+    const destOptions = agentStatus.approved_destinations.map(d => `<option value="${d.id}">${escapeHtml(PARTICIPANTS[d.institution]?.name || d.institution)} - ${escapeHtml(d.identifier)}</option>`).join('');
+    const searchTypeLabel = IDENTITY_TYPE_LABELS[document.getElementById('agentSearchType')?.value] || 'document';
+    const body = `
+        <div style="background:var(--accent-soft);padding:14px;margin-bottom:14px;">
+            <div style="font-size:12px;color:var(--text-muted);">Client's total balance</div>
+            <div style="font-size:22px;font-weight:600;color:var(--accent);font-family:var(--font-mono);">${formatMoney(totalAmount, currency)}</div>
+            <div style="font-size:11px;color:var(--text-dim);margin-top:4px;">Aggregated from ${swapCount} different source(s). The full amount deposits into your account. Whatever the client doesn't take as cash today is instantly sent back to their identity as a new claim.</div>
+        </div>
+        <div class="field-group"><label>Deposit into</label><select id="agentDestSelect">${destOptions}</select></div>
+        <div class="field-group">
+            <label>Cash to give the client now</label>
+            <input type="number" id="cashNowAmount" min="0" max="${totalAmount}" step="0.01" value="${totalAmount}">
+            <div class="help">Leave less than the full amount to split — the rest becomes a new claim for them to collect elsewhere.</div>
+        </div>
+        <div class="quick-actions" style="margin:-4px 0 12px;">
+            <span class="quick-link" onclick="document.getElementById('cashNowAmount').value=${totalAmount}">Give it all</span>
+            <span class="quick-link muted" onclick="document.getElementById('cashNowAmount').value=0">Give none now</span>
+        </div>
+        <div class="field-group"><label style="display:flex;align-items:center;gap:8px;text-transform:none;font-weight:400;">
+            <input type="checkbox" id="agentDocVerified" style="width:auto;"> I have physically verified the client's ${searchTypeLabel}
+        </label></div>
+        <div class="field-group"><label>Client's OTP PIN</label>
+            <input type="password" id="agentClaimPin" inputmode="numeric" maxlength="6" placeholder="Ask the client for the PIN texted to them">
+            <div class="help">This is the OTP PIN sent by SMS — never a personal transaction PIN.</div>
+        </div>
+        <div class="cta-row">
+            <button class="btn btn-secondary" onclick="openAgentToolsModal()">Back to search</button>
+            <button class="btn btn-primary" onclick="submitAgentFinalizeAggregated('${escapeHtml(identityType)}', '${escapeHtml(identityValue)}', ${totalAmount}, '${currency}')">Process</button>
+        </div>`;
+    openModal('Confirm deposit', body);
+}
+
+async function submitAgentFinalizeAggregated(identityType, identityValue, totalAmount, currency) {
+    const destinationAccountId = document.getElementById('agentDestSelect').value;
+    const docVerified = document.getElementById('agentDocVerified').checked;
+    const pin = document.getElementById('agentClaimPin').value.trim();
+    const cashNowAmount = parseFloat(document.getElementById('cashNowAmount').value);
+    if (!docVerified) { showMessage("You must confirm you verified the client's physical document.", 'warning'); return; }
+    if (!pin) { showMessage("Enter the client's claim PIN.", 'warning'); return; }
+    if (isNaN(cashNowAmount) || cashNowAmount < 0 || cashNowAmount > totalAmount) { showMessage(`Cash amount must be between 0 and ${totalAmount}.`, 'warning'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/finalize_claim.php', {
+        identity_type: identityType,
+        identity_value: identityValue,
+        pin,
+        identity_document_verified: true,
+        destination_account_id: parseInt(destinationAccountId, 10),
+        cash_now_amount: cashNowAmount
+    });
+    if (!result.ok) { showMessage('Failed: ' + friendlyApiError(result.error), 'error'); return; }
+    const data = result.body.data || {};
+    closeModal();
+    const netDeposited = data.actually_claimed_net || totalAmount;
+    const grossAmount = data.actually_claimed_gross || totalAmount;
+    const remainder = data.remainder_reswap?.amount || 0;
+    const cashGiven = data.cash_now_amount || cashNowAmount;
+    const successfulSwaps = data.swap_count || 0;
+    const failedSwaps = data.failed_deposits ? data.failed_deposits.length : 0;
+    const totalFees = parseFloat(grossAmount) - parseFloat(netDeposited);
+    let msg = '';
+    if (netDeposited > 0) { msg += `Deposited ${formatMoney(netDeposited, currency)} into your account`; if (totalFees > 0) msg += ` (fee: ${formatMoney(totalFees, currency)})`; msg += '. '; }
+    if (cashGiven > 0) msg += `Gave client ${formatMoney(cashGiven, currency)} in cash. `; else msg += `No cash given now. `;
+    if (remainder > 0) msg += `The remaining ${formatMoney(remainder, currency)} was sent back to their identity — a new PIN was texted to them. `;
+    if (successfulSwaps > 1) { msg += `(Processed ${successfulSwaps} source(s)`; if (failedSwaps > 0) msg += `, ${failedSwaps} failed`; msg += `)`; }
+    else if (failedSwaps > 0) msg += `(${failedSwaps} source(s) failed)`;
+    if (data.status === 'partial_success') msg += ' Partial success — some sources failed.';
+    showMessage(msg, 'success');
+    agentSearchData = null;
+}
+
+// ============================================================
+// AGENT: Destination registration (the "apply to become an agent" flow)
+// ============================================================
+const AGENT_ELIGIBLE_ASSET_TYPES = ['ACCOUNT', 'WALLET', 'BANK-WALLET', 'CARD'];
+
+async function openAgentModal() {
+    openModal('Agent account', '<div style="text-align:center;padding:20px;"><div class="spinner" style="border-color:rgba(16,30,27,0.15);border-top-color:var(--primary);"></div> Loading...</div>');
+    await getCurrentUserRole();
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/status.php', {});
+    if (!result.ok) { document.getElementById('modalBody').innerHTML = `<div style="color:var(--danger);">Couldn't load agent status: ${escapeHtml(friendlyApiError(result.error))}</div>`; return; }
+    agentStatus = result.body.data;
+    agentStatus.is_agent = SessionUser.is_agent;
+    document.getElementById('modalBody').innerHTML = renderAgentModal();
+}
+
+function renderAgentModal() {
+    const activeDestinations = (agentStatus.all_destinations || []).filter(d => d.status !== 'cancelled' && !d.deleted_at);
+    const statusRows = activeDestinations.length ? activeDestinations.map(d => {
+        const isPending = d.status === 'pending_confirmation';
+        const isRejected = d.status === 'rejected';
+        const canCancel = isPending || isRejected;
+        const badge = d.status === 'active'
+            ? '<span style="background:rgba(31,138,84,0.1);color:var(--success);padding:2px 8px;font-size:10px;font-weight:700;">Active</span>'
+            : isPending
+                ? '<span style="background:#fef3c7;color:#8a5a0b;padding:2px 8px;font-size:10px;font-weight:700;">Pending approval</span>'
+                : `<span style="background:#fbeceb;color:var(--danger);padding:2px 8px;font-size:10px;font-weight:700;">${escapeHtml(d.status || 'Unknown')}</span>`;
+        return `<div class="myc-panel" style="margin-bottom:8px;">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
+                <div><div style="font-weight:700;">${escapeHtml(PARTICIPANTS[d.institution]?.name || d.institution)}</div><div style="font-size:12px;color:var(--text-muted);">${escapeHtml(d.identifier)} · ${escapeHtml(d.account_type || d.asset_type)}</div></div>
+                <div style="display:flex;align-items:center;gap:8px;">${badge}${canCancel ? `<button class="btn-danger-outline" onclick="cancelAgentDestination(${d.id})">Cancel</button>` : ''}</div>
+            </div>${d.status === 'rejected' && d.rejection_reason ? `<div style="font-size:12px;color:var(--danger);margin-top:6px;">Reason: ${escapeHtml(d.rejection_reason)}</div>` : ''}
+        </div>`;
+    }).join('') : '<div style="font-size:12px;color:var(--text-dim);">You have no agent destination accounts registered yet.</div>';
+
+    return `
+        <div style="margin-bottom:16px;"><div class="field-label" style="margin-bottom:8px;">Your agent accounts</div>${statusRows}</div>
+        <div style="border-top:1px solid var(--border);padding-top:16px;">
+            <div class="field-label" style="margin-bottom:8px;">Register a new agent destination</div>
+            <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Register a business/agent account you hold at a participating institution. Only business or agent-designated accounts are eligible. Approval required before activation.</div>
+            <div class="field-group"><label>Institution</label><select id="agentInst" onchange="onAgentInstChange(this.value)"><option value="">Select institution</option>${Object.keys(PARTICIPANTS).map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('')}</select></div>
+            <div class="field-group" id="agentAssetTypeGroup" style="display:none;"><label>Account type</label><select id="agentAssetType"></select><div class="help">Only Account, Wallet, or Card can be used — vouchers stay manual, never registered as a destination.</div></div>
+            <div class="field-group"><label>Account / wallet / card number</label><input id="agentIdentifier" placeholder="Your business account number"></div>
+            <div class="field-group"><label>Account name (optional)</label><input id="agentAccountName" placeholder="e.g. Thabo's General Store"></div>
+            <div class="cta-row"><button class="btn btn-primary" onclick="submitAgentDestination()">Register and verify</button></div>
+        </div>`;
+}
+
+function onAgentInstChange(code) {
+    const group = document.getElementById('agentAssetTypeGroup');
+    const sel = document.getElementById('agentAssetType');
+    if (!code) { group.style.display = 'none'; sel.innerHTML = ''; return; }
+    const inst = PARTICIPANTS[code];
+    const allTypes = inst?.asset_types || [];
+    const eligible = allTypes.filter(t => AGENT_ELIGIBLE_ASSET_TYPES.includes(String(t).toUpperCase()));
+    if (eligible.length === 0) { group.style.display = 'block'; sel.innerHTML = '<option value="">No eligible account types at this institution</option>'; return; }
+    sel.innerHTML = eligible.map(t => `<option value="${t}">${getAssetConfig(t)?.label || t}</option>`).join('');
+    group.style.display = 'block';
+}
+
+async function cancelAgentDestination(destinationId) {
+    showConfirm('Cancel this registration? You can register again later.', async () => {
+        const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/cancel_destination.php', { destination_id: destinationId });
+        if (!result.ok) { showMessage('Failed to cancel: ' + friendlyApiError(result.error), 'error'); return; }
+        showMessage('Registration cancelled successfully.', 'success');
+        openAgentModal();
+    });
+}
+
+async function submitAgentDestination() {
+    const institution = document.getElementById('agentInst').value;
+    const assetType = document.getElementById('agentAssetType').value;
+    const identifier = document.getElementById('agentIdentifier').value.trim();
+    const accountName = document.getElementById('agentAccountName').value.trim();
+    if (!institution || !identifier) { showMessage('Select an institution and enter your account number.', 'warning'); return; }
+    if (!assetType) { showMessage('Select whether this is an Account, Wallet, or Card.', 'warning'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/propose_destination.php', { institution, asset_type: assetType, identifier, account_name: accountName || undefined });
+    if (!result.ok) { showMessage('Could not register: ' + friendlyApiError(result.error), 'error'); return; }
+    const data = result.body.data;
+    if (data.requires_redirect) { showMessage(data.message || 'Redirecting you to your bank to confirm this account...', 'info'); window.location.href = data.redirect_url; return; }
+    if (!data.requires_otp) { showMessage(data.message, data.otp_supported ? 'success' : 'warning'); openAgentModal(); return; }
+    document.getElementById('modalBody').innerHTML = renderAgentOtpStep(data);
+}
+
+function renderAgentOtpStep(data) {
+    return `
+        <div style="background:var(--accent-soft);padding:14px;margin-bottom:16px;">
+            <div style="font-weight:700;margin-bottom:4px;">Verification code sent</div>
+            <div style="font-size:12px;color:var(--text-muted);">${escapeHtml(data.message)}</div>
+        </div>
+        <div class="field-group"><label>Enter the code</label><input type="text" id="agentOtpCode" inputmode="numeric" maxlength="8" placeholder="Code from your bank"></div>
+        <div class="cta-row"><button class="btn btn-secondary" onclick="openAgentModal()">Cancel</button><button class="btn btn-primary" onclick="verifyAgentOtp(${data.attempt_id})">Verify and register</button></div>`;
+}
+
+async function verifyAgentOtp(attemptId) {
+    const otp = document.getElementById('agentOtpCode').value.trim();
+    if (!otp) { showMessage('Enter the verification code.', 'warning'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/verify_destination_otp.php', { attempt_id: attemptId, otp });
+    if (!result.ok) { showMessage('Verification failed: ' + friendlyApiError(result.error), 'error'); return; }
+    showMessage(result.body.data.message || 'Account verified and registered.', 'success');
+    openAgentModal();
+}
+
+// ============================================================
+// REGISTER IDENTITY (self-service + agent-verified)
+// ============================================================
+function openAddIdentityModal() {
+    openModal('Register identity', '<div style="text-align:center;padding:20px;"><div class="spinner" style="border-color:rgba(16,30,27,0.15);border-top-color:var(--primary);"></div> Loading...</div>');
+    getCurrentUserRole().then(session => {
+        if (session.is_agent) renderAgentIdentityForm();
+        else renderUserIdentityForm();
+    });
+}
+
+function renderUserIdentityForm() {
+    document.getElementById('modalBody').innerHTML = `
+        <div>
+            <div style="font-weight:700;font-size:15px;margin-bottom:4px;">Add an identity to your account</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px;">Register a phone number, email, or ID so people can swap directly to you.</div>
+            <div class="field-group">
+                <label>Identity type</label>
+                <select id="userIdentityType">
+                    <option value="phone">Phone Number</option>
+                    <option value="email">Email</option>
+                    <option value="national_id">National ID</option>
+                    <option value="birth_certificate">Birth Certificate</option>
+                    <option value="voter_id">Voter ID</option>
+                </select>
+            </div>
+            <div class="field-group"><label>Identity value</label><input type="text" id="userIdentityValue" placeholder="Enter the ID number, phone, or email"></div>
+            <div style="background:var(--accent-soft);border-left:3px solid var(--accent);padding:10px 14px;font-size:12px;margin-bottom:14px;">
+                Phone numbers are verified instantly via SMS. National IDs and other documents require in-person verification by a VouchMorph agent.
+            </div>
+            <div id="regIdentityOtpFields" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+                <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;" id="regIdentityOtpMessage"></div>
+                <div class="otp-input-group"><input type="text" id="regIdentityOtp" placeholder="Enter verification code" inputmode="numeric" maxlength="8"><button class="btn btn-primary btn-sm" onclick="submitVerifyIdentityOtp()">Verify</button></div>
+            </div>
+            <div class="cta-row"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="submitRegisterIdentity()">Register identity</button></div>
+            <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px;font-size:11px;color:var(--text-dim);">
+                <span class="quick-link muted" onclick="closeModal();openFinalizeIdentityModal();">Need to claim a swap sent to your identity? Click here &rarr;</span>
+            </div>
+        </div>`;
+}
+
+function renderAgentIdentityForm() {
+    document.getElementById('modalBody').innerHTML = `
+        <div>
+            <div style="font-weight:700;font-size:15px;margin-bottom:4px;">Register a verified identity (Agent)</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px;">Use this after physically verifying the person's document.</div>
+            <div class="field-group"><label>Account holder's phone or email</label><input type="text" id="agentTargetLookup" placeholder="Phone or email on their VouchMorph account"></div>
+            <div class="field-group">
+                <label>Identity type</label>
+                <select id="agentIdentityType">
+                    <option value="national_id">National ID</option>
+                    <option value="voters_id">Voter's ID</option>
+                    <option value="drivers_license">Driver's License</option>
+                    <option value="birth_certificate">Birth Certificate</option>
+                    <option value="passport">Passport</option>
+                </select>
+            </div>
+            <div class="field-group"><label>ID number</label><input type="text" id="agentIdentityValue" placeholder="Document number"></div>
+            <div class="field-group"><label style="display:flex;align-items:center;gap:8px;text-transform:none;font-weight:400;">
+                <input type="checkbox" id="agentDocVerified" style="width:auto;"> I have physically verified this document
+            </label></div>
+            <div class="cta-row"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="submitAgentIdentity()">Register identity</button></div>
+        </div>`;
+}
+
+async function submitRegisterIdentity() {
+    const identityType = document.getElementById('userIdentityType').value;
+    const identityValue = document.getElementById('userIdentityValue').value.trim();
+    if (!identityValue) { showMessage('Please enter the identity value.', 'warning'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/user/add_identity.php', { identity_type: identityType, identity_value: identityValue });
+    if (!result.ok) { showMessage('Could not register identity: ' + friendlyApiError(result.error), 'error'); return; }
+    const data = result.body.data || {};
+    regIdentityState.attemptId = data.attempt_id || null;
+    regIdentityState.identityType = identityType;
+    regIdentityState.identityValue = identityValue;
+    if (data.requires_otp) {
+        document.getElementById('regIdentityOtpFields').style.display = 'block';
+        document.getElementById('regIdentityOtpMessage').textContent = data.message || 'Enter the verification code sent to your phone/email.';
+        showMessage('Verification code sent.', 'success');
+        return;
+    }
+    showMessage(data.message || 'Identity submitted for review.', 'success');
+    setTimeout(() => closeModal(), 2000);
+}
+
+async function submitAgentIdentity() {
+    const lookup = document.getElementById('agentTargetLookup').value.trim();
+    const type = document.getElementById('agentIdentityType').value;
+    const value = document.getElementById('agentIdentityValue').value.trim();
+    const verified = document.getElementById('agentDocVerified').checked;
+    if (!lookup) { showMessage("Please enter the account holder's contact.", 'warning'); return; }
+    if (!value) { showMessage('Please enter the ID number.', 'warning'); return; }
+    if (!verified) { showMessage('You must confirm you verified the document.', 'warning'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/add_verified_identity.php', { target_lookup: lookup, identity_type: type, identity_value: value, document_verified: true });
+    if (!result.ok) { showMessage('Failed to register identity: ' + friendlyApiError(result.error), 'error'); return; }
+    showMessage(result.body.message || 'Identity registered successfully.', 'success');
+    setTimeout(() => closeModal(), 2000);
+}
+
+async function submitVerifyIdentityOtp() {
+    const otp = document.getElementById('regIdentityOtp').value.trim();
+    if (!otp) { showMessage('Enter the verification code.', 'warning'); return; }
+    const result = await callApi(CONFIG.API_BASE + '/user/verify_identity_otp.php', { attempt_id: regIdentityState.attemptId, otp });
+    if (!result.ok) { showMessage('Verification failed: ' + friendlyApiError(result.error), 'error'); return; }
+    showMessage('Identity verified. You can now receive swaps.', 'success');
+    setTimeout(() => closeModal(), 2000);
+}
 
 function openPendingSources() {
     openModal('Pending sources', renderPendingSourcesModal());
