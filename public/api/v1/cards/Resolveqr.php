@@ -15,39 +15,17 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     exit();
 }
 
-// A require_once on a missing file is a PHP fatal error that happens
-// before this script produces any output and cannot be caught by
-// try/catch -- it silently turns into a blank response with no JSON
-// body. Verify every required file exists first (see cards/My.php for
-// the same pattern) so a missing/misplaced file fails with a clean
-// JSON error instead of empty output.
-$requiredFiles = [
-    ROOT_PATH . '/src/bootstrap.php',
-    ROOT_PATH . '/src/Infrastructure/QRcodes/QrCodeService.php',
-    ROOT_PATH . '/src/Infrastructure/QRcodes/Adapters/VouchMorphHookQrAdapter.php',
-    ROOT_PATH . '/src/Infrastructure/QRcodes/Adapters/VouchMorphPaymentRequestQrAdapter.php',
-    ROOT_PATH . '/src/Application/Utils/SessionManager.php',
-];
-$missing = array_values(array_filter($requiredFiles, fn($f) => !file_exists($f)));
-if (!empty($missing)) {
-    http_response_code(500);
-    echo json_encode([
-        'success' => false,
-        'error' => 'Server misconfiguration: required file(s) not deployed.',
-        'missing_files' => array_map(fn($f) => str_replace(ROOT_PATH, '', $f), $missing),
-    ]);
-    exit();
-}
-
 $container = require_once ROOT_PATH . '/src/bootstrap.php';
 require_once ROOT_PATH . '/src/Infrastructure/QRcodes/QrCodeService.php';
 require_once ROOT_PATH . '/src/Infrastructure/QRcodes/Adapters/VouchMorphHookQrAdapter.php';
 require_once ROOT_PATH . '/src/Infrastructure/QRcodes/Adapters/VouchMorphPaymentRequestQrAdapter.php';
+require_once ROOT_PATH . '/src/Infrastructure/QRcodes/Adapters/VouchMorphAccountQrAdapter.php';
 require_once ROOT_PATH . '/src/Application/Utils/SessionManager.php';
 
 use Infrastructure\QRcodes\QrCodeService;
 use Infrastructure\QRcodes\Adapters\VouchMorphHookQrAdapter;
 use Infrastructure\QRcodes\Adapters\VouchMorphPaymentRequestQrAdapter;
+use Infrastructure\QRcodes\Adapters\VouchMorphAccountQrAdapter;
 use Application\Utils\SessionManager;
 
 SessionManager::start();
@@ -70,7 +48,31 @@ try {
     $qrService = new QrCodeService();
     $qrService->registerAdapter(new VouchMorphHookQrAdapter());
     $qrService->registerAdapter(new VouchMorphPaymentRequestQrAdapter());
+    $qrService->registerAdapter(new VouchMorphAccountQrAdapter());
     $payload = $qrService->decode($input['raw']);
+
+    // ============================================================
+    // BRANCH: account (pre-fill swap destination)
+    // ============================================================
+    if ($payload->type === 'acct') {
+        if (($payload->data['valid'] ?? false) !== true) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'error' => 'This account code could not be verified — it may be damaged or forged.']);
+            exit();
+        }
+        echo json_encode([
+            'success' => true,
+            'data' => [
+                'type' => 'account',
+                'institution' => $payload->data['institution'],
+                'asset_type' => $payload->data['asset_type'],
+                'identifier' => $payload->data['identifier'],
+                'identifier_type' => $payload->data['identifier_type'],
+                'display_name' => $payload->data['display_name'],
+            ],
+        ], JSON_PRETTY_PRINT);
+        exit();
+    }
 
     // ============================================================
     // BRANCH: payment request
@@ -89,9 +91,7 @@ try {
         }
 
         $requestId = $payload->data['request_id'] ?? null;
-        if (!$requestId) {
-            throw new RuntimeException('QR did not resolve to a payment request.');
-        }
+        if (!$requestId) throw new RuntimeException('QR did not resolve to a payment request.');
 
         $stmt = $db->prepare("
             SELECT pr.id, pr.net_amount, pr.currency, pr.status, pr.expires_at, pr.destination_type,
@@ -154,14 +154,9 @@ try {
     }
 
     $cardSuffix = $payload->data['card_suffix'] ?? null;
-    if (!$cardSuffix) {
-        throw new RuntimeException('QR did not resolve to a card.');
-    }
+    if (!$cardSuffix) throw new RuntimeException('QR did not resolve to a card.');
 
-    $stmt = $db->prepare("
-        SELECT card_suffix, cardholder_name, status
-        FROM message_cards WHERE card_suffix = :suffix
-    ");
+    $stmt = $db->prepare("SELECT card_suffix, cardholder_name, status FROM message_cards WHERE card_suffix = :suffix");
     $stmt->execute([':suffix' => $cardSuffix]);
     $card = $stmt->fetch(PDO::FETCH_ASSOC);
 
