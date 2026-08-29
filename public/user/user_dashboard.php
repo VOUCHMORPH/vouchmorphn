@@ -5600,7 +5600,7 @@ function submitPayManualQr() {
 
 async function resolvePaymentQr(raw) {
     if (html5QrScanner) { try { await html5QrScanner.stop(); } catch (e) {} }
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/sources/Resolveqr.php', { raw }); // use your actual Resolveqr.php path
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/Resolveqr.php', { raw });
     if (!result.ok) { showMessage(result.error, 'error'); return; }
 
     const data = result.body.data;
