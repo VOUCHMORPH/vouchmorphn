@@ -15,6 +15,30 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     exit();
 }
 
+// A require_once on a missing file is a PHP fatal error that happens
+// before this script produces any output and cannot be caught by
+// try/catch -- it silently turns into a blank response with no JSON
+// body. Verify every required file exists first (see cards/My.php for
+// the same pattern) so a missing/misplaced file fails with a clean
+// JSON error instead of empty output.
+$requiredFiles = [
+    ROOT_PATH . '/src/bootstrap.php',
+    ROOT_PATH . '/src/Infrastructure/QRcodes/QrCodeService.php',
+    ROOT_PATH . '/src/Infrastructure/QRcodes/Adapters/VouchMorphHookQrAdapter.php',
+    ROOT_PATH . '/src/Infrastructure/QRcodes/Adapters/VouchMorphPaymentRequestQrAdapter.php',
+    ROOT_PATH . '/src/Application/Utils/SessionManager.php',
+];
+$missing = array_values(array_filter($requiredFiles, fn($f) => !file_exists($f)));
+if (!empty($missing)) {
+    http_response_code(500);
+    echo json_encode([
+        'success' => false,
+        'error' => 'Server misconfiguration: required file(s) not deployed.',
+        'missing_files' => array_map(fn($f) => str_replace(ROOT_PATH, '', $f), $missing),
+    ]);
+    exit();
+}
+
 $container = require_once ROOT_PATH . '/src/bootstrap.php';
 require_once ROOT_PATH . '/src/Infrastructure/QRcodes/QrCodeService.php';
 require_once ROOT_PATH . '/src/Infrastructure/QRcodes/Adapters/VouchMorphHookQrAdapter.php';
