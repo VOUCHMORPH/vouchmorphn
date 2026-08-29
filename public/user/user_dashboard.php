@@ -4121,12 +4121,12 @@ function confirmActivateCard() {
 
     pendingExecution = {
         type: 'activate',
-        payload: { 
-            cardSuffix: myCard.card_suffix, 
-            institution: inst, 
-            asset_type: assetType, 
-            identifier: identifier, 
-            pin: pin 
+        payload: {
+            card_suffix: myCard.card_suffix,
+            institution: inst,
+            asset_type: assetType,
+            identifier: identifier,
+            pin: pin
         },
         callback: () => executeActivateCard()
     };
