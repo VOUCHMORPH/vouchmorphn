@@ -55,6 +55,25 @@ define('ROOT_PATH', dirname(__DIR__, 4));
 // this early. Adjust the path if you place it somewhere other than
 // src/Core/Tracing/.
 require_once ROOT_PATH . '/src/Core/Tracing/SwapTracer.php';
+require_once ROOT_PATH . '/src/Application/Utils/SessionManager.php';
+use Application\Utils\SessionManager;
+
+SessionManager::start();
+if (!SessionManager::isLoggedIn()) {
+    http_response_code(401);
+    echo json_encode(['success' => false, 'error' => 'Not logged in']);
+    exit();
+}
+
+$sessionUserId = (int)(SessionManager::getUser()['id'] ?? SessionManager::getUser()['user_id'] ?? 0);
+if (!$sessionUserId) {
+    http_response_code(401);
+    echo json_encode(['success' => false, 'error' => 'Could not resolve user from session']);
+    exit();
+}
+
+// Never trust a client-supplied user_id that disagrees with the session:
+$input['user_id'] = $sessionUserId;
 
 header("Access-Control-Allow-Origin: *");
 header("Content-Type: application/json; charset=UTF-8");
