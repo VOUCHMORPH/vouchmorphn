@@ -3804,8 +3804,37 @@ async function resolveScannedQr(raw) {
     if (html5QrScanner) { try { await html5QrScanner.stop(); } catch (e) {} }
     const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/Resolveqr.php', { raw });
     if (!result.ok) { showMessage('Couldn\'t read that code: ' + friendlyApiError(result.error), 'error'); return; }
-    const { card_suffix, display_name } = result.body.data;
-    confirmHookTargetCard(card_suffix, display_name);
+
+    const data = result.body.data;
+    switch (data.type) {
+        case 'hook':
+            confirmHookTargetCard(data.card_suffix, data.display_name);
+            break;
+        case 'payment_request':
+            renderPaymentRequestConfirm(data);
+            break;
+        case 'account':
+            openSwapWizardPrefilled(data);
+            break;
+        default:
+            showMessage('Unrecognized QR type.', 'error');
+    }
+}
+
+function openSwapWizardPrefilled(accountData) {
+    // Reuses your existing swap wizard — just seeds the destination
+    // step instead of leaving it blank for manual entry.
+    openSwapWizard(); // your existing wizard-opening function
+    wizardState.destination = {
+        institution: accountData.institution,
+        asset_type: accountData.asset_type,
+        identifier: accountData.identifier,
+        identifier_type: accountData.identifier_type,
+    };
+    if (accountData.display_name) {
+        showMessage(`Destination filled in: ${accountData.display_name}`, 'success');
+    }
+    renderWizardStep(wizardState.currentStep); // re-render so the pre-filled fields show
 }
 
 function openUnhook(target) {
