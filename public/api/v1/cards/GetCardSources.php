@@ -85,7 +85,7 @@ try {
     // hookSourcesToCard() actually writes to the database.
     // FIX 2: Changed 'identifier' to 'source_identifier' to match the
     // actual column name in card_pool_hook_sources.
-    $sourceStmt = $db->prepare("
+        $sourceStmt = $db->prepare("
         SELECT
             cphs.institution,
             cphs.asset_type,
@@ -97,8 +97,13 @@ try {
         JOIN card_pool_hooks cph ON cph.id = cphs.hook_id
         WHERE cph.card_suffix = :suffix
           AND cph.status = 'HOOKED'
+          AND cph.id = (
+              SELECT id FROM card_pool_hooks
+              WHERE card_suffix = :suffix2 AND status = 'HOOKED'
+              ORDER BY created_at DESC LIMIT 1
+          )
     ");
-    $sourceStmt->execute([':suffix' => $cardSuffix]);
+    $sourceStmt->execute([':suffix' => $cardSuffix, ':suffix2' => $cardSuffix]);
     $hookedRows = $sourceStmt->fetchAll(PDO::FETCH_ASSOC);
 
     if (empty($hookedRows)) {
