@@ -6106,22 +6106,19 @@ public function confirmCashout(array $payload): array
             error_log("[SwapService] Non-fatal: failed to consume earmarked balance after successful debit: " . $e->getMessage());
         }
 
-        $this->updateCashoutAuthorizationStatus($authId, 'COMPLETED', $cashoutPoint);
-        $this->updateCashoutAuthorizationStatus($authId, 'COMPLETED', $cashoutPoint);
-$this->updateHoldForSwap($swapRef, 'DEBITED');
-$this->updateSwapRequestStatus($swapRef, 'completed');
-
-// NEW: destination already attested cash dispensed (confirmCashout
-// succeeded above); now confirm the source-side debit actually paid them.
-$this->recordSettlementPending(
-    $swapRef,
-    $destinationInstitution,
-    $debitResult['transaction_reference'] ?? $swapRef,
-    $amountToSend,
-    $currency
-);
+                $this->updateCashoutAuthorizationStatus($authId, 'COMPLETED', $cashoutPoint);
         $this->updateHoldForSwap($swapRef, 'DEBITED');
         $this->updateSwapRequestStatus($swapRef, 'completed');
+
+        // Destination already attested cash dispensed (confirmCashout
+        // succeeded above); now confirm the source-side debit actually paid them.
+        $this->recordSettlementPending(
+            $swapRef,
+            $destinationInstitution,
+            $debitResult['transaction_reference'] ?? $swapRef,
+            $amountToSend,
+            $currency
+        );
 
         // Post ledger legs for cashout
         $this->postLedgerLegs(
