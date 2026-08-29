@@ -35,6 +35,9 @@ declare(strict_types=1);
  *    Tracing is best-effort: a tracer failure is logged and swallowed,
  *    never allowed to affect the swap itself. Search "TRACER:" for
  *    every line this introduced.
+ *  - FIXED: Session validation now occurs AFTER API key check and
+ *    BEFORE reading input, ensuring proper authentication order and
+ *    that $input['user_id'] is always overridden with session value.
  */
 require_once __DIR__ . '/../../../../vendor/autoload.php';
 
@@ -55,25 +58,6 @@ define('ROOT_PATH', dirname(__DIR__, 4));
 // this early. Adjust the path if you place it somewhere other than
 // src/Core/Tracing/.
 require_once ROOT_PATH . '/src/Core/Tracing/SwapTracer.php';
-require_once ROOT_PATH . '/src/Application/Utils/SessionManager.php';
-use Application\Utils\SessionManager;
-
-SessionManager::start();
-if (!SessionManager::isLoggedIn()) {
-    http_response_code(401);
-    echo json_encode(['success' => false, 'error' => 'Not logged in']);
-    exit();
-}
-
-$sessionUserId = (int)(SessionManager::getUser()['id'] ?? SessionManager::getUser()['user_id'] ?? 0);
-if (!$sessionUserId) {
-    http_response_code(401);
-    echo json_encode(['success' => false, 'error' => 'Could not resolve user from session']);
-    exit();
-}
-
-// Never trust a client-supplied user_id that disagrees with the session:
-$input['user_id'] = $sessionUserId;
 
 header("Access-Control-Allow-Origin: *");
 header("Content-Type: application/json; charset=UTF-8");
@@ -408,6 +392,9 @@ try {
         exit();
     }
 
+    // ============================================
+    // API KEY VALIDATION (MUST happen before session)
+    // ============================================
     $providedKey = getApiKeyFromRequest();
 
     if (!isValidApiKey($providedKey)) {
@@ -419,10 +406,34 @@ try {
         exit();
     }
 
+    // ============================================
+    // SESSION VALIDATION (after API key, before reading input)
+    // ============================================
+    require_once ROOT_PATH . '/src/Application/Utils/SessionManager.php';
+    \Application\Utils\SessionManager::start();
+    if (!\Application\Utils\SessionManager::isLoggedIn()) {
+        http_response_code(401);
+        echo json_encode(['success' => false, 'error' => 'Not logged in']);
+        exit();
+    }
+    $sessionUserId = (int)(\Application\Utils\SessionManager::getUser()['id']
+        ?? \Application\Utils\SessionManager::getUser()['user_id'] ?? 0);
+    if (!$sessionUserId) {
+        http_response_code(401);
+        echo json_encode(['success' => false, 'error' => 'Could not resolve user from session']);
+        exit();
+    }
+
+    // ============================================
+    // READ INPUT (after authentication is confirmed)
+    // ============================================
     $input = json_decode(file_get_contents('php://input'), true);
     if (!$input) {
         throw new Exception('Invalid JSON payload', 400);
     }
+    
+    // Never trust a client-supplied user_id — always override with session
+    $input['user_id'] = $sessionUserId;
 
     // ============================================================
     // NEW: enforce idempotency even when the caller doesn't supply
