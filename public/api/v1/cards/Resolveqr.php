@@ -1,15 +1,6 @@
 <?php
 declare(strict_types=1);
 
-/**
- * VouchMorph Card — Resolve Scanned QR
- *
- * Takes the raw string a camera scanner read off a card's QR side and
- * turns it into "here's whose card this is, hook to it?" for a
- * confirmation screen — BEFORE any source gets touched. Hooking itself
- * still goes through hook.php's normal consent/verify/hold pipeline.
- */
-
 define('ROOT_PATH', dirname(__DIR__, 4));
 
 header("Content-Type: application/json; charset=UTF-8");
@@ -27,10 +18,12 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 $container = require_once ROOT_PATH . '/src/bootstrap.php';
 require_once ROOT_PATH . '/src/Infrastructure/QRcodes/QrCodeService.php';
 require_once ROOT_PATH . '/src/Infrastructure/QRcodes/Adapters/VouchMorphHookQrAdapter.php';
+require_once ROOT_PATH . '/src/Infrastructure/QRcodes/Adapters/VouchMorphPaymentRequestQrAdapter.php';
 require_once ROOT_PATH . '/src/Application/Utils/SessionManager.php';
 
 use Infrastructure\QRcodes\QrCodeService;
 use Infrastructure\QRcodes\Adapters\VouchMorphHookQrAdapter;
+use Infrastructure\QRcodes\Adapters\VouchMorphPaymentRequestQrAdapter;
 use Application\Utils\SessionManager;
 
 SessionManager::start();
@@ -52,12 +45,78 @@ $db = $container->get(PDO::class);
 try {
     $qrService = new QrCodeService();
     $qrService->registerAdapter(new VouchMorphHookQrAdapter());
+    $qrService->registerAdapter(new VouchMorphPaymentRequestQrAdapter());
     $payload = $qrService->decode($input['raw']);
 
-    // decode() succeeding here only means "this is structurally a hook
-    // QR" — the adapter reports signature/expiry failures via
-    // $payload->data rather than throwing (see VouchMorphHookQrAdapter's
-    // class doc for why: QrCodeService swallows adapter exceptions).
+    // ============================================================
+    // BRANCH: payment request
+    // ============================================================
+    if ($payload->type === 'payreq') {
+        if (($payload->data['valid'] ?? false) !== true) {
+            $reason = $payload->data['reason'] ?? 'invalid';
+            $message = match ($reason) {
+                'expired' => 'This payment request has expired — ask the agent to generate a new one.',
+                'signature_mismatch' => 'This code could not be verified — it may be damaged or forged.',
+                default => 'This code is not valid.',
+            };
+            http_response_code(400);
+            echo json_encode(['success' => false, 'error' => $message]);
+            exit();
+        }
+
+        $requestId = $payload->data['request_id'] ?? null;
+        if (!$requestId) {
+            throw new RuntimeException('QR did not resolve to a payment request.');
+        }
+
+        $stmt = $db->prepare("
+            SELECT pr.id, pr.net_amount, pr.currency, pr.status, pr.expires_at, pr.destination_type,
+                   u.full_name AS agent_name
+            FROM payment_requests pr
+            JOIN users u ON u.user_id = pr.agent_user_id
+            WHERE pr.id = :id
+        ");
+        $stmt->execute([':id' => $requestId]);
+        $request = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$request) {
+            http_response_code(404);
+            echo json_encode(['success' => false, 'error' => 'This payment request no longer exists.']);
+            exit();
+        }
+        if ($request['status'] !== 'PENDING') {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'error' => 'This payment request has already been used or cancelled.']);
+            exit();
+        }
+        if (strtotime($request['expires_at']) < time()) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'error' => 'This payment request has expired — ask the agent to generate a new one.']);
+            exit();
+        }
+
+        $nameParts = preg_split('/\s+/', trim((string)$request['agent_name']));
+        $displayName = count($nameParts) >= 2
+            ? $nameParts[0] . ' ' . mb_substr(end($nameParts), 0, 1) . '.'
+            : ($nameParts[0] ?? 'VouchMorph agent');
+
+        echo json_encode([
+            'success' => true,
+            'data' => [
+                'type' => 'payment_request',
+                'request_id' => $request['id'],
+                'agent_display_name' => $displayName,
+                'net_amount' => (float)$request['net_amount'],
+                'currency' => $request['currency'],
+                'destination_type' => $request['destination_type'],
+            ],
+        ], JSON_PRETTY_PRINT);
+        exit();
+    }
+
+    // ============================================================
+    // BRANCH: hook (existing behavior, unchanged)
+    // ============================================================
     if (($payload->data['valid'] ?? false) !== true) {
         $reason = $payload->data['reason'] ?? 'invalid';
         $message = match ($reason) {
@@ -88,8 +147,6 @@ try {
         exit();
     }
 
-    // Display first name + last initial only — this is a stranger's
-    // card being confirmed, not a full identity reveal.
     $nameParts = preg_split('/\s+/', trim((string)$card['cardholder_name']));
     $displayName = count($nameParts) >= 2
         ? $nameParts[0] . ' ' . mb_substr(end($nameParts), 0, 1) . '.'
@@ -98,6 +155,7 @@ try {
     echo json_encode([
         'success' => true,
         'data' => [
+            'type' => 'hook',
             'card_suffix' => $card['card_suffix'],
             'display_name' => $displayName,
         ],
