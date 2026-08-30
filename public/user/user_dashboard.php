@@ -2333,8 +2333,9 @@ function selectDestination(type) {
     panel.style.display = 'block';
     const toSection = document.getElementById('toSection');
     if (toSection) {
+        // Clone the toSection content
         panel.innerHTML = toSection.cloneNode(true).innerHTML;
-
+        
         const cashoutFields = panel.querySelector('#cashoutFields');
         if (cashoutFields) cashoutFields.style.display = type === 'CASHOUT' ? 'block' : 'none';
 
@@ -2359,65 +2360,17 @@ function selectDestination(type) {
                     !(wizardState.toInst && wizardState.beneficiaryPhone);
             }
         };
-
+        
         wizardState.toInst = null;
         wizardState.toAsset = null;
         wizardState.toFields = {};
-
+        
         const assetSection = panel.querySelector('#toAssetSection');
         if (assetSection) assetSection.style.display = 'none';
         const fieldsBox = panel.querySelector('#toFields');
         if (fieldsBox) { fieldsBox.innerHTML = ''; fieldsBox.style.display = 'none'; }
         nextBtn.disabled = true;
-
-        // ↓ MOVED HERE — after the clone, so it doesn't get erased. DEPOSIT only.
-        if (type === 'DEPOSIT') {
-            const eligible = userSources.filter(u => u.status === 'active');
-            const shortcutsHtml = `
-                <div style="text-align:center;margin-bottom:14px;">
-                    <span class="quick-link muted" onclick="openScanModal('swap_dest')">📷 Scan a code to fill this in</span>
-                </div>
-                ${eligible.length > 0 ? `
-                <div class="field-group">
-                    <label>Or use one of your saved accounts</label>
-                    <select id="destSavedSourceSelect" onchange="applySavedSourceAsDestination(this.value)">
-                        <option value="">— or select an institution below —</option>
-                        ${eligible.map(u => `<option value="${u.id}">${PARTICIPANTS[u.institution]?.name || u.institution} — ${u.identifier || u.source_identifier || ''}</option>`).join('')}
-                    </select>
-                </div>` : ''}`;
-            panel.insertAdjacentHTML('afterbegin', shortcutsHtml);
-        }
     }
-}
-
-function applySavedSourceAsDestination(sourceId) {
-    const source = userSources.find(u => u.id === sourceId);
-    if (!source) return;
-    const panel = document.getElementById('destDetailPanel');
-    const instSel = panel.querySelector('#toInstSelect');
-    if (instSel) { instSel.value = source.institution; wizardSelectToInst(source.institution); }
-
-    setTimeout(() => {
-        const targetAsset = normalizeAssetType(source.asset_type);
-        const assetSel = panel.querySelector('#toAssetSelect');
-        if (assetSel && assetSel.options.length) {
-            const match = Array.from(assetSel.options).find(o => normalizeAssetType(o.value) === targetAsset);
-            if (match) { assetSel.value = match.value; wizardSelectToAsset(match.value); }
-        }
-        setTimeout(() => {
-            const cfg = getAssetConfig(wizardState.toAsset);
-            const idField = (cfg?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
-            if (idField) {
-                const identifier = source.identifier || source.source_identifier || '';
-                const input = document.getElementById('toField_' + idField.name);
-                if (input) input.value = identifier;
-                wizardState.toFields[idField.name] = identifier;
-            }
-            const valid = fieldsValidForAsset(wizardState.toAsset, wizardState.toFields, false);
-            const nextBtn = document.getElementById('wizardDestNext');
-            if (nextBtn) nextBtn.disabled = !valid.valid;
-        }, 30);
-    }, 30);
 }
     
 function wizardSelectToInst(code) {
@@ -3523,100 +3476,6 @@ let hookEntry = { source: 'card', targetCardSuffix: null };
 let pendingHookPrefill = null;
 let unhookTarget = null;
 
-let scanHookState = { source: null, amount: null };
-
-// Entry point. Pass a prefill ({instName, institution, assetType, identifier})
-// when the source is already known (e.g. from a source row's "Hook to card"
-// link) — the source step is skipped and only the amount is asked.
-function openScanAndHook(prefill) {
-    scanHookState = { source: prefill ? { ...prefill, locked: true } : null, amount: null };
-    renderScanHookSetup();
-}
-
-function renderScanHookSetup() {
-    const eligible = userSources.filter(s => s.status === 'active');
-    const s = scanHookState.source;
-
-    const sourcePickerHtml = (s && s.locked)
-        ? `<div class="myc-panel" style="margin-bottom:14px;">
-               <div style="font-weight:700;font-size:13px;">${escapeHtml(s.instName)}</div>
-               <div style="font-size:11px;color:var(--text-dim);">${escapeHtml(s.identifier)}</div>
-           </div>`
-        : `<div class="field-group">
-               <label>Source to hook</label>
-               <select id="scanHookSourceSelect" onchange="onScanHookSourceChange(this.value)">
-                   <option value="">Select a saved source</option>
-                   ${eligible.map(u => `<option value="${u.id}">${PARTICIPANTS[u.institution]?.name || u.institution} — ${u.identifier || u.source_identifier || ''}</option>`).join('')}
-               </select>
-               <div class="help">Only sources you've already added can be hooked this way. <span class="quick-link muted" onclick="closeModal(); openAddSource();">Add a new source first &rarr;</span></div>
-           </div>`;
-
-    const bodyHtml = `
-        <div style="font-size:12px;color:var(--text-muted);margin-bottom:14px;">Pick what you're hooking and how much to authorize — then scan the card you're hooking it to.</div>
-        ${sourcePickerHtml}
-        <div class="field-group">
-            <label>Amount to authorize</label>
-            <input type="number" id="scanHookAmount" min="0.01" step="0.01" placeholder="0.00"
-                   oninput="scanHookState.amount = parseFloat(this.value) || null; refreshScanHookContinue();">
-        </div>
-        <div class="cta-row">
-            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-            <button class="btn btn-primary" id="scanHookContinueBtn" onclick="proceedToScanForHook()" disabled>Continue to scan →</button>
-        </div>`;
-    openModal('Scan & hook', bodyHtml);
-}
-
-function onScanHookSourceChange(sourceId) {
-    const source = userSources.find(u => u.id === sourceId);
-    scanHookState.source = source ? {
-        instName: PARTICIPANTS[source.institution]?.name || source.institution,
-        institution: source.institution,
-        assetType: source.asset_type,
-        identifier: source.identifier || source.source_identifier || '',
-    } : null;
-    refreshScanHookContinue();
-}
-
-function refreshScanHookContinue() {
-    const btn = document.getElementById('scanHookContinueBtn');
-    if (btn) btn.disabled = !(scanHookState.source && scanHookState.amount > 0);
-}
-
-function proceedToScanForHook() {
-    openScanModal('scan_and_hook');
-}
-
-// Called from handleScannedQr's 'hook' case when context === 'scan_and_hook'.
-function confirmScanAndHook(cardSuffix, displayName) {
-    const s = scanHookState.source;
-    const bodyHtml = `
-        <div class="review-hero">
-            <div class="review-hero-label">Hook to ${escapeHtml(displayName)}'s card</div>
-            <div class="review-hero-amount">${formatMoney(scanHookState.amount, myCard?.currency || 'BWP')}</div>
-        </div>
-        <div class="preview-box">
-            <div class="preview-row"><span>Source</span><span class="value">${escapeHtml(s.instName)}</span></div>
-            <div class="preview-row" style="border-bottom:none;"><span>Identifier</span><span class="value">${escapeHtml(s.identifier)}</span></div>
-        </div>
-        <div class="preview-reassure">Held for 24 hours — nothing moves until it's spent.</div>`;
-
-    hookEntry = { source: 'scan_and_hook', targetCardSuffix: cardSuffix };
-    pendingExecution = {
-        type: 'hook',
-        payload: {
-            sources: [{
-                institution: s.institution,
-                asset_type: s.assetType,
-                identifier: s.identifier,
-                authorized_amount: scanHookState.amount,
-            }],
-            cardSuffix: cardSuffix,
-        },
-        callback: () => executeHook()
-    };
-    showPreviewModal('Confirm hook', bodyHtml, null, 'Hook it');
-}
-
 async function openHookBuilder(entryType, prefill) {
     if (!myCard) {
         const result = await callApiGet(CONFIG.API_BASE + '/api/v1/cards/My.php');
@@ -3868,7 +3727,8 @@ function promptHookThisSource(prefill) {
             <div style="font-size:13px;color:var(--text-muted);margin-bottom:18px;">Where should this source be hooked?</div>
             <div class="cta-row" style="flex-direction:column;gap:10px;">
                 <button class="btn btn-primary" onclick="closeModal(); openHookBuilder('source', pendingHookPrefill);">My VouchMorph Card</button>
-          <button class="btn btn-secondary" onclick="closeModal(); openScanAndHook(pendingHookPrefill);">Another VouchMorph Card</button>            </div>
+                <button class="btn btn-secondary" onclick="openAnotherCardChooser()">Another VouchMorph Card</button>
+            </div>
         </div>`;
     openModal('Hook this source', bodyHtml);
 }
@@ -3944,45 +3804,8 @@ async function resolveScannedQr(raw) {
     if (html5QrScanner) { try { await html5QrScanner.stop(); } catch (e) {} }
     const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/Resolveqr.php', { raw });
     if (!result.ok) { showMessage('Couldn\'t read that code: ' + friendlyApiError(result.error), 'error'); return; }
-
-    const data = result.body.data;
-    switch (data.type) {
-        case 'hook':
-    if (context === 'scan_and_hook') {
-        confirmScanAndHook(data.card_suffix, data.display_name);
-    } else if (context === 'agent_charge') {          // added in section 2 below
-        confirmAgentChargeCard(data.card_suffix, data.display_name);
-    } else {
-        confirmHookTargetCard(data.card_suffix, data.display_name);
-    }
-    break;
-            confirmHookTargetCard(data.card_suffix, data.display_name);
-            break;
-        case 'payment_request':
-            renderPaymentRequestConfirm(data);
-            break;
-        case 'account':
-            openSwapWizardPrefilled(data);
-            break;
-        default:
-            showMessage('Unrecognized QR type.', 'error');
-    }
-}
-
-function openSwapWizardPrefilled(accountData) {
-    // Reuses your existing swap wizard — just seeds the destination
-    // step instead of leaving it blank for manual entry.
-    openSwapWizard(); // your existing wizard-opening function
-    wizardState.destination = {
-        institution: accountData.institution,
-        asset_type: accountData.asset_type,
-        identifier: accountData.identifier,
-        identifier_type: accountData.identifier_type,
-    };
-    if (accountData.display_name) {
-        showMessage(`Destination filled in: ${accountData.display_name}`, 'success');
-    }
-    renderWizardStep(wizardState.currentStep); // re-render so the pre-filled fields show
+    const { card_suffix, display_name } = result.body.data;
+    confirmHookTargetCard(card_suffix, display_name);
 }
 
 function openUnhook(target) {
@@ -4021,17 +3844,42 @@ async function executeUnhook() {
 // ============================================================
 // CARD VIEW
 // ============================================================
-async function loadCardView() {
+async function loadCardView(expectedActiveSuffix, _isRetry) {
     const body = document.getElementById('cardViewBody');
     if (!body) return;
-    body.innerHTML = `<div style="text-align:center;padding:40px 0;"><div class="spinner" style="border-color:rgba(16,30,27,0.15);border-top-color:var(--primary);"></div> Loading...</div>`;
+    if (!_isRetry) {
+        body.innerHTML = `<div style="text-align:center;padding:40px 0;"><div class="spinner" style="border-color:rgba(16,30,27,0.15);border-top-color:var(--primary);"></div> Loading...</div>`;
+    }
     try {
         const result = await callApiGet(CONFIG.API_BASE + '/api/v1/cards/My.php');
         if (!result.ok) {
             body.innerHTML = `<div style="color:var(--danger);padding:12px;text-align:center;"><div style="font-weight:700;margin-bottom:6px;">Couldn't load your card</div><div style="font-size:12px;">${escapeHtml(friendlyApiError(result.error))}</div><button class="btn btn-secondary btn-sm" onclick="loadCardView()" style="margin-top:12px;width:auto;">Retry</button></div>`;
             return;
         }
-        myCard = result.body.data;
+        const fetched = result.body.data;
+
+        // Defensive check: if we just confirmed a specific card_suffix as
+        // ACTIVE (e.g. right after paying the activation fee) but "my
+        // card" now resolves to a DIFFERENT, still-inactive card, the
+        // account likely has more than one message_cards row (a
+        // now-fixed provisioning race could create these historically —
+        // see CardService::provisionUserCard). Retry once immediately in
+        // case this was a transient read; if it persists, keep showing
+        // the card that was actually just activated rather than silently
+        // reverting to "please activate" for a card the user already paid
+        // to activate.
+        if (expectedActiveSuffix && fetched.card_suffix !== expectedActiveSuffix && !fetched.is_active) {
+            if (!_isRetry) {
+                return loadCardView(expectedActiveSuffix, true);
+            }
+            console.warn('[loadCardView] server keeps returning a different, inactive card_suffix than the one just activated:', fetched.card_suffix, 'vs', expectedActiveSuffix);
+            myCard = { ...fetched, card_suffix: expectedActiveSuffix, is_active: true, status: 'ACTIVE', qr_payload: null };
+            body.innerHTML = renderCardViewBody();
+            showMessage("Your card is active, but we're still syncing its details — refresh in a moment if your QR code doesn't appear.", 'warning');
+            return;
+        }
+
+        myCard = fetched;
         body.innerHTML = renderCardViewBody();
         if (myCard.is_active && myCard.qr_payload) renderCardQr(myCard.qr_payload);
         if (myCard.active_session) { lastKnownSession = myCard.active_session; startSessionPolling(myCard.active_session.session_id); }
@@ -4082,10 +3930,10 @@ function renderCardViewBody() {
                     ${hook && hook.contributors.length ? `<button class="btn btn-primary" onclick="openCreateSessionModal(myCard.card_suffix)">Start a swap</button>` : ''}
                 </div>
                 ${hook && hook.contributors.length ? `<button class="btn secondary" style="margin-top:10px;" onclick="goView('swap'); setTimeout(()=>initWizard(), 30);">Use this card as a Swap source</button>` : ''}
-                <div style="margin-top:14px;"><span class="quick-link muted" onclick="openScanAndHook(null)">📷 Scan & hook a source to another card</span></div>
-</div>
-<div>
-    <div class="myc-panel">
+                <div style="margin-top:14px;"><span class="quick-link muted" onclick="pendingHookPrefill=null; openScanToHookModal()">Hook to someone else's card (scan their QR)</span></div>
+            </div>
+            <div>
+                <div class="myc-panel">
                     <div class="myc-panel-head"><span class="myc-panel-title">Hooked sources</span>${hook ? `<span class="myc-panel-total">${formatMoney(hook.total_held, hook.currency)}</span>` : ''}</div>
                     ${hook ? `<div class="help" style="margin-bottom:6px;">Held until ${new Date(hook.expires_at).toLocaleString()} — releases automatically after 24 hours if it isn't spent first.</div>` : ''}
                     ${contributorsHtml}
@@ -4331,7 +4179,7 @@ async function executeActivateCard() {
     }
     
     showMessage('Card activated! 🎉', 'success');
-    loadCardView();
+    loadCardView(result.body?.data?.card_suffix || payload.card_suffix);
 }
 
 // executeActivateCard already exists in your file - keep it as-is.
@@ -4683,11 +4531,8 @@ function renderToolboxBody() {
             { icon: '🪪', label: 'Register identity', action: 'openAddIdentityModal()' },
         ]},
     ];
-if (isAgent) groups.push({ title: 'Agent', open: false, rows: [
-    { icon: '🧰', label: 'Agent tools', action: 'openAgentToolsModal()' },
-    { icon: '🏢', label: 'Agent destinations', action: 'openAgentModal()' },
-    { icon: '💳', label: "Charge a customer's card", action: 'openAgentCardPaymentModal()' },   // new
-] });    groups.push({ title: 'Account', open: false, rows: [ { icon: '👤', label: 'My profile', action: 'openProfileModal()' }, { icon: '❓', label: 'Help', action: 'openHelpModal()' }, { icon: '📄', label: 'Terms and conditions', action: 'openTermsModal()' } ] });
+    if (isAgent) groups.push({ title: 'Agent', open: false, rows: [ { icon: '🧰', label: 'Agent tools', action: 'openAgentToolsModal()' }, { icon: '🏢', label: 'Agent destinations', action: 'openAgentModal()' } ] });
+    groups.push({ title: 'Account', open: false, rows: [ { icon: '👤', label: 'My profile', action: 'openProfileModal()' }, { icon: '❓', label: 'Help', action: 'openHelpModal()' }, { icon: '📄', label: 'Terms and conditions', action: 'openTermsModal()' } ] });
 
     const progressHtml = doneCount < steps.length ? `<div style="background:var(--surface-muted);border:1px solid var(--border);padding:14px 16px;margin-bottom:20px;"><div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:var(--text-dim);margin-bottom:8px;">Getting set up — ${doneCount}/${steps.length}</div>${steps.map(s => `<div style="font-size:13px;color:${s.done ? 'var(--success)' : 'var(--text-muted)'};padding:3px 0;">${s.done ? '✓' : '○'} ${s.label}</div>`).join('')}</div>` : '';
 
@@ -4718,142 +4563,6 @@ if (isAgent) groups.push({ title: 'Agent', open: false, rows: [
                 </div>
             </div>
         </details>`;
-}
-
-let agentCardPaymentState = { amount: null, currency: 'BWP', cardSuffix: null, displayName: null, destinationAccountId: null };
-
-function openAgentCardPaymentModal() {
-    if (!agentStatus.approved_destinations || agentStatus.approved_destinations.length === 0) {
-        openModal('Charge a card', '<div style="color:var(--danger);">You need an approved agent destination account first — register one from Toolbox → Agent destinations.</div>');
-        return;
-    }
-    agentCardPaymentState = { amount: null, currency: myCard?.currency || 'BWP', cardSuffix: null, displayName: null, destinationAccountId: null };
-    const bodyHtml = `
-        <div class="field-group">
-            <label>Amount to charge</label>
-            <input type="number" id="agentChargeAmount" min="0.01" step="0.01" placeholder="0.00"
-                   oninput="agentCardPaymentState.amount = parseFloat(this.value) || null;">
-        </div>
-        <div class="field-group">
-            <label>Deposit into</label>
-            <select id="agentChargeDestSelect">
-                ${agentStatus.approved_destinations.map(d => `<option value="${d.id}">${escapeHtml(PARTICIPANTS[d.institution]?.name || d.institution)} — ${escapeHtml(d.identifier)}</option>`).join('')}
-            </select>
-        </div>
-        <div class="cta-row">
-            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-            <button class="btn btn-primary" onclick="proceedToChargeCard()">Continue: identify card →</button>
-        </div>`;
-    openModal("Charge a customer's card", bodyHtml);
-}
-
-function proceedToChargeCard() {
-    if (!(agentCardPaymentState.amount > 0)) { showMessage('Enter the amount to charge.', 'warning'); return; }
-    agentCardPaymentState.destinationAccountId = document.getElementById('agentChargeDestSelect')?.value;
-    const bodyHtml = `
-        <div style="font-size:12px;color:var(--text-muted);margin-bottom:14px;">Enter the customer's card number, or scan their VouchMorph Card QR.</div>
-        <div class="field-group"><label>Card number or suffix</label><input id="agentChargeCardManual" placeholder="e.g. last 4 digits or full number"></div>
-        <div class="cta-row"><button class="btn btn-primary" onclick="submitAgentChargeCardManual()">Continue</button></div>
-        <div style="text-align:center;margin:16px 0;font-size:11px;color:var(--text-dim);">or</div>
-        <button class="btn btn-secondary" onclick="openScanModal('agent_charge')">Scan their card instead</button>`;
-    openModal('Identify the card', bodyHtml);
-}
-
-async function submitAgentChargeCardManual() {
-    const raw = document.getElementById('agentChargeCardManual')?.value.trim();
-    if (!raw) { showMessage('Enter a card number.', 'warning'); return; }
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/LookupBySuffix.php', { card_suffix: raw });
-    if (!result.ok) { showMessage("Couldn't find that card: " + friendlyApiError(result.error), 'error'); return; }
-    const { card_suffix, display_name } = result.body.data;
-    confirmAgentChargeCard(card_suffix, display_name);
-}
-
-async function confirmAgentChargeCard(cardSuffix, displayName) {
-    agentCardPaymentState.cardSuffix = cardSuffix;
-    agentCardPaymentState.displayName = displayName;
-
-    const statusResult = await callApi(CONFIG.API_BASE + '/api/v1/agent/card_charge_status.php', {
-        card_suffix: cardSuffix,
-        destination_account_id: agentCardPaymentState.destinationAccountId,
-    });
-
-    if (!statusResult.ok) {
-        showMessage("Couldn't check that card: " + friendlyApiError(statusResult.error), 'error');
-        return;
-    }
-
-    const status = statusResult.body.data;
-
-    if (status.code === 'SELF_CARD') {
-        openModal("Can't charge your own card", `
-            <div style="font-size:13px;color:var(--text);line-height:1.6;">Agents can't charge their own VouchMorph Card through this flow. Use "Start a swap" from your Card view instead.</div>
-            <div class="cta-row" style="margin-top:16px;"><button class="btn btn-primary" onclick="closeModal()">OK</button></div>`);
-        return;
-    }
-
-    if (status.code === 'NO_HOOK') {
-        openModal('Nothing hooked to this card', `
-            <div style="font-size:13px;color:var(--text);line-height:1.6;">This card doesn't have a source hooked yet, so there's nothing to charge. Ask the customer to hook a source from their own VouchMorph app (Card → Hook a source), then scan again.</div>
-            <div class="cta-row" style="margin-top:16px;"><button class="btn btn-primary" onclick="closeModal()">OK</button></div>`);
-        return;
-    }
-
-    if (status.code === 'ONLY_SOURCE_IS_DESTINATION') {
-        openModal("Can't use that account", `
-            <div style="font-size:13px;color:var(--text);line-height:1.6;">The only source hooked to this card is the exact account you're depositing into — that would just send money to itself. Pick a different destination, or ask the customer to hook a different source.</div>
-            <div class="cta-row" style="margin-top:16px;"><button class="btn btn-primary" onclick="closeModal()">OK</button></div>`);
-        return;
-    }
-
-    if (status.available < agentCardPaymentState.amount) {
-        showMessage(`This card only has ${formatMoney(status.available, status.currency)} hooked — lower the amount or ask the customer to hook more.`, 'warning');
-        return;
-    }
-
-    const bodyHtml = `
-        <div class="review-hero">
-            <div class="review-hero-label">Charge ${escapeHtml(displayName)}'s card</div>
-            <div class="review-hero-amount">${formatMoney(agentCardPaymentState.amount, agentCardPaymentState.currency)}</div>
-        </div>
-        <div style="background:var(--accent-soft);border-left:3px solid var(--accent);padding:12px 14px;font-size:12px;margin:14px 0;color:var(--primary);">
-            To finalize, hand the device to the customer — they enter their own VouchMorph PIN to approve this. An agent can never finalize a charge without it.
-        </div>
-        <div class="field-group">
-            <label>Customer's VouchMorph PIN</label>
-            <input type="password" id="agentChargeOwnerPin" inputmode="numeric" maxlength="6" placeholder="Customer enters this">
-        </div>
-        <div class="cta-row">
-            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-            <button class="btn btn-primary" onclick="executeAgentChargeCard()">Finalize payment</button>
-        </div>`;
-    openModal('Confirm charge', bodyHtml);
-}
-async function executeAgentChargeCard() {
-    const pin = document.getElementById('agentChargeOwnerPin')?.value.trim();
-    if (!pin) { showMessage("Enter the customer's PIN to finalize.", 'warning'); return; }
-    const destOpt = agentStatus.approved_destinations.find(d => String(d.id) === String(agentCardPaymentState.destinationAccountId));
-
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/agent/charge_card.php', {
-        card_suffix: agentCardPaymentState.cardSuffix,
-        amount: agentCardPaymentState.amount,
-        currency: agentCardPaymentState.currency,
-        destination_account_id: destOpt?.id,
-        card_owner_pin: pin,
-    });
-
-    if (!result.ok) { showMessage("Payment didn't go through: " + friendlyApiError(result.error), 'error'); return; }
-
-    const data = result.body.data || {};
-    const bodyHtml = `
-        <div class="result-box" id="resultBoxRoot">
-            <div class="icon">✓</div>
-            <div class="result-title">Payment received</div>
-            <div class="result-sub">Reference: ${escapeHtml(data.reference || '—')}</div>
-            <div style="font-size:22px;font-weight:600;font-family:var(--font-mono);margin-top:12px;">${formatMoney(agentCardPaymentState.amount, agentCardPaymentState.currency)}</div>
-        </div>
-        <div class="cta-row" style="margin-top:16px;"><button class="btn btn-primary" onclick="closeModal();">Done</button></div>`;
-    openModal('Payment complete', bodyHtml);
-    setTimeout(() => fireConfetti(document.getElementById('resultBoxRoot')), 150);
 }
 
 function filterToolbox(query) {
@@ -5770,67 +5479,56 @@ function openAddSource() {
     openModal('Add source — step 1 of 2: Link', bodyHtml);
 }
 
+// ============================================================
+// REQUEST PAYMENT (agent generates a QR)
+// ============================================================
 function openRequestPaymentModal() {
-    const eligible = userSources.filter(s => s.status === 'active');
-    if (eligible.length === 0) {
-        openModal('Request payment', `<div style="text-align:center;padding:20px;color:var(--text-dim);">You need at least one saved source before you can request payment — <span class="quick-link" onclick="closeModal();openAddSource();">add one now</span>.</div>`);
-        return;
-    }
+    const eligible = userSources.filter(s => s.status === 'active'); // reuse saved sources as receiving destinations for now
+    const instOptions = Object.keys(PARTICIPANTS).map(code =>
+        `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`
+    ).join('');
+
     const bodyHtml = `
         <div class="field-group">
             <label>Amount you want to receive</label>
             <input type="number" id="reqPayAmount" min="0.01" step="0.01" placeholder="0.00">
         </div>
         <div class="field-group">
-            <label>Receive into</label>
-            <select id="reqPaySourceSelect">
-                <option value="">Select a saved source</option>
-                ${eligible.map(s => `<option value="${s.id}">${PARTICIPANTS[s.institution]?.name || s.institution} — ${s.identifier || s.source_identifier || ''}</option>`).join('')}
+            <label>Currency</label>
+            <select id="reqPayCurrency">
+                <option value="BWP">BWP</option>
             </select>
-            <div class="help">Payment requests can only be received into your own saved sources.</div>
+        </div>
+        <div class="field-group">
+            <label>How do you want to receive it?</label>
+            <select id="reqPayDestType" onchange="onReqPayDestTypeChange(this.value)">
+                <option value="DEPOSIT">Deposit into an account/wallet</option>
+                <option value="CASHOUT">Cashout code</option>
+            </select>
+        </div>
+        <div id="reqPayDepositFields">
+            <div class="field-group">
+                <label>Receiving institution</label>
+                <select id="reqPayInst" onchange="onReqPayInstChange(this.value)">
+                    <option value="">Select institution</option>
+                    ${instOptions}
+                </select>
+            </div>
+            <div class="field-group" id="reqPayAssetGroup" style="display:none;">
+                <label>Asset type</label>
+                <select id="reqPayAssetType"></select>
+            </div>
+            <div class="field-group">
+                <label>Account/wallet number</label>
+                <input id="reqPayIdentifier" placeholder="Account number or phone">
+            </div>
         </div>
         <div class="cta-row">
             <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
             <button class="btn btn-primary" onclick="submitRequestPayment()">Generate QR</button>
-        </div>`;
-    openModal('Request payment', bodyHtml);
-}
-
-async function submitRequestPayment() {
-    const amount = parseFloat(document.getElementById('reqPayAmount')?.value);
-    const sourceId = document.getElementById('reqPaySourceSelect')?.value;
-    const source = userSources.find(s => s.id === sourceId);
-    if (!(amount > 0)) { showMessage('Enter an amount.', 'warning'); return; }
-    if (!source) { showMessage('Select which of your sources should receive this.', 'warning'); return; }
-
-    const identifierType = String(source.asset_type).toUpperCase() === 'ACCOUNT' ? 'account_number' : 'phone';
-
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/payments/create_request.php', {
-        destination_institution: source.institution,
-        destination_asset_type: source.asset_type,
-        destination_identifier: source.identifier || source.source_identifier,
-        destination_identifier_type: identifierType,
-        net_amount: amount,
-        currency: 'BWP',
-    });
-
-    if (!result.ok) { showMessage('Could not create the payment request: ' + friendlyApiError(result.error), 'error'); return; }
-
-    const data = result.body.data;
-    const bodyHtml = `
-        <div style="text-align:center;padding:10px 0;">
-            <div style="font-size:13px;color:var(--text-muted);margin-bottom:14px;">
-                Have the payer scan this to send you ${formatMoney(data.net_amount, data.currency)}
-            </div>
-            <div class="myc-qr-frame" id="reqPayQrContainer" style="display:inline-flex;"></div>
-            <div style="font-size:11px;color:var(--text-dim);margin-top:12px;">Expires at ${new Date(data.expires_at).toLocaleTimeString()}</div>
         </div>
-        <div class="cta-row" style="margin-top:16px;"><button class="btn btn-primary" onclick="closeModal()">Done</button></div>`;
-    openModal('Your payment QR', bodyHtml);
-    setTimeout(() => {
-        const el = document.getElementById('reqPayQrContainer');
-        if (el && typeof QRCode !== 'undefined') new QRCode(el, { text: data.qr_payload, width: 220, height: 220 });
-    }, 50);
+    `;
+    openModal('Request payment', bodyHtml);
 }
 
 function onReqPayDestTypeChange(type) {
@@ -5844,6 +5542,59 @@ function onReqPayInstChange(code) {
     const types = PARTICIPANTS[code]?.asset_types || [];
     sel.innerHTML = types.map(t => `<option value="${t}">${assetIcon(t)} ${getAssetConfig(t)?.label || t}</option>`).join('');
     group.style.display = 'block';
+}
+
+async function submitRequestPayment() {
+    const amount = parseFloat(document.getElementById('reqPayAmount')?.value);
+    const currency = document.getElementById('reqPayCurrency')?.value;
+    const destType = document.getElementById('reqPayDestType')?.value;
+    const inst = document.getElementById('reqPayInst')?.value;
+    const assetType = document.getElementById('reqPayAssetType')?.value;
+    const identifier = document.getElementById('reqPayIdentifier')?.value.trim();
+
+    if (!(amount > 0)) { showMessage('Enter an amount.', 'warning'); return; }
+    if (!inst || !assetType || !identifier) { showMessage('Complete the destination fields.', 'warning'); return; }
+
+    const identifierType = String(assetType).toUpperCase() === 'ACCOUNT' ? 'account_number' : 'phone';
+
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/payments/create_request.php', {
+        destination_institution: inst,
+        destination_asset_type: assetType,
+        destination_identifier: identifier,
+        destination_identifier_type: identifierType,
+        destination_type: destType,
+        net_amount: amount,
+        currency: currency,
+    });
+
+    if (!result.ok) {
+        showMessage('Could not create the payment request: ' + friendlyApiError(result.error), 'error');
+        return;
+    }
+
+    const data = result.body.data;
+    const bodyHtml = `
+        <div style="text-align:center;padding:10px 0;">
+            <div style="font-size:13px;color:var(--text-muted);margin-bottom:14px;">
+                Have the payer scan this to send you ${formatMoney(data.net_amount, data.currency)}
+            </div>
+            <div class="myc-qr-frame" id="reqPayQrContainer" style="display:inline-flex;"></div>
+            <div style="font-size:11px;color:var(--text-dim);margin-top:12px;">
+                Expires at ${new Date(data.expires_at).toLocaleTimeString()}
+            </div>
+        </div>
+        <div class="cta-row" style="margin-top:16px;">
+            <button class="btn btn-primary" onclick="closeModal()">Done</button>
+        </div>
+    `;
+    openModal('Your payment QR', bodyHtml);
+
+    setTimeout(() => {
+        const el = document.getElementById('reqPayQrContainer');
+        if (el && typeof QRCode !== 'undefined') {
+            new QRCode(el, { text: data.qr_payload, width: 220, height: 220 });
+        }
+    }, 50);
 }
 
 // ============================================================
@@ -5970,107 +5721,6 @@ async function executePaymentRequest() {
     `;
     openModal('Payment complete', bodyHtml);
     setTimeout(() => fireConfetti(document.getElementById('resultBoxRoot')), 150);
-}
-
-let pendingScannedDestination = null;
-
-function openScanModal(context) {
-    const copy = {
-        card_hook: { title: 'Scan a card', hint: "Point your camera at their VouchMorph Card QR to hook a source to it." },
-        pay:       { title: 'Scan to pay',  hint: "Scan a payment request or someone's card to pay them." },
-        swap_dest: { title: 'Scan a code',  hint: "Scan a friend's account QR to fill in the destination." },
-        scan_and_hook: { title: 'Scan a card', hint: 'Point your camera at the card you\'re hooking this source to.' },
-        agent_charge:  { title: 'Scan a card', hint: "Point your camera at the customer's VouchMorph Card." },
-    }[context] || { title: 'Scan a code', hint: 'Point your camera at a VouchMorph QR code.' };
-
-    const bodyHtml = `
-        <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">${copy.hint}</div>
-        <div id="qrScannerRegion" style="width:100%;"></div>
-        <div style="text-align:center;margin:12px 0;font-size:11px;color:var(--text-dim);">or</div>
-        <div class="field-group"><label>Paste the code manually</label><input id="manualQrPaste" placeholder="Paste QR text if you can't scan"></div>
-        <div class="cta-row"><button class="btn btn-primary" onclick="submitManualQr('${context}')">Continue</button></div>`;
-    openModal(copy.title, bodyHtml);
-
-    try {
-        html5QrScanner = new Html5Qrcode('qrScannerRegion');
-        html5QrScanner.start(
-            { facingMode: 'environment' }, { fps: 10, qrbox: 220 },
-            (decodedText) => { html5QrScanner.stop().catch(() => {}); handleScannedQr(decodedText, context); },
-            () => {}
-        ).catch((e) => console.warn('[qr] camera scan unavailable, manual paste only:', e));
-    } catch (e) { console.warn('[qr] Html5Qrcode not available, manual paste only:', e); }
-}
-
-function submitManualQr(context) {
-    const raw = document.getElementById('manualQrPaste')?.value.trim();
-    if (!raw) { showMessage('Paste the code first, or use the camera scanner above.', 'warning'); return; }
-    handleScannedQr(raw, context);
-}
-
-async function handleScannedQr(raw, context) {
-    if (html5QrScanner) { try { await html5QrScanner.stop(); } catch (e) {} }
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/Resolveqr.php', { raw });
-    if (!result.ok) { showMessage("This code couldn't be verified — ask them to show it again.", 'error'); return; }
-
-    const data = result.body.data;
-    switch (data.type) {
-        case 'hook':
-            if (context === 'scan_and_hook') confirmScanAndHook(data.card_suffix, data.display_name);
-            else if (context === 'agent_charge') confirmAgentChargeCard(data.card_suffix, data.display_name);
-            else confirmHookTargetCard(data.card_suffix, data.display_name);
-            break;
-        case 'payment_request':
-            renderPaymentRequestConfirm(data);
-            break;
-        case 'account': {
-            closeModal();
-            const prefill = { institution: data.institution, assetType: data.asset_type, identifier: data.identifier, displayName: data.display_name || null };
-            if (viewStack[viewStack.length - 1] === 'swap' && wizardState.step === 3) {
-                autoFillDestinationFromScan(prefill);
-            } else {
-                pendingScannedDestination = prefill;
-                viewStack = ['hub'];
-                goView('swap');
-            }
-            break;
-        }
-        default:
-            showMessage("This code couldn't be verified — ask them to show it again.", 'error');
-    }
-}
-
-function autoFillDestinationFromScan(prefill) {
-    selectDestination('DEPOSIT');
-    const panel = document.getElementById('destDetailPanel');
-    if (!panel) return;
-    const instSel = panel.querySelector('#toInstSelect');
-    if (instSel) { instSel.value = prefill.institution; wizardSelectToInst(prefill.institution); }
-    const targetAsset = normalizeAssetType(prefill.assetType);
-    const assetSel = panel.querySelector('#toAssetSelect');
-    if (assetSel && assetSel.options.length) {
-        const match = Array.from(assetSel.options).find(o => normalizeAssetType(o.value) === targetAsset);
-        if (match) { assetSel.value = match.value; wizardSelectToAsset(match.value); }
-    }
-    setTimeout(() => {
-        const cfg = getAssetConfig(wizardState.toAsset);
-        const idField = (cfg?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
-        if (idField) {
-            const input = document.getElementById('toField_' + idField.name);
-            if (input) input.value = prefill.identifier;
-            wizardState.toFields[idField.name] = prefill.identifier;
-        }
-        const valid = fieldsValidForAsset(wizardState.toAsset, wizardState.toFields, false);
-        const nextBtn = document.getElementById('wizardDestNext');
-        if (nextBtn) nextBtn.disabled = !valid.valid;
-        if (!panel.querySelector('#scannedDestBanner')) {
-            const banner = document.createElement('div');
-            banner.id = 'scannedDestBanner';
-            banner.style.cssText = 'background:var(--accent-soft);border-left:3px solid var(--accent);padding:10px 14px;font-size:12px;margin-bottom:12px;color:var(--primary);';
-            banner.textContent = prefill.displayName ? `Filled in from the code you scanned — ${prefill.displayName}` : 'Filled in from the code you scanned.';
-            panel.insertBefore(banner, panel.firstChild);
-        }
-    }, 30);
-    pendingScannedDestination = null;
 }
     
 // ============================================================
@@ -6222,6 +5872,65 @@ async function completeSourceOtp() {
     }, 1500);
 }
 
+async function loadPendingSources() {
+  const container = document.getElementById('pending-sources-list');
+  try {
+    const res = await fetch('/api/v1/sources/pending.php', {
+      method: 'GET',
+      credentials: 'same-origin'
+    });
+    const json = await res.json();
+
+    if (!json.success || !json.data.length) {
+      container.innerHTML = '<p>No pending sources.</p>';
+      return;
+    }
+
+    container.innerHTML = json.data.map(src => `
+      <div class="pending-source-row" style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid #eee;">
+        <span>${src.institution_name} — ${src.identifier} <em>(${src.status})</em></span>
+        <button class="delete-pending-btn" data-id="${src.id}" data-type="${src.type}">
+          Delete
+        </button>
+      </div>
+    `).join('');
+
+    container.querySelectorAll('.delete-pending-btn').forEach(btn => {
+      btn.addEventListener('click', () => deletePendingSource(btn.dataset.id, btn.dataset.type, btn));
+    });
+
+  } catch (err) {
+    container.innerHTML = '<p>Failed to load pending sources.</p>';
+    console.error(err);
+  }
+}
+
+async function deletePendingSource(sourceId, type, btnEl) {
+  if (!confirm('Remove this pending source?')) return;
+  btnEl.disabled = true;
+
+  try {
+    const res = await fetch('/api/v1/sources/delete.php', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ type, source_id: parseInt(sourceId, 10) })
+    });
+    const result = await res.json();
+
+    if (result.success) {
+      loadPendingSources(); // refresh
+    } else {
+      alert('Could not delete: ' + result.error);
+      btnEl.disabled = false;
+    }
+  } catch (err) {
+    alert('Network error while deleting.');
+    btnEl.disabled = false;
+  }
+}
+
+loadPendingSources();
     
 // ============================================================
 // DOM READY - NO AWAIT HERE
