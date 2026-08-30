@@ -1509,6 +1509,7 @@ function closeModal() {
     document.getElementById('modal').classList.remove('active');
     returnMovableNodesHome();
     stopSessionPolling();
+    stopPaymentRequestPolling();  
     refreshUI();
 }
 
@@ -4198,6 +4199,41 @@ function startSessionPolling(sessionId) {
 
 function stopSessionPolling() { if (activeSessionPollTimer) { clearInterval(activeSessionPollTimer); activeSessionPollTimer = null; } }
 
+let paymentRequestPollTimer = null;
+
+function stopPaymentRequestPolling() {
+    if (paymentRequestPollTimer) { clearInterval(paymentRequestPollTimer); paymentRequestPollTimer = null; }
+}
+
+function startPaymentRequestPolling(requestId, amount, currency) {
+    stopPaymentRequestPolling();
+    paymentRequestPollTimer = setInterval(async () => {
+        const result = await callApiGet(CONFIG.API_BASE + '/api/v1/payments/request_status.php?request_id=' + requestId);
+        if (!result.ok) return; // endpoint missing or transient error — just keep waiting silently
+        const status = result.body.data?.status;
+        if (status === 'PAID' || status === 'COMPLETED') {
+            stopPaymentRequestPolling();
+            showPaymentRequestPaidConfirmation(result.body.data, amount, currency);
+        } else if (status === 'EXPIRED' || status === 'CANCELLED') {
+            stopPaymentRequestPolling();
+            showMessage('That payment request expired before it was paid.', 'warning');
+        }
+    }, 3000);
+}
+
+function showPaymentRequestPaidConfirmation(data, amount, currency) {
+    const bodyHtml = `
+        <div class="result-box" id="resultBoxRoot">
+            <div class="icon">✓</div>
+            <div class="result-title">Payment received!</div>
+            <div class="result-sub">Reference: ${escapeHtml(data.swap_reference || data.reference || '—')}</div>
+            <div style="font-size:22px;font-weight:600;font-family:var(--font-mono);margin-top:12px;">${formatMoney(amount, currency)}</div>
+        </div>
+        <div class="cta-row" style="margin-top:16px;"><button class="btn btn-primary" onclick="closeModal(); goView('activity');">View in Activity</button></div>`;
+    openModal('Payment received', bodyHtml);
+    setTimeout(() => fireConfetti(document.getElementById('resultBoxRoot')), 150);
+}
+    
 function renderSessionStatus(session) {
     const preview = session.preview || { total_target: session.target_amount, total_covered: 0, remaining: session.target_amount, contributors: [] };
     const pct = preview.total_target > 0 ? Math.min(100, (preview.total_covered / preview.total_target) * 100) : 0;
@@ -5588,6 +5624,7 @@ async function submitRequestPayment() {
         </div>
     `;
     openModal('Your payment QR', bodyHtml);
+    startPaymentRequestPolling(data.request_id, data.net_amount, data.currency);   
 
     setTimeout(() => {
         const el = document.getElementById('reqPayQrContainer');
