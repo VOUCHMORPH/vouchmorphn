@@ -4766,17 +4766,52 @@ async function submitAgentChargeCardManual() {
     confirmAgentChargeCard(card_suffix, display_name);
 }
 
-function confirmAgentChargeCard(cardSuffix, displayName) {
+async function confirmAgentChargeCard(cardSuffix, displayName) {
     agentCardPaymentState.cardSuffix = cardSuffix;
     agentCardPaymentState.displayName = displayName;
-    const destOpt = agentStatus.approved_destinations.find(d => String(d.id) === String(agentCardPaymentState.destinationAccountId));
+
+    const statusResult = await callApi(CONFIG.API_BASE + '/api/v1/agent/card_charge_status.php', {
+        card_suffix: cardSuffix,
+        destination_account_id: agentCardPaymentState.destinationAccountId,
+    });
+
+    if (!statusResult.ok) {
+        showMessage("Couldn't check that card: " + friendlyApiError(statusResult.error), 'error');
+        return;
+    }
+
+    const status = statusResult.body.data;
+
+    if (status.code === 'SELF_CARD') {
+        openModal("Can't charge your own card", `
+            <div style="font-size:13px;color:var(--text);line-height:1.6;">Agents can't charge their own VouchMorph Card through this flow. Use "Start a swap" from your Card view instead.</div>
+            <div class="cta-row" style="margin-top:16px;"><button class="btn btn-primary" onclick="closeModal()">OK</button></div>`);
+        return;
+    }
+
+    if (status.code === 'NO_HOOK') {
+        openModal('Nothing hooked to this card', `
+            <div style="font-size:13px;color:var(--text);line-height:1.6;">This card doesn't have a source hooked yet, so there's nothing to charge. Ask the customer to hook a source from their own VouchMorph app (Card → Hook a source), then scan again.</div>
+            <div class="cta-row" style="margin-top:16px;"><button class="btn btn-primary" onclick="closeModal()">OK</button></div>`);
+        return;
+    }
+
+    if (status.code === 'ONLY_SOURCE_IS_DESTINATION') {
+        openModal("Can't use that account", `
+            <div style="font-size:13px;color:var(--text);line-height:1.6;">The only source hooked to this card is the exact account you're depositing into — that would just send money to itself. Pick a different destination, or ask the customer to hook a different source.</div>
+            <div class="cta-row" style="margin-top:16px;"><button class="btn btn-primary" onclick="closeModal()">OK</button></div>`);
+        return;
+    }
+
+    if (status.available < agentCardPaymentState.amount) {
+        showMessage(`This card only has ${formatMoney(status.available, status.currency)} hooked — lower the amount or ask the customer to hook more.`, 'warning');
+        return;
+    }
+
     const bodyHtml = `
         <div class="review-hero">
             <div class="review-hero-label">Charge ${escapeHtml(displayName)}'s card</div>
             <div class="review-hero-amount">${formatMoney(agentCardPaymentState.amount, agentCardPaymentState.currency)}</div>
-        </div>
-        <div class="preview-box">
-            <div class="preview-row"><span>Deposit into</span><span class="value">${destOpt ? escapeHtml(PARTICIPANTS[destOpt.institution]?.name || destOpt.institution) + ' — ' + escapeHtml(destOpt.identifier) : '—'}</span></div>
         </div>
         <div style="background:var(--accent-soft);border-left:3px solid var(--accent);padding:12px 14px;font-size:12px;margin:14px 0;color:var(--primary);">
             To finalize, hand the device to the customer — they enter their own VouchMorph PIN to approve this. An agent can never finalize a charge without it.
@@ -4791,7 +4826,6 @@ function confirmAgentChargeCard(cardSuffix, displayName) {
         </div>`;
     openModal('Confirm charge', bodyHtml);
 }
-
 async function executeAgentChargeCard() {
     const pin = document.getElementById('agentChargeOwnerPin')?.value.trim();
     if (!pin) { showMessage("Enter the customer's PIN to finalize.", 'warning'); return; }
