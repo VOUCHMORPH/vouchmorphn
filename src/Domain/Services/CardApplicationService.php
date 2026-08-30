@@ -278,8 +278,25 @@ class CardApplicationService
      */
     private function generateVirtualCard(int $userId, array $data): array
     {
-        $cardDetails = $this->cardGenerator->generateForPurpose('general');
-        
+        // card_suffix is only 4 digits and CardNumberGenerator picks it at
+        // random with no DB awareness -- it can and does collide with
+        // other cards. Retry generation until the suffix is confirmed
+        // unused, rather than assuming card_suffix alone identifies a
+        // single card everywhere it's later looked up by.
+        $cardDetails = null;
+        $suffixCheckStmt = $this->db->prepare("SELECT 1 FROM message_cards WHERE card_suffix = :suffix LIMIT 1");
+        for ($attempt = 0; $attempt < 25; $attempt++) {
+            $candidate = $this->cardGenerator->generateForPurpose('general');
+            $suffixCheckStmt->execute([':suffix' => $candidate['pan_suffix']]);
+            if (!$suffixCheckStmt->fetchColumn()) {
+                $cardDetails = $candidate;
+                break;
+            }
+        }
+        if ($cardDetails === null) {
+            throw new RuntimeException("generateVirtualCard: could not generate a unique card_suffix after 25 attempts for user_id={$userId}");
+        }
+
         $stmt = $this->db->prepare("
             INSERT INTO message_cards (
                 card_number_hash,
