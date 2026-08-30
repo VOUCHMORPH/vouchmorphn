@@ -60,14 +60,20 @@ if ($suffix === '') {
 $db = $container->get(PDO::class);
 
 try {
+    // Filter by lifecycle_status = 'ACTIVE' in the query itself, not only
+    // in PHP afterward -- card_suffix alone can match more than one row
+    // (confirmed in production: it collides with unassigned IN_BATCH
+    // physical inventory and can collide with other users' cards), so an
+    // unrelated inactive row must not be allowed to block resolution of
+    // a card that really is active.
     $stmt = $db->prepare("
         SELECT card_suffix, cardholder_name, lifecycle_status
-        FROM message_cards WHERE card_suffix = :suffix
+        FROM message_cards WHERE card_suffix = :suffix AND lifecycle_status = 'ACTIVE'
     ");
     $stmt->execute([':suffix' => $suffix]);
     $card = $stmt->fetch(PDO::FETCH_ASSOC);
 
-    if (!$card || $card['lifecycle_status'] !== 'ACTIVE') {
+    if (!$card) {
         http_response_code(404);
         echo json_encode(['success' => false, 'error' => 'No active card found with that number.']);
         exit();
