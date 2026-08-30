@@ -392,19 +392,6 @@ try {
         exit();
     }
 
-    // ============================================
-    // API KEY VALIDATION (MUST happen before session)
-    // ============================================
-    $providedKey = getApiKeyFromRequest();
-
-    if (!isValidApiKey($providedKey)) {
-        http_response_code(401);
-        echo json_encode([
-            'success' => false,
-            'error' => 'Invalid API key'
-        ]);
-        exit();
-    }
 
     // ============================================
     // SESSION VALIDATION (after API key, before reading input)
