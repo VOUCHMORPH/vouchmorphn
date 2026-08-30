@@ -134,11 +134,29 @@ try {
 // HELPER FUNCTION TO GENERATE BATCH CARDS
 // ============================================
 function generateBatchCard($pdo, $batchId, $input, $index) {
+    // card_suffix is only the last 4 digits and generateCardNumber() has
+    // no DB awareness -- it can and does collide with other cards
+    // (confirmed in production against auto-provisioned user cards).
+    // Retry until the suffix is confirmed unused rather than assuming
+    // it's unique.
+    $suffixCheckStmt = $pdo->prepare("SELECT 1 FROM message_cards WHERE card_suffix = :suffix LIMIT 1");
+    $cardNumber = null;
+    for ($attempt = 0; $attempt < 25; $attempt++) {
+        $candidateNumber = generateCardNumber($input['bin_prefix'], $index);
+        $suffixCheckStmt->execute([':suffix' => substr($candidateNumber, -4)]);
+        if (!$suffixCheckStmt->fetchColumn()) {
+            $cardNumber = $candidateNumber;
+            break;
+        }
+    }
+    if ($cardNumber === null) {
+        throw new RuntimeException("generateBatchCard: could not generate a unique card_suffix after 25 attempts (batch {$batchId}, index {$index})");
+    }
+
     // Generate card details
-    $cardNumber = generateCardNumber($input['bin_prefix'], $index);
     $cardNumberHash = hash('sha256', $cardNumber);
     $cardSuffix = substr($cardNumber, -4);
-    
+
     // FIXED: Cast CVV to string before hashing
     $cvv = (string)rand(100, 999);
     // Ensure 3-digit CVV with leading zeros if needed
