@@ -1478,7 +1478,26 @@ public function regenerateTotpSecret(string $cardSuffix, int $userId): array
         // database/migrations/2026_08_30_message_cards_unique_user_id.sql
         // to exist first (that migration also cleans up any duplicates
         // created before this fix shipped).
-        $cardDetails = $this->cardGenerator->generateForPurpose('standard');
+        // card_suffix is only 4 digits (max 10,000 values) and
+        // CardNumberGenerator picks it at random with no DB awareness --
+        // confirmed in production to collide with other cards, including
+        // unassigned IN_BATCH physical inventory. Retry generation until
+        // we land on a suffix nothing else already uses, rather than
+        // relying on the many call sites that read message_cards by
+        // card_suffix alone to somehow disambiguate after the fact.
+        $cardDetails = null;
+        $suffixCheckStmt = $this->db->prepare("SELECT 1 FROM message_cards WHERE card_suffix = :suffix LIMIT 1");
+        for ($attempt = 0; $attempt < 25; $attempt++) {
+            $candidate = $this->cardGenerator->generateForPurpose('standard');
+            $suffixCheckStmt->execute([':suffix' => $candidate['pan_suffix']]);
+            if (!$suffixCheckStmt->fetchColumn()) {
+                $cardDetails = $candidate;
+                break;
+            }
+        }
+        if ($cardDetails === null) {
+            throw new RuntimeException("provisionUserCard: could not generate a unique card_suffix after 25 attempts for user_id={$userId}");
+        }
 
         $google2fa = new Google2FA();
         $totpSecret = $google2fa->generateSecretKey();
@@ -1849,9 +1868,16 @@ public function releaseHook(
 ): array {
     // ============================================================
     // FIX: GUARD - Check card status BEFORE any holds are placed
+    //
+    // card_suffix alone is not unique (only 4 digits, max 10,000 values)
+    // and collides with other users' cards and with unassigned IN_BATCH
+    // physical inventory (user_id IS NULL) -- confirmed in production.
+    // Must scope by the requesting card owner too, or this can silently
+    // read a completely different card's status (see the same fix in
+    // cards/My.php).
     // ============================================================
-    $stmt = $this->db->prepare("SELECT lifecycle_status FROM message_cards WHERE card_suffix = :suffix");
-    $stmt->execute([':suffix' => $cardSuffix]);
+    $stmt = $this->db->prepare("SELECT lifecycle_status FROM message_cards WHERE card_suffix = :suffix AND user_id = :uid");
+    $stmt->execute([':suffix' => $cardSuffix, ':uid' => $cardOwnerUserId]);
     $cardStatus = $stmt->fetchColumn();
 
     if ($cardStatus === false) {
