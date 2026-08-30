@@ -111,13 +111,6 @@ try {
         exit();
     }
 
-    $providedKey = getApiKeyFromRequest();
-
-    if (!isValidApiKey($providedKey)) {
-        http_response_code(401);
-        echo json_encode(['success' => false, 'error' => 'Invalid API key']);
-        exit();
-    }
 
     $input = json_decode(file_get_contents('php://input'), true);
     if (!$input) {
