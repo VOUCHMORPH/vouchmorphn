@@ -2330,27 +2330,11 @@ function selectDestination(type) {
         return;
     }
 
-    if (type === 'DEPOSIT') {
-    const eligible = userSources.filter(u => u.status === 'active');
-    if (eligible.length > 0) {
-        const savedPickerHtml = `
-            <div class="field-group">
-                <label>Use one of your saved accounts</label>
-                <select id="destSavedSourceSelect" onchange="applySavedSourceAsDestination(this.value)">
-                    <option value="">— or select an institution below —</option>
-                    ${eligible.map(u => `<option value="${u.id}">${PARTICIPANTS[u.institution]?.name || u.institution} — ${u.identifier || u.source_identifier || ''}</option>`).join('')}
-                </select>
-            </div>`;
-        panel.insertAdjacentHTML('afterbegin', savedPickerHtml);
-    }
-}
-    
     panel.style.display = 'block';
     const toSection = document.getElementById('toSection');
     if (toSection) {
-        // Clone the toSection content
         panel.innerHTML = toSection.cloneNode(true).innerHTML;
-        
+
         const cashoutFields = panel.querySelector('#cashoutFields');
         if (cashoutFields) cashoutFields.style.display = type === 'CASHOUT' ? 'block' : 'none';
 
@@ -2375,16 +2359,34 @@ function selectDestination(type) {
                     !(wizardState.toInst && wizardState.beneficiaryPhone);
             }
         };
-        
+
         wizardState.toInst = null;
         wizardState.toAsset = null;
         wizardState.toFields = {};
-        
+
         const assetSection = panel.querySelector('#toAssetSection');
         if (assetSection) assetSection.style.display = 'none';
         const fieldsBox = panel.querySelector('#toFields');
         if (fieldsBox) { fieldsBox.innerHTML = ''; fieldsBox.style.display = 'none'; }
         nextBtn.disabled = true;
+
+        // ↓ MOVED HERE — after the clone, so it doesn't get erased. DEPOSIT only.
+        if (type === 'DEPOSIT') {
+            const eligible = userSources.filter(u => u.status === 'active');
+            const shortcutsHtml = `
+                <div style="text-align:center;margin-bottom:14px;">
+                    <span class="quick-link muted" onclick="openScanModal('swap_dest')">📷 Scan a code to fill this in</span>
+                </div>
+                ${eligible.length > 0 ? `
+                <div class="field-group">
+                    <label>Or use one of your saved accounts</label>
+                    <select id="destSavedSourceSelect" onchange="applySavedSourceAsDestination(this.value)">
+                        <option value="">— or select an institution below —</option>
+                        ${eligible.map(u => `<option value="${u.id}">${PARTICIPANTS[u.institution]?.name || u.institution} — ${u.identifier || u.source_identifier || ''}</option>`).join('')}
+                    </select>
+                </div>` : ''}`;
+            panel.insertAdjacentHTML('afterbegin', shortcutsHtml);
+        }
     }
 }
 
@@ -4080,10 +4082,10 @@ function renderCardViewBody() {
                     ${hook && hook.contributors.length ? `<button class="btn btn-primary" onclick="openCreateSessionModal(myCard.card_suffix)">Start a swap</button>` : ''}
                 </div>
                 ${hook && hook.contributors.length ? `<button class="btn secondary" style="margin-top:10px;" onclick="goView('swap'); setTimeout(()=>initWizard(), 30);">Use this card as a Swap source</button>` : ''}
-                <div style="margin-top:14px;"><span class="quick-link muted" onclick="openScanAndHook(null)">📷 Scan & hook a source to another card</span>
-            </div>
-            <div>
-                <div class="myc-panel">
+                <div style="margin-top:14px;"><span class="quick-link muted" onclick="openScanAndHook(null)">📷 Scan & hook a source to another card</span></div>
+</div>
+<div>
+    <div class="myc-panel">
                     <div class="myc-panel-head"><span class="myc-panel-title">Hooked sources</span>${hook ? `<span class="myc-panel-total">${formatMoney(hook.total_held, hook.currency)}</span>` : ''}</div>
                     ${hook ? `<div class="help" style="margin-bottom:6px;">Held until ${new Date(hook.expires_at).toLocaleString()} — releases automatically after 24 hours if it isn't spent first.</div>` : ''}
                     ${contributorsHtml}
