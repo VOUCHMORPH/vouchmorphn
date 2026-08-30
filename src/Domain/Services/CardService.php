@@ -1448,6 +1448,7 @@ public function regenerateTotpSecret(string $cardSuffix, int $userId): array
      */
     public function provisionUserCard(int $userId, string $cardholderName): array
     {
+        // Fast path: most calls are for a user who already has a card.
         $stmt = $this->db->prepare("
             SELECT card_suffix, lifecycle_status FROM message_cards
             WHERE user_id = :uid ORDER BY created_at DESC LIMIT 1
@@ -1463,6 +1464,20 @@ public function regenerateTotpSecret(string $cardSuffix, int $userId): array
             ];
         }
 
+        // Slow path: no card yet. Two concurrent calls for the same user
+        // (a double-tap, a retried request, two open tabs) can both reach
+        // this point before either INSERT commits -- without a uniqueness
+        // guarantee, that used to create two separate message_cards rows
+        // for one user. Whichever row provisionUserCard() later treats as
+        // "the newest" wins the SELECT above, which can silently be a
+        // DIFFERENT row than the one a user just activated and paid for.
+        //
+        // ON CONFLICT (user_id) DO NOTHING + a re-SELECT on the losing
+        // path makes this atomic: only one row is ever created per user.
+        // Requires the unique index from
+        // database/migrations/2026_08_30_message_cards_unique_user_id.sql
+        // to exist first (that migration also cleans up any duplicates
+        // created before this fix shipped).
         $cardDetails = $this->cardGenerator->generateForPurpose('standard');
 
         $google2fa = new Google2FA();
@@ -1485,6 +1500,7 @@ public function regenerateTotpSecret(string $cardSuffix, int $userId): array
                 'HOOKED', ?::jsonb,
                 ?, ?, ?
             )
+            ON CONFLICT (user_id) DO NOTHING
             RETURNING card_id
         ");
 
@@ -1507,14 +1523,38 @@ public function regenerateTotpSecret(string $cardSuffix, int $userId): array
 
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        error_log("[CardService] Auto-provisioned INACTIVE card {$cardDetails['pan_suffix']} for user_id={$userId}");
+        if ($row) {
+            error_log("[CardService] Auto-provisioned INACTIVE card {$cardDetails['pan_suffix']} for user_id={$userId}");
+
+            return [
+                'success' => true,
+                'card_id' => $row['card_id'],
+                'card_suffix' => $cardDetails['pan_suffix'],
+                'status' => 'INACTIVE',
+                'newly_created' => true,
+            ];
+        }
+
+        // Lost the race: another concurrent call already created this
+        // user's card between our SELECT and our INSERT. Read back what
+        // it created instead of returning the (unused, never persisted)
+        // card details we just generated.
+        $stmt = $this->db->prepare("
+            SELECT card_suffix, lifecycle_status FROM message_cards
+            WHERE user_id = :uid ORDER BY created_at DESC LIMIT 1
+        ");
+        $stmt->execute([':uid' => $userId]);
+        $winner = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$winner) {
+            throw new RuntimeException("provisionUserCard: INSERT conflicted but no existing card found for user_id={$userId}");
+        }
 
         return [
             'success' => true,
-            'card_id' => $row['card_id'] ?? null,
-            'card_suffix' => $cardDetails['pan_suffix'],
-            'status' => 'INACTIVE',
-            'newly_created' => true,
+            'card_suffix' => $winner['card_suffix'],
+            'status' => $winner['lifecycle_status'],
+            'newly_created' => false,
         ];
     }
 
