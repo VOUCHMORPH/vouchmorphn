@@ -127,11 +127,20 @@ try {
         ];
     }
 
+    // card_suffix is only the last 4 digits (max 10,000 possible values),
+    // so it is NOT unique on its own -- it can and does collide with other
+    // users' cards and with unassigned IN_BATCH physical card inventory
+    // (user_id IS NULL). Filtering by card_suffix alone can silently pick
+    // up a completely different row and report a stranger's (or an
+    // unissued inventory card's) lifecycle_status as this user's own --
+    // which is exactly what made genuinely ACTIVE cards appear inactive
+    // for some users. Always scope by user_id too, the same way
+    // CardService::activateCard() already does.
     $stmt = $db->prepare("
         SELECT card_suffix, cardholder_name, lifecycle_status, funding_mode, currency
-        FROM message_cards WHERE card_suffix = :suffix
+        FROM message_cards WHERE card_suffix = :suffix AND user_id = :uid
     ");
-    $stmt->execute([':suffix' => $cardSuffix]);
+    $stmt->execute([':suffix' => $cardSuffix, ':uid' => $userId]);
     $card = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$card) {
