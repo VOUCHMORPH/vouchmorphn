@@ -5770,56 +5770,67 @@ function openAddSource() {
     openModal('Add source — step 1 of 2: Link', bodyHtml);
 }
 
-// ============================================================
-// REQUEST PAYMENT (agent generates a QR)
-// ============================================================
 function openRequestPaymentModal() {
-    const eligible = userSources.filter(s => s.status === 'active'); // reuse saved sources as receiving destinations for now
-    const instOptions = Object.keys(PARTICIPANTS).map(code =>
-        `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`
-    ).join('');
-
+    const eligible = userSources.filter(s => s.status === 'active');
+    if (eligible.length === 0) {
+        openModal('Request payment', `<div style="text-align:center;padding:20px;color:var(--text-dim);">You need at least one saved source before you can request payment — <span class="quick-link" onclick="closeModal();openAddSource();">add one now</span>.</div>`);
+        return;
+    }
     const bodyHtml = `
         <div class="field-group">
             <label>Amount you want to receive</label>
             <input type="number" id="reqPayAmount" min="0.01" step="0.01" placeholder="0.00">
         </div>
         <div class="field-group">
-            <label>Currency</label>
-            <select id="reqPayCurrency">
-                <option value="BWP">BWP</option>
+            <label>Receive into</label>
+            <select id="reqPaySourceSelect">
+                <option value="">Select a saved source</option>
+                ${eligible.map(s => `<option value="${s.id}">${PARTICIPANTS[s.institution]?.name || s.institution} — ${s.identifier || s.source_identifier || ''}</option>`).join('')}
             </select>
-        </div>
-        <div class="field-group">
-            <label>How do you want to receive it?</label>
-            <select id="reqPayDestType" onchange="onReqPayDestTypeChange(this.value)">
-                <option value="DEPOSIT">Deposit into an account/wallet</option>
-                <option value="CASHOUT">Cashout code</option>
-            </select>
-        </div>
-        <div id="reqPayDepositFields">
-            <div class="field-group">
-                <label>Receiving institution</label>
-                <select id="reqPayInst" onchange="onReqPayInstChange(this.value)">
-                    <option value="">Select institution</option>
-                    ${instOptions}
-                </select>
-            </div>
-            <div class="field-group" id="reqPayAssetGroup" style="display:none;">
-                <label>Asset type</label>
-                <select id="reqPayAssetType"></select>
-            </div>
-            <div class="field-group">
-                <label>Account/wallet number</label>
-                <input id="reqPayIdentifier" placeholder="Account number or phone">
-            </div>
+            <div class="help">Payment requests can only be received into your own saved sources.</div>
         </div>
         <div class="cta-row">
             <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
             <button class="btn btn-primary" onclick="submitRequestPayment()">Generate QR</button>
-        </div>
-    `;
+        </div>`;
     openModal('Request payment', bodyHtml);
+}
+
+async function submitRequestPayment() {
+    const amount = parseFloat(document.getElementById('reqPayAmount')?.value);
+    const sourceId = document.getElementById('reqPaySourceSelect')?.value;
+    const source = userSources.find(s => s.id === sourceId);
+    if (!(amount > 0)) { showMessage('Enter an amount.', 'warning'); return; }
+    if (!source) { showMessage('Select which of your sources should receive this.', 'warning'); return; }
+
+    const identifierType = String(source.asset_type).toUpperCase() === 'ACCOUNT' ? 'account_number' : 'phone';
+
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/payments/create_request.php', {
+        destination_institution: source.institution,
+        destination_asset_type: source.asset_type,
+        destination_identifier: source.identifier || source.source_identifier,
+        destination_identifier_type: identifierType,
+        net_amount: amount,
+        currency: 'BWP',
+    });
+
+    if (!result.ok) { showMessage('Could not create the payment request: ' + friendlyApiError(result.error), 'error'); return; }
+
+    const data = result.body.data;
+    const bodyHtml = `
+        <div style="text-align:center;padding:10px 0;">
+            <div style="font-size:13px;color:var(--text-muted);margin-bottom:14px;">
+                Have the payer scan this to send you ${formatMoney(data.net_amount, data.currency)}
+            </div>
+            <div class="myc-qr-frame" id="reqPayQrContainer" style="display:inline-flex;"></div>
+            <div style="font-size:11px;color:var(--text-dim);margin-top:12px;">Expires at ${new Date(data.expires_at).toLocaleTimeString()}</div>
+        </div>
+        <div class="cta-row" style="margin-top:16px;"><button class="btn btn-primary" onclick="closeModal()">Done</button></div>`;
+    openModal('Your payment QR', bodyHtml);
+    setTimeout(() => {
+        const el = document.getElementById('reqPayQrContainer');
+        if (el && typeof QRCode !== 'undefined') new QRCode(el, { text: data.qr_payload, width: 220, height: 220 });
+    }, 50);
 }
 
 function onReqPayDestTypeChange(type) {
@@ -5833,59 +5844,6 @@ function onReqPayInstChange(code) {
     const types = PARTICIPANTS[code]?.asset_types || [];
     sel.innerHTML = types.map(t => `<option value="${t}">${assetIcon(t)} ${getAssetConfig(t)?.label || t}</option>`).join('');
     group.style.display = 'block';
-}
-
-async function submitRequestPayment() {
-    const amount = parseFloat(document.getElementById('reqPayAmount')?.value);
-    const currency = document.getElementById('reqPayCurrency')?.value;
-    const destType = document.getElementById('reqPayDestType')?.value;
-    const inst = document.getElementById('reqPayInst')?.value;
-    const assetType = document.getElementById('reqPayAssetType')?.value;
-    const identifier = document.getElementById('reqPayIdentifier')?.value.trim();
-
-    if (!(amount > 0)) { showMessage('Enter an amount.', 'warning'); return; }
-    if (!inst || !assetType || !identifier) { showMessage('Complete the destination fields.', 'warning'); return; }
-
-    const identifierType = String(assetType).toUpperCase() === 'ACCOUNT' ? 'account_number' : 'phone';
-
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/payments/create_request.php', {
-        destination_institution: inst,
-        destination_asset_type: assetType,
-        destination_identifier: identifier,
-        destination_identifier_type: identifierType,
-        destination_type: destType,
-        net_amount: amount,
-        currency: currency,
-    });
-
-    if (!result.ok) {
-        showMessage('Could not create the payment request: ' + friendlyApiError(result.error), 'error');
-        return;
-    }
-
-    const data = result.body.data;
-    const bodyHtml = `
-        <div style="text-align:center;padding:10px 0;">
-            <div style="font-size:13px;color:var(--text-muted);margin-bottom:14px;">
-                Have the payer scan this to send you ${formatMoney(data.net_amount, data.currency)}
-            </div>
-            <div class="myc-qr-frame" id="reqPayQrContainer" style="display:inline-flex;"></div>
-            <div style="font-size:11px;color:var(--text-dim);margin-top:12px;">
-                Expires at ${new Date(data.expires_at).toLocaleTimeString()}
-            </div>
-        </div>
-        <div class="cta-row" style="margin-top:16px;">
-            <button class="btn btn-primary" onclick="closeModal()">Done</button>
-        </div>
-    `;
-    openModal('Your payment QR', bodyHtml);
-
-    setTimeout(() => {
-        const el = document.getElementById('reqPayQrContainer');
-        if (el && typeof QRCode !== 'undefined') {
-            new QRCode(el, { text: data.qr_payload, width: 220, height: 220 });
-        }
-    }, 50);
 }
 
 // ============================================================
