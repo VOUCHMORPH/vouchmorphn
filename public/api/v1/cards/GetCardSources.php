@@ -63,21 +63,22 @@ $swapService = $container->get('Domain\Services\SwapService');
 
 try {
     // Confirm the card exists and is active before resolving anything.
+    // Filter by lifecycle_status = 'ACTIVE' in the query itself, not only
+    // in PHP afterward -- card_suffix alone can match more than one row
+    // (confirmed in production: collisions with unassigned IN_BATCH
+    // physical inventory and with other users' cards), so an unrelated
+    // inactive row must not be allowed to block resolution of a card
+    // that really is active.
     $cardStmt = $db->prepare("
         SELECT card_suffix, card_scheme, cardholder_name, lifecycle_status, currency
-        FROM message_cards WHERE card_suffix = :suffix
+        FROM message_cards WHERE card_suffix = :suffix AND lifecycle_status = 'ACTIVE'
     ");
     $cardStmt->execute([':suffix' => $cardSuffix]);
     $card = $cardStmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$card) {
         http_response_code(404);
-        echo json_encode(['success' => false, 'error' => 'Card not found']);
-        exit();
-    }
-    if ($card['lifecycle_status'] !== 'ACTIVE') {
-        http_response_code(400);
-        echo json_encode(['success' => false, 'error' => 'This card is not active']);
+        echo json_encode(['success' => false, 'error' => 'Card not found or not active']);
         exit();
     }
 
