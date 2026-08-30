@@ -71,6 +71,25 @@ function isValidApiKey(?string $providedKey): bool {
     return hash_equals($validKey, $providedKey);
 }
 
+ // ============================================
+    // SESSION VALIDATION (after API key, before reading input)
+    // ============================================
+    require_once ROOT_PATH . '/src/Application/Utils/SessionManager.php';
+    \Application\Utils\SessionManager::start();
+    if (!\Application\Utils\SessionManager::isLoggedIn()) {
+        http_response_code(401);
+        echo json_encode(['success' => false, 'error' => 'Not logged in']);
+        exit();
+    }
+    $sessionUserId = (int)(\Application\Utils\SessionManager::getUser()['id']
+        ?? \Application\Utils\SessionManager::getUser()['user_id'] ?? 0);
+    if (!$sessionUserId) {
+        http_response_code(401);
+        echo json_encode(['success' => false, 'error' => 'Could not resolve user from session']);
+        exit();
+    }
+
+
 function getApiKeyFromRequest(): ?string {
     $headers = getallheaders();
     if ($headers) {
