@@ -20,7 +20,7 @@ ZURUBANK:
     # once this block also has cert/key paths instead of a header key.
     type: API_KEY
     header_name: "X-API-KEY"
-    secret_source: { type: env_var, name: "ZURUBANK_VOUCHMORPH_API_KEY" }
+    secret_source: { type: env_var, name: "ZURUBANK_API_KEY" }
 
   oauth:
     client_id: "VOUCHMORPH_APP_ID"
@@ -128,7 +128,7 @@ SACCUSSALIS:
   auth:
     type: API_KEY
     header_name: "X-API-KEY"
-    secret_source: { type: env_var, name: "SACCUSSALIS_VOUCHMORPH_API_KEY" }
+    secret_source: { type: env_var, name: "SACCUSSALIS_API_KEY" }
 
   source_linking:
     initiate: "/api/v1/auth/initiate.php"
