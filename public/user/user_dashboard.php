@@ -5977,6 +5977,107 @@ async function executePaymentRequest() {
     openModal('Payment complete', bodyHtml);
     setTimeout(() => fireConfetti(document.getElementById('resultBoxRoot')), 150);
 }
+
+let pendingScannedDestination = null;
+
+function openScanModal(context) {
+    const copy = {
+        card_hook: { title: 'Scan a card', hint: "Point your camera at their VouchMorph Card QR to hook a source to it." },
+        pay:       { title: 'Scan to pay',  hint: "Scan a payment request or someone's card to pay them." },
+        swap_dest: { title: 'Scan a code',  hint: "Scan a friend's account QR to fill in the destination." },
+        scan_and_hook: { title: 'Scan a card', hint: 'Point your camera at the card you\'re hooking this source to.' },
+        agent_charge:  { title: 'Scan a card', hint: "Point your camera at the customer's VouchMorph Card." },
+    }[context] || { title: 'Scan a code', hint: 'Point your camera at a VouchMorph QR code.' };
+
+    const bodyHtml = `
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">${copy.hint}</div>
+        <div id="qrScannerRegion" style="width:100%;"></div>
+        <div style="text-align:center;margin:12px 0;font-size:11px;color:var(--text-dim);">or</div>
+        <div class="field-group"><label>Paste the code manually</label><input id="manualQrPaste" placeholder="Paste QR text if you can't scan"></div>
+        <div class="cta-row"><button class="btn btn-primary" onclick="submitManualQr('${context}')">Continue</button></div>`;
+    openModal(copy.title, bodyHtml);
+
+    try {
+        html5QrScanner = new Html5Qrcode('qrScannerRegion');
+        html5QrScanner.start(
+            { facingMode: 'environment' }, { fps: 10, qrbox: 220 },
+            (decodedText) => { html5QrScanner.stop().catch(() => {}); handleScannedQr(decodedText, context); },
+            () => {}
+        ).catch((e) => console.warn('[qr] camera scan unavailable, manual paste only:', e));
+    } catch (e) { console.warn('[qr] Html5Qrcode not available, manual paste only:', e); }
+}
+
+function submitManualQr(context) {
+    const raw = document.getElementById('manualQrPaste')?.value.trim();
+    if (!raw) { showMessage('Paste the code first, or use the camera scanner above.', 'warning'); return; }
+    handleScannedQr(raw, context);
+}
+
+async function handleScannedQr(raw, context) {
+    if (html5QrScanner) { try { await html5QrScanner.stop(); } catch (e) {} }
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/Resolveqr.php', { raw });
+    if (!result.ok) { showMessage("This code couldn't be verified — ask them to show it again.", 'error'); return; }
+
+    const data = result.body.data;
+    switch (data.type) {
+        case 'hook':
+            if (context === 'scan_and_hook') confirmScanAndHook(data.card_suffix, data.display_name);
+            else if (context === 'agent_charge') confirmAgentChargeCard(data.card_suffix, data.display_name);
+            else confirmHookTargetCard(data.card_suffix, data.display_name);
+            break;
+        case 'payment_request':
+            renderPaymentRequestConfirm(data);
+            break;
+        case 'account': {
+            closeModal();
+            const prefill = { institution: data.institution, assetType: data.asset_type, identifier: data.identifier, displayName: data.display_name || null };
+            if (viewStack[viewStack.length - 1] === 'swap' && wizardState.step === 3) {
+                autoFillDestinationFromScan(prefill);
+            } else {
+                pendingScannedDestination = prefill;
+                viewStack = ['hub'];
+                goView('swap');
+            }
+            break;
+        }
+        default:
+            showMessage("This code couldn't be verified — ask them to show it again.", 'error');
+    }
+}
+
+function autoFillDestinationFromScan(prefill) {
+    selectDestination('DEPOSIT');
+    const panel = document.getElementById('destDetailPanel');
+    if (!panel) return;
+    const instSel = panel.querySelector('#toInstSelect');
+    if (instSel) { instSel.value = prefill.institution; wizardSelectToInst(prefill.institution); }
+    const targetAsset = normalizeAssetType(prefill.assetType);
+    const assetSel = panel.querySelector('#toAssetSelect');
+    if (assetSel && assetSel.options.length) {
+        const match = Array.from(assetSel.options).find(o => normalizeAssetType(o.value) === targetAsset);
+        if (match) { assetSel.value = match.value; wizardSelectToAsset(match.value); }
+    }
+    setTimeout(() => {
+        const cfg = getAssetConfig(wizardState.toAsset);
+        const idField = (cfg?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+        if (idField) {
+            const input = document.getElementById('toField_' + idField.name);
+            if (input) input.value = prefill.identifier;
+            wizardState.toFields[idField.name] = prefill.identifier;
+        }
+        const valid = fieldsValidForAsset(wizardState.toAsset, wizardState.toFields, false);
+        const nextBtn = document.getElementById('wizardDestNext');
+        if (nextBtn) nextBtn.disabled = !valid.valid;
+        if (!panel.querySelector('#scannedDestBanner')) {
+            const banner = document.createElement('div');
+            banner.id = 'scannedDestBanner';
+            banner.style.cssText = 'background:var(--accent-soft);border-left:3px solid var(--accent);padding:10px 14px;font-size:12px;margin-bottom:12px;color:var(--primary);';
+            banner.textContent = prefill.displayName ? `Filled in from the code you scanned — ${prefill.displayName}` : 'Filled in from the code you scanned.';
+            panel.insertBefore(banner, panel.firstChild);
+        }
+    }, 30);
+    pendingScannedDestination = null;
+}
     
 // ============================================================
 // ADD SOURCE - helper functions
@@ -6127,65 +6228,6 @@ async function completeSourceOtp() {
     }, 1500);
 }
 
-async function loadPendingSources() {
-  const container = document.getElementById('pending-sources-list');
-  try {
-    const res = await fetch('/api/v1/sources/pending.php', {
-      method: 'GET',
-      credentials: 'same-origin'
-    });
-    const json = await res.json();
-
-    if (!json.success || !json.data.length) {
-      container.innerHTML = '<p>No pending sources.</p>';
-      return;
-    }
-
-    container.innerHTML = json.data.map(src => `
-      <div class="pending-source-row" style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid #eee;">
-        <span>${src.institution_name} — ${src.identifier} <em>(${src.status})</em></span>
-        <button class="delete-pending-btn" data-id="${src.id}" data-type="${src.type}">
-          Delete
-        </button>
-      </div>
-    `).join('');
-
-    container.querySelectorAll('.delete-pending-btn').forEach(btn => {
-      btn.addEventListener('click', () => deletePendingSource(btn.dataset.id, btn.dataset.type, btn));
-    });
-
-  } catch (err) {
-    container.innerHTML = '<p>Failed to load pending sources.</p>';
-    console.error(err);
-  }
-}
-
-async function deletePendingSource(sourceId, type, btnEl) {
-  if (!confirm('Remove this pending source?')) return;
-  btnEl.disabled = true;
-
-  try {
-    const res = await fetch('/api/v1/sources/delete.php', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'same-origin',
-      body: JSON.stringify({ type, source_id: parseInt(sourceId, 10) })
-    });
-    const result = await res.json();
-
-    if (result.success) {
-      loadPendingSources(); // refresh
-    } else {
-      alert('Could not delete: ' + result.error);
-      btnEl.disabled = false;
-    }
-  } catch (err) {
-    alert('Network error while deleting.');
-    btnEl.disabled = false;
-  }
-}
-
-loadPendingSources();
     
 // ============================================================
 // DOM READY - NO AWAIT HERE
