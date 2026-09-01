@@ -413,6 +413,7 @@ class HybridSettlementStrategy
             $totalAmount, $currency, self::MSG_FEE_INVOICE, json_encode($invoice)
         ]);
         
+        $invoice['instruction_id'] = $invoiceUuid;
         $this->deliverToParticipant($institution, $invoice);
         
         error_log("[SETTLEMENT] Fee invoice sent to $institution: $totalAmount $currency for $feeType");
@@ -820,7 +821,7 @@ class HybridSettlementStrategy
         $this->updateNetPosition($swapRef, $sourceInstitution, $sourceAccount['account_name'], $amount, 'cross_border_source_to_vm', $sourceCurrency);
         
         // Step 2: Internal transfer
-        $this->recordInternalTransfer($swapRef, $sourceAccount['account_name'], $destinationAccount['account_name'], $convertedAmount, $destinationCurrency, $exchangeRate);
+        $this->recordInternalTransfer($swapRef, $sourceAccount['account_number'], $destinationAccount['account_number'], $convertedAmount, $destinationCurrency, $exchangeRate);
         
         // Step 3: VouchMorph → Destination
         $this->updateNetPosition($swapRef, $destinationAccount['account_name'], $destinationInstitution, $convertedAmount, 'cross_border_vm_to_destination', $destinationCurrency);
