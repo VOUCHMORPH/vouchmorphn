@@ -1149,12 +1149,11 @@ private function deliverToParticipant(string $institutionName, array $message): 
         ?? null;
 
     if (!$webhookUrl) {
-        error_log("[SETTLEMENT] No settlement_webhook_url configured for {$institutionName} -- message recorded locally only, not delivered. Add 'settlement_webhook_url' to this institution's participant config.");
+        error_log("[SETTLEMENT] No settlement_webhook_url configured for {$institutionName} -- message recorded locally only, not delivered.");
         return;
     }
 
     $payload = json_encode($message);
-
     $ch = curl_init($webhookUrl);
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
@@ -1165,7 +1164,6 @@ private function deliverToParticipant(string $institutionName, array $message): 
         CURLOPT_SSL_VERIFYPEER => true,
         CURLOPT_SSL_VERIFYHOST => 2,
     ]);
-
     $response = curl_exec($ch);
     $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $curlError = curl_error($ch);
@@ -1173,27 +1171,46 @@ private function deliverToParticipant(string $institutionName, array $message): 
 
     $delivered = $httpCode >= 200 && $httpCode < 300 && !$curlError;
 
-    if ($delivered) {
-        error_log("[SETTLEMENT] Message delivered to {$institutionName} via webhook (HTTP {$httpCode})");
-    } else {
-        error_log("[SETTLEMENT] FAILED to deliver message to {$institutionName}: HTTP {$httpCode}, curl_error=" . ($curlError ?: 'none') . ". Will remain PENDING for retry.");
+    if (!isset($message['instruction_id'])) {
+        return; // nothing to key the per-recipient row on
     }
 
-    if (isset($message['instruction_id'])) {
     $stmt = $this->db->prepare("
-        UPDATE settlement_outbox
-        SET status = :status, sent_at = CASE WHEN :status2 = 'SENT' THEN NOW() ELSE sent_at END,
-            delivery_attempts = COALESCE(delivery_attempts, 0) + 1,
-            last_delivery_error = :error
-        WHERE message_uuid = :uuid
+        INSERT INTO settlement_outbox_delivery
+            (message_uuid, institution, status, delivery_attempts, last_delivery_error, sent_at)
+        VALUES (:uuid, :institution, :status, 1, :error, CASE WHEN :status2 = 'SENT' THEN NOW() ELSE NULL END)
+        ON CONFLICT (message_uuid, institution) DO UPDATE SET
+            status = EXCLUDED.status,
+            delivery_attempts = settlement_outbox_delivery.delivery_attempts + 1,
+            last_delivery_error = EXCLUDED.last_delivery_error,
+            sent_at = COALESCE(settlement_outbox_delivery.sent_at, EXCLUDED.sent_at)
     ");
     $stmt->execute([
+        ':uuid' => $message['instruction_id'],
+        ':institution' => $institutionName,
         ':status' => $delivered ? 'SENT' : 'PENDING',
         ':status2' => $delivered ? 'SENT' : 'PENDING',
         ':error' => $delivered ? null : ($curlError ?: "HTTP {$httpCode}"),
-        ':uuid' => $message['instruction_id'],
     ]);
+
+    // Roll the parent settlement_outbox.status up to SENT only once BOTH
+    // recipient rows report SENT — this replaces the old single-column write.
+    $this->syncOutboxStatus($message['instruction_id']);
 }
+
+private function syncOutboxStatus(string $messageUuid): void
+{
+    $stmt = $this->db->prepare("
+        SELECT COUNT(*) FILTER (WHERE status = 'SENT') AS sent_count, COUNT(*) AS total
+        FROM settlement_outbox_delivery WHERE message_uuid = ?
+    ");
+    $stmt->execute([$messageUuid]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if ($row && (int)$row['total'] > 0 && (int)$row['sent_count'] === (int)$row['total']) {
+        $this->db->prepare("UPDATE settlement_outbox SET status = 'SENT', sent_at = NOW() WHERE message_uuid = ? AND status = 'PENDING'")
+            ->execute([$messageUuid]);
+    }
 }
 
 /**
@@ -1204,10 +1221,11 @@ private function deliverToParticipant(string $institutionName, array $message): 
 public function redeliverPendingSettlements(int $maxAttempts = 10, int $limit = 100): array
 {
     $stmt = $this->db->prepare("
-        SELECT * FROM settlement_outbox
-        WHERE status = 'PENDING'
-        AND COALESCE(delivery_attempts, 0) < :max_attempts
-        ORDER BY created_at ASC
+        SELECT so.message_uuid, so.message_payload, sod.institution
+        FROM settlement_outbox so
+        JOIN settlement_outbox_delivery sod ON sod.message_uuid = so.message_uuid
+        WHERE sod.status = 'PENDING' AND sod.delivery_attempts < :max_attempts
+        ORDER BY so.created_at ASC
         LIMIT :limit
     ");
     $stmt->bindValue(':max_attempts', $maxAttempts, PDO::PARAM_INT);
@@ -1216,22 +1234,15 @@ public function redeliverPendingSettlements(int $maxAttempts = 10, int $limit = 
     $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     $results = ['attempted' => count($rows), 'delivered' => 0];
-
     foreach ($rows as $row) {
         $message = json_decode($row['message_payload'], true) ?? [];
         $message['instruction_id'] = $row['message_uuid'];
+        $this->deliverToParticipant($row['institution'], $message);
 
-        $beforeStatus = $row['status'];
-        $this->deliverToParticipant($row['destination_institution'], $message);
-        $this->deliverToParticipant($row['source_institution'], $message);
-
-        $checkStmt = $this->db->prepare("SELECT status FROM settlement_outbox WHERE message_uuid = ?");
-        $checkStmt->execute([$row['message_uuid']]);
-        if ($checkStmt->fetchColumn() === 'SENT') {
-            $results['delivered']++;
-        }
+        $check = $this->db->prepare("SELECT status FROM settlement_outbox_delivery WHERE message_uuid = ? AND institution = ?");
+        $check->execute([$row['message_uuid'], $row['institution']]);
+        if ($check->fetchColumn() === 'SENT') $results['delivered']++;
     }
-
     return $results;
 }
     
