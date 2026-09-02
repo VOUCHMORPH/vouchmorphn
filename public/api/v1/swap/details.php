@@ -107,9 +107,25 @@ try {
         exit();
     }
 
-    $providedKey = getApiKeyFromRequest();
+    // ============================================================
+    // AUTH: either a partner/institution X-API-Key (record-keeping,
+    // certification suite) OR a logged-in user's own session — the
+    // user dashboard calls this endpoint straight from the browser
+    // with credentials:'include' and never had a partner key to send,
+    // so it was always rejected with "Invalid API key" until this
+    // session path was added.
+    // ============================================================
+    require_once __DIR__ . '/../../../../src/Application/Utils/SessionManager.php';
+    \Application\Utils\SessionManager::start();
+    $sessionUserId = \Application\Utils\SessionManager::isLoggedIn()
+        ? (int)(\Application\Utils\SessionManager::getUser()['id']
+            ?? \Application\Utils\SessionManager::getUser()['user_id'] ?? 0)
+        : 0;
 
-    if (!isValidApiKey($providedKey)) {
+    $providedKey = getApiKeyFromRequest();
+    $isPartnerAuth = isValidApiKey($providedKey);
+
+    if (!$isPartnerAuth && !$sessionUserId) {
         http_response_code(401);
         echo json_encode(['success' => false, 'error' => 'Invalid API key']);
         exit();
@@ -190,7 +206,8 @@ try {
             ca.client_phone,
             ca.source_wallet,
             ca.updated_at as cashout_updated_at,
-            
+            ca.user_id as cashout_user_id,
+
             -- Swap Transaction Details
             st.swap_transaction_id,
             st.amount as transaction_amount,
@@ -217,6 +234,7 @@ try {
             dt.created_at as deposit_created_at,
             dt.updated_at as deposit_updated_at,
             dt.fee_amount as deposit_fee_amount,
+            dt.user_id as deposit_user_id,
 
             -- Identity Swap Hold Details
             ish.identity_type,
@@ -224,7 +242,8 @@ try {
             ish.otp_pin_encrypted,
             ish.status as identity_hold_status,
             ish.hold_expires_at as identity_expires_at,
-            ish.claim_type
+            ish.claim_type,
+            ish.created_by as identity_created_by
         FROM hold_transactions ht
         LEFT JOIN swap_requests sr ON ht.swap_reference = sr.swap_uuid
         LEFT JOIN cashout_authorizations ca ON ht.swap_reference = ca.swap_reference
@@ -247,6 +266,17 @@ try {
     // Decode JSON fields
     $metadata = json_decode($row['metadata'] ?? '{}', true);
     $sourceDetails = json_decode($row['source_details'] ?? '{}', true);
+
+    // A session-authenticated dashboard user may only see their own
+    // swaps. Partner/institution API-key access is unrestricted (that's
+    // the existing certified record-keeping behavior).
+    if (!$isPartnerAuth) {
+        $rowUserId = $row['user_id'] ?? $row['cashout_user_id'] ?? $row['deposit_user_id']
+            ?? $sourceDetails['user_id'] ?? $row['identity_created_by'] ?? null;
+        if ((int)$rowUserId !== $sessionUserId) {
+            throw new Exception("Swap not found: {$reference}", 404);
+        }
+    }
     $feeBreakdown = json_decode($row['fee_breakdown'] ?? '{}', true);
     $fromAccountDetails = json_decode($row['from_account_details'] ?? '{}', true);
     $toAccountDetails = json_decode($row['to_account_details'] ?? '{}', true);

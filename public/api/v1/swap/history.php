@@ -87,8 +87,25 @@ try {
         exit();
     }
 
+    // ============================================================
+    // AUTH: either a partner/institution X-API-Key (record-keeping,
+    // certification suite) OR a logged-in user's own session — the
+    // user dashboard calls this endpoint straight from the browser
+    // with credentials:'include' and never had a partner key to send,
+    // so it was always rejected with "Invalid API key" until this
+    // session path was added.
+    // ============================================================
+    require_once __DIR__ . '/../../../../src/Application/Utils/SessionManager.php';
+    \Application\Utils\SessionManager::start();
+    $sessionUserId = \Application\Utils\SessionManager::isLoggedIn()
+        ? (int)(\Application\Utils\SessionManager::getUser()['id']
+            ?? \Application\Utils\SessionManager::getUser()['user_id'] ?? 0)
+        : 0;
+
     $providedKey = getApiKeyFromRequest();
-    if (!isValidApiKey($providedKey)) {
+    $isPartnerAuth = isValidApiKey($providedKey);
+
+    if (!$isPartnerAuth && !$sessionUserId) {
         http_response_code(401);
         echo json_encode(['success' => false, 'error' => 'Invalid API key']);
         exit();
@@ -99,7 +116,9 @@ try {
         throw new Exception('Invalid JSON payload', 400);
     }
 
-    $userId = (int)($input['user_id'] ?? 0);
+    // A session-authenticated dashboard user can only ever see their
+    // own history, regardless of what user_id the request body claims.
+    $userId = $isPartnerAuth ? (int)($input['user_id'] ?? 0) : $sessionUserId;
     $limit = min((int)($input['limit'] ?? 50), 100);
     $offset = max((int)($input['offset'] ?? 0), 0);
     $swapType = $input['swap_type'] ?? null;
