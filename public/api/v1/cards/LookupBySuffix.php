@@ -84,7 +84,12 @@ try {
     $nameParts = preg_split('/\s+/', trim((string)$card['cardholder_name']));
     $displayName = count($nameParts) >= 2
         ? $nameParts[0] . ' ' . mb_substr(end($nameParts), 0, 1) . '.'
-        : ($nameParts[0] ?? 'VouchMorph user');
+        // BUG FIX: ?? only falls back on null, but preg_split() on an
+        // empty/whitespace-only name returns [''] - a non-null empty
+        // string - so a card with no cardholder_name on file rendered as
+        // "Hook to 's Card" with the name missing. ?: falls back on any
+        // falsy value, empty string included.
+        : ($nameParts[0] ?: 'VouchMorph user');
 
     echo json_encode([
         'success' => true,
