@@ -1869,28 +1869,45 @@ public function releaseHook(
     // ============================================================
     // FIX: GUARD - Check card status BEFORE any holds are placed
     //
-    // card_suffix alone is not unique (only 4 digits, max 10,000 values)
-    // and collides with other users' cards and with unassigned IN_BATCH
-    // physical inventory (user_id IS NULL) -- confirmed in production.
-    // Must scope by the requesting card owner too, or this can silently
-    // read a completely different card's status (see the same fix in
-    // cards/My.php).
+    // BUG FIX: this used to scope the lookup by "AND user_id = :uid"
+    // where :uid was the SESSION user calling this endpoint. That's
+    // correct for a self-hook (hooking your own card) but wrong for
+    // hooking a source to someone ELSE's card (scan their QR / look up
+    // their suffix, then hook - see beginHookToOtherCard() in the
+    // dashboard): the card's real owner is a different user_id, so this
+    // query matched nothing and every cross-user hook failed with
+    // "Card not found" even though the card existed and was active.
+    //
+    // Look the card up by suffix + ACTIVE status alone, exactly like the
+    // QR/suffix resolve step already does in Resolveqr.php and
+    // LookupBySuffix.php, so the card held here is the same one the user
+    // just confirmed - and take the card's real owner from the row
+    // itself instead of assuming it's the requesting user.
     // ============================================================
-    $stmt = $this->db->prepare("SELECT lifecycle_status FROM message_cards WHERE card_suffix = :suffix AND user_id = :uid");
-    $stmt->execute([':suffix' => $cardSuffix, ':uid' => $cardOwnerUserId]);
-    $cardStatus = $stmt->fetchColumn();
+    $stmt = $this->db->prepare("SELECT user_id FROM message_cards WHERE card_suffix = :suffix AND lifecycle_status = 'ACTIVE'");
+    $stmt->execute([':suffix' => $cardSuffix]);
+    $card = $stmt->fetch(PDO::FETCH_ASSOC);
 
-    if ($cardStatus === false) {
-        return ['success' => false, 'error' => 'Card not found.'];
-    }
-    if ($cardStatus !== 'ACTIVE') {
+    if ($card === false) {
+        // No ACTIVE card at this suffix - look it up without the status
+        // filter purely to give a more useful error message (e.g. the
+        // card exists but isn't activated yet).
+        $anyStmt = $this->db->prepare("SELECT lifecycle_status FROM message_cards WHERE card_suffix = :suffix");
+        $anyStmt->execute([':suffix' => $cardSuffix]);
+        $existingStatus = $anyStmt->fetchColumn();
+
+        if ($existingStatus === false) {
+            return ['success' => false, 'error' => 'Card not found.'];
+        }
         return [
             'success' => false,
-            'error' => $cardStatus === 'INACTIVE'
+            'error' => $existingStatus === 'INACTIVE'
                 ? 'This card has not been activated yet — the card owner needs to activate it before sources can be hooked.'
-                : "This card is {$cardStatus} and cannot accept hooks.",
+                : "This card is {$existingStatus} and cannot accept hooks.",
         ];
     }
+
+    $cardOwnerUserId = (int)$card['user_id'];
 
     $this->db->beginTransaction();
     $placedHolds = [];
