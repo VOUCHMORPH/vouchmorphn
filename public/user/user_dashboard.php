@@ -723,6 +723,18 @@ input[type=number] { -moz-appearance: textfield; }
             <div class="product-tile-sub">Move money between accounts, wallets, cards, or straight to someone's identity.</div>
             <div class="product-tile-arrow">Open Swap &rsaquo;</div>
         </div>
+        <div class="product-tile" onclick="openRequestPaymentModal()">
+            <div class="product-tile-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2V3z"/><path d="M9 8h6M9 12h6M9 16h3"/></svg></div>
+            <div class="product-tile-title">Request payment</div>
+            <div class="product-tile-sub">Generate a QR code for someone to scan and pay you — pick an amount and where it should land.</div>
+            <div class="product-tile-arrow">Generate QR &rsaquo;</div>
+        </div>
+        <div class="product-tile" onclick="openScanQrModal()">
+            <div class="product-tile-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M3 7V5a2 2 0 012-2h2M17 3h2a2 2 0 012 2v2M21 17v2a2 2 0 01-2 2h-2M7 21H5a2 2 0 01-2-2v-2"/><rect x="8" y="8" width="8" height="8" rx="1"/></svg></div>
+            <div class="product-tile-title">Scan to pay</div>
+            <div class="product-tile-sub">Scan someone's payment request QR and send them money in a few taps.</div>
+            <div class="product-tile-arrow">Open scanner &rsaquo;</div>
+        </div>
         <div class="product-tile" onclick="goView('card')">
             <div class="product-tile-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><rect x="2" y="5" width="20" height="14"/><path d="M2 10h20"/></svg></div>
             <div class="product-tile-title">VouchMorph Card <span style="font-size:11px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.04em;">(My Card)</span></div>
