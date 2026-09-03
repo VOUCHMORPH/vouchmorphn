@@ -394,6 +394,12 @@ input[type=number] { -moz-appearance: textfield; }
 .field-group .help { font-size: 11px; color: var(--text-dim); margin-top: 5px; }
 .field-group .help.error-help { color: var(--danger); font-weight: 600; }
 
+.amount-input-group { display: flex; align-items: stretch; border: 1px solid var(--border-strong); background: var(--surface); }
+.amount-input-group .amount-currency { display: flex; align-items: center; padding: 0 12px; font-size: 13px; font-weight: 700; color: var(--text-dim); font-family: var(--font-mono); background: var(--surface-muted); border-right: 1px solid var(--border-strong); white-space: nowrap; }
+.amount-input-group input { flex: 1; min-width: 0; width: auto; border: none; padding: 12px 14px; font-size: 16px; font-weight: 700; font-family: var(--font-mono); background: transparent; color: var(--text); }
+.amount-input-group input:focus { outline: none; }
+.amount-input-group:focus-within { border-color: var(--accent); }
+
 .source-type-buttons { display: flex; flex-direction: column; gap: 0; border: 1px solid var(--border-strong); margin-bottom: 8px; }
 .source-type-btn { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 13px 15px; font-size: 14px; font-weight: 600; text-align: left; background: var(--surface); color: var(--text); border: none; border-bottom: 1px solid var(--border-strong); cursor: pointer; font-family: var(--font); }
 .source-type-btn:last-child { border-bottom: none; }
@@ -722,6 +728,18 @@ input[type=number] { -moz-appearance: textfield; }
             <div class="product-tile-title">Swap</div>
             <div class="product-tile-sub">Move money between accounts, wallets, cards, or straight to someone's identity.</div>
             <div class="product-tile-arrow">Open Swap &rsaquo;</div>
+        </div>
+        <div class="product-tile" onclick="openRequestPaymentModal()">
+            <div class="product-tile-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2V3z"/><path d="M9 8h6M9 12h6M9 16h3"/></svg></div>
+            <div class="product-tile-title">Request payment</div>
+            <div class="product-tile-sub">Generate a QR code for someone to scan and pay you — pick an amount and where it should land.</div>
+            <div class="product-tile-arrow">Generate QR &rsaquo;</div>
+        </div>
+        <div class="product-tile" onclick="openScanQrModal()">
+            <div class="product-tile-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M3 7V5a2 2 0 012-2h2M17 3h2a2 2 0 012 2v2M21 17v2a2 2 0 01-2 2h-2M7 21H5a2 2 0 01-2-2v-2"/><rect x="8" y="8" width="8" height="8" rx="1"/></svg></div>
+            <div class="product-tile-title">Scan to pay</div>
+            <div class="product-tile-sub">Scan someone's payment request QR and send them money in a few taps.</div>
+            <div class="product-tile-arrow">Open scanner &rsaquo;</div>
         </div>
         <div class="product-tile" onclick="goView('card')">
             <div class="product-tile-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><rect x="2" y="5" width="20" height="14"/><path d="M2 10h20"/></svg></div>
@@ -3608,7 +3626,25 @@ function renderHookRows() {
     if (!holder) return;
     holder.innerHTML = hookRows.map((row, idx) => {
         if (row.locked) {
-            return `<div class="hook-row-card"><div class="hook-row-head"><span class="hook-row-label">Source ${idx + 1} — from My sources</span><button class="hook-row-remove" onclick="removeHookRow(${row.id})">Remove</button></div><div style="font-size:13px;font-weight:700;">${escapeHtml(row.instName)}</div><div style="font-size:11px;color:var(--text-dim);margin-bottom:10px;">${escapeHtml(row.identifier)}</div><div class="field-group"><label>Amount to authorize</label><input type="number" placeholder="0.00" value="${row.amount}" oninput="hookRows.find(r=>r.id===${row.id}).amount=this.value"></div></div>`;
+            const lockedCurrency = PARTICIPANTS[row.institution]?.limits?.currency || 'BWP';
+            return `<div class="hook-row-card">
+                <div class="hook-row-head"><span class="hook-row-label">Source ${idx + 1} — from My sources</span><button class="hook-row-remove" onclick="removeHookRow(${row.id})">Remove</button></div>
+                <div class="myc-source-row" style="padding:0 0 14px;border-bottom:none;">
+                    <div class="myc-source-tile">${escapeHtml(institutionInitials(row.institution || ''))}</div>
+                    <div class="myc-source-info">
+                        <div class="myc-source-inst">${escapeHtml(row.instName)}</div>
+                        <div class="myc-source-ident">${escapeHtml(row.identifier)}</div>
+                    </div>
+                </div>
+                <div class="field-group">
+                    <label>Amount to authorize</label>
+                    <div class="amount-input-group">
+                        <span class="amount-currency">${escapeHtml(lockedCurrency)}</span>
+                        <input type="number" inputmode="decimal" min="0.01" step="0.01" placeholder="0.00" value="${row.amount}" oninput="hookRows.find(r=>r.id===${row.id}).amount=this.value">
+                    </div>
+                    <div class="help">Held for 24 hours, or until spent — whichever comes first.</div>
+                </div>
+            </div>`;
         }
         const savedPickerHtml = userSources.filter(u => u.status === 'active').length ? `
     <div style="margin-bottom:10px;">
@@ -3634,9 +3670,16 @@ function renderHookRows() {
             <div class="source-type-picker">${typeOptions}</div>
             ${row.assetType ? `
                 ${institutionField}
-                <div class="field-group"><label>Identifier</label><input placeholder="Account, phone, or voucher number" value="${escapeHtml(row.identifier)}" oninput="hookRows.find(r=>r.id===${row.id}).identifier=this.value"></div>
+                <div class="field-group"><label>Identifier</label><input placeholder="Account, phone, or voucher number" inputmode="text" autocomplete="off" value="${escapeHtml(row.identifier)}" oninput="hookRows.find(r=>r.id===${row.id}).identifier=this.value"></div>
                 ${extraFields}
-                <div class="field-group"><label>Amount to authorize</label><input type="number" placeholder="0.00" value="${row.amount}" oninput="hookRows.find(r=>r.id===${row.id}).amount=this.value"></div>
+                <div class="field-group">
+                    <label>Amount to authorize</label>
+                    <div class="amount-input-group">
+                        <span class="amount-currency">${escapeHtml(row.institution ? (PARTICIPANTS[row.institution]?.limits?.currency || 'BWP') : 'BWP')}</span>
+                        <input type="number" inputmode="decimal" min="0.01" step="0.01" placeholder="0.00" value="${row.amount}" oninput="hookRows.find(r=>r.id===${row.id}).amount=this.value">
+                    </div>
+                    <div class="help">Held for 24 hours, or until spent — whichever comes first.</div>
+                </div>
             ` : ''}
         </div>`;
     }).join('');
