@@ -1852,8 +1852,10 @@ public function releaseHook(
      * is genuinely held, never a partial state.
      * 
      * CONSENT GATE: Any source owned by someone OTHER than the card owner
-     * must already exist as an active linked/consented source in the
-     * source_accounts table. This endpoint never trusts
+     * must already exist as an active linked/consented source in either
+     * source_accounts (OAuth-linked) or user_source_accounts
+     * (manually-added/verified) - the same two tables /user/sources.php
+     * merges into "My Sources". This endpoint never trusts
      * owner_user_id + credentials from the request body alone as proof
      * of consent. The consent check runs as its own pass BEFORE any
      * holds are placed, so a consent failure costs nothing (no rollback needed).
@@ -1936,16 +1938,31 @@ public function releaseHook(
             $sourceOwnerId = (int)($source['owner_user_id'] ?? $cardOwnerUserId);
 
             if ($sourceOwnerId !== $cardOwnerUserId) {
+                // A user's "My Sources" list (see /user/sources.php) merges two
+                // tables - manually-added/verified sources in user_source_accounts,
+                // and OAuth-linked sources in source_accounts - and the hook form
+                // lets either kind be picked without telling us which one it was.
+                // So consent has to be checked against both; requiring only one
+                // would reject a real, already-verified source that just happens
+                // to live in the other table.
                 $consentStmt = $this->db->prepare("
                     SELECT 1 FROM source_accounts
-                    WHERE user_id = :owner_id
-                      AND institution = :institution
+                    WHERE user_id = :owner_id_a
+                      AND institution = :institution_a
                       AND status = 'active'
+                    UNION ALL
+                    SELECT 1 FROM user_source_accounts
+                    WHERE user_id = :owner_id_b
+                      AND institution = :institution_b
+                      AND status = 'active'
+                      AND deleted_at IS NULL
                     LIMIT 1
                 ");
                 $consentStmt->execute([
-                    ':owner_id' => $sourceOwnerId,
-                    ':institution' => $source['institution'],
+                    ':owner_id_a' => $sourceOwnerId,
+                    ':institution_a' => $source['institution'],
+                    ':owner_id_b' => $sourceOwnerId,
+                    ':institution_b' => $source['institution'],
                 ]);
 
                 if (!$consentStmt->fetchColumn()) {
