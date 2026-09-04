@@ -1853,11 +1853,11 @@ public function releaseHook(
      * 
      * CONSENT GATE: Any source owned by someone OTHER than the card owner
      * must already exist as an active linked/consented source in the
-     * user_authorized_sources table. This endpoint never trusts
+     * source_accounts table. This endpoint never trusts
      * owner_user_id + credentials from the request body alone as proof
      * of consent. The consent check runs as its own pass BEFORE any
      * holds are placed, so a consent failure costs nothing (no rollback needed).
-     * 
+     *
      * SCHEMA FIX: Uses lifecycle_status (not status)
      */
   public function hookSourcesToCard(
@@ -1937,7 +1937,7 @@ public function releaseHook(
 
             if ($sourceOwnerId !== $cardOwnerUserId) {
                 $consentStmt = $this->db->prepare("
-                    SELECT 1 FROM user_authorized_sources
+                    SELECT 1 FROM source_accounts
                     WHERE user_id = :owner_id
                       AND institution = :institution
                       AND status = 'active'

@@ -229,7 +229,7 @@ if ($isHookedSource) {
     $payload['source_reference'] = $source['source_reference'];
 
     $stmt = $db->prepare("
-        SELECT access_token FROM user_authorized_sources
+        SELECT access_token FROM source_accounts
         WHERE source_reference = :ref AND status = 'active'
     ");
     $stmt->execute([':ref' => $source['source_reference']]);

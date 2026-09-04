@@ -37,8 +37,7 @@ use Infrastructure\Crypto\AggregateSigner;
  * PIN POLICY (UPDATED):
  * - PIN is NO LONGER REQUIRED for wallet and account sources
  * - Authentication is handled through:
- *   - Hooked sources (OAuth/API tokens from user_authorized_sources)
- *   - Access tokens from source_accounts table
+ *   - Hooked sources (OAuth/API tokens from source_accounts)
  *   - Institution-specific authentication methods
  * - PIN is OPTIONAL - only forwarded if present (backward compatibility)
  * - Destination operations (deposit, credit, transfer) do NOT require PIN
@@ -675,29 +674,29 @@ public function revokeHookedSource(int $userId, string $sourceReference): array
             throw new RuntimeException("user_id required");
         }
         
-        $sql = "SELECT * FROM user_authorized_sources WHERE source_reference = :source_ref AND user_id = :user_id AND status = 'active'";
+        $sql = "SELECT * FROM source_accounts WHERE source_reference = :source_ref AND user_id = :user_id AND status = 'active'";
         $stmt = $this->swapDB->prepare($sql);
         $stmt->execute([':source_ref' => $sourceReference, ':user_id' => $userId]);
         $source = $stmt->fetch(PDO::FETCH_ASSOC);
-        
+
         if (!$source) {
             throw new RuntimeException("Hooked source not found or inactive");
         }
-        
+
         if ($this->isTokenExpired($source['token_expires_at'])) {
             $refreshed = $this->refreshHookedSource($userId, $sourceReference);
             $source['access_token'] = $refreshed['access_token'];
             $source['token_expires_at'] = $refreshed['expires_at'];
         }
-        
+
         $swapPayload = $payload;
         $swapPayload['from_institution'] = $source['institution'];
         $swapPayload['asset_type'] = $source['asset_type'];
-        $swapPayload['source_identifier'] = $source['identifier'];
+        $swapPayload['source_identifier'] = $source['identifier'] ?? $source['source_identifier'] ?? null;
         $swapPayload['access_token'] = $source['access_token'];
         $swapPayload['_is_hooked'] = true;
-        
-        $sql = "UPDATE user_authorized_sources SET last_used_at = NOW() WHERE source_reference = :source_ref";
+
+        $sql = "UPDATE source_accounts SET last_used_at = NOW() WHERE source_reference = :source_ref";
         $stmt = $this->swapDB->prepare($sql);
         $stmt->execute([':source_ref' => $sourceReference]);
         

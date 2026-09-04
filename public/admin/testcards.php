@@ -277,7 +277,7 @@ if ($cardServiceSrc === null) {
         : 'CRITICAL: TOTP verification missing from pooled authorization';
 
     $hookBody = extractMethodBody($cardServiceSrc, 'hookSourcesToCard');
-    $hasConsentGate = $hookBody !== null && stripos($hookBody, 'user_authorized_sources') !== false;
+    $hasConsentGate = $hookBody !== null && stripos($hookBody, 'source_accounts') !== false;
     $report['C_hook_to_vouchmorph_card_only']['consent_gate_present'] = $hasConsentGate
         ? 'OK - third-party sources checked before holding'
         : 'CRITICAL: no consent check found';

@@ -310,7 +310,7 @@ if ($cardServiceSrc === null) {
 
     // C3: Consent gate
     $hookBody = extractMethodBody($cardServiceSrc, 'hookSourcesToCard');
-    $hasConsent = $hookBody !== null && stripos($hookBody, 'user_authorized_sources') !== false;
+    $hasConsent = $hookBody !== null && stripos($hookBody, 'source_accounts') !== false;
     $report['C_hook_vouchmorph_only']['consent_gate'] = $hasConsent ? 'OK' : 'CRITICAL';
 
     // C4: All-or-nothing rollback
