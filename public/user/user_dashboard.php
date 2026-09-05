@@ -4278,6 +4278,25 @@ function showPaymentRequestPaidConfirmation(data, amount, currency) {
 }
     
 function renderSessionStatus(session) {
+    // FIX: a session that reached a terminal status (e.g. execution
+    // failed, expired before anyone swiped, or was cancelled) used to
+    // keep rendering the same "in progress" swipe card below, built
+    // from whatever preview was last saved before that status changed
+    // — which can still show "fully covered, ready to go!" right next
+    // to a permanently disabled "waiting for full coverage" button,
+    // since only the recompute path updates the preview and status
+    // together; cancel/execute/expiry only ever update status. Once
+    // it's terminal, show what actually happened instead.
+    const terminalInfo = {
+        COMPLETED: { title: 'Swap completed', text: 'This swap went through successfully.' },
+        FAILED: { title: 'Swap failed', text: session.failure_reason || 'This swap could not be completed.' },
+        CANCELLED: { title: 'Swap cancelled', text: 'This swap was cancelled.' },
+        EXPIRED: { title: 'Swap expired', text: 'This swap session expired before it was completed.' },
+    }[session.status];
+    if (terminalInfo) {
+        return `<div class="myc-panel"><div class="myc-panel-head"><span class="myc-panel-title">${escapeHtml(terminalInfo.title)}</span></div><div style="margin-bottom:14px;color:var(--text-dim);">${escapeHtml(terminalInfo.text)}</div><div class="cta-row"><button class="btn btn-primary" onclick="loadCardView('${session.card_suffix}')">Start a new swap</button></div></div>`;
+    }
+
     const preview = session.preview || { total_target: session.target_amount, total_covered: 0, remaining: session.target_amount, contributors: [] };
     const pct = preview.total_target > 0 ? Math.min(100, (preview.total_covered / preview.total_target) * 100) : 0;
     const contributors = preview.contributors || [];
