@@ -404,10 +404,18 @@ class CardContributionSessionService
             $entries = $this->getManualEntries($sessionId);
             $userAmounts = [];
             foreach ($hookSources as $s) {
-                $userAmounts[$s['institution']] = (float)($entries[$s['id']] ?? 0);
+                // FIX: composite key, matching what
+                // ContributionCalculator::calculateUserSpecifiedFlexible()
+                // looks up first. Keying by institution alone collided
+                // whenever a card has more than one hooked source from
+                // the same institution (e.g. two accounts at the same
+                // bank), silently dropping all but the last one's entry.
+                $key = $s['institution'] . '|' . $s['source_identifier'];
+                $userAmounts[$key] = (float)($entries[$s['id']] ?? 0);
             }
         }
 
+        $failureReason = null;
         try {
             $computed = $this->contributionCalculator->calculateContributions(
                 $target,
@@ -421,7 +429,11 @@ class CardContributionSessionService
             // don't cover the target under SMART/RATIO) — treat as "not
             // covered yet" rather than propagating, so the dashboard can
             // show a clear remaining-amount instead of an error screen.
-            $computed = array_map(fn($s) => ['institution' => $s['institution'], 'amount' => 0.0], $sourcesWithBalances);
+            // The real reason is kept (via failure_reason below) instead
+            // of being swallowed, so a genuine shortfall is never
+            // indistinguishable from the matching bug this replaces.
+            $computed = array_map(fn($s) => ['source' => $s, 'actual_amount' => 0.0], $sourcesWithBalances);
+            $failureReason = $e->getMessage();
         }
 
         $contributors = [];
@@ -430,12 +442,21 @@ class CardContributionSessionService
         foreach ($hookSources as $s) {
             $match = null;
             foreach ($computed as $c) {
-                if (($c['institution'] ?? null) === $s['institution']) {
+                // FIX: calculateContributions() nests the originating
+                // source one level down as $c['source'] — it never
+                // returns a top-level 'institution' key, so this always
+                // missed before. Matching on institution alone would
+                // also be wrong by itself: a card can have more than one
+                // hooked source from the same institution (institution +
+                // identifier together is what's unique).
+                $cSource = $c['source'] ?? [];
+                if (($cSource['institution'] ?? null) === $s['institution']
+                    && ($cSource['identifier'] ?? null) === $s['source_identifier']) {
                     $match = $c;
                     break;
                 }
             }
-            $amount = round((float)($match['amount'] ?? $match['actual_amount'] ?? 0), 2);
+            $amount = round((float)($match['actual_amount'] ?? $match['amount'] ?? 0), 2);
             $belowMinimum = $amount > 0 && $amount < $floor;
             if ($belowMinimum) {
                 // Same rule PoolCoordinator::execute() applies to
@@ -472,19 +493,20 @@ class CardContributionSessionService
             'total_covered' => $totalCovered,
             'remaining' => max(0, $remaining),
             'contributors' => $contributors,
-        ], $status);
+        ], $status, $failureReason);
     }
 
-    private function savePreview(int $sessionId, array $preview, string $status): void
+    private function savePreview(int $sessionId, array $preview, string $status, ?string $failureReason = null): void
     {
         $stmt = $this->db->prepare("
             UPDATE card_contribution_sessions
-            SET contributions_preview = :preview::jsonb, status = :status, updated_at = NOW()
+            SET contributions_preview = :preview::jsonb, status = :status, failure_reason = :reason, updated_at = NOW()
             WHERE id = :id AND status IN ('OPEN', 'READY')
         ");
         $stmt->execute([
             ':preview' => json_encode($preview),
             ':status' => $status,
+            ':reason' => $failureReason,
             ':id' => $sessionId,
         ]);
     }

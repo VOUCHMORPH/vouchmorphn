@@ -204,12 +204,19 @@ class ContributionCalculator
         }
         
         // Apply strategy
+        //
+        // FIX: 'MANUAL' (CardContributionSessionService's name for
+        // "each contributor enters their own amount") was never matched
+        // here — only 'USER_SPECIFIED' was, which is the exact same
+        // semantics under a different name. A MANUAL session silently
+        // fell through to the SMART default and ignored every amount
+        // contributors had actually entered.
         $contributions = match($strategy) {
             'EQUAL' => $this->calculateEqualFlexible($targetAmount, $flexibleSources),
             'RATIO' => $this->calculateRatioBasedFlexible($targetAmount, $flexibleSources),
             'SMART' => $this->calculateSmartFlexible($targetAmount, $flexibleSources),
             'PRIORITY' => $this->calculatePriorityFlexible($targetAmount, $flexibleSources, $priorityOrder),
-            'USER_SPECIFIED' => $this->calculateUserSpecifiedFlexible($targetAmount, $flexibleSources, $userSpecified),
+            'USER_SPECIFIED', 'MANUAL' => $this->calculateUserSpecifiedFlexible($targetAmount, $flexibleSources, $userSpecified),
             default => $this->calculateSmartFlexible($targetAmount, $flexibleSources) // Default to SMART
         };
 
