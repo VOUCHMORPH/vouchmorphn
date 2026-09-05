@@ -297,7 +297,12 @@ class CardContributionSessionService
         }, array_filter($preview['contributors'] ?? [], fn($c) => ($c['amount'] ?? 0) > 0));
 
         $payload = array_merge($destination, [
-            'amount' => $session['target_amount'],
+            // FIX: $session comes straight from a PDO fetch of a numeric
+            // DB column, which PHP's pgsql driver returns as a string —
+            // PoolCoordinator/MultiSourceFeeCalculator declare this as a
+            // strict `float` parameter downstream, so an uncast string
+            // here threw a TypeError deep inside pool execution.
+            'amount' => (float)$session['target_amount'],
             'currency' => $session['currency'],
             'reference' => $session['session_reference'],
         ]);

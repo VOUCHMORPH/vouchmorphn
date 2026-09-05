@@ -1244,7 +1244,7 @@ class PoolCoordinator
         $feeResult = $this->feeCalculator->calculateFees(
             count($contributions),
             $deliveryMode,
-            $pool['amount'] ?? 0,
+            (float)($pool['amount'] ?? 0),
             $pool['currency'] ?? 'BWP',
             $pool['destination_currency'] ?? $pool['currency'] ?? 'BWP'
         );
