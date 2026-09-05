@@ -305,6 +305,11 @@ class CardContributionSessionService
             'amount' => (float)$session['target_amount'],
             'currency' => $session['currency'],
             'reference' => $session['session_reference'],
+            // FIX: without this, createPool() leaves $pool['user_id']
+            // null, so the swap_requests row this now writes (see
+            // PoolCoordinator::completeDeferredPool()) had no owner to
+            // attribute the transaction to.
+            'user_id' => $ownerUserId,
         ]);
 
         try {
