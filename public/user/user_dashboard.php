@@ -3885,6 +3885,41 @@ async function executeUnhook() {
     loadCardView();
 }
 
+// Per-source unhook — releases just one hooked source, leaving every
+// other contributor untouched. The mirror of openUnhook()/
+// executeUnhook() above, which release everything at once.
+function openUnhookSource(hookSourceId) {
+    const hook = myCard?.hook;
+    const source = hook?.contributors?.find(c => c.hook_source_id === hookSourceId);
+    if (!source) return;
+
+    const bodyHtml = `
+        <div class="unhook-summary" style="border-color: var(--warning);">
+            <div class="icon">🔓</div>
+            <div style="font-size:16px; font-weight:700; margin-bottom:4px;">Unhook this source?</div>
+            <div style="font-size:12px; color:var(--text-muted);">${escapeHtml(PARTICIPANTS[source.institution]?.name || source.institution)} · ${escapeHtml(source.source_identifier)} · ${formatMoney(source.held_amount, hook.currency)}</div>
+        </div>
+        <div style="font-size:12px; color:var(--text-muted); margin-bottom:16px;">
+            Only this source is released — every other hooked source stays in place. It goes back to being a normal, spendable source in your Toolbox.
+        </div>`;
+
+    pendingExecution = {
+        type: 'unhook_source',
+        payload: { hookSourceId },
+        callback: () => executeUnhookSource()
+    };
+    showPreviewModal('Unhook this source', bodyHtml, null, 'Unhook this source', 'btn-danger');
+}
+
+async function executeUnhookSource() {
+    const { hookSourceId } = pendingExecution.payload;
+    if (!hookSourceId) return;
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/unhook_source.php', { hook_source_id: hookSourceId });
+    if (!result.ok) { showMessage('Couldn\'t unhook that source: ' + friendlyApiError(result.error), 'error'); return; }
+    showMessage('Source released. 🎉', 'success');
+    loadCardView();
+}
+
 // ============================================================
 // CARD VIEW
 // ============================================================
@@ -3953,6 +3988,7 @@ function renderCardViewBody() {
                 <div class="myc-source-amt">${formatMoney(c.held_amount, hook.currency)}</div>
                 <span class="source-status-badge open">Open</span>
             </div>
+            <button class="btn btn-secondary btn-sm" onclick="openUnhookSource(${c.hook_source_id})">Unhook</button>
         </div>`).join('') : `<div style="font-size:12px;color:var(--text-dim);padding:8px 0;">No sources hooked yet.</div>`;
     const cardName = myCard.display_name || (Journey.read().cardNamed ? Journey.read().cardNamed : null);
 
