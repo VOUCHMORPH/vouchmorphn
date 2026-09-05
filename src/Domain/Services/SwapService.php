@@ -11414,4 +11414,21 @@ public function addVerifiedIdentityAsAgent(
         'message' => 'Identity verified. You can now finalize identity swaps sent to it with your transaction PIN.',
     ];
 }
+
+    /**
+     * List every identity (self-service or agent-verified) registered
+     * to this user, newest first. Used to populate "My profile" ->
+     * "Your registered identities" and the onboarding checklist.
+     */
+    public function getUserIdentities(int $userId): array
+    {
+        $stmt = $this->swapDB->prepare("
+            SELECT id, identity_type, identity_value, status, verified, verified_at, created_at
+            FROM user_identities
+            WHERE user_id = :user_id
+            ORDER BY created_at DESC
+        ");
+        $stmt->execute([':user_id' => $userId]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
 }
