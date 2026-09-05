@@ -67,7 +67,12 @@ try {
     $result = $service->execute((int)$input['session_id'], $userId, $poolCoordinator);
     http_response_code(200);
     echo json_encode(['success' => true, 'data' => $result], JSON_PRETTY_PRINT);
-} catch (Exception $e) {
+} catch (\Throwable $e) {
+    // FIX: was `catch (Exception $e)` — a PHP engine error (TypeError,
+    // etc.) is a \Throwable but not an \Exception, so it used to skip
+    // this catch entirely and crash the script before any JSON could be
+    // printed, turning into a non-JSON response the frontend could only
+    // report as a generic "hiccup".
     http_response_code(400);
     echo json_encode(['success' => false, 'error' => $e->getMessage()]);
 }
