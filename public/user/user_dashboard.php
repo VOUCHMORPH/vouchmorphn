@@ -1393,7 +1393,17 @@ function computeProgressSteps() {
     ];
 }
 
+function renderGettingSetUpBox() {
+    const steps = computeProgressSteps();
+    const doneCount = steps.filter(s => s.done).length;
+    if (doneCount >= steps.length) return '';
+    return `<div style="background:var(--surface-muted);border:1px solid var(--border);padding:14px 16px;margin-bottom:20px;"><div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:var(--text-dim);margin-bottom:8px;">Getting set up — ${doneCount}/${steps.length}</div>${steps.map(s => `<div style="font-size:13px;color:${s.done ? 'var(--success)' : 'var(--text-muted)'};padding:3px 0;">${s.done ? '✓' : '○'} ${s.label}</div>`).join('')}</div>`;
+}
+
 function renderProgressCard() {
+    const toolboxBox = document.getElementById('toolboxGettingSetUp');
+    if (toolboxBox) toolboxBox.innerHTML = renderGettingSetUpBox();
+
     const holder = document.getElementById('progressCardHolder');
     if (!holder) return;
     const steps = computeProgressSteps();
@@ -4592,8 +4602,6 @@ async function loadToolboxView() {
 function renderToolboxBody() {
     const claimCount = pendingClaims.length;
     const isAgent = !!(SessionUser && SessionUser.is_agent);
-    const steps = computeProgressSteps();
-    const doneCount = steps.filter(s => s.done).length;
 
     const sourcesHtml = userSources.length === 0
         ? `<div style="font-size:13px;color:var(--text-dim);padding:8px 0;">No sources linked yet.</div>`
@@ -4633,8 +4641,6 @@ function renderToolboxBody() {
     if (isAgent) groups.push({ title: 'Agent', open: false, rows: [ { icon: '🧰', label: 'Agent tools', action: 'openAgentToolsModal()' }, { icon: '🏢', label: 'Agent destinations', action: 'openAgentModal()' } ] });
     groups.push({ title: 'Account', open: false, rows: [ { icon: '👤', label: 'My profile', action: 'openProfileModal()' }, { icon: '❓', label: 'Help', action: 'openHelpModal()' }, { icon: '📄', label: 'Terms and conditions', action: 'openTermsModal()' } ] });
 
-    const progressHtml = doneCount < steps.length ? `<div style="background:var(--surface-muted);border:1px solid var(--border);padding:14px 16px;margin-bottom:20px;"><div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:var(--text-dim);margin-bottom:8px;">Getting set up — ${doneCount}/${steps.length}</div>${steps.map(s => `<div style="font-size:13px;color:${s.done ? 'var(--success)' : 'var(--text-muted)'};padding:3px 0;">${s.done ? '✓' : '○'} ${s.label}</div>`).join('')}</div>` : '';
-
     const groupsHtml = groups.map((g, gi) => `
         <details class="toolbox-accordion" ${g.open ? 'open' : ''} data-group-idx="${gi}">
             <summary class="toolbox-accordion-summary">${g.title}<span class="toolbox-accordion-arrow">&rsaquo;</span></summary>
@@ -4642,7 +4648,7 @@ function renderToolboxBody() {
         </details>`).join('');
 
     return `
-        ${progressHtml}
+        <div id="toolboxGettingSetUp">${renderGettingSetUpBox()}</div>
         <div class="field-group" style="margin-bottom:20px;">
             <input id="toolboxSearchInput" placeholder="Search sources, tools, activity…" oninput="filterToolbox(this.value)" style="font-size:15px;padding:14px 16px;">
         </div>
