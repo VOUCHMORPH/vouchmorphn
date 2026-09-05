@@ -175,7 +175,7 @@ try {
 
         if ($hookRow) {
             $stmt = $db->prepare("
-                SELECT institution, asset_type, source_identifier, owner_user_id, held_amount, status
+                SELECT id, institution, asset_type, source_identifier, owner_user_id, held_amount, status
                 FROM card_pool_hook_sources
                 WHERE hook_id = :hook_id AND status = 'HELD'
                 ORDER BY id
@@ -188,6 +188,7 @@ try {
                     : substr($identifier, 0, 3) . str_repeat('•', max(0, strlen($identifier) - 6)) . substr($identifier, -3);
 
                 $contributors[] = [
+                    'hook_source_id' => (int)$s['id'],
                     'institution' => $s['institution'],
                     'asset_type' => $s['asset_type'],
                     'source_identifier' => $masked,

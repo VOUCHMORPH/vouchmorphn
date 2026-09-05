@@ -399,6 +399,135 @@ try {
         $swaps[] = $swap;
     }
 
+    // ============================================================
+    // FIX: multi-source/card-hook pool swaps never place a fresh hold
+    // in THIS request — they draw on one or more holds placed earlier
+    // — so they never get a row in hold_transactions, and the query
+    // above (built entirely around exactly one hold per swap) could
+    // never surface them no matter how its WHERE clause was written.
+    // PoolCoordinator now writes a real swap_requests row for these
+    // (see PoolCoordinator::completeDeferredPool()), so pull those in
+    // separately here rather than reshape the older, more complex
+    // query above — which also drives cashout/identity-claim
+    // decryption for unrelated transaction types — into an untested
+    // SQL UNION with no live database available to verify column
+    // types against.
+    //
+    // Known approximation: this second source is paginated
+    // independently (same limit/offset) before the two are merged and
+    // re-sorted below, rather than through one globally correct
+    // OFFSET across both — exact for the common first-page case,
+    // an approximation on deeper pages mixing many pool swaps with
+    // many regular ones.
+    // ============================================================
+    $poolSql = "
+        SELECT swap_id, swap_uuid, from_currency, to_currency, amount, status,
+               created_at, completed_at, source_country, destination_country,
+               fee_breakdown, forex_rate, forex_fee_percent, forex_fee_amount,
+               total_forex_fee, expected_to_amount, metadata, destination_details
+        FROM swap_requests
+        WHERE user_id = :user_id
+          AND metadata->>'swap_type' = 'MULTI_SOURCE'
+          AND NOT EXISTS (
+              SELECT 1 FROM hold_transactions ht2 WHERE ht2.swap_reference = swap_requests.swap_uuid
+          )
+    ";
+    $poolParams = [':user_id' => $userId];
+    if ($swapType) {
+        $poolSql .= " AND metadata->>'swap_type' = :swap_type";
+        $poolParams[':swap_type'] = $swapType;
+    }
+    if ($status) {
+        $poolSql .= " AND status = :status";
+        $poolParams[':status'] = $status;
+    }
+    $poolSql .= " ORDER BY created_at DESC LIMIT :limit OFFSET :offset";
+
+    $poolStmt = $db->prepare($poolSql);
+    foreach ($poolParams as $key => $value) {
+        $poolStmt->bindValue($key, $value, is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR);
+    }
+    $poolStmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+    $poolStmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+    $poolStmt->execute();
+    $poolRows = $poolStmt->fetchAll(PDO::FETCH_ASSOC);
+
+    foreach ($poolRows as $prow) {
+        $pMetadata = json_decode($prow['metadata'] ?? '{}', true) ?: [];
+        $pDestDetails = json_decode($prow['destination_details'] ?? '{}', true) ?: [];
+        $pFeeBreakdown = json_decode($prow['fee_breakdown'] ?? '{}', true) ?: [];
+        $pCurrency = $prow['from_currency'] ?? $countryDefaultCurrency ?? 'UNKNOWN';
+
+        $poolSwap = [
+            'reference' => $prow['swap_uuid'],
+            'swap_id' => $prow['swap_id'],
+            'swap_uuid' => $prow['swap_uuid'],
+            'swap_type' => $pMetadata['swap_type'] ?? 'MULTI_SOURCE',
+            'status' => $prow['status'],
+            'amount' => (float)($prow['amount'] ?? 0),
+            'currency' => $pCurrency,
+            'from_currency' => $prow['from_currency'] ?? $pCurrency,
+            'to_currency' => $prow['to_currency'] ?? $pCurrency,
+            'source_institution' => $pMetadata['source_institution'] ?? null,
+            'destination_institution' => $pDestDetails['institution'] ?? null,
+            'destination_identifier' => $pDestDetails['identifier'] ?? null,
+            'destination_asset_type' => $pDestDetails['asset_type'] ?? null,
+            'source_country' => $prow['source_country'] ?? 'BW',
+            'destination_country' => $prow['destination_country'] ?? 'BW',
+            'created_at' => $prow['created_at'],
+            'updated_at' => $prow['created_at'],
+            'completed_at' => $prow['completed_at'],
+            'fee_breakdown' => $pFeeBreakdown ?: null,
+            'forex_rate' => $prow['forex_rate'] ? (float)$prow['forex_rate'] : null,
+            'forex_fee_percent' => $prow['forex_fee_percent'] ? (float)$prow['forex_fee_percent'] : null,
+            'forex_fee_amount' => $prow['forex_fee_amount'] ? (float)$prow['forex_fee_amount'] : null,
+            'total_forex_fee' => $prow['total_forex_fee'] ? (float)$prow['total_forex_fee'] : null,
+            'expected_to_amount' => $prow['expected_to_amount'] ? (float)$prow['expected_to_amount'] : null,
+            'metadata' => $pMetadata,
+            'user_id' => $userId,
+        ];
+
+        $poolSwap = array_filter($poolSwap, function ($value) {
+            return $value !== null;
+        });
+
+        $swaps[] = $poolSwap;
+    }
+
+    if (!empty($poolRows)) {
+        // Merge newest-first and enforce the page size actually asked
+        // for — each source was already capped/offset independently
+        // above, so this can only ever trim the combined set, never
+        // need to pad it back out.
+        usort($swaps, fn($a, $b) => strtotime($b['created_at'] ?? 'now') <=> strtotime($a['created_at'] ?? 'now'));
+        $swaps = array_slice($swaps, 0, $limit);
+
+        $poolCountSql = "
+            SELECT COUNT(*) as total
+            FROM swap_requests
+            WHERE user_id = :user_id
+              AND metadata->>'swap_type' = 'MULTI_SOURCE'
+              AND NOT EXISTS (
+                  SELECT 1 FROM hold_transactions ht2 WHERE ht2.swap_reference = swap_requests.swap_uuid
+              )
+        ";
+        $poolCountParams = [':user_id' => $userId];
+        if ($swapType) {
+            $poolCountSql .= " AND metadata->>'swap_type' = :swap_type";
+            $poolCountParams[':swap_type'] = $swapType;
+        }
+        if ($status) {
+            $poolCountSql .= " AND status = :status";
+            $poolCountParams[':status'] = $status;
+        }
+        $poolCountStmt = $db->prepare($poolCountSql);
+        foreach ($poolCountParams as $key => $value) {
+            $poolCountStmt->bindValue($key, $value, is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR);
+        }
+        $poolCountStmt->execute();
+        $totalCount += (int)$poolCountStmt->fetchColumn();
+    }
+
     echo json_encode([
         'success' => true,
         'data' => $swaps,

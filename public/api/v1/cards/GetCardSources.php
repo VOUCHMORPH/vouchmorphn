@@ -86,6 +86,15 @@ try {
     // hookSourcesToCard() actually writes to the database.
     // FIX 2: Changed 'identifier' to 'source_identifier' to match the
     // actual column name in card_pool_hook_sources.
+    // FIX 3: This only ever filtered the PARENT hook's status
+    // (cph.status = 'HOOKED') — it never checked cphs.status on the
+    // individual source row itself. So a source unhooked on its own
+    // (CardService::releaseHookSource(), status flips to 'RELEASED')
+    // while the rest of the hook stays 'HOOKED' kept being resolved
+    // here as a live, spendable source for a new swap. Every other
+    // reader of this table (My.php, authorizePooledSwipe(), etc.)
+    // already filters cphs.status = 'HELD'; this was the one place
+    // that didn't.
         $sourceStmt = $db->prepare("
         SELECT
             cphs.institution,
@@ -98,6 +107,7 @@ try {
         JOIN card_pool_hooks cph ON cph.id = cphs.hook_id
         WHERE cph.card_suffix = :suffix
           AND cph.status = 'HOOKED'
+          AND cphs.status = 'HELD'
           AND cph.id = (
               SELECT id FROM card_pool_hooks
               WHERE card_suffix = :suffix2 AND status = 'HOOKED'

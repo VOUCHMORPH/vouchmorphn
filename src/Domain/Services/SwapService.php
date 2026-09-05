@@ -1424,6 +1424,24 @@ private function populateTrackingTables(array $swapData, array $details, ?array 
     }
 }
 
+/**
+ * Public entry point for a multi-source pool swap (PoolCoordinator) to
+ * record itself in the same swap_requests/swap_transactions tables
+ * every single-source swap already writes to via
+ * populateTrackingTables() — which already has dedicated handling for
+ * swap_type='MULTI_SOURCE' (it still writes the swap_requests/
+ * swap_transactions master rows; it only skips the type-specific
+ * extra table pool_contributions already covers). PoolCoordinator has
+ * no business reaching into populateTrackingTables()'s other private
+ * internals directly — this is the one bit of surface it needs, and
+ * this was simply never wired up to anything that calls it for a pool
+ * swap, so a completed pool swap never showed up in the same
+ * transaction history/admin log every other swap type appears in.
+ */
+public function recordPoolSwapTransaction(array $swapData, array $details): void
+{
+    $this->populateTrackingTables($swapData, $details);
+}
 
 private function populateAuditLog(string $swapRef, string $swapType, array $swapData, array $details, ?int $userId = null): void
 {

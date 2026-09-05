@@ -3862,13 +3862,28 @@ async function resolveScannedQr(raw) {
     confirmHookTargetCard(card_suffix, display_name);
 }
 
-function openUnhook(target) {
-    unhookTarget = target;
+function openUnhook() {
+    // FIX: this used to take a `target` object built from bare
+    // `hook.hook_reference` / `hook.contributors.length` / etc.
+    // references written directly into the button's onclick="..."
+    // attribute with no ${} interpolation — meaning that text was
+    // emitted as literal JavaScript source, evaluated at CLICK time in
+    // the global scope. `hook` is only ever a local variable inside
+    // renderMyCard(), never a global, so every click threw
+    // "hook is not defined" before openUnhook() was ever reached — the
+    // button did nothing at all. Deriving everything from the actual
+    // global (myCard) here, the same way openUnhookSource() already
+    // does, avoids that whole class of bug.
+    const hook = myCard?.hook;
+    if (!hook || !hook.contributors?.length) return;
+
+    const count = hook.contributors.length;
+    const amount = formatMoney(hook.total_held, hook.currency);
     const bodyHtml = `
         <div class="unhook-summary" style="border-color: var(--warning);">
             <div class="icon">🔓</div>
             <div style="font-size:16px; font-weight:700; margin-bottom:4px;">Release this hook?</div>
-            <div style="font-size:12px; color:var(--text-muted);">${target.count} source${target.count > 1 ? 's' : ''} · ${target.amount}</div>
+            <div style="font-size:12px; color:var(--text-muted);">${count} source${count > 1 ? 's' : ''} · ${amount}</div>
             <div style="font-size:11px; color:var(--warning); margin-top:8px;">This releases every source in this hook — all together, not one at a time.</div>
         </div>
         <div style="font-size:12px; color:var(--text-muted); margin-bottom:16px;">
@@ -3877,7 +3892,7 @@ function openUnhook(target) {
 
     pendingExecution = {
         type: 'unhook',
-        payload: { hookReference: target.hookReference, cardSuffix: myCard?.card_suffix },
+        payload: { hookReference: hook.hook_reference, cardSuffix: myCard?.card_suffix },
         callback: () => executeUnhook()
     };
     showPreviewModal('Unhook preview', bodyHtml, null, 'Unhook everything', 'btn-danger');
@@ -3892,6 +3907,41 @@ async function executeUnhook() {
     if (data.status === 'UNHOOK_PARTIAL') showMessage('Some sources released — others could not be released automatically and remain held. See Help for what to do next.', 'warning');
     else showMessage('All hooked sources released. 🎉', 'success');
     goBack();
+    loadCardView();
+}
+
+// Per-source unhook — releases just one hooked source, leaving every
+// other contributor untouched. The mirror of openUnhook()/
+// executeUnhook() above, which release everything at once.
+function openUnhookSource(hookSourceId) {
+    const hook = myCard?.hook;
+    const source = hook?.contributors?.find(c => c.hook_source_id === hookSourceId);
+    if (!source) return;
+
+    const bodyHtml = `
+        <div class="unhook-summary" style="border-color: var(--warning);">
+            <div class="icon">🔓</div>
+            <div style="font-size:16px; font-weight:700; margin-bottom:4px;">Unhook this source?</div>
+            <div style="font-size:12px; color:var(--text-muted);">${escapeHtml(PARTICIPANTS[source.institution]?.name || source.institution)} · ${escapeHtml(source.source_identifier)} · ${formatMoney(source.held_amount, hook.currency)}</div>
+        </div>
+        <div style="font-size:12px; color:var(--text-muted); margin-bottom:16px;">
+            Only this source is released — every other hooked source stays in place. It goes back to being a normal, spendable source in your Toolbox.
+        </div>`;
+
+    pendingExecution = {
+        type: 'unhook_source',
+        payload: { hookSourceId },
+        callback: () => executeUnhookSource()
+    };
+    showPreviewModal('Unhook this source', bodyHtml, null, 'Unhook this source', 'btn-danger');
+}
+
+async function executeUnhookSource() {
+    const { hookSourceId } = pendingExecution.payload;
+    if (!hookSourceId) return;
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/unhook_source.php', { hook_source_id: hookSourceId });
+    if (!result.ok) { showMessage('Couldn\'t unhook that source: ' + friendlyApiError(result.error), 'error'); return; }
+    showMessage('Source released. 🎉', 'success');
     loadCardView();
 }
 
@@ -3963,6 +4013,7 @@ function renderCardViewBody() {
                 <div class="myc-source-amt">${formatMoney(c.held_amount, hook.currency)}</div>
                 <span class="source-status-badge open">Open</span>
             </div>
+            <button class="btn btn-secondary btn-sm" onclick="openUnhookSource(${c.hook_source_id})">Unhook</button>
         </div>`).join('') : `<div style="font-size:12px;color:var(--text-dim);padding:8px 0;">No sources hooked yet.</div>`;
     const cardName = myCard.display_name || (Journey.read().cardNamed ? Journey.read().cardNamed : null);
 
@@ -3991,7 +4042,7 @@ function renderCardViewBody() {
                     <div class="myc-panel-head"><span class="myc-panel-title">Hooked sources</span>${hook ? `<span class="myc-panel-total">${formatMoney(hook.total_held, hook.currency)}</span>` : ''}</div>
                     ${hook ? `<div class="help" style="margin-bottom:6px;">Held until ${new Date(hook.expires_at).toLocaleString()} — releases automatically after 24 hours if it isn't spent first.</div>` : ''}
                     ${contributorsHtml}
-                    ${hook && hook.contributors.length ? `<button class="btn secondary" style="margin-top:14px;" onclick="openUnhook({hookReference: hook.hook_reference, count: hook.contributors.length, amount: formatMoney(hook.total_held, hook.currency)})">Unhook everything</button>` : ''}
+                    ${hook && hook.contributors.length ? `<button class="btn secondary" style="margin-top:14px;" onclick="openUnhook()">Unhook everything</button>` : ''}
                 </div>
                 <div id="sessionStatusArea">${myCard.active_session ? renderSessionStatus(myCard.active_session) : ''}</div>
             </div>

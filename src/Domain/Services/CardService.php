@@ -1854,6 +1854,146 @@ public function releaseHook(
     }
 }
 
+/**
+ * Releases a single hooked source from a card's active hook, leaving
+ * every other source in that hook untouched — the per-source
+ * counterpart to releaseHook() (which releases everything at once).
+ *
+ * Either the card owner or the source's own contributor can call this
+ * on their own source; nobody else can release someone else's
+ * contribution. If this was the last HELD source in the hook, the
+ * hook itself is closed out to UNHOOKED, mirroring what a full
+ * releaseHook() would leave behind.
+ */
+public function releaseHookSource(
+    int $hookSourceId,
+    int $requestingUserId,
+    SwapService $swapService
+): array {
+    $this->db->beginTransaction();
+
+    try {
+        // Non-locking lookup purely to find which hook this source
+        // belongs to, so the hook row can be locked FIRST — same lock
+        // order releaseHook() already uses (hook, then its sources) —
+        // to avoid a deadlock between a full unhook and a single-source
+        // unhook running at the same time against the same hook.
+        $lookupStmt = $this->db->prepare("SELECT hook_id FROM card_pool_hook_sources WHERE id = ?");
+        $lookupStmt->execute([$hookSourceId]);
+        $hookId = $lookupStmt->fetchColumn();
+
+        if (!$hookId) {
+            $this->db->rollBack();
+            return ['success' => false, 'error' => 'This source was not found.'];
+        }
+
+        $hookStmt = $this->db->prepare("SELECT * FROM card_pool_hooks WHERE id = ? FOR UPDATE");
+        $hookStmt->execute([$hookId]);
+        $hook = $hookStmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$hook || $hook['status'] !== 'HOOKED') {
+            $this->db->rollBack();
+            return [
+                'success' => false,
+                'error' => $hook
+                    ? "This hook is {$hook['status']} and can no longer be unhooked from "
+                        . "(it has either already been spent, expired, or was already released)."
+                    : 'This source was not found.',
+            ];
+        }
+
+        $sourceStmt = $this->db->prepare("
+            SELECT * FROM card_pool_hook_sources WHERE id = ? AND hook_id = ? AND status = 'HELD' FOR UPDATE
+        ");
+        $sourceStmt->execute([$hookSourceId, $hookId]);
+        $source = $sourceStmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$source) {
+            $this->db->rollBack();
+            return ['success' => false, 'error' => 'This source was not found or has already been released.'];
+        }
+
+        $isCardOwner = (int)$hook['user_id'] === $requestingUserId;
+        $isSourceOwner = (int)$source['owner_user_id'] === $requestingUserId;
+        if (!$isCardOwner && !$isSourceOwner) {
+            $this->db->rollBack();
+            return ['success' => false, 'error' => "Only the card owner or this source's own contributor can unhook it."];
+        }
+
+        $releaseResult = $swapService->releaseHold(
+            ['institution' => $source['institution'], 'asset_type' => $source['asset_type']],
+            $source['institution'],
+            null,
+            $source['hold_reference']
+        );
+
+        // Same check as releaseHook(): releaseHold() reports a genuine
+        // failure by RETURNING success/released = false, not by
+        // throwing — never mark this source RELEASED unless it actually
+        // was.
+        if (!($releaseResult['success'] ?? $releaseResult['released'] ?? false)) {
+            $this->db->rollBack();
+            return [
+                'success' => false,
+                'error' => $releaseResult['message'] ?? 'Release failed at the source institution — it remains held.',
+            ];
+        }
+
+        $this->db->prepare("
+            UPDATE card_pool_hook_sources SET status = 'RELEASED', released_at = NOW() WHERE id = ?
+        ")->execute([$hookSourceId]);
+
+        // Recompute the hook's total straight from whatever HELD sources
+        // remain, rather than subtracting — self-correcting against any
+        // prior drift instead of accumulating it.
+        $remainingStmt = $this->db->prepare("
+            SELECT COALESCE(SUM(held_amount), 0) AS total, COUNT(*) AS cnt
+            FROM card_pool_hook_sources WHERE hook_id = ? AND status = 'HELD'
+        ");
+        $remainingStmt->execute([$hookId]);
+        $remaining = $remainingStmt->fetch(PDO::FETCH_ASSOC);
+        $remainingTotal = round((float)$remaining['total'], 2);
+        $remainingCount = (int)$remaining['cnt'];
+
+        if ($remainingCount > 0) {
+            $this->db->prepare("UPDATE card_pool_hooks SET total_held_amount = ? WHERE id = ?")
+                ->execute([$remainingTotal, $hookId]);
+            $hookStatus = 'HOOKED';
+        } else {
+            $this->db->prepare("
+                UPDATE card_pool_hooks SET status = 'UNHOOKED', total_held_amount = 0, unhooked_at = NOW() WHERE id = ?
+            ")->execute([$hookId]);
+            $hookStatus = 'UNHOOKED';
+        }
+
+        $this->db->commit();
+
+        error_log("[CardService] releaseHookSource: hook={$hook['hook_reference']} source_id={$hookSourceId} "
+            . "institution={$source['institution']} amount={$source['held_amount']} remaining_sources={$remainingCount}");
+
+        return [
+            'success' => true,
+            'hook_reference' => $hook['hook_reference'],
+            'institution' => $source['institution'],
+            'amount' => (float)$source['held_amount'],
+            'currency' => $hook['currency'],
+            'remaining_hook_total' => $remainingTotal,
+            'remaining_sources' => $remainingCount,
+            'hook_status' => $hookStatus,
+            'message' => $remainingCount > 0
+                ? 'Source released.'
+                : 'Source released — no sources remain hooked to this card.',
+        ];
+
+    } catch (\Throwable $e) {
+        if ($this->db->inTransaction()) {
+            $this->db->rollBack();
+        }
+        error_log("[CardService] releaseHookSource failed: " . $e->getMessage());
+        return ['success' => false, 'error' => $e->getMessage()];
+    }
+}
+
 
     // ============================================================
     // POOLED CARD HOOK/SWIPE/FINALIZE - VouchMorph's own network

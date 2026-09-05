@@ -305,6 +305,52 @@ class PoolCoordinator
         $this->stateMachine->transition($pool, PoolStatus::COMPLETED->value);
         $this->poolRepository->updateStatus($pool['id'], PoolStatus::COMPLETED->value);
 
+        // ============================================================
+        // FIX: record this pool swap in swap_requests/swap_transactions
+        // — the same tables the user's swap history and the admin
+        // transaction log actually read from. A completed multi-source
+        // pool swap (this includes card-hook-funded swaps) previously
+        // never appeared there at all, even though it had genuinely
+        // gone through — createPool()/persistContributions() correctly
+        // track it in this subsystem's OWN pool/pool_contributions
+        // tables, but nothing ever forwarded that into the shared
+        // tracking tables every single-source swap already populates.
+        //
+        // Best-effort: populateTrackingTables() already catches and
+        // logs its own DB errors per-table rather than throwing, and
+        // this call runs after the swap has already genuinely
+        // completed above, so a failure here can only mean this swap
+        // stays invisible in the history log — never that the swap
+        // itself is undone or reported as failed.
+        // ============================================================
+        try {
+            $sourceInstitutions = implode(', ', array_unique(array_column($contributions, 'institution')));
+            $this->swapService->recordPoolSwapTransaction(
+                [
+                    'swap_type' => 'MULTI_SOURCE',
+                    'reference' => $pool['reference'] ?? null,
+                    'amount' => $pool['amount'] ?? 0,
+                    'currency' => $pool['currency'] ?? 'BWP',
+                    'destination_currency' => $pool['destination_currency'] ?? $pool['currency'] ?? 'BWP',
+                    'from_institution' => $sourceInstitutions,
+                    'to_institution' => $pool['destination_institution'] ?? null,
+                    'user_id' => $pool['user_id'] ?? null,
+                ],
+                [
+                    'status' => 'completed',
+                    'source_institution' => $sourceInstitutions,
+                    'destination_institution' => $pool['destination_institution'] ?? null,
+                    'destination_identifier' => $pool['destination_identifier'] ?? null,
+                    'destination_asset_type' => $pool['destination_asset_type'] ?? null,
+                    'user_id' => $pool['user_id'] ?? null,
+                ]
+            );
+        } catch (\Throwable $trackingErr) {
+            $this->logger->warning('Failed to record pool swap in swap_requests/swap_transactions', [
+                'pool_id' => $pool['id'] ?? null, 'error' => $trackingErr->getMessage(),
+            ]);
+        }
+
         return ['debits' => $debits, 'settlement' => $settlementResult, 'invoices' => $invoiceResult];
     }
 
