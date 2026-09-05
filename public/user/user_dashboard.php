@@ -4389,6 +4389,7 @@ function openCreateSessionModal(cardSuffix) {
         <div class="field-group"><label>Amount to pay</label><input type="number" id="sessTarget" min="0.01" step="0.01" placeholder="0.00"></div>
         <div class="field-group"><label>Currency</label><select id="sessCurrency">${[...new Set(Object.values(PARTICIPANTS).map(p => p?.limits?.currency).filter(Boolean))].map(c => `<option value="${c}" ${c === (myCard.hook?.currency || myCard.currency) ? 'selected' : ''}>${c}</option>`).join('') || `<option value="${myCard.hook?.currency || myCard.currency || 'BWP'}">${myCard.hook?.currency || myCard.currency || 'BWP'}</option>`}</select></div>
         <div class="field-group"><label>Destination institution</label><select id="sessToInst"><option value="">Select</option>${instOptions}</select></div>
+        <div class="field-group"><label>Destination type</label><select id="sessToAssetType"><option value="ACCOUNT">Bank account</option><option value="WALLET">Mobile wallet</option><option value="CARD">Card</option></select></div>
         <div class="field-group"><label>Destination account/wallet number</label><input id="sessToIdentifier" placeholder="Account number or phone"></div>
         <div class="field-group"><label>Strategy — how should contributions split?</label>
             <select id="sessStrategy">
@@ -4407,11 +4408,24 @@ async function submitCreateSession(cardSuffix) {
     const target = parseFloat(document.getElementById('sessTarget')?.value);
     const currency = document.getElementById('sessCurrency')?.value.trim();
     const toInst = document.getElementById('sessToInst')?.value;
+    const toAssetType = document.getElementById('sessToAssetType')?.value || 'WALLET';
     const toIdentifier = document.getElementById('sessToIdentifier')?.value.trim();
     const strategy = document.getElementById('sessStrategy')?.value;
     if (!(target > 0)) { showMessage('Enter the amount to pay.', 'warning'); return; }
     if (!toInst || !toIdentifier) { showMessage('Select a destination institution and enter an account/wallet number.', 'warning'); return; }
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/Create.php', { card_suffix: cardSuffix, target_amount: target, currency, strategy, to_institution: toInst, destination_identifier: toIdentifier });
+    // FIX: this never sent a destination type at all, so Create.php
+    // silently defaulted every payout to destination_asset_type=WALLET
+    // — including payouts to a bank ACCOUNT — which makes
+    // creditDestination() send the account number in the wallet-phone
+    // field instead of the account-number field. Matches the same
+    // ACCOUNT/CARD/WALLET -> identifier-type mapping the general swap
+    // wizard already uses correctly (executeViaContributionSession()).
+    const toIdentifierType = toAssetType === 'ACCOUNT' ? 'account' : (toAssetType === 'CARD' ? 'card' : 'phone');
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/Create.php', {
+        card_suffix: cardSuffix, target_amount: target, currency, strategy,
+        to_institution: toInst, destination_identifier: toIdentifier,
+        destination_asset_type: toAssetType, destination_identifier_type: toIdentifierType,
+    });
     if (!result.ok) { showMessage('Couldn\'t start that swap: ' + friendlyApiError(result.error), 'error'); return; }
     showMessage('Swap started.', 'success');
     closeModal(); loadCardView();
@@ -4490,7 +4504,7 @@ function showTransactionReport(response, session) {
         <div class="result-box" id="resultBoxRoot">
             <div class="icon">✓</div>
             <div class="result-title">Swipe complete</div>
-            <div class="result-sub">Reference: ${escapeHtml(data.reference || response.swap_reference || '—')}</div>
+            <div class="result-sub">Reference: ${escapeHtml(data.swap_reference || data.execution_result?.reference || '—')}</div>
             <div style="font-size:22px;font-weight:600;font-family:var(--font-mono);margin:12px 0;">${formatMoney(preview.total_target ?? data.amount, session?.currency)}</div>
         </div>
         <div class="myc-panel-title" style="margin-bottom:8px;">Paid using</div>
