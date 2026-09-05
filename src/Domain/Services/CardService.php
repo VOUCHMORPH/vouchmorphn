@@ -1768,13 +1768,28 @@ public function releaseHook(
  
         foreach ($heldSources as $source) {
             try {
-                $swapService->releaseHold(
+                $releaseResult = $swapService->releaseHold(
                     ['institution' => $source['institution'], 'asset_type' => $source['asset_type']],
                     $source['institution'],
                     null,
                     $source['hold_reference']
                 );
- 
+
+                // ============================================================
+                // FIX: releaseHold() reports a genuine failure (adapter
+                // declines, institution API error, stale hold reference)
+                // by RETURNING success/released = false — it deliberately
+                // catches its own exceptions internally and never throws
+                // for that case. Ignoring the return value here meant a
+                // real release failure still fell through to being marked
+                // RELEASED below and reported to the user as fully
+                // unhooked, even though the hold was never actually
+                // released at the source institution.
+                // ============================================================
+                if (!($releaseResult['success'] ?? $releaseResult['released'] ?? false)) {
+                    throw new RuntimeException($releaseResult['message'] ?? 'Release failed');
+                }
+
                 // ============================================================
                 // FIX: Wrap source status update in a savepoint
                 // ============================================================

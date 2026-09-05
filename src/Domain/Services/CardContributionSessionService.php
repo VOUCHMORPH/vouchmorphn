@@ -125,6 +125,7 @@ class CardContributionSessionService
             ':currency' => $currency,
             ':strategy' => $strategy,
             ':floor' => $floor,
+            ':expires_at' => $expiresAt,
         ]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         $sessionId = $row ? (int)$row['id'] : 0;
