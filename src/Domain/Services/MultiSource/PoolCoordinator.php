@@ -1697,6 +1697,15 @@ class PoolCoordinator
             }
 
             // 5. Jump straight to HOLDING -> FUNDED (holds already real).
+            //
+            // FIX: the pool is created at CREATED (see createPool()) and
+            // the state machine only allows CREATED -> VERIFYING -> HOLDING
+            // — going straight from CREATED to HOLDING was always rejected
+            // as an invalid transition. Skipping verifySources() itself is
+            // still correct (CardService::hookSourcesToCard() already did
+            // the real verify+hold at hook time); only this bookkeeping
+            // transition through VERIFYING was missing.
+            $this->stateMachine->transition($pool, PoolStatus::VERIFYING->value);
             $this->stateMachine->transition($pool, PoolStatus::HOLDING->value);
             $this->stateMachine->transition($pool, PoolStatus::FUNDED->value);
 
