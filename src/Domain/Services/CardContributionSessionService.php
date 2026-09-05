@@ -297,7 +297,12 @@ class CardContributionSessionService
         }, array_filter($preview['contributors'] ?? [], fn($c) => ($c['amount'] ?? 0) > 0));
 
         $payload = array_merge($destination, [
-            'amount' => $session['target_amount'],
+            // FIX: $session comes straight from a PDO fetch of a numeric
+            // DB column, which PHP's pgsql driver returns as a string —
+            // PoolCoordinator/MultiSourceFeeCalculator declare this as a
+            // strict `float` parameter downstream, so an uncast string
+            // here threw a TypeError deep inside pool execution.
+            'amount' => (float)$session['target_amount'],
             'currency' => $session['currency'],
             'reference' => $session['session_reference'],
         ]);
@@ -323,7 +328,14 @@ class CardContributionSessionService
 
             return array_merge($this->getStatus($sessionId, $ownerUserId), ['execution_result' => $result]);
 
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
+            // FIX: was `catch (Exception $e)` — a PHP engine error
+            // (TypeError, etc.) is a \Throwable but NOT an \Exception, so
+            // it fell through this catch entirely, left the session
+            // stuck at EXECUTING forever (never marked FAILED), and
+            // crashed the whole request before it could return JSON —
+            // exactly what surfaced to users as a generic "hiccup"
+            // instead of a real, readable error.
             $stmt = $this->db->prepare("
                 UPDATE card_contribution_sessions
                 SET status = 'FAILED', failure_reason = :reason, updated_at = NOW()

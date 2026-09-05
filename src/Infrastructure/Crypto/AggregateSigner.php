@@ -22,9 +22,24 @@ class AggregateSigner
         $this->systemId = $systemId;
     }
 
-    public function signAggregate(array $pool, array $holds, array $verifications): array
+    /**
+     * FIX: added $sourcesAlreadyVerified — a card-hook-funded pool
+     * (PoolCoordinator::executeFromCardHook()) builds synthetic $holds
+     * from funds that were already verified and held by
+     * CardService::hookSourcesToCard() at hook time, not from a fresh
+     * placeHolds() round in this call, so they never carry a 'signature'
+     * or 'certificate' (no live bank API response exists here to check).
+     * verifySourceSignatures() therefore rejected every single card-hook
+     * execution unconditionally with "Missing certificate or signature
+     * from source". When the caller already knows the sources were
+     * verified through that separate, already-audited path, it can skip
+     * the check here and still get VouchMorph's own aggregate signature.
+     */
+    public function signAggregate(array $pool, array $holds, array $verifications, bool $sourcesAlreadyVerified = false): array
     {
-        $this->verifySourceSignatures($holds, $verifications);
+        if (!$sourcesAlreadyVerified) {
+            $this->verifySourceSignatures($holds, $verifications);
+        }
 
         $payload = [
             'pool_id' => $pool['id'],
@@ -37,8 +52,8 @@ class AggregateSigner
                     'institution' => $hold['institution'],
                     'amount' => $hold['amount'],
                     'hold_reference' => $hold['hold_reference'],
-                    'source_signature' => $hold['signature'],
-                    'source_certificate' => $hold['certificate']
+                    'source_signature' => $hold['signature'] ?? null,
+                    'source_certificate' => $hold['certificate'] ?? null
                 ];
             }, $holds)
         ];

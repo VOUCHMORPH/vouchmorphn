@@ -1244,7 +1244,7 @@ class PoolCoordinator
         $feeResult = $this->feeCalculator->calculateFees(
             count($contributions),
             $deliveryMode,
-            $pool['amount'] ?? 0,
+            (float)($pool['amount'] ?? 0),
             $pool['currency'] ?? 'BWP',
             $pool['destination_currency'] ?? $pool['currency'] ?? 'BWP'
         );
@@ -1724,7 +1724,15 @@ class PoolCoordinator
 
             // 6. Master signature, destination execution — identical to
             // the normal path from here on.
-            $masterSignature = $this->aggregateSigner->signAggregate($pool, $holds, $verifications);
+            //
+            // FIX: pass sourcesAlreadyVerified=true — these holds were
+            // already verified and placed by CardService::
+            // hookSourcesToCard() at hook time, not by a fresh
+            // placeHolds() round in this call, so they carry no
+            // per-source 'signature'/'certificate' for signAggregate()
+            // to check. Without this, every card-hook execution failed
+            // unconditionally with "Missing certificate or signature".
+            $masterSignature = $this->aggregateSigner->signAggregate($pool, $holds, $verifications, true);
             $this->logger->info('Master signature generated (card hook)');
 
             $this->stateMachine->transition($pool, PoolStatus::DESTINATION_PENDING->value);
@@ -1777,7 +1785,12 @@ class PoolCoordinator
 
             return $this->buildResponse($pool, $contributions, $destinationResult, $completion['settlement'], $completion['invoices']);
 
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
+            // FIX: was `catch (Exception $e)` — a PHP engine error
+            // (TypeError, etc.) is a \Throwable but not an \Exception,
+            // so it used to skip this catch, skip the rollback and fee
+            // reversal below, and propagate uncaught, crashing the
+            // response instead of failing cleanly.
             if ($transactionStartedHere && $this->db->inTransaction()) {
                 $this->db->rollBack();
                 $this->logger->debug('Rolled back transaction in PoolCoordinator (card hook)');
