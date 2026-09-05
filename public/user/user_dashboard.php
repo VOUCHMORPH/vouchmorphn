@@ -2350,11 +2350,23 @@ function selectDestination(type) {
         panel.style.display = 'block';
         panel.innerHTML = document.getElementById('identityFields').cloneNode(true).innerHTML;
         const typeSel = panel.querySelector('#identityType');
-        if (typeSel) typeSel.onchange = function() { wizardState.identityType = this.value; };
+        if (typeSel) {
+            typeSel.value = wizardState.identityType || 'national_id';
+            typeSel.onchange = function() { wizardState.identityType = this.value; };
+        }
         const valInput = panel.querySelector('#identityValue');
-        if (valInput) valInput.oninput = function() { wizardState.identityValue = this.value.trim(); };
+        if (valInput) {
+            valInput.value = wizardState.identityValue || '';
+            valInput.oninput = function() {
+                wizardState.identityValue = this.value.trim();
+                nextBtn.disabled = !wizardState.identityValue;
+            };
+        }
         const smsInput = panel.querySelector('#identitySms');
-        if (smsInput) smsInput.oninput = function() { wizardState.identitySms = this.value; };
+        if (smsInput) {
+            smsInput.value = wizardState.identitySms || '';
+            smsInput.oninput = function() { wizardState.identitySms = this.value; };
+        }
         nextBtn.disabled = !wizardState.identityValue;
         return;
     }
