@@ -2119,13 +2119,68 @@ if ($balance <= 0) {
 
         $expiresAt = date('Y-m-d H:i:s', time() + $minExpirySeconds);
 
-        $hookStmt = $this->db->prepare("
-            INSERT INTO card_pool_hooks (hook_reference, card_suffix, user_id, total_held_amount, currency, status, expires_at)
-            VALUES (?, ?, ?, ?, ?, 'HOOKED', ?)
-            RETURNING id
+        // ============================================================
+        // FIX: MERGE INTO THE CARD'S EXISTING ACTIVE POOL INSTEAD OF
+        // ALWAYS STARTING A NEW ONE
+        //
+        // This used to unconditionally INSERT a brand-new card_pool_hooks
+        // row on every call, so every contributor got their own separate
+        // pot instead of adding to the one shared pot for that card — a
+        // card with 10 contributors of P20 each ended up with 10 pots of
+        // P20 rather than 1 pot of P200, and every read path (My.php,
+        // GetCardSources.php, authorizePooledSwipe(), the ISO 8583
+        // bridge, unhook.php) only ever looks at the single newest pot,
+        // so it showed/used just the latest contributor's amount.
+        //
+        // Locking and reusing the card's existing active HOOKED row here
+        // means every one of those "latest hook" reads becomes correct
+        // automatically, with no changes needed on their side — there is
+        // now only ever one active pot per card to find.
+        // ============================================================
+        $existingHookStmt = $this->db->prepare("
+            SELECT id, hook_reference, currency, total_held_amount, expires_at
+            FROM card_pool_hooks
+            WHERE card_suffix = ? AND status = 'HOOKED' AND expires_at > NOW()
+            ORDER BY created_at DESC LIMIT 1
+            FOR UPDATE
         ");
-        $hookStmt->execute([$hookReference, $cardSuffix, $cardOwnerUserId, $totalHeld, $currency, $expiresAt]);
-        $hookId = $hookStmt->fetchColumn();
+        $existingHookStmt->execute([$cardSuffix]);
+        $existingHook = $existingHookStmt->fetch(PDO::FETCH_ASSOC);
+
+        if ($existingHook && $existingHook['currency'] !== $currency) {
+            throw new RuntimeException(
+                "This card's active pool is already funded in {$existingHook['currency']} — " .
+                "cannot add a {$currency} source to the same pool."
+            );
+        }
+
+        if ($existingHook) {
+            $hookId = (int)$existingHook['id'];
+            $hookReference = $existingHook['hook_reference'];
+            $poolTotalHeld = (float)$existingHook['total_held_amount'] + $totalHeld;
+
+            // Conservative expiry, same rule already used above for a
+            // single call's own sources: the pool's expiry is always the
+            // EARLIEST of every hold ever placed into it, never the
+            // latest — never claim funds are available longer than the
+            // shortest-lived hold actually backing them.
+            $expiresAt = min($existingHook['expires_at'], $expiresAt);
+
+            $this->db->prepare("
+                UPDATE card_pool_hooks
+                SET total_held_amount = total_held_amount + ?, expires_at = ?
+                WHERE id = ?
+            ")->execute([$totalHeld, $expiresAt, $hookId]);
+        } else {
+            $hookStmt = $this->db->prepare("
+                INSERT INTO card_pool_hooks (hook_reference, card_suffix, user_id, total_held_amount, currency, status, expires_at)
+                VALUES (?, ?, ?, ?, ?, 'HOOKED', ?)
+                RETURNING id
+            ");
+            $hookStmt->execute([$hookReference, $cardSuffix, $cardOwnerUserId, $totalHeld, $currency, $expiresAt]);
+            $hookId = $hookStmt->fetchColumn();
+            $poolTotalHeld = $totalHeld;
+        }
 
         foreach ($placedHolds as $held) {
             $sourceStmt = $this->db->prepare("
@@ -2150,6 +2205,7 @@ if ($balance <= 0) {
             'success' => true,
             'hook_reference' => $hookReference,
             'total_held' => $totalHeld,
+            'pool_total_held' => $poolTotalHeld,
             'currency' => $currency,
             'expires_at' => $expiresAt,
             'source_count' => count($placedHolds),
