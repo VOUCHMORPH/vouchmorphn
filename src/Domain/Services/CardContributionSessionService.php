@@ -322,6 +322,80 @@ class CardContributionSessionService
                 ':id' => $sessionId,
             ]);
 
+            // ============================================================
+            // FIX: mark the card's OWN hook bookkeeping as spent.
+            //
+            // executeFromCardHook() genuinely debits each source and
+            // credits the destination — both fail closed, a real bank
+            // failure throws before this point — but it only updates
+            // PoolCoordinator's own pool/contribution tables; it has no
+            // knowledge of card_pool_hooks/card_pool_hook_sources at
+            // all. Every dashboard read (My.php, GetCardSources.php)
+            // filters those tables for status='HOOKED'/'HELD', so a
+            // completed swap kept showing every contributor at their
+            // full original held_amount as if nothing had been spent —
+            // and the same already-spent funds stayed eligible to be
+            // pulled into a brand-new swap. Reuses the exact
+            // 'DEBITED'/'SETTLED' convention CardService::
+            // finalizePooledSwipe() already established for card
+            // swipes, so every existing 'HELD'/'HOOKED' filter
+            // elsewhere excludes these rows correctly with no other
+            // changes needed.
+            //
+            // The money already genuinely moved and the session is
+            // already COMPLETED above; this is bookkeeping cleanup on
+            // the card's own side, not the transaction itself, so a
+            // failure here is logged rather than turned into a false
+            // "swap failed" for the caller.
+            // ============================================================
+            try {
+                $spentContributors = array_filter($preview['contributors'] ?? [], fn($c) => ($c['amount'] ?? 0) > 0);
+                if (!empty($spentContributors)) {
+                    $hookStmt = $this->db->prepare("SELECT id FROM card_pool_hooks WHERE hook_reference = :ref");
+                    $hookStmt->execute([':ref' => $session['hook_reference']]);
+                    $hookId = $hookStmt->fetchColumn();
+
+                    if ($hookId) {
+                        foreach ($spentContributors as $c) {
+                            $this->db->prepare("
+                                UPDATE card_pool_hook_sources
+                                SET status = 'DEBITED', debited_amount = :amount, debit_reference = :ref
+                                WHERE id = :id AND status = 'HELD'
+                            ")->execute([
+                                ':amount' => $c['amount'],
+                                ':ref' => $result['reference'] ?? $session['session_reference'],
+                                ':id' => $c['hook_source_id'],
+                            ]);
+                        }
+
+                        // Recompute straight from whatever HELD sources
+                        // remain (a partial swap leaves some hooked
+                        // sources untouched) — self-correcting, same
+                        // pattern releaseHookSource() already uses.
+                        $remainingStmt = $this->db->prepare("
+                            SELECT COALESCE(SUM(held_amount), 0) AS total, COUNT(*) AS cnt
+                            FROM card_pool_hook_sources WHERE hook_id = :hook_id AND status = 'HELD'
+                        ");
+                        $remainingStmt->execute([':hook_id' => $hookId]);
+                        $remaining = $remainingStmt->fetch(PDO::FETCH_ASSOC);
+
+                        if ((int)$remaining['cnt'] > 0) {
+                            $this->db->prepare("
+                                UPDATE card_pool_hooks SET total_held_amount = :total WHERE id = :hook_id
+                            ")->execute([':total' => round((float)$remaining['total'], 2), ':hook_id' => $hookId]);
+                        } else {
+                            $this->db->prepare("
+                                UPDATE card_pool_hooks
+                                SET status = 'SETTLED', total_held_amount = 0, settlement_reference = :ref, finalized_at = NOW()
+                                WHERE id = :hook_id
+                            ")->execute([':ref' => $result['reference'] ?? $session['session_reference'], ':hook_id' => $hookId]);
+                        }
+                    }
+                }
+            } catch (\Throwable $bookkeepingErr) {
+                error_log("[CardContributionSessionService] execute(): session {$sessionId} completed but card hook bookkeeping update failed: " . $bookkeepingErr->getMessage());
+            }
+
             $this->logger->info('Contribution session executed successfully', [
                 'session_id' => $sessionId, 'pool_id' => $result['pool_id'] ?? null,
             ]);
