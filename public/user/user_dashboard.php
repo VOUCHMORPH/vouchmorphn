@@ -4585,6 +4585,7 @@ async function loadToolboxView() {
     body.innerHTML = `<div style="text-align:center;padding:40px 0;"><div class="spinner" style="border-color:rgba(16,30,27,0.15);border-top-color:var(--primary);"></div> Loading...</div>`;
     await getCurrentUserRole();
     await loadUserSources();
+    await loadUserIdentities();
     body.innerHTML = renderToolboxBody();
 }
 
@@ -5211,6 +5212,7 @@ async function submitRegisterIdentity() {
     regIdentityState.attemptId = data.attempt_id || null;
     regIdentityState.identityType = identityType;
     regIdentityState.identityValue = identityValue;
+    await loadUserIdentities();
     if (data.requires_otp) {
         document.getElementById('regIdentityOtpFields').style.display = 'block';
         document.getElementById('regIdentityOtpMessage').textContent = data.message || 'Enter the verification code sent to your phone/email.';
@@ -5240,6 +5242,7 @@ async function submitVerifyIdentityOtp() {
     if (!otp) { showMessage('Enter the verification code.', 'warning'); return; }
     const result = await callApi(CONFIG.API_BASE + '/user/verify_identity_otp.php', { attempt_id: regIdentityState.attemptId, otp });
     if (!result.ok) { showMessage('Verification failed: ' + friendlyApiError(result.error), 'error'); return; }
+    await loadUserIdentities();
     showMessage('Identity verified. You can now receive swaps.', 'success');
     setTimeout(() => closeModal(), 2000);
 }
@@ -5475,6 +5478,21 @@ async function loadUserSources() {
     if (pendingResult.ok) { pendingSources = pendingResult.body.data || []; updateToolboxBadge(); }
 }
 
+async function loadUserIdentities() {
+    if (!CONFIG.USER_ID) return;
+    const result = await callApi(CONFIG.API_BASE + '/user/identities.php', {});
+    if (result.ok) {
+        savedIdentities = (result.body.data?.identities || []).map(id => ({
+            id: id.id,
+            type: id.identity_type,
+            value: id.identity_value,
+            status: id.status,
+            verified: !!id.verified,
+        }));
+        renderProgressCard();
+    }
+}
+
 async function checkPendingClaims() {
     if (!CONFIG.USER_ID) return;
     try { 
@@ -5504,7 +5522,11 @@ async function loadAgentStatus() {
     agentStatus.is_agent = SessionUser.is_agent;
 }
 
-function openProfileModal() { openModal('My profile', renderProfileModal()); }
+async function openProfileModal() {
+    openModal('My profile', '<div style="text-align:center;padding:20px;"><div class="spinner" style="border-color:rgba(16,30,27,0.15);border-top-color:var(--primary);"></div> Loading...</div>');
+    await loadUserIdentities();
+    document.getElementById('modalBody').innerHTML = renderProfileModal();
+}
 
 function renderProfileModal() {
     const rows = savedIdentities.length ? savedIdentities.map((id, i) => `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);"><div><div style="font-size:11px;color:var(--text-muted);">${escapeHtml(IDENTITY_TYPE_LABELS[id.type] || id.type)}</div><div style="font-size:14px;font-weight:700;">${escapeHtml(id.value)}</div></div><div class="quick-actions" style="margin:0;"><span class="quick-link" onclick="useSavedIdentity(${i})">Use</span><span class="quick-link danger" onclick="removeSavedIdentity(${i})">Remove</span></div></div>`).join('') : `<div style="font-size:12px;color:var(--text-dim);">No saved identities yet.</div>`;
@@ -6050,6 +6072,7 @@ document.addEventListener('DOMContentLoaded', function() {
     checkPendingClaims();
     loadAgentStatus();
     loadUserSources();
+    loadUserIdentities();
     renderProgressCard();
     renderRepeatCard();
     renderView();
