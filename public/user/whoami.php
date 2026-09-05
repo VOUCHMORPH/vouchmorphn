@@ -28,7 +28,7 @@ try {
     $db = DBConnection::getConnection();
 
     $stmt = $db->prepare("
-        SELECT r.role_name, r.permissions
+        SELECT r.role_name, r.permissions, u.transaction_pin_hash
         FROM users u
         JOIN roles r ON r.role_id = u.role_id
         WHERE u.user_id = :id
@@ -45,6 +45,7 @@ try {
         'role' => $roleName,
         'is_agent' => $roleName === 'agent',
         'is_admin' => in_array($roleName, ['admin', 'super_admin'], true),
+        'has_pin' => !empty($row['transaction_pin_hash']),
         'permissions' => $permissions,
     ]);
 
