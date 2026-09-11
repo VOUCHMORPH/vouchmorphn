@@ -3,7 +3,10 @@ declare(strict_types=1);
 
 namespace Application\Admin\Auth;
 
+require_once __DIR__ . '/../../../Core/Database/CredentialsRepository.php';
+
 use Application\Utils\SessionManager;
+use Core\Database\CredentialsRepository;
 use PragmaRX\Google2FA\Google2FA;
 
 class AdminAuth
@@ -25,25 +28,13 @@ class AdminAuth
         $lockMinutes = 15;
 
         try {
+            $lockUntil = null;
             if ($newCount >= $maxAttempts) {
-                $stmt = $this->db->prepare("
-                    UPDATE admins 
-                    SET failed_login_attempts = :count,
-                        locked_until = NOW() + (:mins || ' minutes')::interval
-                    WHERE admin_id = :id
-                ");
-                $stmt->execute([
-                    ':count' => $newCount,
-                    ':mins' => $lockMinutes,
-                    ':id' => $adminId
-                ]);
+                $lockUntil = (new \DateTime("+{$lockMinutes} minutes"))->format('Y-m-d H:i:s');
                 error_log("[ADMIN AUTH] Account {$adminId} locked for {$lockMinutes} minutes after {$newCount} failed attempts");
-            } else {
-                $stmt = $this->db->prepare("
-                    UPDATE admins SET failed_login_attempts = :count WHERE admin_id = :id
-                ");
-                $stmt->execute([':count' => $newCount, ':id' => $adminId]);
             }
+            // failed_login_attempts / locked_until live in the auth DB now.
+            CredentialsRepository::recordAdminFailedAttempt($adminId, $newCount, $lockUntil);
         } catch (\Throwable $e) {
             error_log("[ADMIN AUTH] Failed to record login attempt: " . $e->getMessage());
         }
@@ -55,12 +46,7 @@ class AdminAuth
     private function resetFailedAttempts(int $adminId): void
     {
         try {
-            $stmt = $this->db->prepare("
-                UPDATE admins 
-                SET failed_login_attempts = 0, locked_until = NULL 
-                WHERE admin_id = :id
-            ");
-            $stmt->execute([':id' => $adminId]);
+            CredentialsRepository::resetAdminFailedAttempts($adminId);
         } catch (\Throwable $e) {
             error_log("[ADMIN AUTH] Failed to reset login attempts: " . $e->getMessage());
         }
@@ -74,48 +60,55 @@ class AdminAuth
         try {
             error_log("[ADMIN AUTH] Login attempt for: {$username} in country: {$country}");
 
-            // Check if admin exists (username OR email) - INCLUDING lockout fields
+            // Credentials (username, password_hash, MFA, lockout state)
+            // live in the isolated auth DB now. The identifier can be a
+            // username (auth DB) or an email (main DB) - try username
+            // first since that's the more common case.
+            $credentials = CredentialsRepository::findAdminCredentialsByUsername($username);
+            if ($credentials) {
+                $adminId = (int)$credentials['admin_id'];
+            } else {
+                $stmt = $this->db->prepare("
+                    SELECT admin_id FROM admins WHERE email = :identifier AND deleted_at IS NULL LIMIT 1
+                ");
+                $stmt->execute([':identifier' => $username]);
+                $resolvedId = $stmt->fetchColumn();
+                $adminId = $resolvedId ? (int)$resolvedId : null;
+                $credentials = $adminId ? CredentialsRepository::getAdminCredentials($adminId) : null;
+            }
+
+            if (!$adminId || !$credentials) {
+                error_log("[ADMIN AUTH] User not found: {$username}");
+                return ['success' => false, 'message' => 'Invalid username or password.'];
+            }
+
             $stmt = $this->db->prepare("
-                SELECT 
-                    admin_id, 
-                    username, 
-                    email, 
-                    password_hash, 
-                    role_id, 
-                    mfa_enabled,
-                    mfa_secret,
-                    full_name,
-                    country_code,
-                    deleted_at,
-                    failed_login_attempts,
-                    locked_until
-                FROM admins 
-                WHERE (username = :identifier OR email = :identifier)
-                    AND deleted_at IS NULL
-                LIMIT 1
+                SELECT admin_id, email, role_id, full_name, country_code, deleted_at
+                FROM admins
+                WHERE admin_id = :id
             ");
-            $stmt->execute([':identifier' => $username]);
+            $stmt->execute([':id' => $adminId]);
             $admin = $stmt->fetch(\PDO::FETCH_ASSOC);
 
-            if (!$admin) {
+            if (!$admin || $admin['deleted_at'] !== null) {
                 error_log("[ADMIN AUTH] User not found: {$username}");
                 return ['success' => false, 'message' => 'Invalid username or password.'];
             }
 
             // --- ACCOUNT LOCKOUT CHECK ---
-            if (!empty($admin['locked_until']) && strtotime($admin['locked_until']) > time()) {
-                $unlockAt = date('H:i:s', strtotime($admin['locked_until']));
-                error_log("[ADMIN AUTH] Account locked: {$username} until {$admin['locked_until']}");
+            if (!empty($credentials['locked_until']) && strtotime($credentials['locked_until']) > time()) {
+                $unlockAt = date('H:i:s', strtotime($credentials['locked_until']));
+                error_log("[ADMIN AUTH] Account locked: {$username} until {$credentials['locked_until']}");
                 return ['success' => false, 'message' => "Account temporarily locked due to repeated failed attempts. Try again after {$unlockAt}."];
             }
 
-            error_log("[ADMIN AUTH] User found: {$admin['username']}, Role ID: {$admin['role_id']}");
+            error_log("[ADMIN AUTH] User found: {$credentials['username']}, Role ID: {$admin['role_id']}");
 
             // Verify password
-            if (!password_verify($password, $admin['password_hash'])) {
+            if (!password_verify($password, $credentials['password_hash'])) {
                 error_log("[ADMIN AUTH] Password verification failed for: {$username}");
 
-                $this->recordFailedAttempt((int)$admin['admin_id'], (int)$admin['failed_login_attempts']);
+                $this->recordFailedAttempt($adminId, (int)$credentials['failed_login_attempts']);
 
                 return ['success' => false, 'message' => 'Invalid username or password.'];
             }
@@ -123,13 +116,7 @@ class AdminAuth
             error_log("[ADMIN AUTH] Password verified successfully for: {$username}");
 
             // --- RESET FAILURE COUNTER ON SUCCESS ---
-            $this->resetFailedAttempts((int)$admin['admin_id']);
-
-            // Check if account is deleted
-            if ($admin['deleted_at'] !== null) {
-                error_log("[ADMIN AUTH] Account deleted: {$username}");
-                return ['success' => false, 'message' => 'Account not found.'];
-            }
+            $this->resetFailedAttempts($adminId);
 
             // Check country access - Super admin (role_id = 999) can access any country
             $isSuperAdmin = ($admin['role_id'] == 999);
@@ -163,14 +150,14 @@ class AdminAuth
 
                 if (in_array('last_login_at', $existingColumns) && in_array('last_login_ip', $existingColumns)) {
                     $updateStmt = $this->db->prepare("
-                        UPDATE admins 
-                        SET last_login_at = NOW(), 
-                            last_login_ip = :ip 
+                        UPDATE admins
+                        SET last_login_at = NOW(),
+                            last_login_ip = :ip
                         WHERE admin_id = :admin_id
                     ");
                     $updateStmt->execute([
                         ':ip' => $ipAddress,
-                        ':admin_id' => $admin['admin_id']
+                        ':admin_id' => $adminId
                     ]);
                     error_log("[ADMIN AUTH] Last login updated for: {$username}");
                 } else {
@@ -191,8 +178,8 @@ class AdminAuth
             SessionManager::remove('admin_mfa_pending');
 
             // Store admin info in session
-            SessionManager::set('admin_id', (int)$admin['admin_id']);
-            SessionManager::set('admin_username', $admin['username']);
+            SessionManager::set('admin_id', $adminId);
+            SessionManager::set('admin_username', $credentials['username']);
             SessionManager::set('admin_email', $admin['email']);
             SessionManager::set('admin_full_name', $admin['full_name']);
             SessionManager::set('admin_role_id', (int)$admin['role_id']);
@@ -222,15 +209,15 @@ class AdminAuth
             }
 
             // Check if MFA is enabled
-            $mfaEnabled = ($admin['mfa_enabled'] === 't' || $admin['mfa_enabled'] === true || $admin['mfa_enabled'] === 1);
+            $mfaEnabled = ($credentials['mfa_enabled'] === 't' || $credentials['mfa_enabled'] === true || $credentials['mfa_enabled'] === 1);
 
-            if ($mfaEnabled && !empty($admin['mfa_secret'])) {
+            if ($mfaEnabled && !empty($credentials['mfa_secret'])) {
                 SessionManager::set('admin_mfa_pending', true);
                 error_log("[ADMIN AUTH] MFA required for {$username}");
                 return [
                     'success' => true,
                     'mfa_required' => true,
-                    'admin_id' => $admin['admin_id'],
+                    'admin_id' => $adminId,
                     'role_id' => (int)$admin['role_id'],
                     'role' => $roleName,           // FIXED: Added role name
                     'role_name' => $roleName,      // FIXED: Added role name
@@ -239,14 +226,14 @@ class AdminAuth
             }
 
             error_log("[ADMIN AUTH] Login successful: {$username} (Role ID: {$admin['role_id']}, Role Name: {$roleName})");
-            
+
             // ============================================================
             // FIXED: Return array now includes role, role_name, and role_id
             // ============================================================
             return [
                 'success' => true,
                 'message' => 'Login successful.',
-                'admin_id' => (int)$admin['admin_id'],
+                'admin_id' => $adminId,
                 'role_id' => (int)$admin['role_id'],  // FIXED: Added role_id
                 'role' => $roleName,                   // FIXED: Added role
                 'role_name' => $roleName              // FIXED: Added role_name
@@ -269,22 +256,22 @@ class AdminAuth
             }
 
             $stmt = $this->db->prepare("
-                SELECT admin_id, username, mfa_secret, mfa_enabled
-                FROM admins 
-                WHERE admin_id = :id 
-                    AND deleted_at IS NULL
-                LIMIT 1
+                SELECT admin_id FROM admins WHERE admin_id = :id AND deleted_at IS NULL LIMIT 1
             ");
             $stmt->execute([':id' => $adminId]);
-            $admin = $stmt->fetch(\PDO::FETCH_ASSOC);
-
-            if (!$admin) {
+            if (!$stmt->fetchColumn()) {
                 return ['success' => false, 'message' => 'Admin account not found.'];
             }
 
-            $mfaEnabled = ($admin['mfa_enabled'] === 't' || $admin['mfa_enabled'] === true || $admin['mfa_enabled'] === 1);
+            // mfa_secret / mfa_enabled live in the auth DB now.
+            $credentials = CredentialsRepository::getAdminCredentials((int)$adminId);
+            if (!$credentials) {
+                return ['success' => false, 'message' => 'Admin account not found.'];
+            }
 
-            if (!$mfaEnabled || empty($admin['mfa_secret'])) {
+            $mfaEnabled = ($credentials['mfa_enabled'] === 't' || $credentials['mfa_enabled'] === true || $credentials['mfa_enabled'] === 1);
+
+            if (!$mfaEnabled || empty($credentials['mfa_secret'])) {
                 SessionManager::remove('admin_mfa_pending');
                 return ['success' => true, 'message' => 'MFA not required.'];
             }
@@ -294,15 +281,15 @@ class AdminAuth
             }
 
             $google2fa = new Google2FA();
-            $valid = $google2fa->verifyKey($admin['mfa_secret'], $code, 1);
+            $valid = $google2fa->verifyKey($credentials['mfa_secret'], $code, 1);
 
             if (!$valid) {
-                error_log("[ADMIN AUTH] MFA code rejected for {$admin['username']}");
+                error_log("[ADMIN AUTH] MFA code rejected for {$credentials['username']}");
                 return ['success' => false, 'message' => 'Invalid authentication code.'];
             }
 
             SessionManager::remove('admin_mfa_pending');
-            error_log("[ADMIN AUTH] MFA verified for {$admin['username']}");
+            error_log("[ADMIN AUTH] MFA verified for {$credentials['username']}");
             return ['success' => true, 'message' => 'MFA verified successfully.'];
 
         } catch (\Throwable $e) {

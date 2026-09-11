@@ -15,9 +15,12 @@ define('PROJECT_ROOT', dirname(__DIR__, 2));
 require_once PROJECT_ROOT . '/src/Core/Config/LoadCountry.php';
 require_once PROJECT_ROOT . '/src/Application/Utils/SessionManager.php';
 require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
+require_once PROJECT_ROOT . '/src/Core/Database/AuthDBConnection.php';
+require_once PROJECT_ROOT . '/src/Core/Database/CredentialsRepository.php';
 
 use Application\Utils\SessionManager;
 use Core\Database\DBConnection;
+use Core\Database\CredentialsRepository;
 
 // Start session
 SessionManager::start();
@@ -244,18 +247,14 @@ try {
                 // Generate username from full name (remove spaces, lowercase)
                 $username = strtolower(preg_replace('/\s+/', '', $fullName));
                 // Add random numbers if too common
-                $stmt = $db->prepare("SELECT COUNT(*) FROM users WHERE username = :username");
-                $stmt->execute([':username' => $username]);
-                if ($stmt->fetchColumn() > 0) {
+                if (CredentialsRepository::userUsernameExists($username)) {
                     $username .= rand(100, 999);
                 }
             } else {
                 // Use phone as fallback
                 $username = 'user_' . preg_replace('/[^0-9]/', '', $phoneNumber);
                 // Ensure uniqueness
-                $stmt = $db->prepare("SELECT COUNT(*) FROM users WHERE username = :username");
-                $stmt->execute([':username' => $username]);
-                if ($stmt->fetchColumn() > 0) {
+                if (CredentialsRepository::userUsernameExists($username)) {
                     $username .= rand(100, 999);
                 }
             }
@@ -282,12 +281,13 @@ try {
         // ============================================================
         // Create the user with correct column names matching your table
         // ============================================================
+        // username/password_hash are no longer columns on `users` — they
+        // live in the isolated auth DB (see CredentialsRepository), keyed
+        // by the user_id this INSERT returns.
         $stmt = $db->prepare("
             INSERT INTO users (
-                username,
                 email,
                 phone,
-                password_hash,
                 transaction_pin_hash,
                 transaction_pin_set_at,
                 verified,
@@ -301,10 +301,8 @@ try {
                 phone3,
                 registration_channel
             ) VALUES (
-                :username,
                 :email,
                 :phone,
-                :password_hash,
                 :transaction_pin_hash,
                 NOW(),
                 true,
@@ -318,13 +316,12 @@ try {
                 :phone3,
                 'self'
             )
+            RETURNING user_id
         ");
-        
+
         $stmt->execute([
-            ':username' => $username,
             ':email' => $email,
             ':phone' => $tempData['phone_number'] ?? null,
-            ':password_hash' => $tempData['pin_hash'],
             ':transaction_pin_hash' => $tempData['pin_hash'],
             ':national_id' => ($tempData['identifier_type'] === 'national_id') ? $tempData['identifier_value'] : null,
             ':drivers_license' => ($tempData['identifier_type'] === 'drivers_license') ? $tempData['identifier_value'] : null,
@@ -334,16 +331,20 @@ try {
             ':phone2' => $tempData['phone2'] ?? null,
             ':phone3' => $tempData['phone3'] ?? null
         ]);
-        $userId = $db->lastInsertId();
+        $userId = (int)$stmt->fetchColumn();
         error_log("VERIFY OTP: User created with ID: {$userId}");
 
         // Commit transaction
         $db->commit();
         error_log("VERIFY OTP: Transaction committed successfully");
 
+        // Credentials go to the auth DB after the main-DB commit succeeds
+        // (the two databases can't share one transaction).
+        CredentialsRepository::createUserCredentials($userId, $username, $tempData['pin_hash']);
+
         // Store user in session
         $stmt = $db->prepare("
-            SELECT user_id, username, email, phone, full_name, created_at 
+            SELECT user_id, email, phone, full_name, created_at
             FROM users WHERE user_id = :user_id
         ");
         $stmt->execute([':user_id' => $userId]);
@@ -351,7 +352,7 @@ try {
 
         SessionManager::setUser([
             'user_id' => $user['user_id'],
-            'username' => $user['username'] ?? '',
+            'username' => $username,
             'email' => $user['email'],
             'phone' => $user['phone'],
             'full_name' => $user['full_name'] ?? '',

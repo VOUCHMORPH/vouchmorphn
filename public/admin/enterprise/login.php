@@ -12,9 +12,12 @@ if (session_status() === PHP_SESSION_NONE) {
 }
 
 require_once __DIR__ . '/../../../src/Core/Database/DBConnection.php';
+require_once __DIR__ . '/../../../src/Core/Database/AuthDBConnection.php';
+require_once __DIR__ . '/../../../src/Core/Database/CredentialsRepository.php';
 require_once __DIR__ . '/auth.php';
 
 use Core\Database\DBConnection;
+use Core\Database\CredentialsRepository;
 
 $pdo = DBConnection::getConnection();
 
@@ -44,8 +47,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 o.status as org_status,
                 u.user_id as auth_user_id,
                 u.email,
-                u.username,
-                u.password_hash,
                 u.full_name,
                 u.verified,
                 u.kyc_verified,
@@ -61,7 +62,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([':email' => $email]);
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        if ($user && password_verify($password, $user['password_hash'])) {
+        // username/password_hash live in the isolated auth DB now, keyed
+        // by the same user_id.
+        $credentials = $user ? CredentialsRepository::getUserCredentials((int)$user['user_id']) : null;
+        if ($user) {
+            $user['username'] = $credentials['username'] ?? null;
+        }
+
+        if ($user && $credentials && password_verify($password, $credentials['password_hash'])) {
 
             $roleCheck = $pdo->prepare("
                 SELECT role_code, label, default_scope 

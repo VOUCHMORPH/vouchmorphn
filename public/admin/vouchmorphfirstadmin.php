@@ -32,7 +32,10 @@ if (php_sapi_name() !== 'cli') {
 }
 
 require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
+require_once __DIR__ . '/../../src/Core/Database/AuthDBConnection.php';
+require_once __DIR__ . '/../../src/Core/Database/CredentialsRepository.php';
 use Core\Database\DBConnection;
+use Core\Database\CredentialsRepository;
 
 $fullName = trim($argv[1] ?? '');
 $email = trim(strtolower($argv[2] ?? ''));
@@ -71,20 +74,21 @@ if ($tempPassword === '') {
 }
 $hash = password_hash($tempPassword, PASSWORD_DEFAULT);
 
+// username/password_hash/mfa_enabled/failed_login_attempts live in the
+// isolated auth DB now (see CredentialsRepository).
 $stmt = $db->prepare("
     INSERT INTO admins (
-        username, email, password_hash, role_id, full_name, country_code,
-        mfa_enabled, failed_login_attempts, created_at, updated_at
+        email, role_id, full_name, country_code, created_at, updated_at
     ) VALUES (
-        :username, :email, :hash, 999, :name, :country,
-        false, 0, NOW(), NOW()
+        :email, 999, :name, :country, NOW(), NOW()
     ) RETURNING admin_id
 ");
 $stmt->execute([
-    ':username' => $username, ':email' => $email, ':hash' => $hash,
-    ':name' => $fullName, ':country' => $countryCode,
+    ':email' => $email, ':name' => $fullName, ':country' => $countryCode,
 ]);
 $newId = (int)$stmt->fetchColumn();
+
+CredentialsRepository::createAdminCredentials($newId, $username, $hash, false);
 
 echo "super_admin created in this database.\n";
 echo "  admin_id:      {$newId}\n";

@@ -27,10 +27,13 @@ try {
 
 // Load required classes
 require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
+require_once PROJECT_ROOT . '/src/Core/Database/AuthDBConnection.php';
+require_once PROJECT_ROOT . '/src/Core/Database/CredentialsRepository.php';
 require_once PROJECT_ROOT . '/src/Application/Utils/SessionManager.php';
 require_once PROJECT_ROOT . '/src/Application/Admin/Auth/AdminAuth.php';
 
 use Core\Database\DBConnection;
+use Core\Database\CredentialsRepository;
 use Application\Utils\SessionManager;
 use Application\Admin\Auth\AdminAuth;
 
@@ -97,31 +100,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 throw new Exception("Password must be at least 6 characters.");
             }
             
-            // Check if username or email exists
-            $checkStmt = $db->prepare("SELECT COUNT(*) FROM admins WHERE username = :username OR email = :email");
-            $checkStmt->execute([':username' => $username, ':email' => $email]);
+            // Check if username or email exists (username lives in the
+            // auth DB now, email stays in the main DB)
+            if (CredentialsRepository::adminUsernameExists($username)) {
+                throw new Exception("Username or email already exists.");
+            }
+            $checkStmt = $db->prepare("SELECT COUNT(*) FROM admins WHERE email = :email");
+            $checkStmt->execute([':email' => $email]);
             if ($checkStmt->fetchColumn() > 0) {
                 throw new Exception("Username or email already exists.");
             }
-            
+
             // Hash password
             $passwordHash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
-            
-            // Insert new admin
+
+            // Insert new admin - username/password_hash/mfa_enabled live in
+            // the isolated auth DB now (see CredentialsRepository)
             $stmt = $db->prepare("
-                INSERT INTO admins (username, email, password_hash, role_id, full_name, country_code, mfa_enabled, created_at, updated_at)
-                VALUES (:username, :email, :hash, :role_id, :full_name, :country_code, :mfa_enabled, NOW(), NOW())
+                INSERT INTO admins (email, role_id, full_name, country_code, created_at, updated_at)
+                VALUES (:email, :role_id, :full_name, :country_code, NOW(), NOW())
+                RETURNING admin_id
             ");
             $stmt->execute([
-                ':username' => $username,
                 ':email' => $email,
-                ':hash' => $passwordHash,
                 ':role_id' => $roleId,
                 ':full_name' => $fullName,
                 ':country_code' => $countryCode,
-                ':mfa_enabled' => $mfaEnabled
             ]);
-            
+            $newAdminId = (int)$stmt->fetchColumn();
+
+            CredentialsRepository::createAdminCredentials($newAdminId, $username, $passwordHash, $mfaEnabled === 't');
+
             echo json_encode(['success' => true, 'message' => 'Admin created successfully']);
             exit;
             
@@ -144,26 +153,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             
             $stmt = $db->prepare("
-                UPDATE admins 
-                SET username = :username, 
-                    email = :email, 
-                    full_name = :full_name, 
-                    role_id = :role_id, 
+                UPDATE admins
+                SET email = :email,
+                    full_name = :full_name,
+                    role_id = :role_id,
                     country_code = :country_code,
-                    mfa_enabled = :mfa_enabled, 
                     updated_at = NOW()
                 WHERE admin_id = :admin_id
             ");
             $stmt->execute([
-                ':username' => $username,
                 ':email' => $email,
                 ':full_name' => $fullName,
                 ':role_id' => $roleId,
                 ':country_code' => $countryCode,
-                ':mfa_enabled' => $mfaEnabled,
                 ':admin_id' => $adminId
             ]);
-            
+
+            // username/mfa_enabled live in the auth DB now
+            CredentialsRepository::updateAdminUsernameAndMfa($adminId, $username, $mfaEnabled === 't');
+
             echo json_encode(['success' => true, 'message' => 'Admin updated successfully']);
             exit;
             
@@ -196,10 +204,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             
             $passwordHash = password_hash($newPassword, PASSWORD_BCRYPT, ['cost' => 12]);
-            
-            $stmt = $db->prepare("UPDATE admins SET password_hash = :hash, updated_at = NOW() WHERE admin_id = :admin_id");
-            $stmt->execute([':hash' => $passwordHash, ':admin_id' => $adminId]);
-            
+
+            CredentialsRepository::updateAdminPassword($adminId, $passwordHash);
+
             echo json_encode(['success' => true, 'message' => 'Password reset successfully']);
             exit;
         }
@@ -213,14 +220,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// Get all admins (excluding soft-deleted)
+// Get all admins (excluding soft-deleted). username/mfa_enabled live in
+// the auth DB now, so attach them via a batched lookup by admin_id.
 try {
     $admins = $db->query("
-        SELECT admin_id, username, email, phone, full_name, role_id, country_code, mfa_enabled, created_at, updated_at 
-        FROM admins 
-        WHERE deleted_at IS NULL 
+        SELECT admin_id, email, phone, full_name, role_id, country_code, created_at, updated_at
+        FROM admins
+        WHERE deleted_at IS NULL
         ORDER BY role_id DESC, created_at ASC
     ")->fetchAll();
+
+    $credentialsByAdminId = CredentialsRepository::getAdminCredentialsBatch(array_column($admins, 'admin_id'));
+    foreach ($admins as &$adminRow) {
+        $cred = $credentialsByAdminId[(int)$adminRow['admin_id']] ?? null;
+        $adminRow['username'] = $cred['username'] ?? '';
+        $adminRow['mfa_enabled'] = $cred['mfa_enabled'] ?? 'f';
+    }
+    unset($adminRow);
 } catch (Throwable $e) {
     error_log("[ADMIN MANAGEMENT] Query error: " . $e->getMessage());
     $admins = [];

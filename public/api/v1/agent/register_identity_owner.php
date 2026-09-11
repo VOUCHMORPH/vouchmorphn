@@ -29,6 +29,8 @@ define('PROJECT_ROOT', dirname(__DIR__, 4));
 require_once PROJECT_ROOT . '/src/Core/Config/LoadCountry.php';
 require_once PROJECT_ROOT . '/src/Application/Utils/SessionManager.php';
 require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
+require_once PROJECT_ROOT . '/src/Core/Database/AuthDBConnection.php';
+require_once PROJECT_ROOT . '/src/Core/Database/CredentialsRepository.php';
 require_once PROJECT_ROOT . '/src/Core/Factories/CommunicationFactory.php';
 require_once PROJECT_ROOT . '/src/Infrastructure/Email/Contracts/EmailProviderInterface.php';
 require_once PROJECT_ROOT . '/src/Infrastructure/Email/EmailGatewayClient.php';
@@ -36,6 +38,7 @@ require_once PROJECT_ROOT . '/src/Domain/Models/Permission.php';
 
 use Application\Utils\SessionManager;
 use Core\Database\DBConnection;
+use Core\Database\CredentialsRepository;
 use Core\Factories\CommunicationFactory;
 use Infrastructure\Email\EmailGatewayClient;
 
@@ -428,11 +431,8 @@ try {
             }
 
             $username = 'user_' . bin2hex(random_bytes(4));
-            $stmt = $db->prepare("SELECT COUNT(*) FROM users WHERE username = :username");
-            $stmt->execute([':username' => $username]);
-            while ($stmt->fetchColumn() > 0) {
+            while (CredentialsRepository::userUsernameExists($username)) {
                 $username = 'user_' . bin2hex(random_bytes(4));
-                $stmt->execute([':username' => $username]);
             }
 
             $email = $tempData['email'];
@@ -457,9 +457,13 @@ try {
             // The account owner will be prompted to change their PIN
             // immediately after their first successful login.
             // ============================================================
+            // username/password_hash live in the isolated auth DB now (see
+            // CredentialsRepository), written after this INSERT returns
+            // the new user_id — the two databases can't share one
+            // transaction.
             $stmt = $db->prepare("
                 INSERT INTO users (
-                    username, email, phone, password_hash,
+                    email, phone,
                     transaction_pin_hash, transaction_pin_set_at,
                     verified, created_at,
                     national_id, drivers_license, passport,
@@ -467,7 +471,7 @@ try {
                     registered_by_agent_id, registration_channel,
                     must_change_pin
                 ) VALUES (
-                    :username, :email, :phone, :password_hash,
+                    :email, :phone,
                     :transaction_pin_hash, NOW(),
                     true, NOW(),
                     :national_id, :drivers_license, :passport,
@@ -475,12 +479,11 @@ try {
                     :registered_by_agent_id, :registration_channel,
                     true
                 )
+                RETURNING user_id
             ");
             $stmt->execute([
-                ':username' => $username,
                 ':email' => $email,
                 ':phone' => $tempData['phone_number'],
-                ':password_hash' => $pinHash,
                 ':transaction_pin_hash' => $pinHash,
                 ':national_id' => $tempData['identity_type'] === 'national_id' ? $tempData['identity_value'] : null,
                 ':drivers_license' => $tempData['identity_type'] === 'drivers_license' ? $tempData['identity_value'] : null,
@@ -491,9 +494,14 @@ try {
                 ':registration_channel' => !empty($tempData['organization_name']) ? 'organization' : 'agent',
             ]);
 
-            $userId = (int)$db->lastInsertId();
+            $userId = (int)$stmt->fetchColumn();
 
             $db->commit();
+
+            // The agent-generated PIN doubles as this account's login
+            // password (see AuthService note elsewhere) — same value,
+            // stored once in the auth DB.
+            CredentialsRepository::createUserCredentials($userId, $username, $pinHash);
 
             // Send the PIN to the same verified contact channel
             $pinMessage = "Your VouchMorph account has been created. Your PIN is: {$pin}. For security, you will be required to change this PIN after your first login. Keep it private - never share it, even with the agent who helped you register.";

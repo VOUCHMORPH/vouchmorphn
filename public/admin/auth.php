@@ -29,7 +29,10 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
+require_once __DIR__ . '/../../src/Core/Database/AuthDBConnection.php';
+require_once __DIR__ . '/../../src/Core/Database/CredentialsRepository.php';
 use Core\Database\DBConnection;
+use Core\Database\CredentialsRepository;
 
 if (session_status() === PHP_SESSION_NONE) {
     ini_set('session.cookie_httponly', '1');
@@ -49,8 +52,7 @@ function getPlatformAdminDb(): PDO {
 function loadAdminWithRole(int $adminId): ?array {
     $db = getPlatformAdminDb();
     $stmt = $db->prepare("
-        SELECT a.admin_id, a.username, a.email, a.full_name, a.role_id, a.deleted_at,
-               a.locked_until, a.failed_login_attempts, a.mfa_enabled, a.country_code,
+        SELECT a.admin_id, a.email, a.full_name, a.role_id, a.deleted_at, a.country_code,
                r.role_name, r.role_level, r.can_manage_admins, r.can_view_transactions,
                r.can_edit_config, r.can_broadcast, r.can_trigger_cron, r.can_generate_reports,
                r.can_export_data, r.can_view_audit_logs, r.permissions
@@ -59,7 +61,20 @@ function loadAdminWithRole(int $adminId): ?array {
         WHERE a.admin_id = :id
     ");
     $stmt->execute([':id' => $adminId]);
-    return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+    $admin = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+    if (!$admin) {
+        return null;
+    }
+
+    // username / locked_until / failed_login_attempts / mfa_enabled live
+    // in the isolated auth DB now.
+    $credentials = CredentialsRepository::getAdminCredentials($adminId);
+    $admin['username'] = $credentials['username'] ?? null;
+    $admin['locked_until'] = $credentials['locked_until'] ?? null;
+    $admin['failed_login_attempts'] = $credentials['failed_login_attempts'] ?? 0;
+    $admin['mfa_enabled'] = $credentials['mfa_enabled'] ?? 'f';
+
+    return $admin;
 }
 
 /**
@@ -114,44 +129,54 @@ function attemptPlatformAdminLogin(string $usernameOrEmail, string $password): ?
     $db = getPlatformAdminDb();
     $identifier = trim($usernameOrEmail);
 
-    $stmt = $db->prepare("
-        SELECT admin_id, password_hash, deleted_at, locked_until, failed_login_attempts
-        FROM admins
-        WHERE (username = :ident OR email = :ident_lower) AND deleted_at IS NULL
-    ");
-    $stmt->execute([':ident' => $identifier, ':ident_lower' => strtolower($identifier)]);
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
-
-    if (!$row) {
-        return null;
-    }
-    if (!empty($row['locked_until']) && strtotime($row['locked_until']) > time()) {
-        return null;
+    // Credentials (username, password_hash, lockout state) live in the
+    // isolated auth DB now. Accept either username or email as before.
+    $credentials = CredentialsRepository::findAdminCredentialsByUsername($identifier);
+    if (!$credentials) {
+        $stmt = $db->prepare("
+            SELECT admin_id FROM admins WHERE email = :ident_lower AND deleted_at IS NULL LIMIT 1
+        ");
+        $stmt->execute([':ident_lower' => strtolower($identifier)]);
+        $resolvedId = $stmt->fetchColumn();
+        $credentials = $resolvedId ? CredentialsRepository::getAdminCredentials((int)$resolvedId) : null;
     }
 
-    if (!password_verify($password, $row['password_hash'])) {
-        $newAttempts = (int)$row['failed_login_attempts'] + 1;
+    if (!$credentials) {
+        return null;
+    }
+    $adminId = (int)$credentials['admin_id'];
+
+    $stmt = $db->prepare("SELECT deleted_at FROM admins WHERE admin_id = :id");
+    $stmt->execute([':id' => $adminId]);
+    $deletedAt = $stmt->fetchColumn();
+    if ($deletedAt !== false && $deletedAt !== null) {
+        return null;
+    }
+
+    if (!empty($credentials['locked_until']) && strtotime($credentials['locked_until']) > time()) {
+        return null;
+    }
+
+    if (!password_verify($password, $credentials['password_hash'])) {
+        $newAttempts = (int)$credentials['failed_login_attempts'] + 1;
         $lockUntil = $newAttempts >= PLATFORM_ADMIN_MAX_FAILED_ATTEMPTS
             ? (new DateTime('+' . PLATFORM_ADMIN_LOCKOUT_MINUTES . ' minutes'))->format('Y-m-d H:i:s')
             : null;
-        $upd = $db->prepare("
-            UPDATE admins SET failed_login_attempts = :attempts, locked_until = :locked, updated_at = NOW()
-            WHERE admin_id = :id
-        ");
-        $upd->execute([':attempts' => $newAttempts, ':locked' => $lockUntil, ':id' => $row['admin_id']]);
+        CredentialsRepository::recordAdminFailedAttempt($adminId, $newAttempts, $lockUntil);
         return null;
     }
 
+    CredentialsRepository::resetAdminFailedAttempts($adminId);
+
     $upd = $db->prepare("
         UPDATE admins
-        SET failed_login_attempts = 0, locked_until = NULL, last_login_at = NOW(),
-            last_login_ip = :ip, updated_at = NOW()
+        SET last_login_at = NOW(), last_login_ip = :ip, updated_at = NOW()
         WHERE admin_id = :id
     ");
-    $upd->execute([':ip' => $_SERVER['REMOTE_ADDR'] ?? null, ':id' => $row['admin_id']]);
+    $upd->execute([':ip' => $_SERVER['REMOTE_ADDR'] ?? null, ':id' => $adminId]);
 
-    $_SESSION['admin_id'] = (int)$row['admin_id'];
-    return loadAdminWithRole((int)$row['admin_id']);
+    $_SESSION['admin_id'] = $adminId;
+    return loadAdminWithRole($adminId);
 }
 
 /**

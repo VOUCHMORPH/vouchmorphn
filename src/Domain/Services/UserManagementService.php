@@ -3,6 +3,9 @@ declare(strict_types=1);
 
 namespace Domain\Services;
 
+require_once __DIR__ . '/../../Core/Database/CredentialsRepository.php';
+
+use Core\Database\CredentialsRepository;
 use PDO;
 use RuntimeException;
 
@@ -280,28 +283,31 @@ class UserManagementService
         $username = $usernameBase;
         $suffix = 0;
         while (true) {
-            $stmt = $this->db->prepare("SELECT 1 FROM users WHERE username = :u");
-            $stmt->execute([':u' => $username]);
-            if (!$stmt->fetchColumn()) {
+            if (!CredentialsRepository::userUsernameExists($username)) {
                 break;
             }
             $suffix++;
             $username = $suffix < 20 ? ($usernameBase . $suffix) : ($usernameBase . '_' . bin2hex(random_bytes(3)));
         }
 
+        // username/password_hash live in the isolated auth DB now (see
+        // CredentialsRepository) — written after this INSERT since the
+        // two databases can't share one transaction.
         $stmt = $this->db->prepare("
-            INSERT INTO users (username, email, phone, password_hash, role_id, full_name, created_at, updated_at)
-            VALUES (:username, :email, :phone, :hash, 1, :full_name, NOW(), NOW())
+            INSERT INTO users (email, phone, role_id, full_name, created_at, updated_at)
+            VALUES (:email, :phone, 1, :full_name, NOW(), NOW())
             RETURNING user_id
         ");
         $stmt->execute([
-            ':username' => $username,
             ':email' => $email,
             ':phone' => $phone,
-            ':hash' => $passwordHash,
             ':full_name' => $fullName,
         ]);
-        return (int)$stmt->fetchColumn();
+        $userId = (int)$stmt->fetchColumn();
+
+        CredentialsRepository::createUserCredentials($userId, $username, $passwordHash);
+
+        return $userId;
     }
 
     /**

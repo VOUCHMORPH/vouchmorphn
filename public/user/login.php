@@ -19,6 +19,8 @@ ini_set('log_errors', 1);
 require_once __DIR__ . '/../../vendor/autoload.php';
 require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
 require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
+require_once __DIR__ . '/../../src/Core/Database/AuthDBConnection.php';
+require_once __DIR__ . '/../../src/Core/Database/CredentialsRepository.php';
 require_once __DIR__ . '/../../src/Core/Config/LoadCountry.php';
 require_once __DIR__ . '/../../src/Infrastructure/SMS/Contracts/ProviderInterface.php';
 require_once __DIR__ . '/../../src/Core/Factories/CommunicationFactory.php';
@@ -26,6 +28,7 @@ require_once __DIR__ . '/../../src/Infrastructure/Email/Contracts/EmailProviderI
 require_once __DIR__ . '/../../src/Infrastructure/Email/EmailGatewayClient.php';
 use Application\Utils\SessionManager;
 use Core\Database\DBConnection;
+use Core\Database\CredentialsRepository;
 use Core\Config\LoadCountry;
 use Core\Factories\CommunicationFactory;
 use Infrastructure\Email\EmailGatewayClient;
@@ -163,7 +166,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt = $db->prepare("
                 SELECT user_id, phone, phone2, phone3, email,
                        national_id, drivers_license, passport,
-                       username, full_name, password_hash, verified,
+                       full_name, verified,
                        created_at, has_transaction_pin as pin_enabled,
                        role_id
                 FROM users
@@ -179,6 +182,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt->execute([':identifier' => $formattedValue]);
             $user = $stmt->fetch(\PDO::FETCH_ASSOC);
             error_log("[USER LOGIN SUPER TEST] User found: " . ($user ? 'YES' : 'NO'));
+
+            // Credentials (username, password_hash) live in the isolated
+            // auth database now, keyed by user_id.
+            if ($user) {
+                $credentials = CredentialsRepository::getUserCredentials((int)$user['user_id']);
+                $user['username'] = $credentials['username'] ?? null;
+                $user['password_hash'] = $credentials['password_hash'] ?? null;
+            }
             if (!$user) {
                 $error = "User not found. Please check your identifier.";
                 error_log("[USER LOGIN SUPER TEST] User not found: {$formattedValue}");
