@@ -29,7 +29,10 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
+require_once __DIR__ . '/../../src/Core/Database/CredentialsDBConnection.php';
+require_once __DIR__ . '/../../src/Infrastructure/Credentials/CredentialsRepository.php';
 use Core\Database\DBConnection;
+use Infrastructure\Credentials\CredentialsRepository;
 
 if (session_status() === PHP_SESSION_NONE) {
     ini_set('session.cookie_httponly', '1');
@@ -114,13 +117,25 @@ function attemptPlatformAdminLogin(string $usernameOrEmail, string $password): ?
     $db = getPlatformAdminDb();
     $identifier = trim($usernameOrEmail);
 
+    // Identifier lookup (who is this) stays against the main DB, exactly
+    // as before. The login secret (password_hash) plus its lockout
+    // counters live in the separate credentials database, fetched next
+    // by the admin_id this resolves — that database never sees a
+    // username or email.
     $stmt = $db->prepare("
-        SELECT admin_id, password_hash, deleted_at, locked_until, failed_login_attempts
+        SELECT admin_id, deleted_at
         FROM admins
         WHERE (username = :ident OR email = :ident_lower) AND deleted_at IS NULL
     ");
     $stmt->execute([':ident' => $identifier, ':ident_lower' => strtolower($identifier)]);
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    $adminRow = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$adminRow) {
+        return null;
+    }
+
+    $credentials = CredentialsRepository::fromEnvironment();
+    $row = $credentials->findAdminCredentialByAdminId((int)$adminRow['admin_id']);
 
     if (!$row) {
         return null;
@@ -130,22 +145,20 @@ function attemptPlatformAdminLogin(string $usernameOrEmail, string $password): ?
     }
 
     if (!password_verify($password, $row['password_hash'])) {
-        $newAttempts = (int)$row['failed_login_attempts'] + 1;
-        $lockUntil = $newAttempts >= PLATFORM_ADMIN_MAX_FAILED_ATTEMPTS
-            ? (new DateTime('+' . PLATFORM_ADMIN_LOCKOUT_MINUTES . ' minutes'))->format('Y-m-d H:i:s')
-            : null;
-        $upd = $db->prepare("
-            UPDATE admins SET failed_login_attempts = :attempts, locked_until = :locked, updated_at = NOW()
-            WHERE admin_id = :id
-        ");
-        $upd->execute([':attempts' => $newAttempts, ':locked' => $lockUntil, ':id' => $row['admin_id']]);
+        $credentials->recordFailedAdminAttempt(
+            (int)$row['admin_id'],
+            (int)$row['failed_login_attempts'],
+            PLATFORM_ADMIN_MAX_FAILED_ATTEMPTS,
+            PLATFORM_ADMIN_LOCKOUT_MINUTES
+        );
         return null;
     }
 
+    $credentials->resetAdminFailedAttempts((int)$row['admin_id']);
+
     $upd = $db->prepare("
         UPDATE admins
-        SET failed_login_attempts = 0, locked_until = NULL, last_login_at = NOW(),
-            last_login_ip = :ip, updated_at = NOW()
+        SET last_login_at = NOW(), last_login_ip = :ip, updated_at = NOW()
         WHERE admin_id = :id
     ");
     $upd->execute([':ip' => $_SERVER['REMOTE_ADDR'] ?? null, ':id' => $row['admin_id']]);
