@@ -129,6 +129,23 @@ function tsToEpoch($value) {
     return $ts + $frac;
 }
 
+// Formats the gap between two raw DB timestamps as a compact human string
+// (e.g. "384ms" or "1.240s"), so the fact that two events happened at
+// different real moments is obvious at a glance rather than hidden in
+// small microsecond text two readers have to compare by eye.
+function fmtElapsed($fromValue, $toValue) {
+    $from = tsToEpoch($fromValue);
+    $to = tsToEpoch($toValue);
+    if ($from === null || $to === null) {
+        return '—';
+    }
+    $seconds = $to - $from;
+    if (abs($seconds) < 1) {
+        return round($seconds * 1000) . 'ms';
+    }
+    return number_format($seconds, 3) . 's';
+}
+
 function csvEscape($value) {
     $value = (string)$value;
     if (preg_match('/[",\n]/', $value)) {
@@ -1353,8 +1370,8 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
                     ? $certData['duration']['seconds'] . 's (' . ($certData['duration']['pass'] ? 'PASS' : 'FAIL') . ' — threshold ' . $certData['duration']['threshold'] . 's)'
                     : 'N/A',
             ]);
-            $body .= pdf_table_section('1 · Hold Placed', ['Hold ID', 'Hold Reference', 'Institution', 'Amount', 'Status', 'Placed At', 'Debited At'],
-                array_map(fn($h) => [$h['hold_id'], $h['hold_reference'], $h['source_institution'] ?? $h['participant_name'] ?? 'N/A', number_format((float)$h['amount'], 2), $h['status'], fmtTs($h['placed_at'] ?? ''), fmtTs($h['debited_at'] ?? '', '—')], $certData['holds']));
+            $body .= pdf_table_section('1 · Hold Placed', ['Hold ID', 'Hold Reference', 'Institution', 'Amount', 'Status', 'Placed At', 'Debited At', 'Elapsed'],
+                array_map(fn($h) => [$h['hold_id'], $h['hold_reference'], $h['source_institution'] ?? $h['participant_name'] ?? 'N/A', number_format((float)$h['amount'], 2), $h['status'], fmtTs($h['placed_at'] ?? ''), fmtTs($h['debited_at'] ?? '', '—'), !empty($h['debited_at']) ? fmtElapsed($h['placed_at'] ?? '', $h['debited_at']) : '—'], $certData['holds']));
             if (!empty($certData['cashout'])) {
                 $co = $certData['cashout'];
                 $body .= pdf_table_section('2 · Destination Code Generated', ['Provider', 'Amount', 'Fee', 'Code Expiry', 'Status'],
@@ -2769,9 +2786,9 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
 
                     <div class="report-section-title">1 · Hold Placed — Source Institution Reserves Funds</div>
                     <?php if (empty($certData['holds'])): ?><p style="font-size:14px;color:var(--ink-300);">No hold record found.</p><?php else: ?>
-                    <div class="table-responsive"><table><thead><tr><th>Hold ID</th><th>Hold Reference</th><th>Institution</th><th>Amount</th><th>Status</th><th>Placed At</th><th>Debited At</th></tr></thead><tbody>
+                    <div class="table-responsive"><table><thead><tr><th>Hold ID</th><th>Hold Reference</th><th>Institution</th><th>Amount</th><th>Status</th><th>Placed At</th><th>Debited At</th><th>Elapsed</th></tr></thead><tbody>
                     <?php foreach ($certData['holds'] as $h): ?>
-                    <tr><td><?php echo safeHtml($h['hold_id']); ?></td><td><?php echo safeHtml($h['hold_reference']); ?></td><td><?php echo safeHtml($h['source_institution'] ?? $h['participant_name'] ?? 'N/A'); ?></td><td><?php echo number_format((float)$h['amount'], 2); ?></td><td><span class="status status-<?php echo $h['status'] === 'DEBITED' ? 'success' : 'pending'; ?>"><?php echo safeHtml($h['status']); ?></span></td><td><?php echo tsHtml($h['placed_at'] ?? ''); ?></td><td><?php echo tsHtml($h['debited_at'] ?? '', '—'); ?></td></tr>
+                    <tr><td><?php echo safeHtml($h['hold_id']); ?></td><td><?php echo safeHtml($h['hold_reference']); ?></td><td><?php echo safeHtml($h['source_institution'] ?? $h['participant_name'] ?? 'N/A'); ?></td><td><?php echo number_format((float)$h['amount'], 2); ?></td><td><span class="status status-<?php echo $h['status'] === 'DEBITED' ? 'success' : 'pending'; ?>"><?php echo safeHtml($h['status']); ?></span></td><td><?php echo tsHtml($h['placed_at'] ?? ''); ?></td><td><?php echo tsHtml($h['debited_at'] ?? '', '—'); ?></td><td style="white-space:nowrap;font-weight:600;"><?php echo safeHtml(!empty($h['debited_at']) ? fmtElapsed($h['placed_at'] ?? '', $h['debited_at']) : '—'); ?></td></tr>
                     <?php endforeach; ?>
                     </tbody></table></div>
                     <?php endif; ?>
