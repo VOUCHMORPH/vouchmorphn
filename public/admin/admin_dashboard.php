@@ -110,6 +110,25 @@ function fmtTs($value, $fallback = '') {
     return trim($parts['date'] . ' ' . $parts['time']);
 }
 
+// Unix epoch as a float, preserving fractional seconds that strtotime()
+// alone discards (it truncates to whole seconds), so short swap durations
+// aren't reported as "0s" just because they completed within the same
+// second.
+function tsToEpoch($value) {
+    if ($value === null || $value === '') {
+        return null;
+    }
+    $ts = strtotime((string)$value);
+    if ($ts === false) {
+        return null;
+    }
+    $frac = 0.0;
+    if (preg_match('/\.(\d+)/', (string)$value, $m)) {
+        $frac = (float)('0.' . $m[1]);
+    }
+    return $ts + $frac;
+}
+
 function csvEscape($value) {
     $value = (string)$value;
     if (preg_match('/[",\n]/', $value)) {
@@ -794,15 +813,17 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
             $sr = $certData['swap_request'];
             $createdAt = $sr['created_at'] ?? null;
             $completedAt = $sr['completed_at'] ?? null;
-            if ($createdAt && $completedAt) {
-                $seconds = strtotime($completedAt) - strtotime($createdAt);
+            $createdEpoch = tsToEpoch($createdAt);
+            $completedEpoch = tsToEpoch($completedAt);
+            if ($createdEpoch !== null && $completedEpoch !== null) {
+                $seconds = round($completedEpoch - $createdEpoch, 3);
                 $swapType = strtolower($sr['swap_type'] ?? '');
                 $isDeposit = str_contains($swapType, 'deposit');
                 $threshold = $isDeposit ? 60 : 90; // Experiment 2 vs Experiment 1 / H1
                 $certData['duration'] = [
                     'seconds' => $seconds,
                     'threshold' => $threshold,
-                    'pass' => $seconds !== false && $seconds >= 0 && $seconds <= $threshold,
+                    'pass' => $seconds >= 0 && $seconds <= $threshold,
                 ];
             }
         }
@@ -1803,6 +1824,19 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             margin-top: var(--sp-2);
             display: block;
         }
+        .duration-track {
+            width: 100%;
+            height: 6px;
+            border-radius: 3px;
+            background: var(--line);
+            overflow: hidden;
+            margin-top: var(--sp-2);
+        }
+        .duration-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.2s;
+        }
         .metric-card .metric-sub {
             font-size: 12px;
             color: var(--ink-300);
@@ -2712,13 +2746,23 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                         <div class="metric-card"><span class="metric-label">Amount</span><span class="metric-value"><?php echo number_format((float)($sr['amount'] ?? 0), 2); ?></span><span class="metric-sub"><?php echo safeHtml($sr['from_currency'] ?? ''); ?></span></div>
                         <div class="metric-card"><span class="metric-label">Status</span><span class="metric-value" style="font-size:18px;"><?php echo safeHtml(strtoupper($sr['status'] ?? 'unknown')); ?></span></div>
                         <div class="metric-card"><span class="metric-label">Created</span><span class="metric-value" style="font-size:16px;"><?php echo tsHtml($sr['created_at'] ?? '', 'N/A'); ?></span></div>
-                        <?php if (!empty($certData['duration'])): $d = $certData['duration']; ?>
-                        <div class="metric-card" style="border-top-color: <?php echo $d['pass'] ? 'var(--good)' : 'var(--bad)'; ?>;">
+                        <?php if (!empty($certData['duration'])): $d = $certData['duration']; $durColor = $d['pass'] ? 'var(--good)' : 'var(--bad)'; $durPct = $d['threshold'] > 0 ? min(100, max(0, ($d['seconds'] / $d['threshold']) * 100)) : 0; ?>
+                        <div class="metric-card" style="grid-column: 4 / -1; align-items:stretch; text-align:left; border-top-color: <?php echo $durColor; ?>;">
+                            <div style="display:flex; justify-content:space-between; align-items:baseline; gap:var(--sp-3);">
+                                <span class="metric-label">Duration</span>
+                                <span class="metric-sub" style="color: <?php echo $durColor; ?>; font-weight:600;">
+                                    <?php echo $d['pass'] ? '✓ PASS' : '✗ FAIL'; ?> (≤<?php echo $d['threshold']; ?>s)
+                                </span>
+                            </div>
+                            <span class="metric-value" style="font-size:18px; text-align:left; margin-top:var(--sp-1);"><?php echo number_format($d['seconds'], 3); ?>s</span>
+                            <div class="duration-track">
+                                <div class="duration-fill" style="width:<?php echo $durPct; ?>%; background: <?php echo $durColor; ?>;"></div>
+                            </div>
+                        </div>
+                        <?php else: ?>
+                        <div class="metric-card" style="grid-column: 4 / -1; align-items:stretch; text-align:left;">
                             <span class="metric-label">Duration</span>
-                            <span class="metric-value" style="font-size:18px;"><?php echo $d['seconds']; ?>s</span>
-                            <span class="metric-sub" style="color: <?php echo $d['pass'] ? 'var(--good)' : 'var(--bad)'; ?>; font-weight:600;">
-                                <?php echo $d['pass'] ? '✓ PASS' : '✗ FAIL'; ?> (≤<?php echo $d['threshold']; ?>s)
-                            </span>
+                            <span class="metric-sub" style="margin-top:var(--sp-2);">No completion timestamp recorded for this swap yet.</span>
                         </div>
                         <?php endif; ?>
                     </div>
