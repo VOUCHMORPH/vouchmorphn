@@ -65,16 +65,49 @@ function safeHtml($value) {
     return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
 }
 
-// Normalizes raw DB timestamps (which may carry fractional seconds and a
-// UTC offset, e.g. "2026-09-12 11:55:17.95014+00") to a single fixed-width
-// "Y-m-d H:i:s" string so timestamp table cells render on one line instead
-// of wrapping mid-value.
-function fmtTs($value, $fallback = '') {
+// Splits a raw DB timestamp (which may carry fractional seconds and a UTC
+// offset, e.g. "2026-09-12 11:55:17.95014+00") into its date and
+// time-with-microseconds parts, dropping only the trailing offset. Parsed
+// directly off the string (not strtotime/date, which round to whole
+// seconds) so microsecond precision survives. Returns null for empty input.
+function splitTs($value) {
     if ($value === null || $value === '') {
+        return null;
+    }
+    $value = trim((string)$value);
+    if (preg_match('/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2}(?:\.\d+)?)/', $value, $m)) {
+        return ['date' => $m[1], 'time' => $m[2]];
+    }
+    $ts = strtotime($value);
+    if ($ts !== false) {
+        return ['date' => date('Y-m-d', $ts), 'time' => date('H:i:s', $ts)];
+    }
+    return ['date' => $value, 'time' => ''];
+}
+
+// Renders a timestamp as safe HTML with the date and time (microseconds
+// included) stacked on separate lines, instead of one long string that
+// wraps mid-value inside a narrow table cell.
+function tsHtml($value, $fallback = '—') {
+    $parts = splitTs($value);
+    if ($parts === null) {
+        return safeHtml($fallback);
+    }
+    $html = '<div class="ts"><span class="ts-date">' . safeHtml($parts['date']) . '</span>';
+    if ($parts['time'] !== '') {
+        $html .= '<span class="ts-time">' . safeHtml($parts['time']) . '</span>';
+    }
+    return $html . '</div>';
+}
+
+// Plain-text form (date + time, microseconds included, offset dropped) for
+// non-HTML outputs like the PDF and CSV certificate exports.
+function fmtTs($value, $fallback = '') {
+    $parts = splitTs($value);
+    if ($parts === null) {
         return $fallback;
     }
-    $ts = strtotime((string)$value);
-    return $ts === false ? (string)$value : date('Y-m-d H:i:s', $ts);
+    return trim($parts['date'] . ' ' . $parts['time']);
 }
 
 function csvEscape($value) {
@@ -1928,6 +1961,21 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         }
         tr:hover { background: var(--brass-tint); }
 
+        .ts {
+            display: flex;
+            flex-direction: column;
+            line-height: 1.3;
+            white-space: nowrap;
+        }
+        .ts .ts-date {
+            font-weight: 600;
+        }
+        .ts .ts-time {
+            font-size: 0.85em;
+            color: var(--ink-500);
+            font-variant-numeric: tabular-nums;
+        }
+
         .status {
             display: inline-flex;
             align-items: center;
@@ -2663,7 +2711,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <div class="metrics-grid" style="grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));">
                         <div class="metric-card"><span class="metric-label">Amount</span><span class="metric-value"><?php echo number_format((float)($sr['amount'] ?? 0), 2); ?></span><span class="metric-sub"><?php echo safeHtml($sr['from_currency'] ?? ''); ?></span></div>
                         <div class="metric-card"><span class="metric-label">Status</span><span class="metric-value" style="font-size:18px;"><?php echo safeHtml(strtoupper($sr['status'] ?? 'unknown')); ?></span></div>
-                        <div class="metric-card"><span class="metric-label">Created</span><span class="metric-value" style="font-size:16px; white-space:nowrap;"><?php echo safeHtml(fmtTs($sr['created_at'] ?? '', 'N/A')); ?></span></div>
+                        <div class="metric-card"><span class="metric-label">Created</span><span class="metric-value" style="font-size:16px;"><?php echo tsHtml($sr['created_at'] ?? '', 'N/A'); ?></span></div>
                         <?php if (!empty($certData['duration'])): $d = $certData['duration']; ?>
                         <div class="metric-card" style="border-top-color: <?php echo $d['pass'] ? 'var(--good)' : 'var(--bad)'; ?>;">
                             <span class="metric-label">Duration</span>
@@ -2679,7 +2727,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <?php if (empty($certData['holds'])): ?><p style="font-size:14px;color:var(--ink-300);">No hold record found.</p><?php else: ?>
                     <div class="table-responsive"><table><thead><tr><th>Hold ID</th><th>Hold Reference</th><th>Institution</th><th>Amount</th><th>Status</th><th>Placed At</th><th>Debited At</th></tr></thead><tbody>
                     <?php foreach ($certData['holds'] as $h): ?>
-                    <tr><td><?php echo safeHtml($h['hold_id']); ?></td><td><?php echo safeHtml($h['hold_reference']); ?></td><td><?php echo safeHtml($h['source_institution'] ?? $h['participant_name'] ?? 'N/A'); ?></td><td><?php echo number_format((float)$h['amount'], 2); ?></td><td><span class="status status-<?php echo $h['status'] === 'DEBITED' ? 'success' : 'pending'; ?>"><?php echo safeHtml($h['status']); ?></span></td><td style="white-space:nowrap;"><?php echo safeHtml(fmtTs($h['placed_at'] ?? '')); ?></td><td style="white-space:nowrap;"><?php echo safeHtml(fmtTs($h['debited_at'] ?? '', '—')); ?></td></tr>
+                    <tr><td><?php echo safeHtml($h['hold_id']); ?></td><td><?php echo safeHtml($h['hold_reference']); ?></td><td><?php echo safeHtml($h['source_institution'] ?? $h['participant_name'] ?? 'N/A'); ?></td><td><?php echo number_format((float)$h['amount'], 2); ?></td><td><span class="status status-<?php echo $h['status'] === 'DEBITED' ? 'success' : 'pending'; ?>"><?php echo safeHtml($h['status']); ?></span></td><td><?php echo tsHtml($h['placed_at'] ?? ''); ?></td><td><?php echo tsHtml($h['debited_at'] ?? '', '—'); ?></td></tr>
                     <?php endforeach; ?>
                     </tbody></table></div>
                     <?php endif; ?>
@@ -2695,7 +2743,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <?php if (empty($certData['swap_transactions'])): ?><p style="font-size:14px;color:var(--ink-300);">No ledger entries found.</p><?php else: ?>
                     <div class="table-responsive"><table><thead><tr><th>From</th><th>To</th><th>Amount</th><th>Status</th><th>Transaction Ref</th><th>Created</th></tr></thead><tbody>
                     <?php foreach ($certData['swap_transactions'] as $t): $from = json_decode($t['from_account_details'] ?? '{}', true) ?: []; $to = json_decode($t['to_account_details'] ?? '{}', true) ?: []; ?>
-                    <tr><td><?php echo safeHtml($from['institution'] ?? 'N/A'); ?></td><td><?php echo safeHtml($to['institution'] ?? 'N/A'); ?></td><td><?php echo number_format((float)$t['amount'], 2); ?></td><td><?php echo safeHtml($t['status']); ?></td><td><?php echo safeHtml($t['transaction_id'] ?? '—'); ?></td><td style="white-space:nowrap;"><?php echo safeHtml(fmtTs($t['created_at'] ?? '')); ?></td></tr>
+                    <tr><td><?php echo safeHtml($from['institution'] ?? 'N/A'); ?></td><td><?php echo safeHtml($to['institution'] ?? 'N/A'); ?></td><td><?php echo number_format((float)$t['amount'], 2); ?></td><td><?php echo safeHtml($t['status']); ?></td><td><?php echo safeHtml($t['transaction_id'] ?? '—'); ?></td><td><?php echo tsHtml($t['created_at'] ?? ''); ?></td></tr>
                     <?php endforeach; ?>
                     </tbody></table></div>
                     <?php endif; ?>
@@ -2704,7 +2752,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <?php if (empty($certData['audit'])): ?><p style="font-size:14px;color:var(--ink-300);">No audit entries recorded for this reference.</p><?php else: ?>
                     <div class="table-responsive"><table><thead><tr><th>Action</th><th>Category</th><th>Performed By</th><th>At</th></tr></thead><tbody>
                     <?php foreach ($certData['audit'] as $a): ?>
-                    <tr><td><?php echo safeHtml($a['action'] ?? ''); ?></td><td><?php echo safeHtml($a['category'] ?? ''); ?></td><td><?php echo safeHtml($a['performed_by'] ?? $a['performed_by_id'] ?? 'SYSTEM'); ?></td><td style="white-space:nowrap;"><?php echo safeHtml(fmtTs($a['performed_at'] ?? '')); ?></td></tr>
+                    <tr><td><?php echo safeHtml($a['action'] ?? ''); ?></td><td><?php echo safeHtml($a['category'] ?? ''); ?></td><td><?php echo safeHtml($a['performed_by'] ?? $a['performed_by_id'] ?? 'SYSTEM'); ?></td><td><?php echo tsHtml($a['performed_at'] ?? ''); ?></td></tr>
                     <?php endforeach; ?>
                     </tbody></table></div>
                     <?php endif; ?>
@@ -2713,7 +2761,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <?php if (empty($certData['messages'])): ?><p style="font-size:14px;color:var(--ink-300);">No messages recorded.</p><?php else: ?>
                     <div class="table-responsive"><table><thead><tr><th>Channel</th><th>Destination</th><th>Status</th><th>Sent At</th></tr></thead><tbody>
                     <?php foreach ($certData['messages'] as $m): ?>
-                    <tr><td><?php echo safeHtml($m['channel'] ?? ''); ?></td><td><?php echo safeHtml($m['destination'] ?? ''); ?></td><td><?php echo safeHtml($m['status'] ?? ''); ?></td><td style="white-space:nowrap;"><?php echo safeHtml(fmtTs($m['sent_at'] ?? '', '—')); ?></td></tr>
+                    <tr><td><?php echo safeHtml($m['channel'] ?? ''); ?></td><td><?php echo safeHtml($m['destination'] ?? ''); ?></td><td><?php echo safeHtml($m['status'] ?? ''); ?></td><td><?php echo tsHtml($m['sent_at'] ?? '', '—'); ?></td></tr>
                     <?php endforeach; ?>
                     </tbody></table></div>
                     <?php endif; ?>
