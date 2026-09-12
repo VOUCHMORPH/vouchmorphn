@@ -10551,6 +10551,8 @@ private function recordManualReconciliationRequired(
             'signature_chain' => $this->signedPayloads
         ];
         
+        // clock_timestamp() (actual wall-clock time), not NOW() (frozen to
+        // the enclosing transaction's start) — see updateHoldStatus() for why.
         $sql = "
             INSERT INTO hold_transactions (
                 hold_reference, swap_reference, participant_name, asset_type,
@@ -10559,7 +10561,7 @@ private function recordManualReconciliationRequired(
             ) VALUES (
                 :hold_ref, :swap_ref, :participant_name, :asset_type,
                 :amount, :currency, 'ACTIVE', :source_details::jsonb, :destination,
-                :metadata::jsonb, NOW(), NOW(), NOW(), :source_institution
+                :metadata::jsonb, clock_timestamp(), clock_timestamp(), clock_timestamp(), :source_institution
             ) RETURNING hold_id
         ";
         
@@ -10598,12 +10600,18 @@ private function updateHoldStatus(?int $holdId, string $status): void
     $validStatuses = ['ACTIVE', 'HELD', 'PENDING_CASHOUT', 'DEBITED', 'RELEASED', 'PARTIALLY_RELEASED', 'CANCELLED', 'FAILED', 'PENDING_IDENTITY'];
     if (!in_array($status, $validStatuses)) return;
  
+    // clock_timestamp(), not NOW(): NOW()/CURRENT_TIMESTAMP is frozen to the
+    // start of the enclosing transaction, so a hold placed then debited in
+    // the same transaction (the common case via runInSavepoint below) would
+    // get byte-identical placed_at/debited_at regardless of real elapsed
+    // time. clock_timestamp() returns the actual wall-clock time at the
+    // moment this statement runs.
     $sql = "
-        UPDATE hold_transactions 
+        UPDATE hold_transactions
         SET status = :status::text,
-            debited_at = CASE WHEN :status::text = 'DEBITED' THEN NOW() ELSE debited_at END,
-            released_at = CASE WHEN :status::text = 'RELEASED' THEN NOW() ELSE released_at END,
-            updated_at = NOW()
+            debited_at = CASE WHEN :status::text = 'DEBITED' THEN clock_timestamp() ELSE debited_at END,
+            released_at = CASE WHEN :status::text = 'RELEASED' THEN clock_timestamp() ELSE released_at END,
+            updated_at = clock_timestamp()
         WHERE hold_id = :hold_id
     ";
  
