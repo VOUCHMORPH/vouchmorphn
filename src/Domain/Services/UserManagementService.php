@@ -3,10 +3,6 @@ declare(strict_types=1);
 
 namespace Domain\Services;
 
-require_once __DIR__ . '/../../Core/Database/CredentialsDBConnection.php';
-require_once __DIR__ . '/../../Infrastructure/Credentials/CredentialsRepository.php';
-
-use Infrastructure\Credentials\CredentialsRepository;
 use PDO;
 use RuntimeException;
 
@@ -294,26 +290,18 @@ class UserManagementService
         }
 
         $stmt = $this->db->prepare("
-            INSERT INTO users (username, email, phone, role_id, full_name, created_at, updated_at)
-            VALUES (:username, :email, :phone, 1, :full_name, NOW(), NOW())
+            INSERT INTO users (username, email, phone, password_hash, role_id, full_name, created_at, updated_at)
+            VALUES (:username, :email, :phone, :hash, 1, :full_name, NOW(), NOW())
             RETURNING user_id
         ");
         $stmt->execute([
             ':username' => $username,
             ':email' => $email,
             ':phone' => $phone,
+            ':hash' => $passwordHash,
             ':full_name' => $fullName,
         ]);
-        $newUserId = (int)$stmt->fetchColumn();
-
-        // Login secret goes to the separate credentials database, not
-        // this users row. Not wrapped in the caller's DB transaction
-        // (different connection) — if this throws, the caller's
-        // transaction still rolls back the users INSERT above via its
-        // own catch block, so no orphaned login-less user is left behind.
-        CredentialsRepository::fromEnvironment()->createUserCredential($newUserId, $passwordHash);
-
-        return $newUserId;
+        return (int)$stmt->fetchColumn();
     }
 
     /**
@@ -438,20 +426,12 @@ class UserManagementService
             // below can succeed at all.
             $globalUserId = $this->ensureGlobalUser($fullName, $email, $hash, $phone);
 
-            // password_hash deliberately NOT written to organization_users
-            // here: it's the same login secret ensureGlobalUser() just
-            // wrote to the credentials database against $globalUserId, and
-            // real authentication (enterprise/login.php) only ever checks
-            // that one. A second copy on this row would just be a stale
-            // duplicate waiting to drift out of sync with the real one —
-            // which is exactly what happened before (see resetPassword()
-            // below).
             $stmt = $this->db->prepare("
                 INSERT INTO organization_users (
-                    organization_id, user_id, department_id, full_name, email,
+                    organization_id, user_id, department_id, full_name, email, password_hash,
                     role, is_active, must_change_password, created_by, created_at, updated_at
                 ) VALUES (
-                    :org_id, :global_user_id, :dept_id, :name, :email,
+                    :org_id, :global_user_id, :dept_id, :name, :email, :hash,
                     :role, true, true, :created_by, NOW(), NOW()
                 ) RETURNING id
             ");
@@ -461,6 +441,7 @@ class UserManagementService
                 ':dept_id' => $departmentId,
                 ':name' => $fullName,
                 ':email' => $email,
+                ':hash' => $hash,
                 ':role' => $role,
                 ':created_by' => $createdBy,
             ]);
@@ -577,33 +558,15 @@ if (!$existing) {
     {
         $this->assertCanManageUsers($updaterRole);
 
-        // Confirms $targetUserId is actually a member of this org before
-        // touching their credential — the credentials DB has no
-        // organization_id to scope this query by itself.
-        $stmt = $this->db->prepare("SELECT 1 FROM organization_users WHERE user_id = :uid AND organization_id = :org_id");
-        $stmt->execute([':uid' => $targetUserId, ':org_id' => $organizationId]);
-        if (!$stmt->fetchColumn()) {
-            throw new RuntimeException("User not found in this organization.");
-        }
-
         $tempPassword = $this->generateTempPassword();
         $hash = password_hash($tempPassword, PASSWORD_DEFAULT);
 
-        // FIX: this used to write only to organization_users.password_hash
-        // — a column enterprise/login.php never reads (it authenticates
-        // against users.password_hash via the organization_users->users
-        // join). That meant a password reset here silently didn't change
-        // what the person could actually log in with. The real credential
-        // now lives in the credentials database keyed by the same global
-        // user_id, which is what this updates.
-        CredentialsRepository::fromEnvironment()->updateUserPassword($targetUserId, $hash);
-
         $stmt = $this->db->prepare("
             UPDATE organization_users
-            SET must_change_password = true, updated_at = NOW()
+            SET password_hash = :hash, must_change_password = true, updated_at = NOW()
             WHERE user_id = :uid AND organization_id = :org_id
         ");
-        $stmt->execute([':uid' => $targetUserId, ':org_id' => $organizationId]);
+        $stmt->execute([':hash' => $hash, ':uid' => $targetUserId, ':org_id' => $organizationId]);
 
         return $tempPassword;
     }
