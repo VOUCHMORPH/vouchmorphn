@@ -24,14 +24,11 @@ require_once __DIR__ . '/../../src/Infrastructure/SMS/Contracts/ProviderInterfac
 require_once __DIR__ . '/../../src/Core/Factories/CommunicationFactory.php';
 require_once __DIR__ . '/../../src/Infrastructure/Email/Contracts/EmailProviderInterface.php';
 require_once __DIR__ . '/../../src/Infrastructure/Email/EmailGatewayClient.php';
-require_once __DIR__ . '/../../src/Core/Database/CredentialsDBConnection.php';
-require_once __DIR__ . '/../../src/Infrastructure/Credentials/CredentialsRepository.php';
 use Application\Utils\SessionManager;
 use Core\Database\DBConnection;
 use Core\Config\LoadCountry;
 use Core\Factories\CommunicationFactory;
 use Infrastructure\Email\EmailGatewayClient;
-use Infrastructure\Credentials\CredentialsRepository;
 // ============================================================
 // SUPER TEST MODE: NO PIN REQUIRED
 // ============================================================
@@ -166,7 +163,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt = $db->prepare("
                 SELECT user_id, phone, phone2, phone3, email,
                        national_id, drivers_license, passport,
-                       username, full_name, verified,
+                       username, full_name, password_hash, verified,
                        created_at, has_transaction_pin as pin_enabled,
                        role_id
                 FROM users
@@ -181,17 +178,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ");
             $stmt->execute([':identifier' => $formattedValue]);
             $user = $stmt->fetch(\PDO::FETCH_ASSOC);
-            // Login secrets (password_hash) live in the separate
-            // credentials database, not on this `users` row — fetched
-            // only once we know which user_id we're checking.
-            $userCredential = null;
-            if ($user) {
-                try {
-                    $userCredential = CredentialsRepository::fromEnvironment()->findUserCredentialByUserId((int)$user['user_id']);
-                } catch (\Throwable $e) {
-                    error_log("[USER LOGIN] Credentials DB error: " . $e->getMessage());
-                }
-            }
             error_log("[USER LOGIN SUPER TEST] User found: " . ($user ? 'YES' : 'NO'));
             if (!$user) {
                 $error = "User not found. Please check your identifier.";
@@ -214,7 +200,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     // any PIN, or none, is accepted.
                     $pinValid = true;
                     error_log("[USER LOGIN SUPER TEST] PIN SKIPPED - any PIN accepted (or no PIN)");
-                } elseif (!empty($userCredential['password_hash']) && password_verify($pin, $userCredential['password_hash'])) {
+                } elseif (!empty($user['password_hash']) && password_verify($pin, $user['password_hash'])) {
                     $pinValid = true;
                     error_log("[USER LOGIN SUPER TEST] PIN verified successfully");
                 } else {

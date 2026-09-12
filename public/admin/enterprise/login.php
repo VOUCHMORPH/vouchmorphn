@@ -12,12 +12,9 @@ if (session_status() === PHP_SESSION_NONE) {
 }
 
 require_once __DIR__ . '/../../../src/Core/Database/DBConnection.php';
-require_once __DIR__ . '/../../../src/Core/Database/CredentialsDBConnection.php';
-require_once __DIR__ . '/../../../src/Infrastructure/Credentials/CredentialsRepository.php';
 require_once __DIR__ . '/auth.php';
 
 use Core\Database\DBConnection;
-use Infrastructure\Credentials\CredentialsRepository;
 
 $pdo = DBConnection::getConnection();
 
@@ -48,6 +45,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 u.user_id as auth_user_id,
                 u.email,
                 u.username,
+                u.password_hash,
                 u.full_name,
                 u.verified,
                 u.kyc_verified,
@@ -63,14 +61,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([':email' => $email]);
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        // Login secret lives in the separate credentials database, keyed
-        // by the same global user_id this join just resolved — not on
-        // organization_users.password_hash, which is a stale duplicate
-        // never read for authentication (see UserManagementService::
-        // resetPassword(), which only ever wrote that column).
-        $credential = $user ? CredentialsRepository::fromEnvironment()->findUserCredentialByUserId((int)$user['user_id']) : null;
-
-        if ($user && $credential && password_verify($password, $credential['password_hash'])) {
+        if ($user && password_verify($password, $user['password_hash'])) {
 
             $roleCheck = $pdo->prepare("
                 SELECT role_code, label, default_scope 

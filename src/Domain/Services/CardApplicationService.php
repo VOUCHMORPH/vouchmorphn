@@ -7,8 +7,6 @@ namespace Domain\Services;
 require_once __DIR__ . '/KYCDocumentService.php';
 require_once __DIR__ . '/../../Infrastructure/Cards/CardNumberGenerator.php';
 require_once __DIR__ . '/../Helpers/CardHelper.php';
-require_once __DIR__ . '/../../Core/Database/CredentialsDBConnection.php';
-require_once __DIR__ . '/../../Infrastructure/Credentials/CredentialsRepository.php';
 
 use PDO;
 use Exception;
@@ -16,7 +14,6 @@ use RuntimeException;
 use Domain\Services\KYCDocumentService;
 use Infrastructure\Cards\CardNumberGenerator;
 use Domain\Helpers\CardHelper;
-use Infrastructure\Credentials\CredentialsRepository;
 
 /**
  * CardApplicationService - Handles card applications for general public
@@ -119,35 +116,26 @@ class CardApplicationService
         
         $stmt = $this->db->prepare("
             INSERT INTO users (
-                username, email, phone, role_id,
+                username, email, phone, password_hash, role_id, 
                 verified, kyc_verified, created_at
             ) VALUES (
-                :username, :email, :phone, 1,
+                :username, :email, :phone, :password, 1, 
                 false, false, NOW()
             ) RETURNING user_id, username, email, phone
         ");
-
+        
         $stmt->execute([
             ':username' => $username,
             ':email' => $data['email'],
             ':phone' => $data['phone'],
+            ':password' => password_hash($tempPassword, PASSWORD_DEFAULT)
         ]);
-
+        
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
-
-        // Login secret goes to the separate credentials database. This
-        // runs inside the caller's transaction on $this->db (a different
-        // connection) — if it throws, processApplication()'s catch block
-        // still rolls back the users INSERT above, so no login-less user
-        // is left behind.
-        CredentialsRepository::fromEnvironment()->createUserCredential(
-            (int)$user['user_id'],
-            password_hash($tempPassword, PASSWORD_DEFAULT)
-        );
-
+        
         // Store personal information in kyc_documents table
         $this->storeUserProfile($user['user_id'], $data);
-
+        
         return $user;
     }
     

@@ -84,24 +84,18 @@ function createOrganizationWithOwner(PDO $db, array $orgData, array $ownerData, 
         // (unscoped). Per the department-scoping rule elsewhere in this
         // codebase, that's what a NULL department_id on an owner means:
         // full authority across every department this org will ever create.
-        //
-        // password_hash deliberately not written here — ensureGlobalUser()
-        // above already wrote the real login secret to the credentials
-        // database against $globalUserId, which is what enterprise/login.php
-        // actually checks. A second copy on this row would just be a stale
-        // duplicate (see UserManagementService::resetPassword()'s note).
         $stmt = $db->prepare("
             INSERT INTO organization_users (
-                organization_id, user_id, department_id, full_name, email,
+                organization_id, user_id, department_id, full_name, email, password_hash,
                 role, is_active, must_change_password, created_by, created_at, updated_at
             ) VALUES (
-                :org_id, :global_user_id, NULL, :name, :email,
+                :org_id, :global_user_id, NULL, :name, :email, :hash,
                 'owner', true, true, NULL, NOW(), NOW()
             ) RETURNING id
         ");
         $stmt->execute([
             ':org_id' => $orgId, ':global_user_id' => $globalUserId,
-            ':name' => $ownerName, ':email' => $ownerEmail,
+            ':name' => $ownerName, ':email' => $ownerEmail, ':hash' => $hash,
         ]);
         // organization_users.id — the membership row's PK, not the same
         // value as $globalUserId. This is what the rest of the enterprise

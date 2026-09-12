@@ -27,13 +27,10 @@ try {
 
 // Load required classes
 require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
-require_once PROJECT_ROOT . '/src/Core/Database/CredentialsDBConnection.php';
-require_once PROJECT_ROOT . '/src/Infrastructure/Credentials/CredentialsRepository.php';
 require_once PROJECT_ROOT . '/src/Application/Utils/SessionManager.php';
 require_once PROJECT_ROOT . '/src/Application/Admin/Auth/AdminAuth.php';
 
 use Core\Database\DBConnection;
-use Infrastructure\Credentials\CredentialsRepository;
 use Application\Utils\SessionManager;
 use Application\Admin\Auth\AdminAuth;
 
@@ -109,32 +106,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
             // Hash password
             $passwordHash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
-
-            // Insert new admin (identity/profile only — the password
-            // hash goes to the separate credentials database below)
+            
+            // Insert new admin
             $stmt = $db->prepare("
-                INSERT INTO admins (username, email, role_id, full_name, country_code, mfa_enabled, created_at, updated_at)
-                VALUES (:username, :email, :role_id, :full_name, :country_code, :mfa_enabled, NOW(), NOW())
-                RETURNING admin_id
+                INSERT INTO admins (username, email, password_hash, role_id, full_name, country_code, mfa_enabled, created_at, updated_at)
+                VALUES (:username, :email, :hash, :role_id, :full_name, :country_code, :mfa_enabled, NOW(), NOW())
             ");
             $stmt->execute([
                 ':username' => $username,
                 ':email' => $email,
+                ':hash' => $passwordHash,
                 ':role_id' => $roleId,
                 ':full_name' => $fullName,
                 ':country_code' => $countryCode,
                 ':mfa_enabled' => $mfaEnabled
             ]);
-            $newAdminId = (int)$stmt->fetchColumn();
-
-            try {
-                CredentialsRepository::fromEnvironment()->createAdminCredential($newAdminId, $passwordHash);
-            } catch (\Throwable $e) {
-                // Compensate: don't leave an admin account with no way to log in.
-                $db->prepare("DELETE FROM admins WHERE admin_id = :id")->execute([':id' => $newAdminId]);
-                throw $e;
-            }
-
+            
             echo json_encode(['success' => true, 'message' => 'Admin created successfully']);
             exit;
             
@@ -209,10 +196,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             
             $passwordHash = password_hash($newPassword, PASSWORD_BCRYPT, ['cost' => 12]);
-
-            CredentialsRepository::fromEnvironment()->updateAdminPassword($adminId, $passwordHash);
-            $db->prepare("UPDATE admins SET updated_at = NOW() WHERE admin_id = :admin_id")->execute([':admin_id' => $adminId]);
-
+            
+            $stmt = $db->prepare("UPDATE admins SET password_hash = :hash, updated_at = NOW() WHERE admin_id = :admin_id");
+            $stmt->execute([':hash' => $passwordHash, ':admin_id' => $adminId]);
+            
             echo json_encode(['success' => true, 'message' => 'Password reset successfully']);
             exit;
         }

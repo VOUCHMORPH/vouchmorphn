@@ -3,37 +3,46 @@ declare(strict_types=1);
 
 namespace Application\Admin\Auth;
 
-require_once __DIR__ . '/../../../Core/Database/CredentialsDBConnection.php';
-require_once __DIR__ . '/../../../Infrastructure/Credentials/CredentialsRepository.php';
-
 use Application\Utils\SessionManager;
-use Infrastructure\Credentials\CredentialsRepository;
 use PragmaRX\Google2FA\Google2FA;
 
 class AdminAuth
 {
     private \PDO $db;
-
+    
     public function __construct(\PDO $db)
     {
         $this->db = $db;
     }
-
+    
     /**
      * Increment failed login counter; lock account after threshold.
-     * The counter and lock now live in the credentials database next to
-     * the password_hash they protect, not on the main admins row.
      */
     private function recordFailedAttempt(int $adminId, int $currentCount): void
     {
+        $newCount = $currentCount + 1;
         $maxAttempts = 5;
         $lockMinutes = 15;
 
         try {
-            $result = CredentialsRepository::fromEnvironment()
-                ->recordFailedAdminAttempt($adminId, $currentCount, $maxAttempts, $lockMinutes);
-            if (!empty($result['locked_until'])) {
-                error_log("[ADMIN AUTH] Account {$adminId} locked for {$lockMinutes} minutes after {$result['failed_login_attempts']} failed attempts");
+            if ($newCount >= $maxAttempts) {
+                $stmt = $this->db->prepare("
+                    UPDATE admins 
+                    SET failed_login_attempts = :count,
+                        locked_until = NOW() + (:mins || ' minutes')::interval
+                    WHERE admin_id = :id
+                ");
+                $stmt->execute([
+                    ':count' => $newCount,
+                    ':mins' => $lockMinutes,
+                    ':id' => $adminId
+                ]);
+                error_log("[ADMIN AUTH] Account {$adminId} locked for {$lockMinutes} minutes after {$newCount} failed attempts");
+            } else {
+                $stmt = $this->db->prepare("
+                    UPDATE admins SET failed_login_attempts = :count WHERE admin_id = :id
+                ");
+                $stmt->execute([':count' => $newCount, ':id' => $adminId]);
             }
         } catch (\Throwable $e) {
             error_log("[ADMIN AUTH] Failed to record login attempt: " . $e->getMessage());
@@ -46,7 +55,12 @@ class AdminAuth
     private function resetFailedAttempts(int $adminId): void
     {
         try {
-            CredentialsRepository::fromEnvironment()->resetAdminFailedAttempts($adminId);
+            $stmt = $this->db->prepare("
+                UPDATE admins 
+                SET failed_login_attempts = 0, locked_until = NULL 
+                WHERE admin_id = :id
+            ");
+            $stmt->execute([':id' => $adminId]);
         } catch (\Throwable $e) {
             error_log("[ADMIN AUTH] Failed to reset login attempts: " . $e->getMessage());
         }
@@ -60,22 +74,22 @@ class AdminAuth
         try {
             error_log("[ADMIN AUTH] Login attempt for: {$username} in country: {$country}");
 
-            // Identifier lookup (who is this) stays against the main DB.
-            // Login secret + lockout state live in the separate
-            // credentials database, fetched next by the admin_id this
-            // resolves — that database never sees a username or email.
+            // Check if admin exists (username OR email) - INCLUDING lockout fields
             $stmt = $this->db->prepare("
-                SELECT
-                    admin_id,
-                    username,
-                    email,
-                    role_id,
+                SELECT 
+                    admin_id, 
+                    username, 
+                    email, 
+                    password_hash, 
+                    role_id, 
                     mfa_enabled,
                     mfa_secret,
                     full_name,
                     country_code,
-                    deleted_at
-                FROM admins
+                    deleted_at,
+                    failed_login_attempts,
+                    locked_until
+                FROM admins 
                 WHERE (username = :identifier OR email = :identifier)
                     AND deleted_at IS NULL
                 LIMIT 1
@@ -88,27 +102,20 @@ class AdminAuth
                 return ['success' => false, 'message' => 'Invalid username or password.'];
             }
 
-            $credential = CredentialsRepository::fromEnvironment()->findAdminCredentialByAdminId((int)$admin['admin_id']);
-
-            if (!$credential) {
-                error_log("[ADMIN AUTH] No credential record for admin_id {$admin['admin_id']}");
-                return ['success' => false, 'message' => 'Invalid username or password.'];
-            }
-
             // --- ACCOUNT LOCKOUT CHECK ---
-            if (!empty($credential['locked_until']) && strtotime($credential['locked_until']) > time()) {
-                $unlockAt = date('H:i:s', strtotime($credential['locked_until']));
-                error_log("[ADMIN AUTH] Account locked: {$username} until {$credential['locked_until']}");
+            if (!empty($admin['locked_until']) && strtotime($admin['locked_until']) > time()) {
+                $unlockAt = date('H:i:s', strtotime($admin['locked_until']));
+                error_log("[ADMIN AUTH] Account locked: {$username} until {$admin['locked_until']}");
                 return ['success' => false, 'message' => "Account temporarily locked due to repeated failed attempts. Try again after {$unlockAt}."];
             }
 
             error_log("[ADMIN AUTH] User found: {$admin['username']}, Role ID: {$admin['role_id']}");
 
             // Verify password
-            if (!password_verify($password, $credential['password_hash'])) {
+            if (!password_verify($password, $admin['password_hash'])) {
                 error_log("[ADMIN AUTH] Password verification failed for: {$username}");
 
-                $this->recordFailedAttempt((int)$admin['admin_id'], (int)$credential['failed_login_attempts']);
+                $this->recordFailedAttempt((int)$admin['admin_id'], (int)$admin['failed_login_attempts']);
 
                 return ['success' => false, 'message' => 'Invalid username or password.'];
             }
@@ -117,6 +124,12 @@ class AdminAuth
 
             // --- RESET FAILURE COUNTER ON SUCCESS ---
             $this->resetFailedAttempts((int)$admin['admin_id']);
+
+            // Check if account is deleted
+            if ($admin['deleted_at'] !== null) {
+                error_log("[ADMIN AUTH] Account deleted: {$username}");
+                return ['success' => false, 'message' => 'Account not found.'];
+            }
 
             // Check country access - Super admin (role_id = 999) can access any country
             $isSuperAdmin = ($admin['role_id'] == 999);

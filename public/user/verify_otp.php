@@ -15,8 +15,6 @@ define('PROJECT_ROOT', dirname(__DIR__, 2));
 require_once PROJECT_ROOT . '/src/Core/Config/LoadCountry.php';
 require_once PROJECT_ROOT . '/src/Application/Utils/SessionManager.php';
 require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
-require_once PROJECT_ROOT . '/src/Core/Database/CredentialsDBConnection.php';
-require_once PROJECT_ROOT . '/src/Infrastructure/Credentials/CredentialsRepository.php';
 
 use Application\Utils\SessionManager;
 use Core\Database\DBConnection;
@@ -289,6 +287,7 @@ try {
                 username,
                 email,
                 phone,
+                password_hash,
                 transaction_pin_hash,
                 transaction_pin_set_at,
                 verified,
@@ -305,6 +304,7 @@ try {
                 :username,
                 :email,
                 :phone,
+                :password_hash,
                 :transaction_pin_hash,
                 NOW(),
                 true,
@@ -319,11 +319,12 @@ try {
                 'self'
             )
         ");
-
+        
         $stmt->execute([
             ':username' => $username,
             ':email' => $email,
             ':phone' => $tempData['phone_number'] ?? null,
+            ':password_hash' => $tempData['pin_hash'],
             ':transaction_pin_hash' => $tempData['pin_hash'],
             ':national_id' => ($tempData['identifier_type'] === 'national_id') ? $tempData['identifier_value'] : null,
             ':drivers_license' => ($tempData['identifier_type'] === 'drivers_license') ? $tempData['identifier_value'] : null,
@@ -335,14 +336,6 @@ try {
         ]);
         $userId = $db->lastInsertId();
         error_log("VERIFY OTP: User created with ID: {$userId}");
-
-        // Login secret (the PIN hash that doubles as this user's login
-        // password) goes to the separate credentials database, not this
-        // `users` row. Written before commit so a failure here rolls the
-        // whole registration back via the existing catch block below,
-        // rather than leaving a user with no way to log in.
-        \Infrastructure\Credentials\CredentialsRepository::fromEnvironment()
-            ->createUserCredential((int)$userId, $tempData['pin_hash']);
 
         // Commit transaction
         $db->commit();

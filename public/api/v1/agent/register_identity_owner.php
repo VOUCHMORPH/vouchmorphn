@@ -29,8 +29,6 @@ define('PROJECT_ROOT', dirname(__DIR__, 4));
 require_once PROJECT_ROOT . '/src/Core/Config/LoadCountry.php';
 require_once PROJECT_ROOT . '/src/Application/Utils/SessionManager.php';
 require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
-require_once PROJECT_ROOT . '/src/Core/Database/CredentialsDBConnection.php';
-require_once PROJECT_ROOT . '/src/Infrastructure/Credentials/CredentialsRepository.php';
 require_once PROJECT_ROOT . '/src/Core/Factories/CommunicationFactory.php';
 require_once PROJECT_ROOT . '/src/Infrastructure/Email/Contracts/EmailProviderInterface.php';
 require_once PROJECT_ROOT . '/src/Infrastructure/Email/EmailGatewayClient.php';
@@ -40,7 +38,6 @@ use Application\Utils\SessionManager;
 use Core\Database\DBConnection;
 use Core\Factories\CommunicationFactory;
 use Infrastructure\Email\EmailGatewayClient;
-use Infrastructure\Credentials\CredentialsRepository;
 
 header('Content-Type: application/json; charset=utf-8');
 header('Access-Control-Allow-Origin: *');
@@ -462,7 +459,7 @@ try {
             // ============================================================
             $stmt = $db->prepare("
                 INSERT INTO users (
-                    username, email, phone,
+                    username, email, phone, password_hash,
                     transaction_pin_hash, transaction_pin_set_at,
                     verified, created_at,
                     national_id, drivers_license, passport,
@@ -470,7 +467,7 @@ try {
                     registered_by_agent_id, registration_channel,
                     must_change_pin
                 ) VALUES (
-                    :username, :email, :phone,
+                    :username, :email, :phone, :password_hash,
                     :transaction_pin_hash, NOW(),
                     true, NOW(),
                     :national_id, :drivers_license, :passport,
@@ -483,6 +480,7 @@ try {
                 ':username' => $username,
                 ':email' => $email,
                 ':phone' => $tempData['phone_number'],
+                ':password_hash' => $pinHash,
                 ':transaction_pin_hash' => $pinHash,
                 ':national_id' => $tempData['identity_type'] === 'national_id' ? $tempData['identity_value'] : null,
                 ':drivers_license' => $tempData['identity_type'] === 'drivers_license' ? $tempData['identity_value'] : null,
@@ -494,12 +492,6 @@ try {
             ]);
 
             $userId = (int)$db->lastInsertId();
-
-            // Login secret goes to the separate credentials database.
-            // Written before commit so a failure here rolls back the
-            // whole registration via the catch block below, instead of
-            // leaving behind a user who can never log in.
-            CredentialsRepository::fromEnvironment()->createUserCredential($userId, $pinHash);
 
             $db->commit();
 
