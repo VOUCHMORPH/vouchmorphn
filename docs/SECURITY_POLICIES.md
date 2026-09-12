@@ -5,3 +5,6 @@
 - Logs and audit trails must be immutable.
 - Swap PINs and voucher codes must be encrypted at rest.
 - Transactions must use ACID-compliant transactions across DBs.
+- Login secrets (password hashes) are stored in a database physically
+  separate from application/business data — see
+  docs/security/credentials-isolation.md.
