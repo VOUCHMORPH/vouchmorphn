@@ -820,20 +820,39 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
         } catch (Throwable $e) { $certData['settlement'] = []; }
 
         // Duration check against H1 (90s cross-bank cashout) / Experiment 2
-        // (60s deposit) per the KPI doc's measurement method:
-        // swap_requests.created_at to swap_requests.completed_at.
-        // If your schema names this column differently (or doesn't have
-        // it yet), this quietly falls back to null rather than erroring —
-        // the on-screen/PDF views below show "N/A" in that case.
+        // (60s deposit) per the KPI doc's measurement method. This used to
+        // read swap_requests.created_at/completed_at, but populateSwapRequest()
+        // (see its docblock) writes BOTH of those in the same call, AFTER the
+        // swap has already finished — so they always land within the same
+        // fraction of a second and the duration always read ~0s regardless
+        // of how long the swap actually took. hold_transactions.placed_at
+        // (funds reserved — the real start) through debited_at (funds
+        // actually taken — the real finish) are stamped by clock_timestamp()
+        // at each genuine event, so use those when a hold is on record and
+        // only fall back to the swap_request pair when there's no hold.
         $certData['duration'] = null;
         if (!empty($certData['swap_request'])) {
             $sr = $certData['swap_request'];
-            $createdAt = $sr['created_at'] ?? null;
-            $completedAt = $sr['completed_at'] ?? null;
-            $createdEpoch = tsToEpoch($createdAt);
-            $completedEpoch = tsToEpoch($completedAt);
-            if ($createdEpoch !== null && $completedEpoch !== null) {
-                $seconds = round($completedEpoch - $createdEpoch, 3);
+            $startEpoch = null;
+            $endEpoch = null;
+            foreach ($certData['holds'] as $h) {
+                $placedEpoch = tsToEpoch($h['placed_at'] ?? '');
+                if ($placedEpoch !== null && ($startEpoch === null || $placedEpoch < $startEpoch)) {
+                    $startEpoch = $placedEpoch;
+                }
+                $debitedEpoch = tsToEpoch($h['debited_at'] ?? '');
+                if ($debitedEpoch !== null && ($endEpoch === null || $debitedEpoch > $endEpoch)) {
+                    $endEpoch = $debitedEpoch;
+                }
+            }
+            if ($startEpoch === null) {
+                $startEpoch = tsToEpoch($sr['created_at'] ?? '');
+            }
+            if ($endEpoch === null) {
+                $endEpoch = tsToEpoch($sr['completed_at'] ?? '');
+            }
+            if ($startEpoch !== null && $endEpoch !== null) {
+                $seconds = round($endEpoch - $startEpoch, 3);
                 $swapType = strtolower($sr['swap_type'] ?? '');
                 $isDeposit = str_contains($swapType, 'deposit');
                 $threshold = $isDeposit ? 60 : 90; // Experiment 2 vs Experiment 1 / H1
