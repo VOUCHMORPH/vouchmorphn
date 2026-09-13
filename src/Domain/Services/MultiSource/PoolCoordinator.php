@@ -1638,6 +1638,91 @@ class PoolCoordinator
     }
 
     /**
+     * Cron entry point for pools stuck in PENDING_CASHOUT past their
+     * cashout code's expiry (+ buffer), mirroring
+     * SwapService::cancelExpiredCashouts()'s single-source pattern.
+     * Deliberately does NOT call SwapService::releaseCashoutHold() —
+     * that method assumes a single source_institution/hold_transactions
+     * row and settles per-source generate-code-fee/levy withholding on
+     * release. A pool's cashout_authorizations row is stored with
+     * source_institution = 'VM_POOL' and all three fee columns zeroed
+     * (see storePoolCashoutAuthorization()) because pool fees are
+     * already settled per-contributor at pool-completion time via
+     * invoice() in completeDeferredPool() — there is nothing left to
+     * withhold at release time, only the N source holds to release.
+     */
+    public function cancelExpiredPoolCashouts(int $bufferHours = 6): array
+    {
+        $results = ['total_expired' => 0, 'released' => 0, 'errors' => 0, 'details' => []];
+
+        $sql = "
+            SELECT auth_id, swap_reference, metadata
+            FROM cashout_authorizations
+            WHERE source_institution = 'VM_POOL'
+            AND status IN ('PENDING', 'VERIFIED')
+            AND code_expiry + (:buffer || ' hours')::interval < NOW()
+        ";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([':buffer' => $bufferHours]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $results['total_expired'] = count($rows);
+
+        foreach ($rows as $row) {
+            $metadata = json_decode($row['metadata'] ?? '{}', true) ?: [];
+            $poolId = $metadata['pool_id'] ?? null;
+
+            if (!$poolId) {
+                $this->logger->error('Expired pool cashout authorization has no pool_id in metadata', ['auth_id' => $row['auth_id']]);
+                $results['errors']++;
+                $results['details'][] = ['auth_id' => $row['auth_id'], 'status' => 'error', 'error' => 'missing pool_id in metadata'];
+                continue;
+            }
+
+            try {
+                [$pool, $holds, $contributions] = $this->reloadPoolForConfirmation($poolId);
+
+                foreach ($holds as $hold) {
+                    try {
+                        $this->swapService->releaseHold(
+                            $hold['source_payload'] ?? [],
+                            $hold['institution'],
+                            null,
+                            $hold['hold_reference'] ?? null
+                        );
+                    } catch (\Throwable $releaseError) {
+                        $this->logger->error('Failed to release pool source hold on cashout expiry', [
+                            'pool_id' => $poolId,
+                            'institution' => $hold['institution'],
+                            'error' => $releaseError->getMessage(),
+                        ]);
+                    }
+                }
+
+                $stmt2 = $this->db->prepare("
+                    UPDATE cashout_authorizations
+                    SET status = 'EXPIRED', released_at = NOW(), updated_at = NOW()
+                    WHERE auth_id = :auth_id
+                ");
+                $stmt2->execute([':auth_id' => $row['auth_id']]);
+
+                $this->poolRepository->updateStatus($poolId, PoolStatus::CANCELLED->value, [
+                    'cancel_reason' => 'cashout_code_expired',
+                ]);
+
+                $results['released']++;
+                $results['details'][] = ['pool_id' => $poolId, 'auth_id' => $row['auth_id'], 'status' => 'released'];
+
+            } catch (\Throwable $e) {
+                $this->logger->error('cancelExpiredPoolCashouts failed for pool', ['pool_id' => $poolId, 'auth_id' => $row['auth_id'], 'error' => $e->getMessage()]);
+                $results['errors']++;
+                $results['details'][] = ['pool_id' => $poolId, 'auth_id' => $row['auth_id'], 'status' => 'error', 'error' => $e->getMessage()];
+            }
+        }
+
+        return $results;
+    }
+
+    /**
      * Executes a pool where every source's funds are ALREADY held
      * (VouchMorph Card hook flow), rather than the standard execute()
      * pipeline which discovers, verifies, and holds sources itself.
