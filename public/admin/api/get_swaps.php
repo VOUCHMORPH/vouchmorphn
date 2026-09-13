@@ -2,17 +2,15 @@
 header('Content-Type: application/json');
 
 require_once __DIR__ . '/../../../src/bootstrap.php';
-require_once __DIR__ . '/../../../src/ADMIN_LAYER/Auth/AdminAuth.php';
-require_once __DIR__ . '/../../../src/DATA_PERSISTENCE_LAYER/config/DBConnection.php';
+require_once __DIR__ . '/../../../src/Application/Admin/Auth/AdminAuth.php';
+require_once __DIR__ . '/../../../src/Core/Database/DBConnection.php';
 
-use ADMIN_LAYER\Auth\AdminAuth;
-use DATA_PERSISTENCE_LAYER\config\DBConnection;
+use Application\Admin\Auth\AdminAuth;
+use Core\Database\DBConnection;
 
-$config = require __DIR__ . '/../../../src/CORE_CONFIG/load_country.php';
-$db = DBConnection::getInstance($config['db']['swap']);
-$auth = new AdminAuth($db);
+$db = DBConnection::getConnection();
 
-if (!$auth->getCurrentAdmin()) {
+if (!AdminAuth::isLoggedIn()) {
     http_response_code(401);
     echo json_encode(['error' => 'Unauthorized']);
     exit;
