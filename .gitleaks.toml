@@ -1,0 +1,26 @@
+title = "VouchMorph gitleaks config"
+
+# Use gitleaks' default detection rules; we only add exclusions below.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Vendored third-party code and known, already-flagged secrets pending manual rotation by the repo owner"
+
+paths = [
+  '''^vendor/''',
+
+  # Known-compromised production secrets, already reported to the repo
+  # owner directly (not via this scanner) and pending manual rotation on
+  # their own infrastructure. Do NOT remove this allowlist entry as a way
+  # to "fix" the finding — the fix is rotating the underlying credential,
+  # which is out of this repo's/CI's control. Removing these lines only
+  # makes CI red without rotating anything.
+  '''^src/Core/Config/Countries/Botswana/\.env$''',
+  '''^src/Core/Config/Countries/South Africa/\.env$''',
+  '''^add-variables\.sh$''',
+  '''^scripts/add-variables\.sh$''',
+  '''^public/api/card_common\.php$''',
+  '''^public/test\.php$''',
+  '''^src/Core/Config/Countries/South Africa/communication\.json$''',
+]

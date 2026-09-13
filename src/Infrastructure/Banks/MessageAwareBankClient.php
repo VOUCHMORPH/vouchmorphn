@@ -18,27 +18,27 @@ class MessageAwareBankClient extends GenericBankClient
     /**
      * Override send to use message adapter
      */
-    protected function send(string $action, array $payload): array
+    protected function send(string $action, array $payload, ?string $accessToken = null): array
     {
         // Create internal transaction from payload
         $transaction = new InternalTransaction($payload);
-        
+
         // Convert to bank's expected format using adapter
         $message = $this->adapter->toExternal($transaction);
-        
+
         // Determine endpoint based on message format
         $endpoint = $this->getEndpointForFormat($action);
-        
+
         // Send the message (could be JSON, XML, or binary)
-        return $this->sendMessage($message, $endpoint);
+        return $this->sendMessage($message, $endpoint, $accessToken);
     }
-    
-    private function sendMessage(string $message, string $endpoint): array
+
+    private function sendMessage(string $message, string $endpoint, ?string $accessToken = null): array
     {
         $url = rtrim($this->config['base_url'], '/') . '/' . ltrim($endpoint, '/');
-        
-        $headers = $this->buildHeaders([]);
-        
+
+        $headers = $this->buildHeaders([], $accessToken);
+
         // Add content-type based on message format
         if ($this->messageFormat === 'iso8583') {
             $headers[] = 'Content-Type: application/octet-stream';

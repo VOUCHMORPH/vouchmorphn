@@ -44,8 +44,11 @@ declare(strict_types=1);
  * institution and confirm reality. This script's only side effect is
  * writing rows to swap_integrity_findings for review.
  *
- * SCHEDULING: run every 15-30 minutes.
- *   */15 * * * * php /path/to/swap_integrity_reconciler.php >> /var/log/vouchmorph/reconciler.log 2>&1
+ * SCHEDULING: run every 15-30 minutes. Crontab line (every 15 minutes -
+ * written as 0-59/15 rather than the more familiar star-slash-15
+ * shorthand because that shorthand's literal "star-slash" would close
+ * this very comment block early and break the file):
+ *   0-59/15 * * * * php /path/to/swap_integrity_reconciler.php >> /var/log/vouchmorph/reconciler.log 2>&1
  */
 
 require_once __DIR__ . '/../../vendor/autoload.php'; // adjust to your actual vendor path

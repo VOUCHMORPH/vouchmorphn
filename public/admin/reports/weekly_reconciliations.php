@@ -227,7 +227,8 @@ $logFile = __DIR__ . '/../../../storage/logs/weekly_reconciliations.log';
 if (!is_dir(dirname($logFile))) {
     mkdir(dirname($logFile), 0755, true);
 }
-file_put_contents($logFile, "[" . date('Y-m-d H:i:s') . "] Weekly reconciliations run for {$startDate} to {$endDate} by {$user['username'] ?? 'unknown'}\n", FILE_APPEND);
+$auditUsername = $user['username'] ?? 'unknown';
+file_put_contents($logFile, "[" . date('Y-m-d H:i:s') . "] Weekly reconciliations run for {$startDate} to {$endDate} by {$auditUsername}\n", FILE_APPEND);
 
 // --- CSV EXPORT ---
 if (isset($_GET['export']) && $_GET['export'] === 'csv') {

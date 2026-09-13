@@ -1,0 +1,2 @@
+# CI/dev tooling downloaded fresh, not committed (e.g. tools/phpstan.phar)
+/tools/

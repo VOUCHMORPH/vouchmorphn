@@ -1,0 +1,1039 @@
+parameters:
+	ignoreErrors:
+		-
+			message: '#^Variable \$canViewSuspicious might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/admin_dashboard.php
+
+		-
+			message: '#^Variable \$countryConfigForParticipants on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.variable
+			count: 1
+			path: public/admin/admin_dashboard.php
+
+		-
+			message: '#^Variable \$suspiciousStaleHolds on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.variable
+			count: 1
+			path: public/admin/admin_dashboard.php
+
+		-
+			message: '#^Variable \$suspiciousSummary might not be defined\.$#'
+			identifier: variable.undefined
+			count: 5
+			path: public/admin/admin_dashboard.php
+
+		-
+			message: '#^Variable \$config on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.variable
+			count: 1
+			path: public/admin/admin_login.php
+
+		-
+			message: '#^Variable \$canApprove might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/departments/index.php
+
+		-
+			message: '#^Variable \$canManageDepartments might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/departments/index.php
+
+		-
+			message: '#^Variable \$canManageUsers might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/departments/index.php
+
+		-
+			message: '#^Variable \$canSeeSourceAccountsArea might not be defined\.$#'
+			identifier: variable.undefined
+			count: 2
+			path: public/admin/enterprise/departments/index.php
+
+		-
+			message: '#^Variable \$canTrace might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/departments/index.php
+
+		-
+			message: '#^Variable \$canViewActivityTile might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/departments/index.php
+
+		-
+			message: '#^Variable \$canViewAttentionTile might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/departments/index.php
+
+		-
+			message: '#^Variable \$canViewBatchesTile might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/departments/index.php
+
+		-
+			message: '#^Variable \$canViewBeneficiariesTile might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/departments/index.php
+
+		-
+			message: '#^Variable \$canViewReports might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/departments/index.php
+
+		-
+			message: '#^Variable \$isDepartmentHead might not be defined\.$#'
+			identifier: variable.undefined
+			count: 4
+			path: public/admin/enterprise/departments/index.php
+
+		-
+			message: '#^Variable \$isTopRole might not be defined\.$#'
+			identifier: variable.undefined
+			count: 11
+			path: public/admin/enterprise/departments/index.php
+
+		-
+			message: '#^Call to an undefined static method Core\\Database\\DBConnection\:\:getInstance\(\)\.$#'
+			identifier: staticMethod.notFound
+			count: 1
+			path: public/admin/enterprise/imports/approve.php
+
+		-
+			message: '#^Variable \$destinations in empty\(\) always exists and is not falsy\.$#'
+			identifier: empty.variable
+			count: 1
+			path: public/admin/enterprise/imports/execute.php
+
+		-
+			message: '#^Variable \$canApprove might not be defined\.$#'
+			identifier: variable.undefined
+			count: 2
+			path: public/admin/enterprise/index.php
+
+		-
+			message: '#^Variable \$canConfirmSource might not be defined\.$#'
+			identifier: variable.undefined
+			count: 2
+			path: public/admin/enterprise/index.php
+
+		-
+			message: '#^Variable \$canCreate might not be defined\.$#'
+			identifier: variable.undefined
+			count: 4
+			path: public/admin/enterprise/index.php
+
+		-
+			message: '#^Variable \$canDisburse might not be defined\.$#'
+			identifier: variable.undefined
+			count: 3
+			path: public/admin/enterprise/index.php
+
+		-
+			message: '#^Variable \$canExportFilings might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/index.php
+
+		-
+			message: '#^Variable \$canManageDepartments might not be defined\.$#'
+			identifier: variable.undefined
+			count: 4
+			path: public/admin/enterprise/index.php
+
+		-
+			message: '#^Variable \$canManageUsers might not be defined\.$#'
+			identifier: variable.undefined
+			count: 4
+			path: public/admin/enterprise/index.php
+
+		-
+			message: '#^Variable \$canSeeFinancialStats might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/index.php
+
+		-
+			message: '#^Variable \$canSeeSourceAccountsArea might not be defined\.$#'
+			identifier: variable.undefined
+			count: 4
+			path: public/admin/enterprise/index.php
+
+		-
+			message: '#^Variable \$canTrace might not be defined\.$#'
+			identifier: variable.undefined
+			count: 4
+			path: public/admin/enterprise/index.php
+
+		-
+			message: '#^Variable \$canViewActivityTile might not be defined\.$#'
+			identifier: variable.undefined
+			count: 3
+			path: public/admin/enterprise/index.php
+
+		-
+			message: '#^Variable \$canViewAttentionTile might not be defined\.$#'
+			identifier: variable.undefined
+			count: 3
+			path: public/admin/enterprise/index.php
+
+		-
+			message: '#^Variable \$canViewBatchesTile might not be defined\.$#'
+			identifier: variable.undefined
+			count: 3
+			path: public/admin/enterprise/index.php
+
+		-
+			message: '#^Variable \$canViewBeneficiariesTile might not be defined\.$#'
+			identifier: variable.undefined
+			count: 4
+			path: public/admin/enterprise/index.php
+
+		-
+			message: '#^Variable \$canViewReports might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/index.php
+
+		-
+			message: '#^Variable \$isApprover might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/index.php
+
+		-
+			message: '#^Variable \$isDepartmentHead might not be defined\.$#'
+			identifier: variable.undefined
+			count: 4
+			path: public/admin/enterprise/index.php
+
+		-
+			message: '#^Variable \$isLoader might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/index.php
+
+		-
+			message: '#^Variable \$isReadOnly might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/index.php
+
+		-
+			message: '#^Variable \$isSupervisor might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/index.php
+
+		-
+			message: '#^Variable \$isTopRole might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/index.php
+
+		-
+			message: '#^Variable \$userDeptScope might not be defined\.$#'
+			identifier: variable.undefined
+			count: 8
+			path: public/admin/enterprise/index.php
+
+		-
+			message: '#^Variable \$userRole might not be defined\.$#'
+			identifier: variable.undefined
+			count: 6
+			path: public/admin/enterprise/partials/permissions.php
+
+		-
+			message: '#^Variable \$fullName might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/partials/shell-foot.php
+
+		-
+			message: '#^Variable \$orgName might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/partials/shell-foot.php
+
+		-
+			message: '#^Variable \$userRole might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/partials/shell-foot.php
+
+		-
+			message: '#^Variable \$fullName might not be defined\.$#'
+			identifier: variable.undefined
+			count: 2
+			path: public/admin/enterprise/partials/shell-head.php
+
+		-
+			message: '#^Variable \$orgName might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/partials/shell-head.php
+
+		-
+			message: '#^Variable \$userRole might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/partials/shell-head.php
+
+		-
+			message: '#^Variable \$canApprove might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/settings.php
+
+		-
+			message: '#^Variable \$canManageDepartments might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/settings.php
+
+		-
+			message: '#^Variable \$canManageUsers might not be defined\.$#'
+			identifier: variable.undefined
+			count: 2
+			path: public/admin/enterprise/settings.php
+
+		-
+			message: '#^Variable \$canSeeSourceAccountsArea might not be defined\.$#'
+			identifier: variable.undefined
+			count: 3
+			path: public/admin/enterprise/settings.php
+
+		-
+			message: '#^Variable \$canTrace might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/settings.php
+
+		-
+			message: '#^Variable \$canViewActivityTile might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/settings.php
+
+		-
+			message: '#^Variable \$canViewAttentionTile might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/settings.php
+
+		-
+			message: '#^Variable \$canViewBatchesTile might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/settings.php
+
+		-
+			message: '#^Variable \$canViewBeneficiariesTile might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/settings.php
+
+		-
+			message: '#^Variable \$canViewReports might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/settings.php
+
+		-
+			message: '#^Variable \$isDepartmentHead might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/settings.php
+
+		-
+			message: '#^Variable \$canApprove might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/settings/users.php
+
+		-
+			message: '#^Variable \$canManageDepartments might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/settings/users.php
+
+		-
+			message: '#^Variable \$canManageUsers might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/settings/users.php
+
+		-
+			message: '#^Variable \$canSeeSourceAccountsArea might not be defined\.$#'
+			identifier: variable.undefined
+			count: 2
+			path: public/admin/enterprise/settings/users.php
+
+		-
+			message: '#^Variable \$canTrace might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/settings/users.php
+
+		-
+			message: '#^Variable \$canViewActivityTile might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/settings/users.php
+
+		-
+			message: '#^Variable \$canViewAttentionTile might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/settings/users.php
+
+		-
+			message: '#^Variable \$canViewBatchesTile might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/settings/users.php
+
+		-
+			message: '#^Variable \$canViewBeneficiariesTile might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/settings/users.php
+
+		-
+			message: '#^Variable \$canViewReports might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/settings/users.php
+
+		-
+			message: '#^Variable \$isDepartmentHead might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/enterprise/settings/users.php
+
+		-
+			message: '#^Variable \$db might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/reports/audit_trails.php
+
+		-
+			message: '#^Variable \$endDate might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/reports/audit_trails.php
+
+		-
+			message: '#^Variable \$logs on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.variable
+			count: 1
+			path: public/admin/reports/audit_trails.php
+
+		-
+			message: '#^Variable \$startDate might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/admin/reports/audit_trails.php
+
+		-
+			message: '#^Variable \$totalCount on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.variable
+			count: 1
+			path: public/admin/reports/audit_trails.php
+
+		-
+			message: '#^Call to an undefined static method Core\\Database\\DBConnection\:\:getInstance\(\)\.$#'
+			identifier: staticMethod.notFound
+			count: 1
+			path: public/admin/reset_password.php
+
+		-
+			message: '#^Call to an undefined static method Core\\Database\\DBConnection\:\:getInstance\(\)\.$#'
+			identifier: staticMethod.notFound
+			count: 1
+			path: public/api/get_active_codes.php
+
+		-
+			message: '#^Function callApi invoked with 3 parameters, 2 required\.$#'
+			identifier: arguments.count
+			count: 4
+			path: public/api/test.php
+
+		-
+			message: '#^Variable \$db might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/api/ussd.php
+
+		-
+			message: '#^Variable \$db might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/api/ussd/index.php
+
+		-
+			message: '#^Call to static method getConnection\(\) on an unknown class DBConnection\.$#'
+			identifier: class.notFound
+			count: 1
+			path: public/api/v1/cards/admin/ship.php
+
+		-
+			message: '#^Variable \$this might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/api/v1/cards/admin/ship.php
+
+		-
+			message: '#^Function getAuthenticatedUserId not found\.$#'
+			identifier: function.notFound
+			count: 1
+			path: public/api/v1/dashboard/balance.php
+
+		-
+			message: '#^Function getUserLinkedInstitutions not found\.$#'
+			identifier: function.notFound
+			count: 1
+			path: public/api/v1/dashboard/balance.php
+
+		-
+			message: '#^Variable \$error on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.variable
+			count: 1
+			path: public/api/v1/dashboard/balance.php
+
+		-
+			message: '#^Variable \$config might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/api/v1/swap/cashout_confirm.php
+
+		-
+			message: '#^Variable \$db might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/api/v1/swap/cashout_confirm.php
+
+		-
+			message: '#^Call to static method isLoggedIn\(\) on an unknown class Infrastructure\\Session\\SessionManager\.$#'
+			identifier: class.notFound
+			count: 1
+			path: public/api/v1/swap/service-endpoint.php
+
+		-
+			message: '#^Call to static method start\(\) on an unknown class Infrastructure\\Session\\SessionManager\.$#'
+			identifier: class.notFound
+			count: 1
+			path: public/api/v1/swap/service-endpoint.php
+
+		-
+			message: '#^Class Domain\\Services\\SwapService constructor invoked with 5 parameters, 3\-4 required\.$#'
+			identifier: arguments.count
+			count: 1
+			path: public/api/v1/swap/service-endpoint.php
+
+		-
+			message: '#^Variable \$parsed on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.variable
+			count: 2
+			path: public/api/v1/user/all_balances.php
+
+		-
+			message: '#^Variable \$parsed on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.variable
+			count: 2
+			path: public/api/v1/user/balance.php
+
+		-
+			message: '#^File ends with a trailing whitespace\. This may cause problems when running the code in the web browser\. Remove the closing \?\> mark or remove the whitespace\.$#'
+			identifier: whitespace.fileEnd
+			count: 1
+			path: public/assets/images/image.php
+
+		-
+			message: '#^Variable \$httpStatus on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.variable
+			count: 1
+			path: public/health.php
+
+		-
+			message: '#^Variable \$countryConfig on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.variable
+			count: 1
+			path: public/onboarding_validator.php
+
+		-
+			message: '#^Function authenticateUser not found\.$#'
+			identifier: function.notFound
+			count: 1
+			path: public/user/delete.php
+
+		-
+			message: '#^Instantiated class VouchMorph\\Services\\SwapService not found\.$#'
+			identifier: class.notFound
+			count: 1
+			path: public/user/delete.php
+
+		-
+			message: '#^Variable \$isAjax in isset\(\) always exists and is not nullable\.$#'
+			identifier: isset.variable
+			count: 1
+			path: public/user/demo/regulation.php
+
+		-
+			message: '#^Variable \$response might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/user/demo/regulation.php
+
+		-
+			message: '#^Call to an undefined static method Core\\Database\\DBConnection\:\:getInstance\(\)\.$#'
+			identifier: staticMethod.notFound
+			count: 1
+			path: public/user/oauth_callback.php
+
+		-
+			message: '#^Variable \$isAjax in isset\(\) always exists and is not nullable\.$#'
+			identifier: isset.variable
+			count: 1
+			path: public/user/regulationdemo.php
+
+		-
+			message: '#^Variable \$response might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: public/user/regulationdemo.php
+
+		-
+			message: '#^Call to an undefined static method Core\\Database\\DBConnection\:\:getInstance\(\)\.$#'
+			identifier: staticMethod.notFound
+			count: 2
+			path: public/user/verify-otp.php
+
+		-
+			message: '#^Call to an undefined static method Core\\Database\\DBConnection\:\:getInstance\(\)\.$#'
+			identifier: staticMethod.notFound
+			count: 1
+			path: src/Application/Admin/Modules/PartnerManager.php
+
+		-
+			message: '#^Call to static method write\(\) on an unknown class AuditLogger\.$#'
+			identifier: class.notFound
+			count: 1
+			path: src/Application/Controllers/AdminController.php
+
+		-
+			message: '#^Instantiated class ADMIN_LAYER\\Tools\\ConfigEditor not found\.$#'
+			identifier: class.notFound
+			count: 1
+			path: src/Application/Controllers/AdminController.php
+
+		-
+			message: '#^Instantiated class AdminService not found\.$#'
+			identifier: class.notFound
+			count: 1
+			path: src/Application/Controllers/AdminController.php
+
+		-
+			message: '#^Property AdminController\:\:\$svc has unknown class AdminService as its type\.$#'
+			identifier: class.notFound
+			count: 1
+			path: src/Application/Controllers/AdminController.php
+
+		-
+			message: '#^Variable \$countryConfig on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.variable
+			count: 1
+			path: src/Application/Handlers/Mojaloop/ParticipantsHandler.php
+
+		-
+			message: '#^Variable \$countryConfig on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.variable
+			count: 1
+			path: src/Application/Handlers/Mojaloop/PartiesHandler.php
+
+		-
+			message: '#^Constant ROOT_PATH not found\.$#'
+			identifier: constant.notFound
+			count: 1
+			path: src/Core/Config/CountryRegistry.php
+
+		-
+			message: '#^Class Infrastructure\\Transactions\\Contracts\\Iso8583TransactionAdapter not found\.$#'
+			identifier: class.notFound
+			count: 1
+			path: src/Core/Config/channel_adapters.php
+
+		-
+			message: '#^Class Infrastructure\\Transactions\\Contracts\\MobileMoneyTransactionAdapter not found\.$#'
+			identifier: class.notFound
+			count: 1
+			path: src/Core/Config/channel_adapters.php
+
+		-
+			message: '#^Class Infrastructure\\Transactions\\Contracts\\RestTransactionAdapter not found\.$#'
+			identifier: class.notFound
+			count: 1
+			path: src/Core/Config/channel_adapters.php
+
+		-
+			message: '#^Class VouchMorph\\Infrastructure\\MessageAdapters\\Iso20022Adapter not found\.$#'
+			identifier: class.notFound
+			count: 1
+			path: src/Core/Config/message_adapters.php
+
+		-
+			message: '#^Class VouchMorph\\Infrastructure\\MessageAdapters\\LegacyAdapter not found\.$#'
+			identifier: class.notFound
+			count: 1
+			path: src/Core/Config/message_adapters.php
+
+		-
+			message: '#^Class VouchMorph\\Infrastructure\\MessageAdapters\\MobileMoneyAdapter not found\.$#'
+			identifier: class.notFound
+			count: 1
+			path: src/Core/Config/message_adapters.php
+
+		-
+			message: '#^Class VouchMorph\\Infrastructure\\MessageAdapters\\RTGSAdapter not found\.$#'
+			identifier: class.notFound
+			count: 1
+			path: src/Core/Config/message_adapters.php
+
+		-
+			message: '#^Call to an undefined static method Core\\Config\\CountryRegistry\:\:get\(\)\.$#'
+			identifier: staticMethod.notFound
+			count: 1
+			path: src/Domain/Models/User.php
+
+		-
+			message: '#^Call to an undefined static method Core\\Config\\CountryRegistry\:\:getAll\(\)\.$#'
+			identifier: staticMethod.notFound
+			count: 2
+			path: src/Domain/Models/User.php
+
+		-
+			message: '#^Class Domain\\Models\\PoolContribution constructor invoked with 9 parameters, 10 required\.$#'
+			identifier: arguments.count
+			count: 1
+			path: src/Domain/Repositories/PoolContributionRepository.php
+
+		-
+			message: '#^Variable \$hookReference might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: src/Domain/Services/CardService.php
+
+		-
+			message: '#^Call to an undefined static method Core\\Database\\DBConnection\:\:getInstance\(\)\.$#'
+			identifier: staticMethod.notFound
+			count: 1
+			path: src/Domain/Services/IdentityResolver.php
+
+		-
+			message: '#^Class Domain\\Models\\PoolContribution constructor invoked with 9 parameters, 10 required\.$#'
+			identifier: arguments.count
+			count: 1
+			path: src/Domain/Services/MultiSource/MultiSourceSwapExecutor.php
+
+		-
+			message: '#^Variable \$pool on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.variable
+			count: 2
+			path: src/Domain/Services/MultiSource/PoolCoordinator.php
+
+		-
+			message: '#^Variable \$verifyPayload on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.variable
+			count: 1
+			path: src/Domain/Services/MultiSource/PoolCoordinator.php
+
+		-
+			message: '#^Access to an undefined property RateLockService\:\:\$swapRepository\.$#'
+			identifier: property.notFound
+			count: 1
+			path: src/Domain/Services/RateLockService.php
+
+		-
+			message: '#^Parameter \$rate of method RateLockService\:\:lockRate\(\) has invalid type RateDTO\.$#'
+			identifier: class.notFound
+			count: 1
+			path: src/Domain/Services/RateLockService.php
+
+		-
+			message: '#^Parameter \$swap of method RateLockService\:\:lockRate\(\) has invalid type SwapTransaction\.$#'
+			identifier: class.notFound
+			count: 1
+			path: src/Domain/Services/RateLockService.php
+
+		-
+			message: '#^Parameter \$swap of method RateLockService\:\:validateLock\(\) has invalid type SwapTransaction\.$#'
+			identifier: class.notFound
+			count: 1
+			path: src/Domain/Services/RateLockService.php
+
+		-
+			message: '#^Access to an undefined property Domain\\Services\\SwapService\:\:\$postDeliveryAmount\.$#'
+			identifier: property.notFound
+			count: 1
+			path: src/Domain/Services/SwapService.php
+
+		-
+			message: '#^Access to an undefined property Domain\\Services\\SwapService\:\:\$postDeliveryCurrency\.$#'
+			identifier: property.notFound
+			count: 1
+			path: src/Domain/Services/SwapService.php
+
+		-
+			message: '#^Access to an undefined property Domain\\Services\\SwapService\:\:\$postDeliveryDestinationInstitution\.$#'
+			identifier: property.notFound
+			count: 1
+			path: src/Domain/Services/SwapService.php
+
+		-
+			message: '#^Array has 2 duplicate keys with value ''asset_type'' \(''asset_type'', ''asset_type''\)\.$#'
+			identifier: array.duplicateKey
+			count: 1
+			path: src/Domain/Services/SwapService.php
+
+		-
+			message: '#^Call to an undefined method Domain\\Services\\SwapService\:\:completeIdentitySwapAsCashout\(\)\.$#'
+			identifier: method.notFound
+			count: 1
+			path: src/Domain/Services/SwapService.php
+
+		-
+			message: '#^Variable \$amount on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.variable
+			count: 3
+			path: src/Domain/Services/SwapService.php
+
+		-
+			message: '#^Variable \$denominations on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.variable
+			count: 2
+			path: src/Domain/Services/SwapService.php
+
+		-
+			message: '#^Variable \$destAmount on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.variable
+			count: 4
+			path: src/Domain/Services/SwapService.php
+
+		-
+			message: '#^Variable \$identityType on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.variable
+			count: 2
+			path: src/Domain/Services/SwapService.php
+
+		-
+			message: '#^Variable \$sourceIdForEarmarkCheck on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.variable
+			count: 1
+			path: src/Domain/Services/SwapService.php
+
+		-
+			message: '#^Variable \$subRef in isset\(\) always exists and is not nullable\.$#'
+			identifier: isset.variable
+			count: 1
+			path: src/Domain/Services/SwapService.php
+
+		-
+			message: '#^Variable \$subRef on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.variable
+			count: 1
+			path: src/Domain/Services/SwapService.php
+
+		-
+			message: '#^Array has 2 duplicate keys with value ''asset_type'' \(''asset_type'', ''asset_type''\)\.$#'
+			identifier: array.duplicateKey
+			count: 1
+			path: src/Domain/Services/oldswap.php
+
+		-
+			message: '#^Variable \$destAmount on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.variable
+			count: 1
+			path: src/Domain/Services/oldswap.php
+
+		-
+			message: '#^Call to static method get\(\) on an unknown class Core\\Config\\CountryBankRegistry\.$#'
+			identifier: class.notFound
+			count: 1
+			path: src/Infrastructure/Banks/BankFactory.php
+
+		-
+			message: '#^Call to static method get\(\) on an unknown class Core\\Config\\SystemCountry\.$#'
+			identifier: class.notFound
+			count: 1
+			path: src/Infrastructure/Banks/BankFactory.php
+
+		-
+			message: '#^Constructor of class Infrastructure\\Banks\\CentralSwitchAdapter has an unused parameter \$bankClient\.$#'
+			identifier: constructor.unusedParameter
+			count: 1
+			path: src/Infrastructure/Banks/CentralSwitchAdapter.php
+
+		-
+			message: '#^Constructor of class Infrastructure\\Banks\\CentralSwitchAdapter has an unused parameter \$logger\.$#'
+			identifier: constructor.unusedParameter
+			count: 1
+			path: src/Infrastructure/Banks/CentralSwitchAdapter.php
+
+		-
+			message: '#^Constructor of class Infrastructure\\Banks\\CentralSwitchAdapter has an unused parameter \$participant\.$#'
+			identifier: constructor.unusedParameter
+			count: 1
+			path: src/Infrastructure/Banks/CentralSwitchAdapter.php
+
+		-
+			message: '#^Constructor of class Infrastructure\\Banks\\GenericBankClient has an unused parameter \$endpoint\.$#'
+			identifier: constructor.unusedParameter
+			count: 1
+			path: src/Infrastructure/Banks/GenericBankClient.php
+
+		-
+			message: '#^Constructor of class Infrastructure\\Banks\\GenericBankClient has an unused parameter \$headers\.$#'
+			identifier: constructor.unusedParameter
+			count: 1
+			path: src/Infrastructure/Banks/GenericBankClient.php
+
+		-
+			message: '#^Constructor of class Infrastructure\\Banks\\GenericBankClient has an unused parameter \$requestPayload\.$#'
+			identifier: constructor.unusedParameter
+			count: 1
+			path: src/Infrastructure/Banks/GenericBankClient.php
+
+		-
+			message: '#^Variable \$apiKey in empty\(\) always exists and is not falsy\.$#'
+			identifier: empty.variable
+			count: 3
+			path: src/Infrastructure/Banks/GenericBankClient.php
+
+		-
+			message: '#^Variable \$baseUrl in empty\(\) always exists and is not falsy\.$#'
+			identifier: empty.variable
+			count: 1
+			path: src/Infrastructure/Banks/GenericBankClient.php
+
+		-
+			message: '#^Variable \$endpoint in empty\(\) always exists and is not falsy\.$#'
+			identifier: empty.variable
+			count: 2
+			path: src/Infrastructure/Banks/GenericBankClient.php
+
+		-
+			message: '#^Variable \$genericApiKey in empty\(\) always exists and is not falsy\.$#'
+			identifier: empty.variable
+			count: 1
+			path: src/Infrastructure/Banks/GenericBankClient.php
+
+		-
+			message: '#^Variable \$genericBaseUrl in empty\(\) always exists and is not falsy\.$#'
+			identifier: empty.variable
+			count: 1
+			path: src/Infrastructure/Banks/GenericBankClient.php
+
+		-
+			message: '#^Call to an undefined method Infrastructure\\Banks\\MessageAwareBankClient\:\:getEndpointForFormat\(\)\.$#'
+			identifier: method.notFound
+			count: 1
+			path: src/Infrastructure/Banks/MessageAwareBankClient.php
+
+		-
+			message: '#^Instantiated class Infrastructure\\Banks\\InternalTransaction not found\.$#'
+			identifier: class.notFound
+			count: 1
+			path: src/Infrastructure/Banks/MessageAwareBankClient.php
+
+		-
+			message: '#^Missing parameter \$type \(string\) in call to Infrastructure\\QRcodes\\Contracts\\QrPayload constructor\.$#'
+			identifier: argument.missing
+			count: 1
+			path: src/Infrastructure/QRcodes/EmvQrAdapter.php
+
+		-
+			message: '#^Unknown parameter \$amount in call to Infrastructure\\QRcodes\\Contracts\\QrPayload constructor\.$#'
+			identifier: argument.unknown
+			count: 1
+			path: src/Infrastructure/QRcodes/EmvQrAdapter.php
+
+		-
+			message: '#^Unknown parameter \$currency in call to Infrastructure\\QRcodes\\Contracts\\QrPayload constructor\.$#'
+			identifier: argument.unknown
+			count: 1
+			path: src/Infrastructure/QRcodes/EmvQrAdapter.php
+
+		-
+			message: '#^Unknown parameter \$institution in call to Infrastructure\\QRcodes\\Contracts\\QrPayload constructor\.$#'
+			identifier: argument.unknown
+			count: 1
+			path: src/Infrastructure/QRcodes/EmvQrAdapter.php
+
+		-
+			message: '#^Unknown parameter \$merchantOrPayeeId in call to Infrastructure\\QRcodes\\Contracts\\QrPayload constructor\.$#'
+			identifier: argument.unknown
+			count: 1
+			path: src/Infrastructure/QRcodes/EmvQrAdapter.php
+
+		-
+			message: '#^Unknown parameter \$qrType in call to Infrastructure\\QRcodes\\Contracts\\QrPayload constructor\.$#'
+			identifier: argument.unknown
+			count: 1
+			path: src/Infrastructure/QRcodes/EmvQrAdapter.php
+
+		-
+			message: '#^Unknown parameter \$raw in call to Infrastructure\\QRcodes\\Contracts\\QrPayload constructor\.$#'
+			identifier: argument.unknown
+			count: 1
+			path: src/Infrastructure/QRcodes/EmvQrAdapter.php
+
+		-
+			message: '#^Unknown parameter \$reference in call to Infrastructure\\QRcodes\\Contracts\\QrPayload constructor\.$#'
+			identifier: argument.unknown
+			count: 1
+			path: src/Infrastructure/QRcodes/EmvQrAdapter.php
+
+		-
+			message: '#^Parameter \$logger of method Infrastructure\\SMS\\SmsGatewayClient\:\:__construct\(\) has invalid type Psr\\Log\\LoggerInterface\.$#'
+			identifier: class.notFound
+			count: 1
+			path: src/Infrastructure/SMS/SmsGatewayClient.php
+
+		-
+			message: '#^Property Infrastructure\\SMS\\SmsGatewayClient\:\:\$logger has unknown class Psr\\Log\\LoggerInterface as its type\.$#'
+			identifier: class.notFound
+			count: 1
+			path: src/Infrastructure/SMS/SmsGatewayClient.php
+
+		-
+			message: '#^Call to an undefined static method Core\\Database\\DBConnection\:\:getInstance\(\)\.$#'
+			identifier: staticMethod.notFound
+			count: 1
+			path: src/Security/Auth/TokenValidator.php
+
+		-
+			message: '#^Constructor of class Security\\Encryption\\SecretManagerClient has an unused parameter \$config\.$#'
+			identifier: constructor.unusedParameter
+			count: 1
+			path: src/Security/Encryption/SecretManagerClient.php
+
+		-
+			message: '#^Instantiated class Azure\\Identity\\DefaultAzureCredential not found\.$#'
+			identifier: class.notFound
+			count: 1
+			path: src/Security/HSMKeyManager.php
+
+		-
+			message: '#^Method Security\\HSMKeyManager\:\:getVaultClient\(\) has invalid return type GuzzleHttp\\Client\.$#'
+			identifier: class.notFound
+			count: 1
+			path: src/Security/HSMKeyManager.php

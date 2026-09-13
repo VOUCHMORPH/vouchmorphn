@@ -28,8 +28,11 @@ declare(strict_types=1);
  *
  * SCHEDULING:
  * Run this every 1-5 minutes via cron, a queue worker, or your
- * platform's scheduled-job mechanism:
- *   */5 * * * * php /path/to/settlement_confirmation_worker.php >> /var/log/vouchmorph/settlement_worker.log 2>&1
+ * platform's scheduled-job mechanism. Crontab line (every 5 minutes -
+ * written as 0-59/5 rather than the more familiar star-slash-5 shorthand
+ * because that shorthand's literal "star-slash" would close this very
+ * comment block early and break the file):
+ *   0-59/5 * * * * php /path/to/settlement_confirmation_worker.php >> /var/log/vouchmorph/settlement_worker.log 2>&1
  *
  * Safe to run concurrently with itself IF your job runner guarantees
  * only one instance at a time; this script does not implement its own

@@ -442,7 +442,7 @@ $container->setFactory('Domain\Services\MultiSource\PoolCoordinator', function (
 });
 
 $container->setFactory('Domain\Services\MultiSourceSwapExecutor', function ($c) {
-    return new \Domain\Services\MultiSourceSwapExecutor(
+    return new \Domain\Services\MultiSource\MultiSourceSwapExecutor(
         $c->get(PDO::class),
         $c->get('Domain\Services\SwapService'),
         $c->get('Domain\Services\Settlement\HybridSettlementStrategy'),

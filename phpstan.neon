@@ -1,0 +1,33 @@
+includes:
+    - phpstan-baseline.neon
+
+parameters:
+    level: 1
+    paths:
+        - src
+        - public
+    excludePaths:
+        - vendor/*
+        - tools/*
+        # Not valid PHP (raw YAML content); left as-is per explicit instruction,
+        # not required as PHP anywhere. Real config for this purpose is
+        # Core/Config/channel_adapters.php.
+        - src/Core/Config/channel.php
+        # Dead legacy-pseudo-namespace files (namespace declared after a
+        # require_once, a genuine parse error) left as-is per explicit
+        # instruction. Confirmed unreferenced/superseded elsewhere; see
+        # public/api/mojaloop/index.php's header comment for the Mojaloop
+        # cluster's real replacement.
+        - src/Core/Schemes/FlowValidator.php
+        - src/Core/Factories/ReportingFactory.php
+        - src/Infrastructure/Mojaloop/ResponseBuilder.php
+        - src/Infrastructure/Mojaloop/RequestParser.php
+        - src/Infrastructure/Mojaloop/Mappers/ResponseMapper.php
+        - src/Infrastructure/Mojaloop/Router.php
+        # Dead dependents of ReportingFactory.php above: no namespace, wrong
+        # required paths, implement an interface that only exists at a
+        # different, unrelated namespace (Infrastructure\Reporting\Contracts).
+        - src/Infrastructure/Reporting/FATFClient.php
+        - src/Infrastructure/Reporting/LocalRegulatorClient.php
+    tmpDir: /tmp/phpstan-cache
+    reportUnmatchedIgnoredErrors: false
