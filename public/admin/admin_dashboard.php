@@ -121,6 +121,21 @@ function tsHtml($value, $fallback = '—') {
     return $html . '</div>';
 }
 
+// Two timestamps side by side with an arrow between them — the "amount
+// added" start and "swap finished" end, for a table cell that needs to
+// show the whole span rather than a single instant. Falls back to a plain
+// single tsHtml() when there's no end (or no start) to pair it with.
+function tsRangeHtml($startValue, $endValue, $fallback = '—') {
+    if (empty($startValue) && empty($endValue)) {
+        return safeHtml($fallback);
+    }
+    if (empty($startValue) || empty($endValue)) {
+        return tsHtml($startValue ?: $endValue, $fallback);
+    }
+    return '<div class="ts-range">' . tsHtml($startValue, $fallback)
+        . '<span class="ts-range-arrow">&rarr;</span>' . tsHtml($endValue, $fallback) . '</div>';
+}
+
 // Plain-text form (date + time, microseconds included, offset dropped) for
 // non-HTML outputs like the PDF and CSV certificate exports.
 function fmtTs($value, $fallback = '') {
@@ -1506,11 +1521,14 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
                 $body .= pdf_table_section('2 · Destination Code Generated', ['Provider', 'Amount', 'Fee', 'Code Expiry', 'Status'],
                     [[$co['cashout_provider'] ?? 'N/A', number_format((float)$co['amount'], 2), number_format((float)($co['fee_amount'] ?? 0), 2), $co['code_expiry'] ?? '', $co['status']]]);
             }
-            $body .= pdf_table_section('3 · Ledger Entries', ['From', 'To', 'Amount', 'Status', 'Transaction Ref', 'Created'],
-                array_map(function ($t) {
+            $body .= pdf_table_section('3 · Ledger Entries', ['From', 'To', 'Amount', 'Status', 'Transaction Ref', 'Created (Amount Added to Swap Finished)'],
+                array_map(function ($t) use ($certData) {
                     $from = json_decode($t['from_account_details'] ?? '{}', true) ?: [];
                     $to = json_decode($t['to_account_details'] ?? '{}', true) ?: [];
-                    return [$from['institution'] ?? 'N/A', $to['institution'] ?? 'N/A', number_format((float)$t['amount'], 2), $t['status'], $t['transaction_id'] ?? '—', fmtTs($t['created_at'] ?? '')];
+                    $created = !empty($certData['duration'])
+                        ? fmtTs($certData['duration']['start']) . ' to ' . fmtTs($certData['duration']['end'])
+                        : fmtTs($t['created_at'] ?? '');
+                    return [$from['institution'] ?? 'N/A', $to['institution'] ?? 'N/A', number_format((float)$t['amount'], 2), $t['status'], $t['transaction_id'] ?? '—', $created];
                 }, $certData['swap_transactions']));
             $body .= pdf_table_section('4 · Audit Trail', ['Action', 'Category', 'Performed By', 'At'],
                 array_map(fn($a) => [$a['action'] ?? '', $a['category'] ?? '', $a['performed_by'] ?? $a['performed_by_id'] ?? 'SYSTEM', fmtTs($a['performed_at'] ?? '')], $certData['audit']),
@@ -2154,6 +2172,15 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             font-size: 0.85em;
             color: var(--ink-500);
             font-variant-numeric: tabular-nums;
+        }
+        .ts-range {
+            display: flex;
+            align-items: center;
+            gap: var(--sp-2);
+        }
+        .ts-range-arrow {
+            color: var(--ink-300);
+            font-size: 13px;
         }
 
         .status {
@@ -2949,9 +2976,20 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
 
                     <div class="report-section-title">3 · Ledger Entries</div>
                     <?php if (empty($certData['swap_transactions'])): ?><p style="font-size:14px;color:var(--ink-300);">No ledger entries found.</p><?php else: ?>
-                    <div class="table-responsive"><table><thead><tr><th>From</th><th>To</th><th>Amount</th><th>Status</th><th>Transaction Ref</th><th>Created</th></tr></thead><tbody>
-                    <?php foreach ($certData['swap_transactions'] as $t): $from = json_decode($t['from_account_details'] ?? '{}', true) ?: []; $to = json_decode($t['to_account_details'] ?? '{}', true) ?: []; ?>
-                    <tr><td><?php echo safeHtml($from['institution'] ?? 'N/A'); ?></td><td><?php echo safeHtml($to['institution'] ?? 'N/A'); ?></td><td><?php echo number_format((float)$t['amount'], 2); ?></td><td><?php echo safeHtml($t['status']); ?></td><td><?php echo safeHtml($t['transaction_id'] ?? '—'); ?></td><td><?php echo tsHtml($t['created_at'] ?? ''); ?></td></tr>
+                    <div class="table-responsive"><table><thead><tr><th>From</th><th>To</th><th>Amount</th><th>Status</th><th>Transaction Ref</th><th>Created — Amount Added to Swap Finished</th></tr></thead><tbody>
+                    <?php foreach ($certData['swap_transactions'] as $t): $from = json_decode($t['from_account_details'] ?? '{}', true) ?: []; $to = json_decode($t['to_account_details'] ?? '{}', true) ?: [];
+                        // The full span, not just when this ledger row was
+                        // posted: from the moment the account added an
+                        // amount and requested the swap to the moment it
+                        // was actually debited/finished — the same
+                        // start/end the Duration bar and Hold table use.
+                        // Falls back to this row's own created_at when
+                        // there's no resolved swap duration to draw from.
+                        $ledgerCreated = !empty($certData['duration'])
+                            ? tsRangeHtml($certData['duration']['start'], $certData['duration']['end'])
+                            : tsHtml($t['created_at'] ?? '');
+                    ?>
+                    <tr><td><?php echo safeHtml($from['institution'] ?? 'N/A'); ?></td><td><?php echo safeHtml($to['institution'] ?? 'N/A'); ?></td><td><?php echo number_format((float)$t['amount'], 2); ?></td><td><?php echo safeHtml($t['status']); ?></td><td><?php echo safeHtml($t['transaction_id'] ?? '—'); ?></td><td><?php echo $ledgerCreated; ?></td></tr>
                     <?php endforeach; ?>
                     </tbody></table></div>
                     <?php endif; ?>
