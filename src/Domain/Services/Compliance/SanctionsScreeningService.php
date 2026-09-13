@@ -49,6 +49,8 @@ class SanctionsScreeningService
     private ?string $providerApiUrl;
     private ?string $providerApiKey;
 
+    private int $providerTimeoutMs;
+
     public function __construct(
         PDO $db,
         string $mode = 'LOCAL_LIST',
@@ -61,6 +63,23 @@ class SanctionsScreeningService
         $this->failOpenOnProviderError = $failOpenOnProviderError;
         $this->providerApiUrl = $providerApiUrl ?? getenv('SANCTIONS_PROVIDER_API_URL') ?: null;
         $this->providerApiKey = $providerApiKey ?? getenv('SANCTIONS_PROVIDER_API_KEY') ?: null;
+        $this->providerTimeoutMs = (int)(getenv('SANCTIONS_PROVIDER_TIMEOUT_MS') ?: 10000);
+
+        // Fail loudly here, at construction, rather than only per-call
+        // inside screenParty()'s try/catch. Previously, selecting
+        // PROVIDER_API without configuring a URL/key just meant every
+        // single swap silently failed closed with a PROVIDER_ERROR,
+        // indistinguishable from a real vendor outage — an ops person
+        // would have to notice a pattern of blocked swaps to even
+        // discover the misconfiguration. This surfaces as a visible
+        // startup failure instead.
+        if ($this->mode === 'PROVIDER_API' && (!$this->providerApiUrl || !$this->providerApiKey)) {
+            throw new \RuntimeException(
+                'SANCTIONS_SCREENING_MODE=PROVIDER_API requires both SANCTIONS_PROVIDER_API_URL ' .
+                'and SANCTIONS_PROVIDER_API_KEY to be set. Refusing to start with an unusable ' .
+                'screening provider configured — set both, or use LOCAL_LIST mode.'
+            );
+        }
 
         $this->ensureTableExists();
     }
@@ -216,6 +235,21 @@ class SanctionsScreeningService
      * until you have a provider contract -- do not silently fall back to
      * the local list if PROVIDER_API mode was explicitly requested; that
      * would hide a real integration gap behind a weaker check.
+     *
+     * Contract a real vendor integration must satisfy, so wiring one up
+     * is a configuration change, not a code change:
+     *   - SANCTIONS_PROVIDER_API_URL / SANCTIONS_PROVIDER_API_KEY: request
+     *     target and bearer token.
+     *   - SANCTIONS_PROVIDER_TIMEOUT_MS (optional, default 10000).
+     *   - Request: POST {url} with JSON body {"name": string, "identifier":
+     *     string|null}.
+     *   - Response: 2xx with JSON body {"matches": [...]} — an array,
+     *     empty meaning clear. Any other shape (including a 2xx with an
+     *     unparseable body or a missing/non-array "matches" key) is
+     *     treated as a provider error, not a clear result — see below.
+     *
+     * HTTP conventions here match GenericBankClient::send() (SSL
+     * verification on, configurable timeout).
      */
     private function screenAgainstProvider(string $name, ?string $identifier): array
     {
@@ -232,8 +266,9 @@ class SanctionsScreeningService
                 'Content-Type: application/json',
                 'Authorization: Bearer ' . $this->providerApiKey,
             ],
-            CURLOPT_TIMEOUT => 10,
+            CURLOPT_TIMEOUT_MS => $this->providerTimeoutMs,
             CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYHOST => 2,
         ]);
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -244,8 +279,22 @@ class SanctionsScreeningService
             throw new \RuntimeException("Screening provider request failed: HTTP {$httpCode} {$error}");
         }
 
+        // A garbled or unexpected response shape must NOT be read as "no
+        // matches" — that's a false negative for a security control.
+        // json_decode() on malformed JSON returns null, and null['matches']
+        // ?? [] previously silently produced an empty (= clear) result.
+        // Anything that doesn't look like a real {"matches": [...]}
+        // response is treated as a provider error, which correctly routes
+        // into screenParty()'s fail-closed-by-default handling instead.
         $data = json_decode($response, true);
-        return $data['matches'] ?? [];
+        if (!is_array($data) || !array_key_exists('matches', $data) || !is_array($data['matches'])) {
+            throw new \RuntimeException(
+                'Screening provider returned an unrecognized response shape ' .
+                '(expected {"matches": [...]}); treating as a provider error, not a clear result.'
+            );
+        }
+
+        return $data['matches'];
     }
 
     private function normalizeName(string $name): string
