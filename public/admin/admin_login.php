@@ -229,7 +229,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($auth) && isset($auditService
 
     // --- RATE LIMITING ---
     try {
-        $limiter = new ApiRateLimiter(8, 300);
+        $limiter = new ApiRateLimiter($db, 8, 300);
         if (!$limiter->check($rateLimitKey)) {
             $rateLimited = true;
             error_log("[ADMIN LOGIN] Rate limit exceeded for IP: {$clientIp}");
