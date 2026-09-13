@@ -885,21 +885,24 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
         } catch (Throwable $e) { $certData['settlement'] = []; }
 
         // Duration check against H1 (90s cross-bank cashout) / Experiment 2
-        // (60s deposit) per the KPI doc's measurement method. This used to
-        // read swap_requests.created_at/completed_at, but populateSwapRequest()
-        // (see its docblock) writes BOTH of those in the same call, AFTER the
-        // swap has already finished — so they always land within the same
-        // fraction of a second and the duration always read ~0s regardless
-        // of how long the swap actually took. hold_transactions.placed_at
-        // (funds reserved — the real start) through debited_at (funds
-        // actually taken — the real finish) are stamped by clock_timestamp()
-        // at each genuine event, so use those when a hold is on record and
-        // only fall back to the swap_request pair when there's no hold.
+        // (60s deposit) per the KPI doc's measurement method: the real
+        // start of the transaction — when the account's swap request first
+        // came in, captured in SwapService::beginAtomicSwap() before any
+        // sanctions screening or hold placement — through to the real
+        // finish (funds actually debited). swap_requests.created_at used
+        // to be written post-hoc by populateSwapRequest() after the swap
+        // had already finished (so it always landed within a hair of
+        // completed_at and duration always read ~0s); it now carries the
+        // true start instant. hold_transactions.placed_at can still be
+        // earlier than that for a batch child with no standalone
+        // swap_requests row, or later than it on old data predating this
+        // fix, so take whichever of the two is earliest/latest rather than
+        // preferring one source outright.
         $certData['duration'] = null;
         if (!empty($certData['swap_request'])) {
             $sr = $certData['swap_request'];
-            $startEpoch = null;
-            $endEpoch = null;
+            $startEpoch = tsToEpoch($sr['created_at'] ?? '');
+            $endEpoch = tsToEpoch($sr['completed_at'] ?? '');
             foreach ($certData['holds'] as $h) {
                 $placedEpoch = tsToEpoch($h['placed_at'] ?? '');
                 if ($placedEpoch !== null && ($startEpoch === null || $placedEpoch < $startEpoch)) {
@@ -909,12 +912,6 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
                 if ($debitedEpoch !== null && ($endEpoch === null || $debitedEpoch > $endEpoch)) {
                     $endEpoch = $debitedEpoch;
                 }
-            }
-            if ($startEpoch === null) {
-                $startEpoch = tsToEpoch($sr['created_at'] ?? '');
-            }
-            if ($endEpoch === null) {
-                $endEpoch = tsToEpoch($sr['completed_at'] ?? '');
             }
             if ($startEpoch !== null && $endEpoch !== null) {
                 $seconds = round($endEpoch - $startEpoch, 3);

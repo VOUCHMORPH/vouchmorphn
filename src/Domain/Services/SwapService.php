@@ -101,6 +101,7 @@ class SwapService
     
     private bool $inAtomicSwap = false;
     private ?string $currentSwapRef = null;
+    private ?string $currentSwapStartedAt = null;
     private ?int $currentHoldId = null;
     private ?string $currentHoldReference = null;
     private ?string $currentHoldInstitution = null;
@@ -1701,7 +1702,7 @@ if (isset($details['status'])) {
 // Only stamp completed_at on the write that actually reports completion.
 // COALESCE in the ON CONFLICT clause above means this never gets
 // overwritten once set, and never gets set on a later non-completed update.
-$completedAt = (strtolower($status) === 'completed') ? date('Y-m-d H:i:s') : null;
+$completedAt = (strtolower($status) === 'completed') ? $this->nowWithMicros() : null;
        
         
         try {
@@ -1718,7 +1719,11 @@ $completedAt = (strtolower($status) === 'completed') ? date('Y-m-d H:i:s') : nul
         'asset_type' => $details['destination_asset_type'] ?? null
     ]),
     ':status' => strtolower($status),
-    ':created_at' => date('Y-m-d H:i:s'),
+    // The real moment the account initiated this swap (captured in
+    // beginAtomicSwap(), before sanctions screening and before the hold
+    // is ever placed) — not "now", which would be this post-completion
+    // tracking write and always land within a hair of completed_at.
+    ':created_at' => $this->currentSwapStartedAt ?? $this->nowWithMicros(),
     ':completed_at' => $completedAt,
     ':source_country' => $details['source_country'] ?? 'BW',
     ':destination_country' => $details['destination_country'] ?? 'BW',
@@ -10147,8 +10152,16 @@ private function beginAtomicSwap(string $reference): void
     error_log("[DEBUG][agg_claim] beginAtomicSwap reference={$reference} pdo_in_transaction=" . ($this->swapDB->inTransaction() ? 'true' : 'false'));
  
     $this->swapDB->beginTransaction();
- 
+
     $this->currentSwapRef = $reference;
+    // Captured here, not inside populateSwapRequest(), because this is the
+    // earliest point every swap type passes through (right after the
+    // reference/idempotency check, before sanctions screening and before
+    // the type-specific handler that eventually places the hold) — the
+    // real moment the account's swap request began, not just when the
+    // hold got placed after pre-checks, and not the post-hoc write
+    // populateSwapRequest() used to do after the whole swap had finished.
+    $this->currentSwapStartedAt = $this->nowWithMicros();
     $this->inAtomicSwap = true;
     $this->executedSteps = [];
     $this->stepResults = [];
@@ -10492,6 +10505,7 @@ private function recordManualReconciliationRequired(
     {
         $this->inAtomicSwap = false;
         $this->currentSwapRef = null;
+        $this->currentSwapStartedAt = null;
         $this->currentHoldId = null;
         $this->currentHoldReference = null;
         $this->currentHoldInstitution = null;
@@ -10505,6 +10519,22 @@ private function recordManualReconciliationRequired(
     {
         $this->executedSteps[] = ['step' => $stepName, 'timestamp' => microtime(true)];
         return $operation();
+    }
+
+    // Wall-clock "Y-m-d H:i:s.u" with real microsecond precision, for
+    // timestamps written from PHP (as opposed to clock_timestamp() for
+    // ones written in SQL) — plain date('Y-m-d H:i:s') only has whole-second
+    // resolution, which collapses fast events to the same instant.
+    private function nowWithMicros(): string
+    {
+        $mt = microtime(true);
+        $whole = (int)floor($mt);
+        $micros = (int)round(($mt - $whole) * 1000000);
+        if ($micros >= 1000000) { // rounding carried into the next second
+            $whole += 1;
+            $micros = 0;
+        }
+        return date('Y-m-d H:i:s', $whole) . '.' . sprintf('%06d', $micros);
     }
 
     private function getLastStep(): string
