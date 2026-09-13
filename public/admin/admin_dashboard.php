@@ -925,21 +925,19 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
             $certData['settlement'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
         } catch (Throwable $e) { $certData['settlement'] = []; }
 
-        // Duration check against H1 (90s cross-bank cashout) / Experiment 2
-        // (60s deposit) per the KPI doc's measurement method: the real
-        // start of the transaction — when the account added an amount and
-        // requested the swap, captured in SwapService::beginAtomicSwap()
-        // before any sanctions screening or hold placement — through to
-        // the real finish: the moment the hold was actually debited, not
-        // whatever came after it (ledger posting, notifications, etc. all
-        // still run after the debit and would otherwise push "Ended" later
-        // than the debit itself). swap_requests.created_at used to be
-        // written post-hoc by populateSwapRequest() after the swap had
-        // already finished (so it always landed within a hair of
-        // completed_at and duration always read ~0s); it now carries the
-        // true start instant. hold_transactions.placed_at can still be
-        // earlier than that for a batch child with no standalone
-        // swap_requests row, so take whichever of the two is earlier.
+        // Transaction Certificate spec: created_at is the moment the
+        // account clicked "Swap" (captured client-side and sent with the
+        // request — see SwapService::executeAtomicSwap()'s
+        // currentClientInitiatedAt handling — falling back to the
+        // server's own beginAtomicSwap() timestamp for callers that don't
+        // send one), through to debited_at: the moment the hold was
+        // actually debited, not whatever came after it (ledger posting,
+        // notifications, etc. all still run after the debit and would
+        // otherwise push "Ended" later than the debit itself).
+        // hold_transactions.placed_at is checked too only as a safety net
+        // for a batch child with no standalone swap_requests row — in the
+        // normal case created_at is already the earliest point by
+        // construction, so this never overrides it with something later.
         $certData['duration'] = null;
         if (!empty($certData['swap_request'])) {
             $sr = $certData['swap_request'];
@@ -1504,16 +1502,16 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
                         . fmtTs($certData['duration']['start']) . ' to ' . fmtTs($certData['duration']['end'])
                     : 'N/A',
             ]);
-            // Placed At / Debited At here mirror the Duration line's
-            // Started/Ended (the swap's overall start/finish), not this
-            // specific hold's own timestamps — see the matching comment in
-            // the HTML render below for why.
+            // This hold's own real placed_at/debited_at — distinct
+            // checkpoints from the Duration line's created_at (client
+            // clicked "Swap") per the Transaction Certificate's
+            // three-timestamp spec — see the matching comment in the
+            // HTML render below for why.
             $body .= pdf_table_section('1 · Hold Placed', ['Hold ID', 'Hold Reference', 'Institution', 'Amount', 'Status', 'Placed At', 'Debited At', 'Elapsed'],
-                array_map(function ($h) use ($certData) {
-                    $dur = $certData['duration'];
+                array_map(function ($h) {
                     $isDebited = $h['status'] === 'DEBITED';
-                    $placedDisplay = !empty($dur) ? $dur['start'] : ($h['placed_at'] ?? '');
-                    $debitedDisplay = $isDebited ? (!empty($dur) ? $dur['end'] : ($h['debited_at'] ?? '')) : '';
+                    $placedDisplay = $h['placed_at'] ?? '';
+                    $debitedDisplay = $isDebited ? ($h['debited_at'] ?? '') : '';
                     return [$h['hold_id'], $h['hold_reference'], $h['source_institution'] ?? $h['participant_name'] ?? 'N/A', number_format((float)$h['amount'], 2), $h['status'], fmtTs($placedDisplay), fmtTs($debitedDisplay, '—'), $isDebited ? fmtElapsed($placedDisplay, $debitedDisplay) : '—'];
                 }, $certData['holds']));
             if (!empty($certData['cashout'])) {
@@ -2948,19 +2946,18 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <?php if (empty($certData['holds'])): ?><p style="font-size:14px;color:var(--ink-300);">No hold record found.</p><?php else: ?>
                     <div class="table-responsive"><table><thead><tr><th>Hold ID</th><th>Hold Reference</th><th>Institution</th><th>Amount</th><th>Status</th><th>Placed At</th><th>Debited At</th><th>Elapsed</th></tr></thead><tbody>
                     <?php foreach ($certData['holds'] as $h):
-                        // Show the swap's overall start/finish here (same
-                        // Started/Ended pair as the Duration bar above) rather
-                        // than this specific hold's own placed_at/debited_at,
-                        // per instruction: Placed At = when the transaction
-                        // began, Debited At = when it finished, Elapsed = the
-                        // difference between those two. Falls back to the
-                        // hold's own timestamps only when there's no swap
-                        // duration to draw from (e.g. a batch child with no
-                        // standalone swap_requests row).
-                        $dur = $certData['duration'];
+                        // This hold's own real checkpoints, per the
+                        // Transaction Certificate's three-timestamp spec:
+                        // created_at (client clicked "Swap", shown as
+                        // Started above) is distinct from placed_at (this
+                        // hold reserved, once the backend validated the
+                        // order and submitted it for processing) and from
+                        // debited_at (funds actually taken). Elapsed here
+                        // is this hold's own placed->debited gap, not the
+                        // full created_at->debited_at duration shown above.
                         $isDebited = $h['status'] === 'DEBITED';
-                        $placedDisplay = !empty($dur) ? $dur['start'] : ($h['placed_at'] ?? '');
-                        $debitedDisplay = $isDebited ? (!empty($dur) ? $dur['end'] : ($h['debited_at'] ?? '')) : '';
+                        $placedDisplay = $h['placed_at'] ?? '';
+                        $debitedDisplay = $isDebited ? ($h['debited_at'] ?? '') : '';
                     ?>
                     <tr><td><?php echo safeHtml($h['hold_id']); ?></td><td><?php echo safeHtml($h['hold_reference']); ?></td><td><?php echo safeHtml($h['source_institution'] ?? $h['participant_name'] ?? 'N/A'); ?></td><td><?php echo number_format((float)$h['amount'], 2); ?></td><td><span class="status status-<?php echo $isDebited ? 'success' : 'pending'; ?>"><?php echo safeHtml($h['status']); ?></span></td><td><?php echo tsHtml($placedDisplay); ?></td><td><?php echo tsHtml($debitedDisplay, '—'); ?></td><td style="white-space:nowrap;font-weight:600;"><?php echo safeHtml($isDebited ? fmtElapsed($placedDisplay, $debitedDisplay) : '—'); ?></td></tr>
                     <?php endforeach; ?>

@@ -2915,6 +2915,11 @@ async function wizardConfirm() {
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span>Swapping…';
 
+    // Captured right here, at the moment of the click, not on the server —
+    // this is the true start of the transaction for the certificate's
+    // Duration (created_at -> debited_at). ISO 8601 with milliseconds.
+    wizardState.swapPayload.payload.client_initiated_at = new Date().toISOString();
+
     const result = await callApi(CONFIG.EXECUTE_ENDPOINT, wizardState.swapPayload.payload);
     btn.disabled = false;
     btn.innerHTML = original;

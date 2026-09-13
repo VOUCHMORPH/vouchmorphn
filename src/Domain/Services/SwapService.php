@@ -102,6 +102,7 @@ class SwapService
     private bool $inAtomicSwap = false;
     private ?string $currentSwapRef = null;
     private ?string $currentSwapStartedAt = null;
+    private ?string $currentClientInitiatedAt = null;
     private ?int $currentHoldId = null;
     private ?string $currentHoldReference = null;
     private ?string $currentHoldInstitution = null;
@@ -1719,11 +1720,15 @@ $completedAt = (strtolower($status) === 'completed') ? $this->nowWithMicros() : 
         'asset_type' => $details['destination_asset_type'] ?? null
     ]),
     ':status' => strtolower($status),
-    // The real moment the account initiated this swap (captured in
-    // beginAtomicSwap(), before sanctions screening and before the hold
-    // is ever placed) — not "now", which would be this post-completion
+    // Transaction Certificate spec: created_at is when the account
+    // clicked "Swap" client-side (currentClientInitiatedAt, sent with the
+    // request and sanity-checked in executeAtomicSwap()). Falls back to
+    // currentSwapStartedAt (captured server-side in beginAtomicSwap(),
+    // before sanctions screening) for callers that don't send a client
+    // timestamp — e.g. API-direct integrations with no browser — and
+    // only as a last resort to "now", which would be this post-completion
     // tracking write and always land within a hair of completed_at.
-    ':created_at' => $this->currentSwapStartedAt ?? $this->nowWithMicros(),
+    ':created_at' => $this->currentClientInitiatedAt ?? $this->currentSwapStartedAt ?? $this->nowWithMicros(),
     ':completed_at' => $completedAt,
     ':source_country' => $details['source_country'] ?? 'BW',
     ':destination_country' => $details['destination_country'] ?? 'BW',
@@ -2203,7 +2208,35 @@ public function recordExternalRailExecution(array $payload, array $railResult, s
             ];
             $payload = $payload['original_payload'];
         }
-        
+
+        // Transaction Certificate spec: created_at is the moment the
+        // account clicked "Swap" — captured client-side and sent with the
+        // request, since only the client knows when that actually
+        // happened. Sanity-checked against server time (+/-10 min) rather
+        // than trusted outright: a broken client clock must not corrupt
+        // the audit trail or produce a negative/absurd duration. Falls
+        // back to null (populateSwapRequest() then uses the server's own
+        // beginAtomicSwap() timestamp) for callers that don't send it —
+        // API-direct integrations with no browser client, for instance.
+        $this->currentClientInitiatedAt = null;
+        if (!empty($payload['client_initiated_at'])) {
+            $rawClientTs = (string)$payload['client_initiated_at'];
+            // strtotime() alone would truncate to whole seconds; pull the
+            // fractional part straight off the client's own ISO string
+            // (e.g. "2026-09-13T19:27:21.001Z") so its millisecond
+            // precision survives.
+            $clientEpoch = strtotime($rawClientTs);
+            if ($clientEpoch !== false && abs($clientEpoch - time()) <= 600) {
+                $frac = '000000';
+                if (preg_match('/\.(\d+)/', $rawClientTs, $m)) {
+                    $frac = str_pad(substr($m[1], 0, 6), 6, '0');
+                }
+                $this->currentClientInitiatedAt = date('Y-m-d H:i:s', $clientEpoch) . '.' . $frac;
+            } else {
+                error_log("[SwapService] Ignoring client_initiated_at (unparseable or too far from server time): " . $rawClientTs);
+            }
+        }
+
         $swapType = $payload['swap_type'] ?? 'STANDARD';
         
         $isMultiSource = isset($payload['sources']) && is_array($payload['sources']) && count($payload['sources']) > 0;
@@ -10506,6 +10539,7 @@ private function recordManualReconciliationRequired(
         $this->inAtomicSwap = false;
         $this->currentSwapRef = null;
         $this->currentSwapStartedAt = null;
+        $this->currentClientInitiatedAt = null;
         $this->currentHoldId = null;
         $this->currentHoldReference = null;
         $this->currentHoldInstitution = null;
