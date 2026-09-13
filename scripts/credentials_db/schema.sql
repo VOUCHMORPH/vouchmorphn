@@ -38,3 +38,23 @@ CREATE TABLE IF NOT EXISTS admin_credentials (
     created_at               TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at               TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+-- The user's persistent transaction PIN (used to authorize swaps/identity
+-- claims) - a real, long-lived credential exactly like password_hash, so
+-- it gets the same isolation. This is deliberately NOT where one-time
+-- OTP codes live: those are ephemeral, tied to a specific
+-- hold_transactions/identity_swap_holds row as part of one atomic
+-- multi-table swap transaction in the main database, and splitting them
+-- across two databases would break that atomicity for a value that's
+-- already short-lived and cleared immediately after use. Only the
+-- standing PIN a user sets once and reuses across many transactions
+-- belongs here.
+CREATE TABLE IF NOT EXISTS user_transaction_pins (
+    user_id         BIGINT PRIMARY KEY,           -- = main DB users.user_id
+    pin_hash        VARCHAR(255) NOT NULL,
+    attempts        INT NOT NULL DEFAULT 0,
+    locked_until    TIMESTAMP WITH TIME ZONE,
+    set_at          TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    created_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);

@@ -47,6 +47,26 @@
 -- and stay in the main database for lookup, display, and notification
 -- purposes exactly as before. Only the password hash (and, for admins,
 -- its lockout counters) is exclusive to the credentials database.
+--
+--   - users.transaction_pin_hash / transaction_pin_attempts /
+--     transaction_pin_locked_until / transaction_pin_set_at: the user's
+--     standing transaction-authorization PIN and its lockout state -
+--     migrated the same way as password_hash, via
+--     CredentialsMigrationRunner::migrateTransactionPins() /
+--     verifyTransactionPins(). Every real read/write site (SwapService's
+--     PIN verification and setUserTransactionPin(), the account-creation
+--     flows in verify_otp.php and register_identity_owner.php, and the
+--     has_pin check in whoami.php) was switched to CredentialsRepository
+--     before this file should ever run. Run the transaction_pins
+--     migration and --verify pass the same way as users/admins before
+--     including these ALTERs.
+--
+-- NOT included here: users.otp_pin_hash-style ephemeral columns and
+-- message_cards.card_number_hash / totp_secret_* — see the note in
+-- scripts/credentials_db/schema.sql on user_transaction_pins for why
+-- those stay in the main database (atomic multi-table swap transactions
+-- and hot-path card-authorization queries, respectively, neither of
+-- which can cross a database boundary without real architectural cost).
 -- ============================================================================
 
 ALTER TABLE users DROP COLUMN IF EXISTS password_hash;
@@ -56,3 +76,8 @@ ALTER TABLE admins DROP COLUMN IF EXISTS failed_login_attempts;
 ALTER TABLE admins DROP COLUMN IF EXISTS locked_until;
 
 ALTER TABLE organization_users DROP COLUMN IF EXISTS password_hash;
+
+ALTER TABLE users DROP COLUMN IF EXISTS transaction_pin_hash;
+ALTER TABLE users DROP COLUMN IF EXISTS transaction_pin_attempts;
+ALTER TABLE users DROP COLUMN IF EXISTS transaction_pin_locked_until;
+ALTER TABLE users DROP COLUMN IF EXISTS transaction_pin_set_at;

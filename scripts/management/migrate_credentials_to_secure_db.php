@@ -35,7 +35,7 @@ declare(strict_types=1);
  *       Compares row counts and spot-checks a sample of password hashes
  *       between the two databases. Run this after --apply.
  *
- *   --table=users|admins   Restrict to one table (default: both).
+ *   --table=users|admins|transaction_pins   Restrict to one table (default: all).
  *   --batch-size=N         Rows per batch (default 500).
  *
  * Requires both DATABASE_URL (source) and CREDENTIALS_DATABASE_URL
@@ -67,8 +67,8 @@ $verify = isset($options['verify']);
 $tableFilter = $options['table'] ?? 'all';
 $batchSize = isset($options['batch-size']) ? max(1, (int)$options['batch-size']) : 500;
 
-if (!in_array($tableFilter, ['all', 'users', 'admins'], true)) {
-    fwrite(STDERR, "Invalid --table value. Use 'users', 'admins', or omit for both.\n");
+if (!in_array($tableFilter, ['all', 'users', 'admins', 'transaction_pins'], true)) {
+    fwrite(STDERR, "Invalid --table value. Use 'users', 'admins', 'transaction_pins', or omit for all.\n");
     exit(1);
 }
 
@@ -133,6 +133,15 @@ if ($tableFilter === 'all' || $tableFilter === 'admins') {
         $allOk = CredentialsMigrationRunner::verifyTable($mainDb, $credDb, 'admins', 'admins', 'admin_id', 'admin_credentials', 'admin_id', $out) && $allOk;
     } else {
         CredentialsMigrationRunner::migrateAdmins($mainDb, $credDb, $apply, $batchSize, $out);
+    }
+    $out("");
+}
+
+if ($tableFilter === 'all' || $tableFilter === 'transaction_pins') {
+    if ($verify) {
+        $allOk = CredentialsMigrationRunner::verifyTransactionPins($mainDb, $credDb, $out) && $allOk;
+    } else {
+        CredentialsMigrationRunner::migrateTransactionPins($mainDb, $credDb, $apply, $batchSize, $out);
     }
     $out("");
 }

@@ -9620,27 +9620,22 @@ private function verifyIdentityClaimPin(array $identitySwap, string $suppliedPin
             throw new RuntimeException("This identity's verification status changed - claim cannot proceed. Contact support.");
         }
  
-        $stmt = $this->swapDB->prepare("
-            SELECT transaction_pin_hash, transaction_pin_attempts, transaction_pin_locked_until
-            FROM users WHERE user_id = :id
-        ");
-        $stmt->execute([':id' => $owner['user_id']]);
-        $user = $stmt->fetch(PDO::FETCH_ASSOC);
- 
-        if (!$user || empty($user['transaction_pin_hash'])) {
+        $credentials = \Infrastructure\Credentials\CredentialsRepository::fromEnvironment();
+        $pinRecord = $credentials->findUserTransactionPin($owner['user_id']);
+
+        if (!$pinRecord || empty($pinRecord['pin_hash'])) {
             throw new RuntimeException("No transaction PIN has been set on this account yet. Set one in your VouchMorph profile before claiming.");
         }
- 
-        $this->assertNotLocked($user['transaction_pin_locked_until'] ?? null, 'transaction PIN');
- 
-        if (!password_verify($suppliedPin, $user['transaction_pin_hash'])) {
-            $this->recordFailedAccountPinAttempt($owner['user_id'], (int)($user['transaction_pin_attempts'] ?? 0));
+
+        $this->assertNotLocked($pinRecord['locked_until'] ?? null, 'transaction PIN');
+
+        if (!password_verify($suppliedPin, $pinRecord['pin_hash'])) {
+            $credentials->recordFailedTransactionPinAttempt($owner['user_id'], (int)($pinRecord['attempts'] ?? 0));
             throw new RuntimeException("Incorrect transaction PIN.");
         }
- 
-        $stmt = $this->swapDB->prepare("UPDATE users SET transaction_pin_attempts = 0 WHERE user_id = :id");
-        $stmt->execute([':id' => $owner['user_id']]);
-        
+
+        $credentials->resetTransactionPinAttempts($owner['user_id']);
+
         $this->markIdentityHoldsAuthorized($identityType, $identityValue, 'account_pin_verification');
         return;
     }
@@ -9743,35 +9738,22 @@ private function recordFailedIdentityOtpAttempt(int $holdId, int $currentAttempt
  
 private function recordFailedAccountPinAttempt(int $userId, int $currentAttempts): void
 {
-    $attempts = $currentAttempts + 1;
+    $credentials = \Infrastructure\Credentials\CredentialsRepository::fromEnvironment();
     $maxAttempts = 5;
-    $lockUntil = $attempts >= $maxAttempts ? date('Y-m-d H:i:s', strtotime('+30 minutes')) : null;
- 
-    $stmt = $this->swapDB->prepare("
-        UPDATE users
-        SET transaction_pin_attempts = :attempts, transaction_pin_locked_until = :lock
-        WHERE user_id = :id
-    ");
-    $stmt->execute([':attempts' => $attempts, ':lock' => $lockUntil, ':id' => $userId]);
- 
-    if ($lockUntil) {
-        error_log("[SECURITY] User {$userId} transaction PIN locked after {$attempts} failed attempts");
+    $result = $credentials->recordFailedTransactionPinAttempt($userId, $currentAttempts, $maxAttempts, 30);
+
+    if (!empty($result['locked_until'])) {
+        error_log("[SECURITY] User {$userId} transaction PIN locked after {$result['attempts']} failed attempts");
     }
 }
- 
+
 public function setUserTransactionPin(int $userId, string $pin): void
 {
     if (!preg_match('/^\d{4,6}$/', $pin)) {
         throw new RuntimeException("PIN must be 4-6 digits.");
     }
     $hash = password_hash($pin, PASSWORD_DEFAULT);
-    $stmt = $this->swapDB->prepare("
-        UPDATE users
-        SET transaction_pin_hash = :hash, transaction_pin_set_at = NOW(),
-            transaction_pin_attempts = 0, transaction_pin_locked_until = NULL
-        WHERE user_id = :id
-    ");
-    $stmt->execute([':hash' => $hash, ':id' => $userId]);
+    \Infrastructure\Credentials\CredentialsRepository::fromEnvironment()->setUserTransactionPin($userId, $hash);
 }
  
 public function getPendingClaimsForUser(int $userId): array

@@ -463,7 +463,6 @@ try {
             $stmt = $db->prepare("
                 INSERT INTO users (
                     username, email, phone,
-                    transaction_pin_hash, transaction_pin_set_at,
                     verified, created_at,
                     national_id, drivers_license, passport,
                     date_of_birth, full_name,
@@ -471,7 +470,6 @@ try {
                     must_change_pin
                 ) VALUES (
                     :username, :email, :phone,
-                    :transaction_pin_hash, NOW(),
                     true, NOW(),
                     :national_id, :drivers_license, :passport,
                     :date_of_birth, :full_name,
@@ -483,7 +481,6 @@ try {
                 ':username' => $username,
                 ':email' => $email,
                 ':phone' => $tempData['phone_number'],
-                ':transaction_pin_hash' => $pinHash,
                 ':national_id' => $tempData['identity_type'] === 'national_id' ? $tempData['identity_value'] : null,
                 ':drivers_license' => $tempData['identity_type'] === 'drivers_license' ? $tempData['identity_value'] : null,
                 ':passport' => $tempData['identity_type'] === 'passport' ? $tempData['identity_value'] : null,
@@ -495,11 +492,15 @@ try {
 
             $userId = (int)$db->lastInsertId();
 
-            // Login secret goes to the separate credentials database.
+            // Login secret and transaction PIN both go to the separate
+            // credentials database (see verify_otp.php for why they're
+            // two independent rows despite sharing a value at signup).
             // Written before commit so a failure here rolls back the
             // whole registration via the catch block below, instead of
             // leaving behind a user who can never log in.
-            CredentialsRepository::fromEnvironment()->createUserCredential($userId, $pinHash);
+            $credentials = CredentialsRepository::fromEnvironment();
+            $credentials->createUserCredential($userId, $pinHash);
+            $credentials->setUserTransactionPin($userId, $pinHash);
 
             $db->commit();
 

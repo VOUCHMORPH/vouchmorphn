@@ -289,8 +289,6 @@ try {
                 username,
                 email,
                 phone,
-                transaction_pin_hash,
-                transaction_pin_set_at,
                 verified,
                 created_at,
                 national_id,
@@ -305,8 +303,6 @@ try {
                 :username,
                 :email,
                 :phone,
-                :transaction_pin_hash,
-                NOW(),
                 true,
                 NOW(),
                 :national_id,
@@ -324,7 +320,6 @@ try {
             ':username' => $username,
             ':email' => $email,
             ':phone' => $tempData['phone_number'] ?? null,
-            ':transaction_pin_hash' => $tempData['pin_hash'],
             ':national_id' => ($tempData['identifier_type'] === 'national_id') ? $tempData['identifier_value'] : null,
             ':drivers_license' => ($tempData['identifier_type'] === 'drivers_license') ? $tempData['identifier_value'] : null,
             ':passport' => ($tempData['identifier_type'] === 'passport') ? $tempData['identifier_value'] : null,
@@ -336,13 +331,18 @@ try {
         $userId = $db->lastInsertId();
         error_log("VERIFY OTP: User created with ID: {$userId}");
 
-        // Login secret (the PIN hash that doubles as this user's login
-        // password) goes to the separate credentials database, not this
-        // `users` row. Written before commit so a failure here rolls the
-        // whole registration back via the existing catch block below,
-        // rather than leaving a user with no way to log in.
-        \Infrastructure\Credentials\CredentialsRepository::fromEnvironment()
-            ->createUserCredential((int)$userId, $tempData['pin_hash']);
+        // Login secret and transaction PIN both go to the separate
+        // credentials database, not this `users` row. At signup they're
+        // the same value (the PIN the user just entered doubles as their
+        // login password), but they're stored as two independent
+        // credentials since a user can later change just the transaction
+        // PIN via set_pin.php without touching their login password.
+        // Written before commit so a failure here rolls the whole
+        // registration back via the existing catch block below, rather
+        // than leaving a user with no way to log in.
+        $credentials = \Infrastructure\Credentials\CredentialsRepository::fromEnvironment();
+        $credentials->createUserCredential((int)$userId, $tempData['pin_hash']);
+        $credentials->setUserTransactionPin((int)$userId, $tempData['pin_hash']);
 
         // Commit transaction
         $db->commit();

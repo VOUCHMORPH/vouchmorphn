@@ -169,6 +169,83 @@ class CredentialsRepository
     }
 
     // ============================================================================
+    // USER TRANSACTION PINS
+    //
+    // The user's standing PIN for authorizing swaps/identity claims - a
+    // real, long-lived credential like password_hash, so it lives here
+    // too. This is NOT where one-time OTP codes live: those stay in the
+    // main database's hold_transactions/identity_swap_holds rows as part
+    // of one atomic multi-table swap transaction - see the class-level
+    // note on cross-database consistency for why splitting an ephemeral,
+    // already-short-lived value out of that transaction isn't worth the
+    // atomicity it would cost.
+    // ============================================================================
+
+    public function findUserTransactionPin(int $userId): ?array
+    {
+        $stmt = $this->db->prepare(
+            "SELECT user_id, pin_hash, attempts, locked_until FROM user_transaction_pins WHERE user_id = :id"
+        );
+        $stmt->execute([':id' => $userId]);
+        return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+    }
+
+    /**
+     * Sets (or replaces) a user's transaction PIN, resetting any lockout
+     * state - the same "clean slate on password change" behavior a login
+     * password reset gets. Idempotent via upsert, so it works whether the
+     * user has never set one or is changing an existing one.
+     */
+    public function setUserTransactionPin(int $userId, string $pinHash): void
+    {
+        $stmt = $this->db->prepare("
+            INSERT INTO user_transaction_pins (user_id, pin_hash, attempts, locked_until, set_at, created_at, updated_at)
+            VALUES (:id, :hash, 0, NULL, NOW(), NOW(), NOW())
+            ON CONFLICT (user_id) DO UPDATE
+                SET pin_hash = EXCLUDED.pin_hash,
+                    attempts = 0,
+                    locked_until = NULL,
+                    set_at = NOW(),
+                    updated_at = NOW()
+        ");
+        $stmt->execute([':id' => $userId, ':hash' => $pinHash]);
+    }
+
+    /**
+     * Same shared lockout policy as recordFailedAdminAttempt, applied to
+     * transaction PINs instead of login passwords.
+     */
+    public function recordFailedTransactionPinAttempt(int $userId, int $currentAttempts, int $maxAttempts = 5, int $lockMinutes = 15): array
+    {
+        $newAttempts = $currentAttempts + 1;
+        $locked = $newAttempts >= $maxAttempts;
+
+        $stmt = $this->db->prepare("
+            UPDATE user_transaction_pins
+            SET attempts = :attempts,
+                locked_until = CASE WHEN :locked::boolean THEN NOW() + (:mins || ' minutes')::interval ELSE locked_until END,
+                updated_at = NOW()
+            WHERE user_id = :id
+            RETURNING attempts, locked_until
+        ");
+        $stmt->execute([
+            ':attempts' => $newAttempts,
+            ':locked' => $locked ? 't' : 'f',
+            ':mins' => $lockMinutes,
+            ':id' => $userId,
+        ]);
+        return $stmt->fetch(PDO::FETCH_ASSOC) ?: ['attempts' => $newAttempts, 'locked_until' => null];
+    }
+
+    public function resetTransactionPinAttempts(int $userId): void
+    {
+        $stmt = $this->db->prepare(
+            "UPDATE user_transaction_pins SET attempts = 0, locked_until = NULL, updated_at = NOW() WHERE user_id = :id"
+        );
+        $stmt->execute([':id' => $userId]);
+    }
+
+    // ============================================================================
     // FACTORY
     // ============================================================================
 

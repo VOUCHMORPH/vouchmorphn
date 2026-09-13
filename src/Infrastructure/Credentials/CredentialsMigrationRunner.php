@@ -167,6 +167,73 @@ class CredentialsMigrationRunner
         return ['total' => $total, 'migrated' => $migrated];
     }
 
+    public static function migrateTransactionPins(PDO $mainDb, PDO $credDb, bool $apply, int $batchSize, callable $out): array
+    {
+        $label = 'transaction_pins';
+        $total = (int)$mainDb->query("SELECT COUNT(*) FROM users WHERE transaction_pin_hash IS NOT NULL")->fetchColumn();
+        $out("[{$label}] {$total} row(s) in users with a transaction_pin_hash to migrate.");
+        if ($total === 0) {
+            return ['total' => 0, 'migrated' => 0];
+        }
+
+        $migrated = 0;
+        $lastId = 0;
+        $upsertStmt = $credDb->prepare("
+            INSERT INTO user_transaction_pins (user_id, pin_hash, attempts, locked_until, set_at, created_at, updated_at)
+            VALUES (:id, :hash, :attempts, :locked, COALESCE(:set_at, NOW()), NOW(), NOW())
+            ON CONFLICT (user_id) DO UPDATE
+                SET pin_hash = EXCLUDED.pin_hash,
+                    attempts = EXCLUDED.attempts,
+                    locked_until = EXCLUDED.locked_until,
+                    set_at = EXCLUDED.set_at,
+                    updated_at = NOW()
+        ");
+
+        while (true) {
+            $stmt = $mainDb->prepare("
+                SELECT user_id AS id, transaction_pin_hash, transaction_pin_attempts, transaction_pin_locked_until, transaction_pin_set_at
+                FROM users
+                WHERE user_id > :lastId AND transaction_pin_hash IS NOT NULL
+                ORDER BY user_id ASC
+                LIMIT :limit
+            ");
+            $stmt->bindValue(':lastId', $lastId, PDO::PARAM_INT);
+            $stmt->bindValue(':limit', $batchSize, PDO::PARAM_INT);
+            $stmt->execute();
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            if (empty($rows)) {
+                break;
+            }
+
+            if ($apply) {
+                $credDb->beginTransaction();
+                try {
+                    foreach ($rows as $row) {
+                        $upsertStmt->execute([
+                            ':id' => $row['id'],
+                            ':hash' => $row['transaction_pin_hash'],
+                            ':attempts' => $row['transaction_pin_attempts'] ?? 0,
+                            ':locked' => $row['transaction_pin_locked_until'],
+                            ':set_at' => $row['transaction_pin_set_at'],
+                        ]);
+                    }
+                    $credDb->commit();
+                } catch (\Throwable $e) {
+                    $credDb->rollBack();
+                    $out("[{$label}] Batch starting after id {$lastId} failed: " . $e->getMessage());
+                    throw $e;
+                }
+            }
+
+            $migrated += count($rows);
+            $lastId = (int)end($rows)['id'];
+            $out("[{$label}] " . ($apply ? "Migrated" : "Would migrate") . " {$migrated}/{$total} (through id {$lastId})...");
+        }
+
+        return ['total' => $total, 'migrated' => $migrated];
+    }
+
     public static function verifyTable(
         PDO $mainDb,
         PDO $credDb,
@@ -198,6 +265,50 @@ class CredentialsMigrationRunner
             $checkStmt->execute([':id' => $row['id']]);
             $destRow = $checkStmt->fetch(PDO::FETCH_ASSOC);
             if (!$destRow || $destRow['password_hash'] !== $row['password_hash']) {
+                $mismatches++;
+                $out("[{$label}] Spot-check mismatch for id={$row['id']}");
+            }
+        }
+
+        if ($mismatches > 0) {
+            $out("[{$label}] {$mismatches}/" . count($sample) . " spot-checked rows differ.");
+            return false;
+        }
+
+        $out("[{$label}] OK — counts match and " . count($sample) . " spot-checked rows are identical.");
+        return true;
+    }
+
+    /**
+     * Same idea as verifyTable() but for user_transaction_pins, which
+     * uses different column names (pin_hash, not password_hash) on both
+     * sides - kept separate rather than generalizing verifyTable() and
+     * risking the already-working users/admins verification path.
+     */
+    public static function verifyTransactionPins(PDO $mainDb, PDO $credDb, callable $out): bool
+    {
+        $label = 'transaction_pins';
+        $sourceCount = (int)$mainDb->query("SELECT COUNT(*) FROM users WHERE transaction_pin_hash IS NOT NULL")->fetchColumn();
+        $destCount = (int)$credDb->query("SELECT COUNT(*) FROM user_transaction_pins")->fetchColumn();
+
+        $out("[{$label}] source rows with a transaction PIN: {$sourceCount} | credentials DB rows: {$destCount}");
+
+        if ($sourceCount !== $destCount) {
+            $out("[{$label}] MISMATCH — re-run apply to reconcile.");
+            return false;
+        }
+
+        $sample = $mainDb->query("
+            SELECT user_id AS id, transaction_pin_hash FROM users
+            WHERE transaction_pin_hash IS NOT NULL ORDER BY random() LIMIT 25
+        ")->fetchAll(PDO::FETCH_ASSOC);
+
+        $mismatches = 0;
+        $checkStmt = $credDb->prepare("SELECT pin_hash FROM user_transaction_pins WHERE user_id = :id");
+        foreach ($sample as $row) {
+            $checkStmt->execute([':id' => $row['id']]);
+            $destRow = $checkStmt->fetch(PDO::FETCH_ASSOC);
+            if (!$destRow || $destRow['pin_hash'] !== $row['transaction_pin_hash']) {
                 $mismatches++;
                 $out("[{$label}] Spot-check mismatch for id={$row['id']}");
             }

@@ -84,13 +84,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $out("");
             CredentialsMigrationRunner::migrateAdmins($mainDb, $credDb, $apply, 500, $out);
             $out("");
+            CredentialsMigrationRunner::migrateTransactionPins($mainDb, $credDb, $apply, 500, $out);
+            $out("");
             $out($apply ? "Apply complete." : "Dry run complete — nothing was written.");
         } elseif ($action === 'verify') {
             $okUsers = CredentialsMigrationRunner::verifyTable($mainDb, $credDb, 'users', 'users', 'user_id', 'user_credentials', 'user_id', $out);
             $out("");
             $okAdmins = CredentialsMigrationRunner::verifyTable($mainDb, $credDb, 'admins', 'admins', 'admin_id', 'admin_credentials', 'admin_id', $out);
             $out("");
-            $out(($okUsers && $okAdmins) ? "VERIFY PASSED." : "VERIFY FAILED — see mismatches above.");
+            $okPins = CredentialsMigrationRunner::verifyTransactionPins($mainDb, $credDb, $out);
+            $out("");
+            $out(($okUsers && $okAdmins && $okPins) ? "VERIFY PASSED." : "VERIFY FAILED — see mismatches above.");
         } else {
             throw new RuntimeException("Unknown action.");
         }
