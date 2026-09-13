@@ -13,14 +13,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit();
 }
 
-require_once __DIR__ . '/../../src/bootstrap.php';
-require_once __DIR__ . '/../../src/Domain/controllers/USSDController.php';
+require_once __DIR__ . '/../../../src/bootstrap.php';
+require_once __DIR__ . '/../../../src/Application/Controllers/USSDController.php';
 
-use BUSINESS_LOGIC_LAYER\controllers\USSDController;
+use Application\Controllers\USSDController;
 
 try {
-    $config = require_once __DIR__ . '/../../src/Core/Config/load_country.php';
-    $ussdController = new USSDController($config);
+    $config = require __DIR__ . '/../../../src/Core/Config/config_loader.php';
+    $ussdController = new USSDController($config, $db);
 
     $request = array_merge($_GET, $_POST);
 

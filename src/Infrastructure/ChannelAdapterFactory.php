@@ -23,7 +23,7 @@ class ChannelAdapterFactory
     {
         $this->countryCode = trim($countryCode);
 
-        $configFile = dirname(__DIR__, 2) . '/Core/Config/channel_adapters.php';
+        $configFile = dirname(__DIR__) . '/Core/Config/channel_adapters.php';
         if (!file_exists($configFile)) {
             throw new RuntimeException("Missing config: {$configFile}");
         }
@@ -48,7 +48,7 @@ class ChannelAdapterFactory
             return $this->instances[$cacheKey];
         }
 
-        $yamlPath = dirname(__DIR__, 2)
+        $yamlPath = dirname(__DIR__)
             . "/Core/Config/Countries/{$this->countryCode}/ussd_gateways.yaml";
 
         if (!file_exists($yamlPath)) {
@@ -80,7 +80,7 @@ class ChannelAdapterFactory
 
         $service = new QrCodeService();
 
-        $qrConfigPath = dirname(__DIR__, 2)
+        $qrConfigPath = dirname(__DIR__)
             . "/Core/Config/Countries/{$this->countryCode}/qr_providers.yaml";
 
         $institutionTagMap = [];
@@ -130,6 +130,13 @@ class ChannelAdapterFactory
                 $indents[] = $indent + 2;
             } elseif (preg_match('/^-\s*([\w.\/-]+)$/', $trimmed, $m)) {
                 $stack[count($stack) - 1][] = $m[1];
+            } elseif (preg_match('/^([\w.-]+):\s*\[(.*)\]$/', $trimmed, $m)) {
+                // Inline flow-style list, e.g. `key: [a, b, c]`
+                $items = array_map(
+                    fn($v) => trim($v, '"\' '),
+                    $m[2] === '' ? [] : explode(',', $m[2])
+                );
+                $stack[count($stack) - 1][$m[1]] = $items;
             } elseif (preg_match('/^([\w.-]+):\s*(.+)$/', $trimmed, $m)) {
                 $value = trim($m[2], '"\' ');
                 $stack[count($stack) - 1][$m[1]] = $value;
