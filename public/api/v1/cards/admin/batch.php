@@ -1,7 +1,4 @@
 <?php
-
-require_once dirname(__DIR__, 2) . '/src/bootstrap.php';
-
 declare(strict_types=1);
 
 /**
@@ -14,12 +11,13 @@ define('ROOT_PATH', dirname(__DIR__, 5));
 // ============================================
 // BOOTSTRAP - Load all dependencies
 // ============================================
-require_once ROOT_PATH . '/src/Core/Config/system_country.php';
-require_once ROOT_PATH . '/src/Core/Config/load_country.php';
-require_once ROOT_PATH . '/src/Core/Database/config/DBConnection.php';
-require_once ROOT_PATH . '/src/Domain/services/CardService.php';
+$container = require_once ROOT_PATH . '/src/bootstrap.php';
+require_once ROOT_PATH . '/src/Core/Config/SystemCountry.php';
+require_once ROOT_PATH . '/src/Core/Config/LoadCountry.php';
+require_once ROOT_PATH . '/src/Core/Database/DBConnection.php';
+require_once ROOT_PATH . '/src/Domain/Services/CardService.php';
 
-use DATA_PERSISTENCE_LAYER\config\DBConnection;
+use Core\Database\DBConnection;
 
 // ============================================
 // HEADERS & AUTHENTICATION
@@ -42,7 +40,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 
 // Load environment
 $country = defined('SYSTEM_COUNTRY') ? SYSTEM_COUNTRY : 'BW';
-$envFile = ROOT_PATH . "/src/Core/Config/countries/{$country}/.env_{$country}";
+$envFile = ROOT_PATH . "/src/Core/Config/Countries/{$country}/.env";
 if (file_exists($envFile)) {
     $lines = file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
     foreach ($lines as $line) {

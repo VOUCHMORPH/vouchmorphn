@@ -6,8 +6,8 @@
 
 require_once __DIR__ . '/../../../src/bootstrap.php';
 
-use DATA_PERSISTENCE_LAYER\config\DBConnection;
-use BUSINESS_LOGIC_LAYER\services\SmsNotificationService;
+use Core\Database\DBConnection;
+use Infrastructure\SMS\SmsNotificationService;
 
 header('Content-Type: application/json');
 
@@ -53,7 +53,7 @@ try {
         'message' => 'Callback processed'
     ]);
     
-} catch (Exception $e) {
+} catch (\Throwable $e) {
     error_log("Callback processing error: " . $e->getMessage());
     
     http_response_code(500);

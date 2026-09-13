@@ -1,25 +1,36 @@
 <?php
 declare(strict_types=1);
 
-require_once __DIR__ . '/../../src/bootstrap.php';
-require_once __DIR__ . '/../../src/Core/Database/config/DBConnection.php';
+require_once __DIR__ . '/../../../src/bootstrap.php';
+require_once __DIR__ . '/../../../src/Core/Database/DBConnection.php';
+require_once __DIR__ . '/../../../src/Application/Admin/Auth/AdminAuth.php';
 
-use DATA_PERSISTENCE_LAYER\config\DBConnection;
-use INTEGRATION_LAYER\CLIENTS\BankClients\GenericBankClient;
-
-$db = DBConnection::getConnection();
+use Core\Database\DBConnection;
+use Application\Admin\Auth\AdminAuth;
+use Infrastructure\Banks\GenericBankClient;
 
 header('Content-Type: application/json');
+
+if (!AdminAuth::isLoggedIn()) {
+    http_response_code(401);
+    echo json_encode(['error' => 'Unauthorized']);
+    exit;
+}
+
+$db = DBConnection::getConnection();
 
 $action = $_GET['action'] ?? 'status';
 $participantId = $_GET['participant_id'] ?? null;
 
 switch ($action) {
     case 'test_all':
-        $result = testAllConnections($db);
-        break;
     case 'test_one':
-        $result = testConnection($db, $participantId);
+        // GenericBankClient has no generic health-check/connectivity-test
+        // method - only request-shaped calls (checkStatus, etc.) tied to a
+        // specific transaction. There's no real capability here to wire
+        // this up to yet.
+        http_response_code(501);
+        $result = ['status' => 'error', 'message' => 'Connection testing is not implemented for this client'];
         break;
     case 'status':
     default:
