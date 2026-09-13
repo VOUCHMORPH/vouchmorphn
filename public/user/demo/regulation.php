@@ -67,11 +67,11 @@ $db_error = null;
 $db = null;
 
 try {
-    if (!class_exists('\DATA_PERSISTENCE_LAYER\config\DBConnection')) {
+    if (!class_exists('\Core\Database\DBConnection')) {
         throw new \Exception('DBConnection class not found - check autoloader');
     }
     
-    $db = \DATA_PERSISTENCE_LAYER\config\DBConnection::getConnection();
+    $db = \Core\Database\DBConnection::getConnection();
     
     if ($db) {
         $db_status = '✅ Connected';
@@ -562,20 +562,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['execute_swap']) && $i
         $debug_log[] = "1. Starting swap execution";
 
         // Check if KeyVault class exists
-        if (!class_exists('\SECURITY_LAYER\Encryption\KeyVault')) {
+        if (!class_exists('\Security\Encryption\KeyVault')) {
             throw new \Exception('KeyVault class not found');
         }
         
-        $keyVault = new \SECURITY_LAYER\Encryption\KeyVault();
+        $keyVault = \Security\Encryption\KeyVault::getInstance();
         $encryptionKey = $keyVault->getEncryptionKey();
         $debug_log[] = "2. KeyVault initialized";
 
         // Check if SwapService class exists
-        if (!class_exists('\BUSINESS_LOGIC_LAYER\services\SwapService')) {
+        if (!class_exists('\Domain\Services\SwapService')) {
             throw new \Exception('SwapService class not found');
         }
         
-        $swapService = new \BUSINESS_LOGIC_LAYER\services\SwapService($db, [], $countryCode, $encryptionKey, ['participants' => $participantsData]);
+        $swapService = new \Domain\Services\SwapService($db, [], $countryCode);
         $debug_log[] = "3. SwapService initialized";
 
         $swapType     = $_POST['swap_type'] ?? 'self';
