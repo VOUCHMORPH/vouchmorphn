@@ -912,23 +912,24 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
 
         // Duration check against H1 (90s cross-bank cashout) / Experiment 2
         // (60s deposit) per the KPI doc's measurement method: the real
-        // start of the transaction — when the account's swap request first
-        // came in, captured in SwapService::beginAtomicSwap() before any
-        // sanctions screening or hold placement — through to the real
-        // finish (funds actually debited). swap_requests.created_at used
-        // to be written post-hoc by populateSwapRequest() after the swap
-        // had already finished (so it always landed within a hair of
+        // start of the transaction — when the account added an amount and
+        // requested the swap, captured in SwapService::beginAtomicSwap()
+        // before any sanctions screening or hold placement — through to
+        // the real finish: the moment the hold was actually debited, not
+        // whatever came after it (ledger posting, notifications, etc. all
+        // still run after the debit and would otherwise push "Ended" later
+        // than the debit itself). swap_requests.created_at used to be
+        // written post-hoc by populateSwapRequest() after the swap had
+        // already finished (so it always landed within a hair of
         // completed_at and duration always read ~0s); it now carries the
         // true start instant. hold_transactions.placed_at can still be
         // earlier than that for a batch child with no standalone
-        // swap_requests row, or later than it on old data predating this
-        // fix, so take whichever of the two is earliest/latest rather than
-        // preferring one source outright.
+        // swap_requests row, so take whichever of the two is earlier.
         $certData['duration'] = null;
         if (!empty($certData['swap_request'])) {
             $sr = $certData['swap_request'];
             $startEpoch = tsToEpoch($sr['created_at'] ?? '');
-            $endEpoch = tsToEpoch($sr['completed_at'] ?? '');
+            $endEpoch = null;
             foreach ($certData['holds'] as $h) {
                 $placedEpoch = tsToEpoch($h['placed_at'] ?? '');
                 if ($placedEpoch !== null && ($startEpoch === null || $placedEpoch < $startEpoch)) {
@@ -938,6 +939,12 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
                 if ($debitedEpoch !== null && ($endEpoch === null || $debitedEpoch > $endEpoch)) {
                     $endEpoch = $debitedEpoch;
                 }
+            }
+            // Only a swap with no hold ever debited (still pending, or a
+            // flow with no hold at all) falls back to swap_requests'
+            // own completed_at as the end point.
+            if ($endEpoch === null) {
+                $endEpoch = tsToEpoch($sr['completed_at'] ?? '');
             }
             if ($startEpoch !== null && $endEpoch !== null) {
                 $seconds = round($endEpoch - $startEpoch, 3);
