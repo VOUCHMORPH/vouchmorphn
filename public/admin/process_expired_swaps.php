@@ -1,101 +1,71 @@
 <?php
 declare(strict_types=1);
 
-use BUSINESS_LOGIC_LAYER\Services\ExpiredSwapsService;
-
 require_once __DIR__ . '/../../src/bootstrap.php';
-require_once __DIR__ . '/../../src/BUSINESS_LOGIC_LAYER/services/ExpiredSwapsService.php';
+require_once __DIR__ . '/../../src/Application/Utils/SessionManager.php';
+require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
+require_once __DIR__ . '/../../src/Domain/Services/SwapService.php';
+
+use Application\Utils\SessionManager;
+use Core\Database\DBConnection;
+use Domain\Services\SwapService;
 
 header('Content-Type: application/json');
-// --- 1. CONFIGURATION AND DB SETUP ---
-try {
-    $countryFile = __DIR__ . '/../../src/CORE_CONFIG/system_country.php';
-    if (!file_exists($countryFile)) throw new Exception("system_country.php missing");
-    $country = trim(require $countryFile);
 
-    $configFile = __DIR__ . "/../../src/CORE_CONFIG/config_{$country}.php";
-    if (!file_exists($configFile)) throw new Exception("config_{$country}.php missing");
-    $config = require $configFile;
-
-    // Ensure logs folder exists
-    $logsDir = __DIR__ . '/../../src/APP_LAYER/logs';
-    if (!is_dir($logsDir)) mkdir($logsDir, 0777, true);
-
-    $serviceLogFile = $config['logging']['log_file'] ?? $logsDir . '/expired_swaps.log';
-
-    // PDO options
-    $pdoOptions = [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::MYSQL_ATTR_INIT_COMMAND => "SET time_zone = '+00:00'"
-    ];
-
-    // Central DB (swap_system)
-    $swapConfig = $config['db']['swap'] ?? null;
-    if (!$swapConfig) throw new Exception("Missing 'swap' database config.");
-
-    $centralDB = new PDO(
-        "mysql:host={$swapConfig['host']};dbname={$swapConfig['name']};charset=utf8mb4",
-        $swapConfig['user'],
-        $swapConfig['pass'],
-        $pdoOptions
-    );
-
-    // Bank DB connections
-    $banksDB = [];
-    foreach ($config['db'] as $name => $c) {
-        if (strtolower($name) === 'swap') continue;
-        $banksDB[strtolower($name)] = new PDO(
-            "mysql:host={$c['host']};dbname={$c['name']};charset=utf8mb4",
-            $c['user'],
-            $c['pass'],
-            $pdoOptions
-        );
-    }
-
-    // Participants
-    $participantsFile = __DIR__ . "/../../src/CORE_CONFIG/env/participants_{$country}.json";
-    if (!file_exists($participantsFile)) throw new Exception("participants_{$country}.json missing");
-    $participantsRaw = file_get_contents($participantsFile);
-    $participantsData = json_decode($participantsRaw, true);
-    if (!$participantsData || !isset($participantsData['participants'])) {
-        throw new Exception("Invalid participants JSON structure");
-    }
-    $participants = array_change_key_case($participantsData['participants'], CASE_LOWER);
-
-} catch (Throwable $e) {
-    http_response_code(500);
-    echo json_encode([
-        'status' => 'error',
-        'message' => 'Configuration/DB setup failed: ' . $e->getMessage()
-    ]);
+SessionManager::start();
+if (!SessionManager::isAdminLoggedIn()) {
+    http_response_code(401);
+    echo json_encode(['status' => 'error', 'message' => 'Admin login required']);
     exit;
 }
 
-// --- 2. SERVICE EXECUTION ---
 try {
+    $db = DBConnection::getConnection();
+    if (!$db) {
+        throw new Exception('Database connection failed');
+    }
 
-    // ✅ FIX: Instantiating the service with the correct 3 arguments 
-    // to match the ExpiredSwapsService::__construct(PDO $swapDB, array $banksDB, array $participants) signature.
-    $service = new ExpiredSwapsService(
-        $centralDB,
-        $banksDB,
-        $participants
-    );
+    $countryConfig = \Core\Config\LoadCountry::getConfig();
+    $country = defined('SYSTEM_COUNTRY') ? SYSTEM_COUNTRY : 'Botswana';
 
-    $result = $service->processExpiredSwaps();
+    $swapService = new SwapService($db, $countryConfig, $country);
+
+    // Each category is run independently: a failure in one (e.g. a bug
+    // deeper in the multi-source pool subsystem) must not prevent the
+    // others from running or being reported.
+    $sections = [
+        'cashouts' => fn() => $swapService->cancelExpiredCashouts(),
+        'identity_swaps' => fn() => $swapService->cancelExpiredIdentitySwaps(),
+        'pool_cashouts' => fn() => $swapService->cancelExpiredPoolCashouts(),
+        'pool_identity_claims' => fn() => $swapService->cancelExpiredPoolIdentityClaims(),
+    ];
+
+    $report = [];
+    $totalProcessed = 0;
+    $sectionErrors = 0;
+    foreach ($sections as $name => $run) {
+        try {
+            $report[$name] = $run();
+            $totalProcessed += (int)($report[$name]['total_expired'] ?? 0);
+        } catch (\Throwable $e) {
+            error_log("[process_expired_swaps] section '{$name}' failed: " . $e->getMessage());
+            $report[$name] = ['error' => $e->getMessage()];
+            $sectionErrors++;
+        }
+    }
 
     echo json_encode([
-        'status' => 'success',
-        'message' => $result['report'],
-        'processed' => $result['totalProcessed'] ?? 0
+        'status' => $sectionErrors > 0 ? 'partial_success' : 'success',
+        'total_processed' => $totalProcessed,
+        'section_errors' => $sectionErrors,
+        'report' => $report,
     ]);
-    exit;
 
 } catch (Throwable $e) {
+    error_log('[process_expired_swaps] ' . $e->getMessage());
     http_response_code(500);
     echo json_encode([
         'status' => 'error',
-        'message' => 'Processing failed: ' . $e->getMessage()
+        'message' => 'Processing failed: ' . $e->getMessage(),
     ]);
-    exit;
 }

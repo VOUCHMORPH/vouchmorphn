@@ -1,14 +1,22 @@
 <?php
 declare(strict_types=1);
 
-require_once __DIR__ . '/../../src/bootstrap.php';
-require_once __DIR__ . '/../../src/Core/Database/config/DBConnection.php';
+require_once __DIR__ . '/../../../src/bootstrap.php';
+require_once __DIR__ . '/../../../src/Core/Database/DBConnection.php';
+require_once __DIR__ . '/../../../src/Application/Admin/Auth/AdminAuth.php';
 
-use DATA_PERSISTENCE_LAYER\config\DBConnection;
-
-$db = DBConnection::getConnection();
+use Core\Database\DBConnection;
+use Application\Admin\Auth\AdminAuth;
 
 header('Content-Type: application/json');
+
+if (!AdminAuth::isLoggedIn()) {
+    http_response_code(401);
+    echo json_encode(['error' => 'Unauthorized']);
+    exit;
+}
+
+$db = DBConnection::getConnection();
 
 $scan = [
     'timestamp' => date('c'),

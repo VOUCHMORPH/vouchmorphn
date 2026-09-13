@@ -37,14 +37,18 @@ class HSMKeyManager
         $this->connectToHSM();
         $this->authenticate();
         $this->loadMasterKey();
-        $this->initVaultClient();
     }
-    
+
     private function connectToHSM(): void
     {
         $hsmType = getenv('HSM_TYPE') ?: 'software';
-        
+
         if ($hsmType === 'aws') {
+            if (!class_exists(\Aws\CloudHSM\CloudHSMClient::class)) {
+                throw new \RuntimeException(
+                    "HSM_TYPE=aws but the AWS SDK is not installed. Run: composer require aws/aws-sdk-php"
+                );
+            }
             $this->hsmClient = new \Aws\CloudHSM\CloudHSMClient([
                 'region' => getenv('AWS_REGION') ?: 'af-south-1',
                 'endpoint' => getenv('HSM_ENDPOINT'),
@@ -55,6 +59,11 @@ class HSMKeyManager
                 ]
             ]);
         } elseif ($hsmType === 'azure') {
+            if (!class_exists(\Azure\KeyVault\KeyClient::class)) {
+                throw new \RuntimeException(
+                    "HSM_TYPE=azure but the Azure SDK is not installed. Run: composer require azure/azure-sdk-for-php"
+                );
+            }
             $this->hsmClient = new \Azure\KeyVault\KeyClient(
                 getenv('AZURE_VAULT_URL'),
                 new \Azure\Identity\DefaultAzureCredential()
@@ -90,14 +99,27 @@ class HSMKeyManager
         $this->masterKeyHandle = $masterKeyId;
     }
     
-    private function initVaultClient(): void
+    private function getVaultClient(): ?\GuzzleHttp\Client
     {
+        if ($this->vaultClient !== null) {
+            return $this->vaultClient;
+        }
+
+        if (!class_exists(\GuzzleHttp\Client::class)) {
+            return null;
+        }
+
+        // The token used to talk to Vault must come from the environment,
+        // not from Vault itself - getSecretFromVault() falls back to env
+        // when there is no client yet, which is exactly what happens here.
         $this->vaultClient = new \GuzzleHttp\Client([
             'base_uri' => getenv('VAULT_ADDR') ?: 'https://vault.internal:8200',
             'headers' => [
-                'X-Vault-Token' => $this->getSecretFromVault('vault/token')
+                'X-Vault-Token' => getenv('VAULT_TOKEN') ?: ''
             ]
         ]);
+
+        return $this->vaultClient;
     }
     
     /**
@@ -188,10 +210,14 @@ class HSMKeyManager
     private function getSecretFromVault(string $path): string
     {
         try {
-            $response = $this->vaultClient->get('/v1/secret/data/' . $path);
+            $client = $this->getVaultClient();
+            if ($client === null) {
+                throw new \RuntimeException('Vault client unavailable');
+            }
+            $response = $client->get('/v1/secret/data/' . $path);
             $data = json_decode($response->getBody(), true);
             return $data['data']['data']['value'];
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             // Fallback to environment for development
             return getenv(strtoupper(str_replace('/', '_', $path))) ?: '';
         }
@@ -217,34 +243,80 @@ class SoftwareHSM
     public function generateKey(array $params): array
     {
         $keyId = $params['KeyId'];
-        $this->keys[$keyId] = openssl_pkey_new([
-            'private_key_bits' => 4096,
-            'private_key_type' => OPENSSL_KEYTYPE_RSA
-        ]);
-        
+        $spec = $params['KeySpec'] ?? 'RSA_4096';
+
+        if (str_starts_with($spec, 'AES')) {
+            $this->keys[$keyId] = ['type' => 'AES', 'material' => random_bytes(32)];
+        } else {
+            $this->keys[$keyId] = [
+                'type' => 'RSA',
+                'material' => openssl_pkey_new([
+                    'private_key_bits' => 4096,
+                    'private_key_type' => OPENSSL_KEYTYPE_RSA
+                ])
+            ];
+        }
+
         // Log warning about non-persistence
         error_log("[SoftwareHSM] WARNING: Generated key '{$keyId}' will NOT persist across requests");
-        
+
         return ['KeyHandle' => $keyId];
+    }
+
+    public function encrypt(array $params): array
+    {
+        $key = $this->keys[$params['KeyHandle']] ?? null;
+        if (!$key || $key['type'] !== 'AES') {
+            throw new \RuntimeException("AES key handle '{$params['KeyHandle']}' not found - keys do not persist");
+        }
+
+        $iv = random_bytes(12);
+        $tag = '';
+        $ciphertext = openssl_encrypt($params['Plaintext'], 'aes-256-gcm', $key['material'], OPENSSL_RAW_DATA, $iv, $tag);
+
+        return ['Ciphertext' => $ciphertext, 'Iv' => $iv, 'AuthenticationTag' => $tag];
+    }
+
+    public function decrypt(array $params): array
+    {
+        $key = $this->keys[$params['KeyHandle']] ?? null;
+        if (!$key || $key['type'] !== 'AES') {
+            throw new \RuntimeException("AES key handle '{$params['KeyHandle']}' not found - keys do not persist");
+        }
+
+        $plaintext = openssl_decrypt(
+            $params['Ciphertext'],
+            'aes-256-gcm',
+            $key['material'],
+            OPENSSL_RAW_DATA,
+            $params['Iv'],
+            $params['AuthenticationTag']
+        );
+        if ($plaintext === false) {
+            throw new \RuntimeException('Decryption failed - invalid ciphertext or authentication tag');
+        }
+
+        return ['Plaintext' => $plaintext];
     }
     
     public function sign(array $params): array
     {
         $key = $this->keys[$params['KeyHandle']] ?? null;
-        if (!$key) {
-            throw new \RuntimeException("Key handle '{$params['KeyHandle']}' not found - keys do not persist");
+        if (!$key || $key['type'] !== 'RSA') {
+            throw new \RuntimeException("RSA key handle '{$params['KeyHandle']}' not found - keys do not persist");
         }
-        openssl_sign($params['Message'], $signature, $key, OPENSSL_ALGO_SHA256);
+        openssl_sign($params['Message'], $signature, $key['material'], OPENSSL_ALGO_SHA256);
         return ['Signature' => $signature];
     }
-    
+
     public function verify(array $params): array
     {
         $key = $this->keys[$params['KeyHandle']] ?? null;
-        if (!$key) {
+        if (!$key || $key['type'] !== 'RSA') {
             return ['Success' => false];
         }
-        $publicKey = openssl_pkey_get_public($key);
+        $details = openssl_pkey_get_details($key['material']);
+        $publicKey = openssl_pkey_get_public($details['key']);
         $valid = openssl_verify($params['Message'], $params['Signature'], $publicKey, OPENSSL_ALGO_SHA256);
         return ['Success' => $valid === 1];
     }

@@ -1,48 +1,50 @@
 <?php
+declare(strict_types=1);
+
+/**
+ * Post-deploy verification and version stamp.
+ *
+ * The old version of this script assumed a manual deployment model
+ * (copy new files out of an UPDATES/ folder, which doesn't exist) with
+ * a hardcoded plaintext MySQL root password. Neither matches how this
+ * application actually ships: a Docker image is built and Railway
+ * replaces the running container with it. There's nothing for a PHP
+ * script to "deploy" - the file copy already happened when the image
+ * was built.
+ *
+ * What's actually useful to run once the new container is up: confirm
+ * the database is reachable, and record which build is now live so a
+ * later incident has an answer to "what's actually running right now."
+ *
+ * Usage: php scripts/management/deploy.php
+ */
 
 require_once dirname(__DIR__, 2) . '/src/bootstrap.php';
 
-/**
- * deploy_update.php
- * Handles system updates: backups, versioning, and logging
- */
+use Core\Database\DBConnection;
 
-$rootDir = __DIR__ . "/../"; // PrestagedSWAP root
-$backupDir = $rootDir . 'APP_LAYER/logs/backups/';
-if (!file_exists($backupDir)) mkdir($backupDir, 0777, true);
+$logFile = STORAGE_PATH . '/logs/deploy.log';
+@mkdir(dirname($logFile), 0700, true);
 
-// Step 1: Backup DB
-$backupFile = $backupDir . 'db_backup_' . date('Y-m-d_H-i-s') . '.sql';
-$dbName = "prestagedSWAP";
-$dbUser = "root";
-$dbPass = "YourPass"; // replace with your DB password
-
-exec("mysqldump -u {$dbUser} -p{$dbPass} {$dbName} > {$backupFile}", $output, $return);
-if ($return === 0) {
-    file_put_contents($rootDir . 'APP_LAYER/logs/system.log', "[".date('Y-m-d H:i:s')."] Database backup successful: $backupFile\n", FILE_APPEND);
-} else {
-    file_put_contents($rootDir . 'APP_LAYER/logs/system.log', "[".date('Y-m-d H:i:s')."] Database backup FAILED\n", FILE_APPEND);
-    exit("Database backup failed.\n");
+function logDeploy(string $logFile, string $message): void
+{
+    file_put_contents($logFile, '[' . date('Y-m-d H:i:s') . "] {$message}\n", FILE_APPEND);
+    echo $message . "\n";
 }
 
-// Step 2: Deploy new files from UPDATES folder
-$updateFolder = $rootDir . 'UPDATES/';
-if (!file_exists($updateFolder)) {
-    exit("No updates folder found. Place update files in /UPDATES\n");
+$db = DBConnection::getConnection();
+if (!$db) {
+    logDeploy($logFile, 'Database connectivity check FAILED - no connection');
+    exit(1);
 }
+logDeploy($logFile, 'Database connectivity check OK');
 
-exec("cp -r {$updateFolder}* {$rootDir}", $output, $return);
-if ($return === 0) {
-    file_put_contents($rootDir . 'APP_LAYER/logs/system.log', "[".date('Y-m-d H:i:s')."] System update applied from UPDATES folder\n", FILE_APPEND);
-} else {
-    file_put_contents($rootDir . 'APP_LAYER/logs/system.log', "[".date('Y-m-d H:i:s')."] System update FAILED\n", FILE_APPEND);
-    exit("Update failed.\n");
-}
+// Railway sets this automatically for every deploy; fall back to a
+// timestamp if it's not present (e.g. running this by hand locally).
+$version = getenv('RAILWAY_GIT_COMMIT_SHA') ?: ('local_' . date('Ymd_His'));
 
-// Step 3: Update version
-$versionFile = $rootDir . 'MANAGEMENT/version.txt';
-$currentVersion = 'v' . date('Ymd_His');
-file_put_contents($versionFile, $currentVersion);
+$versionFile = STORAGE_PATH . '/version.txt';
+file_put_contents($versionFile, $version);
+logDeploy($logFile, "Deployed version recorded: {$version}");
 
-echo "Update applied successfully. Version: $currentVersion\n";
-
+echo "Deploy verification complete. Version: {$version}\n";

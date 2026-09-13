@@ -5,17 +5,15 @@ header('Content-Type: application/json');
 
 require_once __DIR__ . '/../../../src/bootstrap.php';
 require_once __DIR__ . '/../../../src/Application/Admin/Auth/AdminAuth.php';
-require_once __DIR__ . '/../../../src/Core/Database/config/DBConnection.php';
+require_once __DIR__ . '/../../../src/Core/Database/DBConnection.php';
 
-use ADMIN_LAYER\Auth\AdminAuth;
-use DATA_PERSISTENCE_LAYER\config\DBConnection;
+use Application\Admin\Auth\AdminAuth;
+use Core\Database\DBConnection;
 
 // Check authentication
-$config = require __DIR__ . '/../../../src/Core/Config/load_country.php';
-$db = DBConnection::getInstance($config['db']['swap']);
-$auth = new AdminAuth($db);
+$db = DBConnection::getConnection();
 
-if (!$auth->getCurrentAdmin()) {
+if (!AdminAuth::isLoggedIn()) {
     http_response_code(401);
     echo json_encode(['error' => 'Unauthorized']);
     exit;
@@ -26,23 +24,23 @@ try {
 
     // Total transactions today
     $stmt = $db->query("SELECT COUNT(*) FROM swap_requests WHERE DATE(created_at) = CURRENT_DATE");
-    $metrics['total_transactions'] = number_format($stmt->fetchColumn());
+    $metrics['total_transactions'] = number_format((int)$stmt->fetchColumn());
 
     // Total volume today
     $stmt = $db->query("SELECT COALESCE(SUM(amount), 0) FROM swap_requests WHERE DATE(created_at) = CURRENT_DATE");
-    $metrics['total_volume'] = 'BWP ' . number_format($stmt->fetchColumn(), 2);
+    $metrics['total_volume'] = 'BWP ' . number_format((float)$stmt->fetchColumn(), 2);
 
     // Active participants
     $stmt = $db->query("SELECT COUNT(*) FROM participants WHERE status = 'ACTIVE'");
-    $metrics['active_participants'] = number_format($stmt->fetchColumn());
+    $metrics['active_participants'] = number_format((int)$stmt->fetchColumn());
 
     // Pending settlements
     $stmt = $db->query("SELECT COUNT(*) FROM settlement_queue WHERE status = 'PENDING'");
-    $metrics['pending_settlements'] = number_format($stmt->fetchColumn());
+    $metrics['pending_settlements'] = number_format((int)$stmt->fetchColumn());
 
     // Total fees today
     $stmt = $db->query("SELECT COALESCE(SUM(total_amount), 0) FROM swap_fee_collections WHERE DATE(collected_at) = CURRENT_DATE");
-    $metrics['total_fees'] = 'BWP ' . number_format($stmt->fetchColumn(), 2);
+    $metrics['total_fees'] = 'BWP ' . number_format((float)$stmt->fetchColumn(), 2);
 
     // Net position (example calculation)
     $stmt = $db->query("
@@ -51,7 +49,7 @@ try {
         WHERE status = 'PENDING'
     ");
     $dueToMerchants = $stmt->fetchColumn();
-    $metrics['net_position'] = 'BWP ' . number_format($dueToMerchants, 2);
+    $metrics['net_position'] = 'BWP ' . number_format((float)$dueToMerchants, 2);
 
     echo json_encode($metrics);
 
