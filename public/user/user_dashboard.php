@@ -4010,7 +4010,7 @@ function renderCardViewBody() {
         return `<div style="text-align:center;padding:10px 0 20px;">
             <div style="font-weight:700;font-size:16px;margin-bottom:6px;">Your VouchMorph Card is ready</div>
             <div style="font-size:12px;color:var(--text-muted);max-width:320px;margin:0 auto 18px;">It's issued but not active yet — activate it once with a small one-time fee from any of your linked sources, and it's ready to use.</div>
-            <div style="font-family:var(--font-mono);font-size:14px;font-weight:700;margin-bottom:4px;">•••• ${escapeHtml(myCard.card_suffix)}</div>
+            <div style="font-family:var(--font-mono);font-size:14px;font-weight:700;margin-bottom:4px;">@${escapeHtml(myCard.username || 'VouchMorph User')}</div>
             <div style="font-size:12px;color:var(--text-dim);margin-bottom:18px;">Activation fee: ${formatMoney(myCard.activation_fee, myCard.currency)}</div>
             <div class="cta-row"><button class="btn btn-primary" onclick="openActivateCardModal()">Activate my card</button></div>
             <div style="margin-top:14px;"><span class="quick-link muted" onclick="openHelpModal()">How does this work? →</span></div>
@@ -4034,7 +4034,7 @@ function renderCardViewBody() {
             <div class="myc-qr-panel">
                 <div class="myc-card-visual">
                     <div class="myc-card-top"><div class="myc-card-mark">VouchMorph<sup>TM</sup></div><div class="myc-card-status active">Active</div></div>
-                    <div class="myc-card-bottom"><div class="myc-card-number">•••• •••• •••• ${escapeHtml(myCard.card_suffix)}</div><div class="myc-card-name">${cardName ? escapeHtml(cardName) : 'VouchMorph Card'}</div></div>
+                    <div class="myc-card-bottom"><div class="myc-card-number">@${escapeHtml(myCard.username || 'VouchMorph User')}</div><div class="myc-card-name">${cardName ? escapeHtml(cardName) : 'VouchMorph Card'}</div></div>
                 </div>
                 <div class="qr-tap-target" onclick="goQrFull()">
                     <div class="myc-qr-frame" id="cardQrContainer"></div>
@@ -4070,7 +4070,7 @@ function renderCardQr(payloadText) {
 
 function goQrFull() {
     if (!myCard || !myCard.qr_payload) { showMessage("Card QR isn't ready yet.", 'warning'); return; }
-    document.getElementById('qrFullSuffix').textContent = '•••• ' + myCard.card_suffix;
+    document.getElementById('qrFullSuffix').textContent = '@' + (myCard.username || 'VouchMorph User');
     document.getElementById('qrFullName').textContent = (myCard.display_name || Journey.read().cardNamed) || 'VouchMorph Card';
     pushView('qrfull');
     const holder = document.getElementById('qrHolderLg');

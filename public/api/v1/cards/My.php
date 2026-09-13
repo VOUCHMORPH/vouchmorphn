@@ -82,6 +82,7 @@ if (!SessionManager::isLoggedIn()) {
 $userData = SessionManager::getUser();
 $userId = (int)($userData['id'] ?? $userData['user_id'] ?? 0);
 $userName = $userData['full_name'] ?? $userData['username'] ?? 'VouchMorph User';
+$username = $userData['username'] ?? $userName;
 
 if (!$userId) {
     http_response_code(401);
@@ -230,6 +231,7 @@ try {
             'has_card' => true,
             'card_suffix' => $cardSuffix,
             'cardholder_name' => $card['cardholder_name'],
+            'username' => $username,
             'status' => $card['lifecycle_status'],
             'is_active' => $isActive,
             'funding_mode' => $card['funding_mode'] ?? 'HOOKED',
