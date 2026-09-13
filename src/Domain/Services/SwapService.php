@@ -517,6 +517,129 @@ private function assertCanBeSource(string $institution): void
         );
     }
 }
+
+/**
+ * Server-side enforcement of institution transaction limits: the
+ * min/max/currency defined in participants.yaml's `limits` block for
+ * every institution, and — for wallet-type institutions only —
+ * `wallet_config.daily_transaction_limit`. Previously these limits
+ * existed only in config and were checked exclusively in browser
+ * JavaScript (user_dashboard.php), trivially bypassed by calling the
+ * API directly. Called before beginAtomicSwap(), so a rejection here
+ * has zero side effects to unwind — no hold has been placed yet.
+ */
+private function assertWithinInstitutionLimits(array $payload, string $institution): void
+{
+    $participant = $this->participants[$institution]
+        ?? $this->participants[strtoupper($institution)]
+        ?? null;
+
+    if ($participant === null) {
+        return; // Unknown institution — handled elsewhere, not this method's job.
+    }
+
+    $amount = (float)($payload['amount'] ?? 0);
+    $currency = $payload['currency'] ?? $this->config['currency'] ?? 'BWP';
+
+    $limits = $participant['limits'] ?? null;
+    if ($limits !== null) {
+        $limitCurrency = $limits['currency'] ?? $currency;
+        $comparableAmount = $amount;
+
+        if (strtoupper($currency) !== strtoupper($limitCurrency)) {
+            try {
+                $rate = $this->forexService->getExchangeRate($currency, $limitCurrency);
+                $comparableAmount = $amount * $rate;
+            } catch (\Throwable $e) {
+                // Can't safely compare across currencies — don't enforce a
+                // limit we can't convert for, rather than block on a guess.
+                $this->logger->warning('Skipping institution limit check: currency conversion failed', [
+                    'institution' => $institution,
+                    'from' => $currency,
+                    'to' => $limitCurrency,
+                    'error' => $e->getMessage(),
+                ]);
+                $limits = null;
+            }
+        }
+
+        if ($limits !== null) {
+            $minAmount = $limits['min_amount'] ?? null;
+            $maxAmount = $limits['max_amount'] ?? null;
+
+            if ($minAmount !== null && $comparableAmount < (float)$minAmount) {
+                throw new RuntimeException(
+                    "Amount {$amount} {$currency} is below {$institution}'s minimum of {$minAmount} {$limitCurrency}."
+                );
+            }
+            if ($maxAmount !== null && $comparableAmount > (float)$maxAmount) {
+                throw new RuntimeException(
+                    "Amount {$amount} {$currency} exceeds {$institution}'s maximum of {$maxAmount} {$limitCurrency}."
+                );
+            }
+        }
+    }
+
+    $dailyLimit = $participant['wallet_config']['daily_transaction_limit'] ?? null;
+    $userId = $payload['user_id'] ?? null;
+
+    if ($dailyLimit !== null && $userId) {
+        $stmt = $this->swapDB->prepare("
+            SELECT COALESCE(SUM(amount), 0) AS daily_total
+            FROM swap_requests
+            WHERE user_id = :user_id
+              AND metadata->>'source_institution' = :institution
+              AND status = 'completed'
+              AND created_at >= CURRENT_DATE
+        ");
+        $stmt->execute([':user_id' => $userId, ':institution' => $institution]);
+        $dailyTotal = (float)$stmt->fetchColumn();
+
+        if ($dailyTotal + $amount > (float)$dailyLimit) {
+            throw new RuntimeException(
+                "This transaction would exceed {$institution}'s daily limit of {$dailyLimit} {$currency} " .
+                "(already used {$dailyTotal} {$currency} today)."
+            );
+        }
+    }
+}
+
+/**
+ * Requires the initiating user to be KYC-verified for swaps above a
+ * configurable threshold (KYC_VERIFICATION_REQUIRED_ABOVE, default
+ * 5000) — below the threshold, ordinary transactions stay
+ * frictionless. Deliberately reads users.kyc_verified live from the
+ * database rather than SessionManager::isKycVerified(), which caches
+ * the flag at login time and would be stale for a user approved mid-
+ * session. Only covers ordinary single-source/single-destination
+ * swaps — MULTI_SOURCE/MULTI_DESTINATION pool swaps use a different
+ * code path and are not covered by this check.
+ */
+private function assertKycVerifiedIfRequired(array $payload): void
+{
+    $amount = (float)($payload['amount'] ?? 0);
+    $threshold = (float)(getenv('KYC_VERIFICATION_REQUIRED_ABOVE') ?: 5000);
+
+    if ($amount <= $threshold) {
+        return;
+    }
+
+    $userId = $payload['user_id'] ?? null;
+    if (!$userId) {
+        throw new RuntimeException(
+            "Identity verification is required for transactions above {$threshold}, but no user could be identified for this swap."
+        );
+    }
+
+    $stmt = $this->swapDB->prepare("SELECT kyc_verified FROM users WHERE user_id = :id");
+    $stmt->execute([':id' => $userId]);
+
+    if (!$stmt->fetchColumn()) {
+        throw new RuntimeException(
+            "This transaction (amount {$amount}) requires identity verification. Please complete KYC document verification before proceeding."
+        );
+    }
+}
     // ============================================================================
     // SOURCE LINKING METHODS (Hooking)
     // ============================================================================
@@ -2249,10 +2372,13 @@ public function recordExternalRailExecution(array $payload, array $railResult, s
             
             if (!$isMultiSource && !$isMultiDestination) {
                 $this->validateInstitutions($payload, $swapType !== 'DEPOSIT');
-                
+
                 $sourceInst = $this->extractSourceInstitution($payload);
                 error_log("[SwapService] Source: {$sourceInst}, Type: {$swapType}");
-                
+
+                $this->assertWithinInstitutionLimits($payload, $sourceInst);
+                $this->assertKycVerifiedIfRequired($payload);
+
                 if ($swapType !== 'DEPOSIT') {
                     $destInst = $this->extractDestinationInstitution($payload);
                     error_log("[SwapService] Destination: {$destInst}");

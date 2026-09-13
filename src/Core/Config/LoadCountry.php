@@ -132,7 +132,17 @@ final class LoadCountry
     }
 
     /**
-     * Parse YAML file using available parser
+     * Parse YAML file using available parser.
+     *
+     * symfony/yaml is now a real composer dependency specifically so this
+     * never has to fall through to parseYamlManually() below in normal
+     * operation. That manual parser only handles exactly two levels of
+     * nesting (participant name -> flat scalar key: value) and silently
+     * DROPS every deeper block — limits, capabilities, card_config,
+     * wallet_config, routing, cross_border, and more all came back empty
+     * from it, with no error raised. Do not remove the symfony/yaml
+     * dependency without replacing parseYamlManually() with something
+     * that actually parses nested YAML.
      */
     private static function parseYamlFile(string $path): array
     {
