@@ -6,6 +6,13 @@ namespace Domain\Services;
 
 use PDO;
 
+/**
+ * Not currently wired into any controller or page - the live admin
+ * permission check is RoleManager/currentUserHasPermission() in
+ * public/admin/roles.php. This class is real and functional (DB-backed
+ * via user_roles/role_permissions/permissions, plus organization-level
+ * grants roles.php doesn't have), just unused for now.
+ */
 class PermissionService
 {
     private PDO $db;
