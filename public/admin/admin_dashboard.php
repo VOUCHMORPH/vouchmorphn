@@ -1482,8 +1482,18 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
                         . fmtTs($certData['duration']['start']) . ' to ' . fmtTs($certData['duration']['end'])
                     : 'N/A',
             ]);
+            // Placed At / Debited At here mirror the Duration line's
+            // Started/Ended (the swap's overall start/finish), not this
+            // specific hold's own timestamps — see the matching comment in
+            // the HTML render below for why.
             $body .= pdf_table_section('1 · Hold Placed', ['Hold ID', 'Hold Reference', 'Institution', 'Amount', 'Status', 'Placed At', 'Debited At', 'Elapsed'],
-                array_map(fn($h) => [$h['hold_id'], $h['hold_reference'], $h['source_institution'] ?? $h['participant_name'] ?? 'N/A', number_format((float)$h['amount'], 2), $h['status'], fmtTs($h['placed_at'] ?? ''), fmtTs($h['debited_at'] ?? '', '—'), !empty($h['debited_at']) ? fmtElapsed($h['placed_at'] ?? '', $h['debited_at']) : '—'], $certData['holds']));
+                array_map(function ($h) use ($certData) {
+                    $dur = $certData['duration'];
+                    $isDebited = $h['status'] === 'DEBITED';
+                    $placedDisplay = !empty($dur) ? $dur['start'] : ($h['placed_at'] ?? '');
+                    $debitedDisplay = $isDebited ? (!empty($dur) ? $dur['end'] : ($h['debited_at'] ?? '')) : '';
+                    return [$h['hold_id'], $h['hold_reference'], $h['source_institution'] ?? $h['participant_name'] ?? 'N/A', number_format((float)$h['amount'], 2), $h['status'], fmtTs($placedDisplay), fmtTs($debitedDisplay, '—'), $isDebited ? fmtElapsed($placedDisplay, $debitedDisplay) : '—'];
+                }, $certData['holds']));
             if (!empty($certData['cashout'])) {
                 $co = $certData['cashout'];
                 $body .= pdf_table_section('2 · Destination Code Generated', ['Provider', 'Amount', 'Fee', 'Code Expiry', 'Status'],
@@ -2903,8 +2913,22 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <div class="report-section-title">1 · Hold Placed — Source Institution Reserves Funds</div>
                     <?php if (empty($certData['holds'])): ?><p style="font-size:14px;color:var(--ink-300);">No hold record found.</p><?php else: ?>
                     <div class="table-responsive"><table><thead><tr><th>Hold ID</th><th>Hold Reference</th><th>Institution</th><th>Amount</th><th>Status</th><th>Placed At</th><th>Debited At</th><th>Elapsed</th></tr></thead><tbody>
-                    <?php foreach ($certData['holds'] as $h): ?>
-                    <tr><td><?php echo safeHtml($h['hold_id']); ?></td><td><?php echo safeHtml($h['hold_reference']); ?></td><td><?php echo safeHtml($h['source_institution'] ?? $h['participant_name'] ?? 'N/A'); ?></td><td><?php echo number_format((float)$h['amount'], 2); ?></td><td><span class="status status-<?php echo $h['status'] === 'DEBITED' ? 'success' : 'pending'; ?>"><?php echo safeHtml($h['status']); ?></span></td><td><?php echo tsHtml($h['placed_at'] ?? ''); ?></td><td><?php echo tsHtml($h['debited_at'] ?? '', '—'); ?></td><td style="white-space:nowrap;font-weight:600;"><?php echo safeHtml(!empty($h['debited_at']) ? fmtElapsed($h['placed_at'] ?? '', $h['debited_at']) : '—'); ?></td></tr>
+                    <?php foreach ($certData['holds'] as $h):
+                        // Show the swap's overall start/finish here (same
+                        // Started/Ended pair as the Duration bar above) rather
+                        // than this specific hold's own placed_at/debited_at,
+                        // per instruction: Placed At = when the transaction
+                        // began, Debited At = when it finished, Elapsed = the
+                        // difference between those two. Falls back to the
+                        // hold's own timestamps only when there's no swap
+                        // duration to draw from (e.g. a batch child with no
+                        // standalone swap_requests row).
+                        $dur = $certData['duration'];
+                        $isDebited = $h['status'] === 'DEBITED';
+                        $placedDisplay = !empty($dur) ? $dur['start'] : ($h['placed_at'] ?? '');
+                        $debitedDisplay = $isDebited ? (!empty($dur) ? $dur['end'] : ($h['debited_at'] ?? '')) : '';
+                    ?>
+                    <tr><td><?php echo safeHtml($h['hold_id']); ?></td><td><?php echo safeHtml($h['hold_reference']); ?></td><td><?php echo safeHtml($h['source_institution'] ?? $h['participant_name'] ?? 'N/A'); ?></td><td><?php echo number_format((float)$h['amount'], 2); ?></td><td><span class="status status-<?php echo $isDebited ? 'success' : 'pending'; ?>"><?php echo safeHtml($h['status']); ?></span></td><td><?php echo tsHtml($placedDisplay); ?></td><td><?php echo tsHtml($debitedDisplay, '—'); ?></td><td style="white-space:nowrap;font-weight:600;"><?php echo safeHtml($isDebited ? fmtElapsed($placedDisplay, $debitedDisplay) : '—'); ?></td></tr>
                     <?php endforeach; ?>
                     </tbody></table></div>
                     <?php endif; ?>
