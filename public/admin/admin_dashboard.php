@@ -70,17 +70,38 @@ function safeHtml($value) {
 // time-with-microseconds parts, dropping only the trailing offset. Parsed
 // directly off the string (not strtotime/date, which round to whole
 // seconds) so microsecond precision survives. Returns null for empty input.
+// VouchMorph is a Botswana operation; the database stores/returns these
+// timestamps in UTC (the "+00" suffix on every raw value), so every
+// display helper below shifts by this fixed offset before formatting.
+// Africa/Gaborone has never observed DST, so a constant +2h is correct
+// year-round — no DateTimeZone table lookup needed.
+const BOTSWANA_UTC_OFFSET_SECONDS = 7200;
+
 function splitTs($value) {
     if ($value === null || $value === '') {
         return null;
     }
     $value = trim((string)$value);
-    if (preg_match('/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2}(?:\.\d+)?)/', $value, $m)) {
-        return ['date' => $m[1], 'time' => $m[2]];
+    // Grab the original fractional-second digits, if any, before doing
+    // anything else — they're unaffected by the whole-hour timezone shift
+    // below and strtotime() would otherwise just discard them.
+    $microFrac = '';
+    if (preg_match('/\.(\d+)/', $value, $fracMatch)) {
+        $microFrac = $fracMatch[1];
     }
+    // strtotime() first, not the raw digits: it's what actually resolves
+    // the string's own UTC offset into an absolute instant, which is what
+    // lets us shift it to Botswana time correctly below.
     $ts = strtotime($value);
     if ($ts !== false) {
-        return ['date' => date('Y-m-d', $ts), 'time' => date('H:i:s', $ts)];
+        $botswanaTs = $ts + BOTSWANA_UTC_OFFSET_SECONDS;
+        $time = gmdate('H:i:s', $botswanaTs) . ($microFrac !== '' ? '.' . $microFrac : '');
+        return ['date' => gmdate('Y-m-d', $botswanaTs), 'time' => $time];
+    }
+    // Last resort for a string strtotime() can't parse at all: show its
+    // digits as written, un-shifted, rather than nothing.
+    if (preg_match('/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2}(?:\.\d+)?)/', $value, $m)) {
+        return ['date' => $m[1], 'time' => $m[2]];
     }
     return ['date' => $value, 'time' => ''];
 }
@@ -143,7 +164,12 @@ function epochToTs($epoch) {
         $whole += 1;
         $frac = 0.0;
     }
-    return date('Y-m-d H:i:s', $whole) . substr(sprintf('%.6f', $frac), 1);
+    // Deliberately UTC (via gmdate(), not date()), with an explicit "+00"
+    // suffix — matching the raw strings straight out of the DB — because
+    // this string gets fed back into splitTs()/tsHtml()/fmtTs() for
+    // display, and THAT is where the single Botswana-time shift happens.
+    // Shifting here too would double-apply it.
+    return gmdate('Y-m-d H:i:s', $whole) . substr(sprintf('%.6f', $frac), 1) . '+00';
 }
 
 // Formats the gap between two raw DB timestamps as a compact human string
@@ -2674,14 +2700,14 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <td><span class="status status-<?php echo $class; ?>"><?php echo safeHtml($row['status'] ?? 'pending'); ?></span></td>
                     <td><?php echo safeHtml($row['source_institution'] ?? 'N/A'); ?></td>
                     <td><?php echo safeHtml($row['destination_institution'] ?? 'N/A'); ?></td>
-                    <td><?php echo date('Y-m-d H:i:s', strtotime($row['created_at'] ?? 'now')); ?></td>
+                    <td><?php echo tsHtml($row['created_at'] ?? ''); ?></td>
                 </tr>
                 <?php endforeach; endif; ?>
                 </tbody></table></div>
             </div>
             <script>
                 let autoRefresh = true; let refreshInterval = null;
-                function startAutoRefresh() { clearInterval(refreshInterval); refreshInterval = setInterval(function() { fetch(window.location.href + (window.location.href.includes('?') ? '&' : '?') + 'ajax=1').then(r => r.json()).then(data => { if (data.transactions) { const tbody = document.getElementById('liveTransactionsBody'); let html = ''; data.transactions.forEach((row, i) => { const status = (row.status || 'pending').toLowerCase(); let cls = 'info'; if (status.includes('complet') || status.includes('success')) cls = 'success'; else if (status.includes('pending') || status.includes('processing')) cls = 'pending'; else if (status.includes('fail') || status.includes('error')) cls = 'failed'; html += `<tr><td>${i+1}</td><td>${(row.swap_reference || row.reference || 'N/A').substring(0,14)}</td><td><span class="status status-info">${row.swap_type || 'STANDARD'}</span></td><td><strong>${Number(row.amount || 0).toFixed(2)}</strong></td><td><span class="status status-${cls}">${row.status || 'pending'}</span></td><td>${row.source_institution || 'N/A'}</td><td>${row.destination_institution || 'N/A'}</td><td>${new Date(row.created_at).toLocaleString()}</td></tr>`; }); tbody.innerHTML = html; document.getElementById('liveCount').textContent = data.transactions.length; } }).catch(e => console.error('Refresh failed:', e)); }, 5000); }
+                function startAutoRefresh() { clearInterval(refreshInterval); refreshInterval = setInterval(function() { fetch(window.location.href + (window.location.href.includes('?') ? '&' : '?') + 'ajax=1').then(r => r.json()).then(data => { if (data.transactions) { const tbody = document.getElementById('liveTransactionsBody'); let html = ''; data.transactions.forEach((row, i) => { const status = (row.status || 'pending').toLowerCase(); let cls = 'info'; if (status.includes('complet') || status.includes('success')) cls = 'success'; else if (status.includes('pending') || status.includes('processing')) cls = 'pending'; else if (status.includes('fail') || status.includes('error')) cls = 'failed'; html += `<tr><td>${i+1}</td><td>${(row.swap_reference || row.reference || 'N/A').substring(0,14)}</td><td><span class="status status-info">${row.swap_type || 'STANDARD'}</span></td><td><strong>${Number(row.amount || 0).toFixed(2)}</strong></td><td><span class="status status-${cls}">${row.status || 'pending'}</span></td><td>${row.source_institution || 'N/A'}</td><td>${row.destination_institution || 'N/A'}</td><td>${new Date(row.created_at).toLocaleString('en-GB', {timeZone: 'Africa/Gaborone', hour12: false})}</td></tr>`; }); tbody.innerHTML = html; document.getElementById('liveCount').textContent = data.transactions.length; } }).catch(e => console.error('Refresh failed:', e)); }, 5000); }
                 startAutoRefresh();
             </script>
             <?php endif; ?>
