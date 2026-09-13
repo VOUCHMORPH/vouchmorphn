@@ -536,9 +536,13 @@ class AuditTrailService
     }
 
     /**
-     * Clean up old audit logs (retention policy)
+     * Clean up old audit logs (retention policy).
+     * Default matches VouchMorph's documented 10-year audit log
+     * retention policy - do not lower this without a compliance
+     * sign-off, since it directly controls how long audit records
+     * survive.
      */
-    public function cleanOldLogs(int $daysToKeep = 90): int
+    public function cleanOldLogs(int $daysToKeep = 3650): int
     {
         if (!$this->checkTableReady()) {
             return 0;
@@ -546,7 +550,7 @@ class AuditTrailService
 
         $sql = "
             DELETE FROM audit_logs
-            WHERE performed_at < NOW() - INTERVAL :days DAY
+            WHERE performed_at < NOW() - (:days || ' days')::interval
         ";
 
         try {

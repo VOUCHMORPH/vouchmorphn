@@ -204,14 +204,15 @@ function checkAuditTrail($db) {
         'value' => $auditData['total'] . ' entries'
     ];
     
-    // Check 7-year retention
+    // Check 10-year retention (matches VouchMorph's documented audit
+    // log retention policy - see AuditTrailService::cleanOldLogs())
     $oldestQuery = $db->query("SELECT MIN(created_at) FROM audit_logs");
     $oldest = $oldestQuery->fetchColumn();
-    $sevenYearsAgo = date('Y-m-d', strtotime('-7 years'));
-    
-    $retentionOK = $oldest < $sevenYearsAgo;
+    $tenYearsAgo = date('Y-m-d', strtotime('-10 years'));
+
+    $retentionOK = $oldest < $tenYearsAgo;
     $result['checks'][] = [
-        'name' => '7-year retention maintained',
+        'name' => '10-year retention maintained',
         'passed' => $retentionOK,
         'value' => $oldest ?: 'No data'
     ];
@@ -389,15 +390,16 @@ function checkFATF_Wire($db) {
         'value' => $beneficiaryData['total'] . ' transactions'
     ];
     
-    // Check record keeping
+    // Check record keeping (matches VouchMorph's documented 10-year
+    // audit log retention policy - see AuditTrailService::cleanOldLogs())
     $recordQuery = $db->query("
-        SELECT COUNT(*) FROM swap_requests 
-        WHERE created_at < NOW() - INTERVAL '5 years'
+        SELECT COUNT(*) FROM swap_requests
+        WHERE created_at < NOW() - INTERVAL '10 years'
     ");
     $recordCount = $recordQuery->fetchColumn();
-    
+
     $result['checks'][] = [
-        'name' => '5+ year record retention',
+        'name' => '10+ year record retention',
         'passed' => $recordCount > 0,
         'value' => $recordCount . ' old records'
     ];
