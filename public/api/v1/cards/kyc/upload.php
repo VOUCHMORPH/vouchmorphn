@@ -23,20 +23,48 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     exit();
 }
 
+// Bootstrap - load container
+$container = require_once ROOT_PATH . '/src/bootstrap.php';
+
 // Load system config
-require_once ROOT_PATH . '/src/CORE_CONFIG/system_country.php';
-require_once ROOT_PATH . '/src/CORE_CONFIG/load_country.php';
+require_once ROOT_PATH . '/src/Core/Config/SystemCountry.php';
+require_once ROOT_PATH . '/src/Core/Config/LoadCountry.php';
 $country = defined('SYSTEM_COUNTRY') ? SYSTEM_COUNTRY : 'BW';
 
 // Load required classes
-require_once ROOT_PATH . '/src/DATA_PERSISTENCE_LAYER/config/DBConnection.php';
-require_once ROOT_PATH . '/src/BUSINESS_LOGIC_LAYER/services/KYCDocumentService.php';
+require_once ROOT_PATH . '/src/Core/Database/DBConnection.php';
+require_once ROOT_PATH . '/src/Domain/Services/KYCDocumentService.php';
 
-use DATA_PERSISTENCE_LAYER\config\DBConnection;
-use BUSINESS_LOGIC_LAYER\services\KYCDocumentService;
+use Core\Database\DBConnection;
+use Domain\Services\KYCDocumentService;
 
-// Load environment (same pattern as other files)
-// ... (include env loading code)
+// Load environment
+$envFile = ROOT_PATH . "/src/Core/Config/Countries/{$country}/.env_{$country}";
+if (file_exists($envFile)) {
+    $lines = file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    foreach ($lines as $line) {
+        $line = trim($line);
+        if (empty($line) || strpos($line, '#') === 0) continue;
+        $parts = explode('=', $line, 2);
+        if (count($parts) === 2) {
+            $key = trim($parts[0]);
+            $value = trim($parts[1]);
+            putenv("$key=$value");
+            $_ENV[$key] = $value;
+            $_SERVER[$key] = $value;
+        }
+    }
+}
+
+if (!function_exists('get_env_val')) {
+    function get_env_val(string $key) {
+        $val = getenv($key);
+        if ($val === false) {
+            $val = $_ENV[$key] ?? ($_SERVER[$key] ?? null);
+        }
+        return $val;
+    }
+}
 
 // Authentication
 $headers = function_exists('getallheaders') ? getallheaders() : [];
