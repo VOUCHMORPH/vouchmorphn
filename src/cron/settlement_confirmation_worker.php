@@ -41,7 +41,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/../../vendor/autoload.php'; // adjust to your actual vendor path
-require_once __DIR__ . '/../src/Core/Database/DBConnection.php';
+require_once __DIR__ . '/../Core/Database/DBConnection.php';
 
 use Core\Database\DBConnection;
 use Infrastructure\Adapters\InstitutionAdapterFactory;
