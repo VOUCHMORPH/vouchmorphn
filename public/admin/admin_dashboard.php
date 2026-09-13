@@ -129,6 +129,23 @@ function tsToEpoch($value) {
     return $ts + $frac;
 }
 
+// Inverse of tsToEpoch(): turns a float epoch back into a "Y-m-d H:i:s.u"
+// string that splitTs()/tsHtml()/fmtTs() can render, so a resolved
+// start/end instant (which may come from whichever timestamp column
+// actually won, not always the same one) still displays consistently.
+function epochToTs($epoch) {
+    if ($epoch === null) {
+        return null;
+    }
+    $whole = (int)floor($epoch);
+    $frac = round($epoch - $whole, 6);
+    if ($frac >= 1) { // rounding carried into the next second
+        $whole += 1;
+        $frac = 0.0;
+    }
+    return date('Y-m-d H:i:s', $whole) . substr(sprintf('%.6f', $frac), 1);
+}
+
 // Formats the gap between two raw DB timestamps as a compact human string
 // (e.g. "384ms" or "1.240s"), so the fact that two events happened at
 // different real moments is obvious at a glance rather than hidden in
@@ -860,6 +877,8 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
                     'seconds' => $seconds,
                     'threshold' => $threshold,
                     'pass' => $seconds >= 0 && $seconds <= $threshold,
+                    'start' => epochToTs($startEpoch),
+                    'end' => epochToTs($endEpoch),
                 ];
             }
         }
@@ -935,6 +954,8 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
                 fputcsv($out, ['duration', 'seconds', $certData['duration']['seconds']]);
                 fputcsv($out, ['duration', 'threshold_seconds', $certData['duration']['threshold']]);
                 fputcsv($out, ['duration', 'pass', $certData['duration']['pass'] ? 'PASS' : 'FAIL']);
+                fputcsv($out, ['duration', 'started_at', fmtTs($certData['duration']['start'])]);
+                fputcsv($out, ['duration', 'ended_at', fmtTs($certData['duration']['end'])]);
             }
             fclose($out);
             exit;
@@ -1384,9 +1405,10 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
             $body .= pdf_metrics_section('Summary', [
                 'Amount' => number_format((float)($sr['amount'] ?? 0), 2) . ' ' . ($sr['from_currency'] ?? ''),
                 'Status' => strtoupper($sr['status'] ?? 'unknown'),
-                'Created' => fmtTs($sr['created_at'] ?? '', 'N/A'),
+                'Started' => !empty($certData['duration']) ? fmtTs($certData['duration']['start'], 'N/A') : fmtTs($sr['created_at'] ?? '', 'N/A'),
                 'Duration' => !empty($certData['duration'])
-                    ? $certData['duration']['seconds'] . 's (' . ($certData['duration']['pass'] ? 'PASS' : 'FAIL') . ' — threshold ' . $certData['duration']['threshold'] . 's)'
+                    ? $certData['duration']['seconds'] . 's (' . ($certData['duration']['pass'] ? 'PASS' : 'FAIL') . ' — threshold ' . $certData['duration']['threshold'] . 's) — '
+                        . fmtTs($certData['duration']['start']) . ' to ' . fmtTs($certData['duration']['end'])
                     : 'N/A',
             ]);
             $body .= pdf_table_section('1 · Hold Placed', ['Hold ID', 'Hold Reference', 'Institution', 'Amount', 'Status', 'Placed At', 'Debited At', 'Elapsed'],
@@ -2781,11 +2803,11 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <div class="metrics-grid" style="grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));">
                         <div class="metric-card"><span class="metric-label">Amount</span><span class="metric-value"><?php echo number_format((float)($sr['amount'] ?? 0), 2); ?></span><span class="metric-sub"><?php echo safeHtml($sr['from_currency'] ?? ''); ?></span></div>
                         <div class="metric-card"><span class="metric-label">Status</span><span class="metric-value" style="font-size:18px;"><?php echo safeHtml(strtoupper($sr['status'] ?? 'unknown')); ?></span></div>
-                        <div class="metric-card"><span class="metric-label">Created</span><span class="metric-value" style="font-size:16px;"><?php echo tsHtml($sr['created_at'] ?? '', 'N/A'); ?></span></div>
+                        <div class="metric-card"><span class="metric-label">Started</span><span class="metric-value" style="font-size:16px;"><?php echo !empty($certData['duration']) ? tsHtml($certData['duration']['start'], 'N/A') : tsHtml($sr['created_at'] ?? '', 'N/A'); ?></span></div>
                         <?php if (!empty($certData['duration'])): $d = $certData['duration']; $durColor = $d['pass'] ? 'var(--good)' : 'var(--bad)'; $durPct = $d['threshold'] > 0 ? min(100, max(0, ($d['seconds'] / $d['threshold']) * 100)) : 0; ?>
                         <div class="metric-card" style="grid-column: 4 / -1; align-items:stretch; text-align:left; border-top-color: <?php echo $durColor; ?>;">
                             <div style="display:flex; justify-content:space-between; align-items:baseline; gap:var(--sp-3);">
-                                <span class="metric-label">Duration</span>
+                                <span class="metric-label">Duration — Start to Finish</span>
                                 <span class="metric-sub" style="color: <?php echo $durColor; ?>; font-weight:600;">
                                     <?php echo $d['pass'] ? '✓ PASS' : '✗ FAIL'; ?> (≤<?php echo $d['threshold']; ?>s)
                                 </span>
@@ -2793,6 +2815,10 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                             <span class="metric-value" style="font-size:18px; text-align:left; margin-top:var(--sp-1);"><?php echo number_format($d['seconds'], 3); ?>s</span>
                             <div class="duration-track">
                                 <div class="duration-fill" style="width:<?php echo $durPct; ?>%; background: <?php echo $durColor; ?>;"></div>
+                            </div>
+                            <div style="display:flex; justify-content:space-between; margin-top:var(--sp-2);">
+                                <span class="metric-sub">Started <?php echo safeHtml(fmtTs($d['start'])); ?></span>
+                                <span class="metric-sub">Ended <?php echo safeHtml(fmtTs($d['end'])); ?></span>
                             </div>
                         </div>
                         <?php else: ?>
