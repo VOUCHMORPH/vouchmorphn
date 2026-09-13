@@ -163,6 +163,42 @@ function fmtElapsed($fromValue, $toValue) {
     return number_format($seconds, 3) . 's';
 }
 
+// vw_all_swaps unions several event tables (hold placement, identity
+// verification, etc.), so one swap reference can surface as more than one
+// row — e.g. a HOLD/PENDING_IDENTITY row and a separate IDENTITY/PENDING
+// row for the exact same swap. Collapse those down to a single row per
+// reference for the activity feeds, keeping whichever row represents the
+// furthest-along status (falling back to whichever happened most recently
+// when two rows are equally "advanced").
+function dedupeSwapRows(array $rows) {
+    static $statusRank = [
+        'completed' => 5, 'success' => 5, 'debited' => 5,
+        'failed' => 4, 'error' => 4, 'cancelled' => 4,
+        'pending_cashout' => 3, 'pending_identity' => 3, 'pending' => 3, 'processing' => 3,
+        'active' => 2, 'held' => 2,
+        'released' => 1, 'partially_released' => 1,
+    ];
+    $best = [];
+    $fallbackIndex = 0;
+    foreach ($rows as $row) {
+        $ref = $row['swap_reference'] ?? $row['reference'] ?? '';
+        $key = $ref !== '' ? $ref : ('__row_' . $fallbackIndex++);
+        if (!isset($best[$key])) {
+            $best[$key] = $row;
+            continue;
+        }
+        $current = $best[$key];
+        $currentRank = $statusRank[strtolower($current['status'] ?? '')] ?? 2;
+        $rowRank = $statusRank[strtolower($row['status'] ?? '')] ?? 2;
+        $currentEpoch = tsToEpoch($current['created_at'] ?? '') ?? -INF;
+        $rowEpoch = tsToEpoch($row['created_at'] ?? '') ?? -INF;
+        if ($rowRank > $currentRank || ($rowRank === $currentRank && $rowEpoch > $currentEpoch)) {
+            $best[$key] = $row;
+        }
+    }
+    return array_values($best);
+}
+
 function csvEscape($value) {
     $value = (string)$value;
     if (preg_match('/[",\n]/', $value)) {
@@ -346,7 +382,7 @@ if (isset($_GET['ajax']) && $view === 'live_transactions' && canView('live_trans
                 ':search3' => $likeSearch, ':search4' => $likeSearch,
                 ':search5' => $likeSearch,
             ]);
-            $ajaxRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $ajaxRows = dedupeSwapRows($stmt->fetchAll(PDO::FETCH_ASSOC));
             foreach ($ajaxRows as &$ajaxRow) {
                 $ajaxRow['amount'] = (float)($ajaxRow['amount'] ?? 0);
                 $ajaxRow['fee_amount'] = (float)($ajaxRow['fee_amount'] ?? 0);
@@ -385,14 +421,26 @@ try {
             ':search3' => $likeSearch, ':search4' => $likeSearch,
             ':search5' => $likeSearch,
         ]);
-        $liveTransactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $liveTransactions = dedupeSwapRows($stmt->fetchAll(PDO::FETCH_ASSOC));
+        // vw_all_swaps has one row per event (hold placed, identity check,
+        // etc.), not one per transaction, so COUNT(*) here would overcount
+        // relative to the deduped feed above — count distinct references
+        // instead, and take the latest row per reference for the status
+        // breakdown so a transaction isn't double-counted across an
+        // in-progress and a since-resolved status.
         $statStmt = $db->query("
             SELECT COUNT(*) as total,
                    COUNT(CASE WHEN status ILIKE '%completed%' OR status ILIKE '%success%' OR status ILIKE '%debited%' THEN 1 END) as completed,
                    COUNT(CASE WHEN status ILIKE '%pending%' OR status ILIKE '%processing%' THEN 1 END) as pending,
                    COUNT(CASE WHEN status ILIKE '%failed%' OR status ILIKE '%error%' THEN 1 END) as failed,
                    COALESCE(SUM(amount), 0) as total_amount
-            FROM vw_all_swaps WHERE created_at >= NOW() - INTERVAL '24 hours'
+            FROM (
+                SELECT DISTINCT ON (COALESCE(swap_reference, reference))
+                    COALESCE(swap_reference, reference) AS dedup_ref, status, amount
+                FROM vw_all_swaps
+                WHERE created_at >= NOW() - INTERVAL '24 hours'
+                ORDER BY COALESCE(swap_reference, reference), created_at DESC
+            ) latest_per_reference
         ");
         $liveStats = $statStmt->fetch(PDO::FETCH_ASSOC);
         $liveStats['total'] = (int)($liveStats['total'] ?? 0);
@@ -422,7 +470,7 @@ try {
             ':search3' => $likeSearch, ':search4' => $likeSearch,
             ':search5' => $likeSearch,
         ]);
-        $recentSwaps = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $recentSwaps = dedupeSwapRows($stmt->fetchAll(PDO::FETCH_ASSOC));
     }
 } catch (Throwable $e) {}
 
@@ -2667,7 +2715,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <td><span class="status status-<?php echo $class; ?>"><?php echo safeHtml($row['status'] ?? 'pending'); ?></span></td>
                     <td><?php echo safeHtml($row['source_institution'] ?? 'N/A'); ?></td>
                     <td><?php echo safeHtml($row['destination_institution'] ?? 'N/A'); ?></td>
-                    <td><?php echo date('Y-m-d H:i', strtotime($row['created_at'] ?? 'now')); ?></td>
+                    <td><?php echo tsHtml($row['created_at'] ?? ''); ?></td>
                     <td><a href="?view=reports&report=transaction_certificate&ref=<?php echo urlencode($ref); ?>" class="btn btn-sm">Certificate</a></td>
                 </tr>
                 <?php endforeach; endif; ?>
