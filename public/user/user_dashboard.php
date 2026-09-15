@@ -4539,7 +4539,26 @@ async function submitClaim(swapReference) {
     const destType = document.getElementById('claimDestType').value;
     if (!pin) { showMessage('Enter your claim PIN.', 'warning'); return; }
 
-    const payload = { swap_reference: swapReference, pin, destination_type: destType };
+    // FIX: claim_identity.php resolves the claim by identity_type +
+    // identity_value (it claims every pending hold for that identity in
+    // one PIN check), never by swap_reference -- it doesn't even read
+    // that field. This used to send only swap_reference, so every claim
+    // through this button failed with "identity_type and identity_value
+    // are required". pendingClaims already carries both (see
+    // pending_claims.php), so no extra request is needed to get them.
+    const claim = pendingClaims.find(c => c.swap_reference === swapReference);
+    if (!claim || !claim.identity_type || !claim.identity_value) {
+        showMessage('Could not find this claim\'s identity details. Refresh and try again.', 'error');
+        return;
+    }
+
+    const payload = {
+        swap_reference: swapReference,
+        identity_type: claim.identity_type,
+        identity_value: claim.identity_value,
+        pin,
+        destination_type: destType,
+    };
     let destInst = null, destIdentifier = null;
 
     if (destType === 'DEPOSIT') {
@@ -4553,7 +4572,6 @@ async function submitClaim(swapReference) {
         payload.card_suffix = claimHookCardSuffix;
     }
 
-    const claim = pendingClaims.find(c => c.swap_reference === swapReference);
     const amount = claim?.amount || 0;
     const currency = claim?.currency || 'BWP';
     const sourceInst = claim?.source_institution || 'Unknown';
@@ -4976,7 +4994,26 @@ async function submitDirectClaim() {
     if (!swapRef) { showMessage('Please enter the swap reference.', 'warning'); return; }
     if (!pin) { showMessage('Please enter your claim PIN.', 'warning'); return; }
     if (!/^\d{4,6}$/.test(pin)) { showMessage('PIN must be 4-6 digits.', 'warning'); return; }
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/claim_identity.php', { swap_reference: swapRef, pin });
+
+    // FIX: claim_identity.php resolves by identity_type + identity_value,
+    // never by swap_reference (see submitClaim()'s comment for why) --
+    // unlike that button, this form only has the reference the user
+    // typed in, so look the identity up first via details.php (already
+    // used elsewhere in this file for the same reference-based lookup)
+    // before calling claim_identity.php.
+    const lookup = await callApi(CONFIG.API_BASE + '/api/v1/swap/details.php', { reference: swapRef });
+    const identity = lookup.ok ? (lookup.body.swap || lookup.body.data || {}).identity : null;
+    if (!identity || !identity.identity_type || !identity.identity_value) {
+        showMessage('Could not find an identity swap for that reference.', 'error');
+        return;
+    }
+
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/claim_identity.php', {
+        swap_reference: swapRef,
+        identity_type: identity.identity_type,
+        identity_value: identity.identity_value,
+        pin,
+    });
     if (!result.ok) { showMessage('Claim failed: ' + friendlyApiError(result.error), 'error'); return; }
     closeModal();
     showMessage('Funds claimed successfully! 🎉', 'success');
