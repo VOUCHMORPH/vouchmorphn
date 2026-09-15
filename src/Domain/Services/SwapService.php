@@ -6886,17 +6886,72 @@ public function executeIdentityClaimWithSplit(
             ? $this->reservationAccountService->resolveOrCreateReservationAccount($ownerUserId, $destinationInstitution, $currency)
             : ['supported' => false];
 
+        $depositedToReservation = false;
+        // Which owner_user_id (if any) to tag the pooled-holding fallback
+        // with -- see below for why this differs from $ownerUserId itself
+        // when the reservation deposit was actually attempted.
+        $fallbackOwnerUserId = $ownerUserId;
+
         if (($reservation['status'] ?? null) === 'active') {
-            $this->reservationAccountService->depositToReservationAccount(
-                $destinationInstitution,
-                $currency,
-                $remainder,
-                $reservation['account_identifier'],
-                $reservation['account_identifier_type'] ?? 'account_number',
-                $consolidationReference . '_RESACC'
-            );
-            $reservationAccountId = $reservation['id'] ?? null;
-        } else {
+            try {
+                $this->reservationAccountService->depositToReservationAccount(
+                    $destinationInstitution,
+                    $currency,
+                    $remainder,
+                    $reservation['account_identifier'],
+                    $reservation['account_identifier_type'] ?? 'account_number',
+                    $consolidationReference . '_RESACC'
+                );
+                $reservationAccountId = $reservation['id'] ?? null;
+                $depositedToReservation = true;
+            } catch (\Throwable $e) {
+                // The reservation account itself is fine (it's active and
+                // stays that way for the next claim) -- only THIS deposit
+                // is in doubt. Crucially, "failed" here can mean "the bank
+                // actually credited it but didn't return a proof we could
+                // verify" (GenericInstitutionAdapter::credit() treats a
+                // missing transaction_reference as failure even then) --
+                // so we do NOT know the money didn't land. Falling back to
+                // a normal pooled hold tagged with this owner would let the
+                // sweep job later deposit the SAME remainder into the SAME
+                // reservation account a second time if the bank really did
+                // process it. Recording it WITHOUT an owner instead means
+                // it parks in the pool exactly like it would have for an
+                // institution with no reservation-account support at all --
+                // never auto-swept, tracked, and left for manual
+                // reconciliation against the bank's own records, same as
+                // 100% of identity_holding_positions rows before this
+                // feature existed.
+                $fallbackOwnerUserId = null;
+
+                // The fallback below places a NEW hold on the pooled
+                // account for this same amount, which is only correct if
+                // the deposit genuinely never landed. If it's this specific
+                // "no proof" ambiguity rather than an outright network/bank
+                // failure, that assumption might be wrong -- flag it as
+                // needing priority reconciliation (check the reservation
+                // account's actual balance at the bank) rather than a
+                // routine failure, since ops can't tell the two apart from
+                // the pooled-holding audit trail alone.
+                $isAmbiguousSuccess = str_contains($e->getMessage(), 'cannot confirm funds were credited');
+                $this->logger->error(
+                    $isAmbiguousSuccess
+                        ? "AMBIGUOUS reservation account deposit (bank may have already credited it) -- falling back to a NEW pooled hold for the same amount; verify the reservation account's real balance before relying on either record"
+                        : "Deposit into reservation account failed, falling back to pooled holding (untagged, needs manual reconciliation)",
+                    [
+                        'institution' => $destinationInstitution,
+                        'reservation_account_id' => $reservation['id'] ?? null,
+                        'reservation_account_identifier' => $reservation['account_identifier'] ?? null,
+                        'consolidation_reference' => $consolidationReference,
+                        'amount' => $remainder,
+                        'ambiguous_success' => $isAmbiguousSuccess,
+                        'error' => $e->getMessage(),
+                    ]
+                );
+            }
+        }
+
+        if (!$depositedToReservation) {
             $holdingPositionId = $this->placeHoldOnHoldingRemainder(
                 $destinationInstitution,
                 $currency,
@@ -6905,7 +6960,7 @@ public function executeIdentityClaimWithSplit(
                 $identityValue,
                 $landedHoldIds,
                 $consolidationReference,
-                $ownerUserId
+                $fallbackOwnerUserId
             );
         }
     }

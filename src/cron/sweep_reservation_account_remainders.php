@@ -35,6 +35,15 @@ $logger = new class {
 $adapterFactory = new InstitutionAdapterFactory($participants, $logger);
 $reservationAccountService = new ReservationAccountService($db, $participants, $adapterFactory, $logger);
 
+// Recover any position left stuck in 'sweeping' by a worker that died
+// mid-sweep (crash, OOM, deploy restart) before it could mark 'swept' or
+// 'sweep_failed' — otherwise such a position is invisible to every query
+// below and would never be retried.
+$reclaimedSweeping = $reservationAccountService->reclaimStaleSweepingPositions(50);
+if ($reclaimedSweeping > 0) {
+    error_log("[SWEEP_RESACC] Reclaimed {$reclaimedSweeping} position(s) stuck in 'sweeping'");
+}
+
 $accountIds = $reservationAccountService->findActiveAccountIdsWithOpenPositions(50);
 
 $totalSwept = 0;
