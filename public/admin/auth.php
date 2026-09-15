@@ -51,9 +51,17 @@ function getPlatformAdminDb(): PDO {
 
 function loadAdminWithRole(int $adminId): ?array {
     $db = getPlatformAdminDb();
+    // locked_until / failed_login_attempts are deliberately NOT selected
+    // here — scripts/credentials_db/phase2_drop_columns.sql already
+    // dropped both from the main admins table (see
+    // docs/security/credentials-isolation.md). They live exclusively in
+    // the credentials database now; requirePlatformAdminAuth() below
+    // fetches locked_until from there instead. Selecting them here was a
+    // leftover from before that cutover and broke every admin page the
+    // moment those columns actually disappeared in production.
     $stmt = $db->prepare("
         SELECT a.admin_id, a.username, a.email, a.full_name, a.role_id, a.deleted_at,
-               a.locked_until, a.failed_login_attempts, a.mfa_enabled, a.country_code,
+               a.mfa_enabled, a.country_code,
                r.role_name, r.role_level, r.can_manage_admins, r.can_view_transactions,
                r.can_edit_config, r.can_broadcast, r.can_trigger_cron, r.can_generate_reports,
                r.can_export_data, r.can_view_audit_logs, r.permissions
@@ -68,7 +76,10 @@ function loadAdminWithRole(int $adminId): ?array {
 /**
  * Any authenticated admin. Re-checks deleted_at/locked_until on every
  * call (not just at login) — a deactivated or newly-locked admin's
- * existing session stops working immediately.
+ * existing session stops working immediately. locked_until comes from
+ * the credentials database (CredentialsRepository), same source
+ * attemptPlatformAdminLogin() already reads it from at login time — see
+ * loadAdminWithRole()'s comment for why it can't come from $admin itself.
  */
 function requirePlatformAdminAuth(): array {
     if (empty($_SESSION['admin_id'])) {
@@ -83,7 +94,10 @@ function requirePlatformAdminAuth(): array {
         header('Location: /admin/organizations/login.php');
         exit;
     }
-    if (!empty($admin['locked_until']) && strtotime($admin['locked_until']) > time()) {
+
+    $credentials = CredentialsRepository::fromEnvironment();
+    $credRow = $credentials->findAdminCredentialByAdminId((int)$admin['admin_id']);
+    if ($credRow && !empty($credRow['locked_until']) && strtotime($credRow['locked_until']) > time()) {
         session_unset();
         session_destroy();
         header('Location: /admin/organizations/login.php?locked=1');
