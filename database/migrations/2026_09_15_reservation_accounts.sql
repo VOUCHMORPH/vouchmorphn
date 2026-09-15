@@ -41,13 +41,36 @@ CREATE INDEX IF NOT EXISTS reservation_accounts_institution_status_idx
 -- these columns let the sweep job attribute an open pooled position to a
 -- resolved person and record where/when it was swept once that person's
 -- reservation account at the same institution/currency becomes active.
+-- hold_released_at marks that the bank-side hold on the pooled holding
+-- account has already been released for this position, independent of
+-- whether the deposit into the reservation account that follows it has
+-- succeeded yet. Without it, a retry after "release succeeded, deposit
+-- failed" would re-issue releaseHold on an already-released hold_reference
+-- -- most bank APIs reject that, permanently stalling the sweep. See
+-- ReservationAccountService::sweepPosition().
+--
+-- sweep_claimed_at records when a position was atomically claimed
+-- (status -> 'sweeping') for processing. If the worker dies between the
+-- claim and finishing (crash, OOM, deploy restart), the position would
+-- otherwise sit in 'sweeping' forever -- excluded from both the sweep
+-- query and the cron discovery query, with no automated recovery. See
+-- ReservationAccountService::reclaimStaleSweepingPositions().
 ALTER TABLE identity_holding_positions
     ADD COLUMN IF NOT EXISTS owner_user_id BIGINT REFERENCES users(user_id),
     ADD COLUMN IF NOT EXISTS swept_to_reservation_account_id BIGINT REFERENCES reservation_accounts(id),
-    ADD COLUMN IF NOT EXISTS swept_at TIMESTAMPTZ;
+    ADD COLUMN IF NOT EXISTS swept_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS hold_released_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS sweep_claimed_at TIMESTAMPTZ;
 
-CREATE INDEX IF NOT EXISTS identity_holding_positions_sweep_idx
+-- DROP + CREATE rather than CREATE INDEX IF NOT EXISTS: this partial
+-- index's WHERE predicate has already changed once during development
+-- (open -> open/sweep_failed). IF NOT EXISTS would silently keep an
+-- earlier, narrower predicate on any database this migration already ran
+-- against, degrading sweep_failed lookups to a full scan without any
+-- error -- DROP+CREATE makes a predicate edit here always take effect.
+DROP INDEX IF EXISTS identity_holding_positions_sweep_idx;
+CREATE INDEX identity_holding_positions_sweep_idx
     ON identity_holding_positions (owner_user_id, institution, currency)
-    WHERE status = 'open';
+    WHERE status IN ('open', 'sweep_failed');
 
 COMMIT;

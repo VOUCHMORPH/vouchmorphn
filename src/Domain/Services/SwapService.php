@@ -411,6 +411,108 @@ private function extractBeneficiaryPartyData(array $payload): array
         ];
     }
 
+    /**
+     * Classifies a raw bank-returned account_type into one of VouchMorph's
+     * three logical branches for Phase D expiry handling (swap-to-identity
+     * algorithm v2, §7/§8): government and business/trust money is *owed*
+     * to the identity and parks in a reservation account at the source
+     * institution on expiry; personal money is a lapsed gift that releases
+     * back to the sender.
+     *
+     * The raw bank vocabulary is not yet confirmed to map 1:1 onto these
+     * three buckets -- this mapping is a placeholder pending real sandbox
+     * verifyAccount() responses for source-side accounts, per the approved
+     * plan's flagged judgment call. Unrecognized types default to
+     * PERSONAL, matching verifySourceAccountType()'s own safe-default
+     * posture below.
+     */
+    private static function classifySourceAccountType(string $rawAccountType): string
+    {
+        $type = strtoupper(trim($rawAccountType));
+
+        $governmentTypes = ['GOVERNMENT', 'GOV', 'STATE', 'MUNICIPAL', 'PARASTATAL'];
+        $businessOrTrustTypes = ['BUSINESS', 'TRUST', 'CORPORATE', 'COMPANY', 'NGO', 'NON_PROFIT'];
+
+        if (in_array($type, $governmentTypes, true)) {
+            return 'GOVERNMENT';
+        }
+        if (in_array($type, $businessOrTrustTypes, true)) {
+            return 'BUSINESS_OR_TRUST';
+        }
+
+        return 'PERSONAL';
+    }
+
+    /**
+     * Classifies the SOURCE account's type at hold-placement time, so
+     * Phase D's expiry branch (cancelExpiredIdentitySwaps()) knows whether
+     * unclaimed money is owed to the identity or a lapsed gift. Reuses the
+     * existing verifyAccount() adapter call -- already implemented and
+     * proven against sandbox banks for the destination-registration path
+     * (see the agent-destination-account flow elsewhere in this class) --
+     * against the SOURCE identifier instead, rather than widening
+     * verifyAsset()'s contract across every sandbox bank.
+     *
+     * Never blocks the swap: any failure (adapter throws, the institution
+     * doesn't support verifyAccount for source-side lookups, no
+     * account_type comes back) defaults to PERSONAL -- the stricter, most
+     * protective branch, since money returns to the sender rather than
+     * parking indefinitely on an unconfirmed classification -- and logs
+     * loudly instead of failing the hold outright.
+     */
+    private function verifySourceAccountType(array $payload, string $sourceInstitution): string
+    {
+        try {
+            $sourceId = $this->extractSourceIdentifier($payload);
+            if (!$sourceId['has_value']) {
+                error_log("[SwapService] verifySourceAccountType: no source identifier to verify at {$sourceInstitution}, defaulting to PERSONAL");
+                return 'PERSONAL';
+            }
+
+            $adapter = $this->adapterFactory->getAdapter($sourceInstitution);
+            $verifyResult = $adapter->verifyAccount([
+                'action' => 'VERIFY_ACCOUNT',
+                'reference' => 'SOURCE_TYPE_' . ($payload['reference'] ?? $this->currentSwapRef ?? uniqid('source_type_')),
+                'account_identifier' => $sourceId['identifier'],
+                'identifier_type' => $sourceId['type'],
+                'requester' => 'VOUCHMORPH',
+                'timestamp' => time(),
+            ], [
+                'institution' => $sourceInstitution,
+                'purpose' => 'source_account_classification',
+            ]);
+
+            $rawAccountType = $verifyResult['account_type'] ?? $verifyResult['data']['account_type'] ?? '';
+            if ($rawAccountType === '') {
+                error_log("[SwapService] verifySourceAccountType: {$sourceInstitution} returned no account_type, defaulting to PERSONAL");
+                return 'PERSONAL';
+            }
+
+            $classified = self::classifySourceAccountType($rawAccountType);
+            error_log("[SwapService] verifySourceAccountType: {$sourceInstitution} account_type={$rawAccountType} classified as {$classified}");
+            return $classified;
+        } catch (\Throwable $e) {
+            error_log("[SwapService] verifySourceAccountType: verification failed at {$sourceInstitution}, defaulting to PERSONAL: " . $e->getMessage());
+            return 'PERSONAL';
+        }
+    }
+
+    /**
+     * Staged-rollout gate for the swap-to-identity algorithm v2 behavior
+     * that changes real money movement or reporting for a live
+     * institution: Phase D's government/business-trust-vs-personal expiry
+     * branch, and Point X's obligation-ledger wiring. Mirrors
+     * ReservationAccountService::isSupported()'s exact lookup pattern
+     * against the same participants.yaml capabilities block. Defaults to
+     * false (old behavior) for any institution that hasn't explicitly
+     * opted in, or isn't found in config at all.
+     */
+    private function isClaimAlgorithmV2Enabled(string $institution): bool
+    {
+        $participant = $this->participants[$institution] ?? $this->participants[strtoupper($institution)] ?? null;
+        return (bool)($participant['capabilities']['claim_algorithm_v2'] ?? false);
+    }
+
    public function extractDestinationIdentifier(array $payload): array
 {
     $destinationIdentifier = null;
@@ -4356,13 +4458,20 @@ $this->recordSettlementPending(
             ];
         }
 
+        // Classified regardless of $skipHold: even when reusing an
+        // already-placed bank-side hold (multi-source pooling), this call
+        // still inserts a fresh identity_swap_holds row for THIS source
+        // institution, and Phase D needs to know its account type too.
+        $sourceAccountType = $this->verifySourceAccountType($payload, $sourceInstitution);
+
         error_log("[SwapService] STEP 3: Store identity mapping (PAUSED)");
         $identityHoldStored = $this->storeIdentityHold(
             $payload,
             $swapRef,
             $holdResult,
             $this->currentHoldId,
-            $skipHold
+            $skipHold,
+            $sourceAccountType
         );
         $identityHoldId = $identityHoldStored['hold_id'];
         $claimPin = $identityHoldStored['claim_pin'];
@@ -4400,6 +4509,100 @@ $this->recordSettlementPending(
         throw $e;
     }
 }
+
+/**
+ * Residual rollover (swap-to-identity algorithm v2, §9 / plan §7): pulls
+ * an existing reservation position into a NEW claim as a fresh hold,
+ * re-priced with its own Fh -- the client's confirmed decision was
+ * spec §11e's simplest default, "accept it, charge Fh again every time,"
+ * so this method has no exemption logic to skip Point H for a
+ * reservation-sourced hold.
+ *
+ * A reservation account is, from the adapter's perspective, just another
+ * bank account with its own account_identifier -- this reuses the exact
+ * same verifyAssetSigned()/placeHoldSigned()/storeIdentityHold() path
+ * every other swap-to-identity hold goes through (Point Z's creation-time
+ * call included, already wired inside initiateSwapToIdentity() since
+ * Increment 3) rather than inventing a parallel "debit a reservation
+ * account" mechanism. The resulting identity_swap_holds row is
+ * structurally indistinguishable from any other pending hold once
+ * created, so it joins the SAME multi-hold pool for this identity with
+ * zero changes needed to executeIdentityClaimWithSplit() itself -- spec
+ * 3d's "proceed exactly as §8" is satisfied by reuse, not by a parallel
+ * pooling path.
+ *
+ * VouchMorph doesn't track a running balance for a reservation account
+ * locally (the bank is the source of truth, same principle used
+ * everywhere else in this codebase) -- the real balance is discovered
+ * fresh from the bank via verifyAssetSigned() before the hold amount is
+ * decided, then the ENTIRE discovered balance is rolled over (the whole
+ * position, not a client-chosen slice, matching the spec's framing of P
+ * as "one more contributing source", not a partial one).
+ */
+public function initiateResidualRollover(int $reservationAccountId, string $identityType, string $identityValue): array
+{
+    $reservation = $this->reservationAccountService->getById($reservationAccountId);
+    if ($reservation === null || $reservation['status'] !== 'active') {
+        throw new RuntimeException("Reservation account {$reservationAccountId} is not an active position available for rollover.");
+    }
+
+    $institution = $reservation['institution'];
+    $identifier = $reservation['account_identifier'];
+    $identifierType = $reservation['account_identifier_type'] ?? 'account_number';
+    $currency = $reservation['currency'];
+
+    $verification = $this->verifyAssetSigned([
+        'source_identifier' => $identifier,
+        'source_identifier_type' => $identifierType,
+        'asset_type' => 'ACCOUNT',
+        'currency' => $currency,
+    ], $institution);
+
+    if (!($verification['verified'] ?? false)) {
+        throw new RuntimeException("Could not verify reservation account {$reservationAccountId} at {$institution}: " . ($verification['message'] ?? 'Unknown reason'));
+    }
+
+    $available = (float)($verification['balance'] ?? 0);
+    if ($available <= 0) {
+        throw new RuntimeException("Reservation account {$reservationAccountId} has no available balance to roll over.");
+    }
+
+    $payload = [
+        'amount' => $available,
+        'from_institution' => $institution,
+        'source_institution' => $institution,
+        'source_identifier' => $identifier,
+        'source_identifier_type' => $identifierType,
+        'identifier_type' => $identifierType,
+        'currency' => $currency,
+        'identity_type' => $identityType,
+        'identity_value' => $identityValue,
+        'asset_type' => 'ACCOUNT',
+        'reference' => $this->generateReference(),
+        'hold_reason' => 'RESIDUAL_ROLLOVER',
+    ];
+
+    $result = $this->initiateSwapToIdentity($payload);
+
+    // Close P only after a new hold representing its value genuinely
+    // exists -- never before, so a failure partway through leaves P
+    // exactly as it was (still active, safe to retry the rollover)
+    // rather than closed with nothing to show for it.
+    $closed = $this->reservationAccountService->closePosition($reservationAccountId);
+    if (!$closed) {
+        // Extremely unlikely (would mean P's status changed between the
+        // check at the top of this method and now) -- the new hold above
+        // is real regardless, so this is a bookkeeping inconsistency to
+        // flag, not a reason to fail a rollover that already succeeded.
+        error_log("[SwapService] initiateResidualRollover: reservation account {$reservationAccountId} was not 'active' when closePosition() ran -- rollover hold was still created successfully, needs a bookkeeping check");
+    }
+
+    $result['rolled_over_from_reservation_account_id'] = $reservationAccountId;
+    $result['rolled_over_amount'] = $available;
+
+    return $result;
+}
+
     public function confirmAndFinalizeIdentitySwap(array $payload): array
 {
     error_log("[SwapService] ===== confirmAndFinalizeIdentitySwap =====");
@@ -5247,24 +5450,60 @@ private function finalizeHoldToReceiving(
         $this->debitHoldToSourceSettlement($identitySwap);
 
         $reference = $identitySwap['swap_reference'] . '_SETTLE';
-        $netLanded = $this->settleToDestinationReceiving(
-            $sourceInstitution, $destinationInstitution, $currency, $amount, $reference
-        );
+
+        // Staged rollout (swap-to-identity algorithm v2, plan §3a): once
+        // enabled for this source institution, a settlement failure after
+        // a successful debit gets automatic recovery (retry, then a
+        // compensating credit back to source) instead of going straight
+        // to a manual-reconciliation-only flag. Gated per SOURCE
+        // institution -- it's the source's money and the source's debit
+        // this recovers, same actor the existing manual-reconciliation
+        // record already names.
+        $netLanded = $this->isClaimAlgorithmV2Enabled($sourceInstitution)
+            ? $this->retrySettlementOrCompensate(
+                $identitySwap, $sourceInstitution, $destinationInstitution, $currency, $amount, $reference
+            )
+            : $this->settleToDestinationReceiving(
+                $sourceInstitution, $destinationInstitution, $currency, $amount, $reference
+            );
 
         $this->updateReceivingDepositStatus($recvId, 'landed', $reference);
-        $this->updateIdentityHoldStatus((int)$identitySwap['hold_id'], 'completed', [
-            'final_destination_type' => 'HOLDING_CONSOLIDATED',
-            'consolidation_reference' => $consolidationReference,
-        ]);
+
+        // Staged rollout (plan §3b): when enabled, this hold's value has
+        // only reached the destination's HOLDING account so far -- Step 4
+        // (actual payout to the beneficiary) hasn't happened yet, that
+        // runs later in executeIdentityClaimWithSplit(), after every hold
+        // in the pool reaches this point. 'completed' is reserved for
+        // once Step 4 is also confirmed (see the transition after Step 4
+        // there). When disabled, 'completed' is set here directly, same
+        // as it always was.
+        $this->updateIdentityHoldStatus((int)$identitySwap['hold_id'],
+            $this->isClaimAlgorithmV2Enabled($sourceInstitution) ? 'settled_pending_payout' : 'completed',
+            [
+                'final_destination_type' => 'HOLDING_CONSOLIDATED',
+                'consolidation_reference' => $consolidationReference,
+            ]
+        );
 
         return ['success' => true, 'net_amount' => $netLanded, 'hold_id' => $identitySwap['hold_id']];
 
+    } catch (SettlementRecoveryException $e) {
+        // retrySettlementOrCompensate() already recorded whatever needed
+        // recording (nothing, if it successfully compensated; a manual
+        // reconciliation flag, if compensation also failed) before
+        // throwing -- do not do either again here.
+        $this->updateReceivingDepositStatus($recvId, 'failed', null);
+        throw $e;
     } catch (\Throwable $e) {
         $this->updateReceivingDepositStatus($recvId, 'failed', null);
         if ($this->currentHoldId && strpos($e->getMessage(), 'Failed to debit') === false) {
             // Hold was debited but settlement onward failed — money is
             // gone from the source but hasn't landed anywhere confirmed.
             // Flag for manual reconciliation rather than losing track of it.
+            // (Institutions with claim_algorithm_v2 enabled never reach
+            // this branch for a post-debit settlement failure -- that
+            // path throws SettlementRecoveryException instead, caught
+            // above.)
             $this->recordManualReconciliationRequired(
                 $identitySwap['swap_reference'], $identitySwap['hold_reference'], $sourceInstitution,
                 $destinationInstitution, $amount, $currency,
@@ -5272,6 +5511,119 @@ private function finalizeHoldToReceiving(
             );
         }
         throw $e;
+    }
+}
+
+/**
+ * Automatic recovery for "debit succeeded, settlement onward failed"
+ * (swap-to-identity algorithm v2, plan §3a). Before falling back to a
+ * manual-reconciliation-only flag: retry settlement itself a bounded
+ * number of times (the common case -- a transient network/timeout blip,
+ * not a real problem with the money; $reference is stable across
+ * retries, so this relies on the destination adapter treating a repeat
+ * credit with the same reference as idempotent, same assumption the rest
+ * of this codebase's retry paths already make). If retries are
+ * exhausted, attempt ONE compensating credit back to the source
+ * identifier the hold came from, so the source customer isn't left short
+ * with nothing to show for a debit that never delivered anywhere.
+ *
+ * Always throws SettlementRecoveryException on any non-success path --
+ * from the caller's perspective this hold did not land at the
+ * destination either way, so it must end up in
+ * executeIdentityClaimWithSplit()'s $failedHolds, not $landedHoldIds --
+ * but $wasCompensated tells the difference between "self-healed, source
+ * was made whole automatically" and "still needs a human."
+ */
+private function retrySettlementOrCompensate(
+    array $identitySwap,
+    string $sourceInstitution,
+    string $destinationInstitution,
+    string $currency,
+    float $amount,
+    string $reference
+): float {
+    $maxAttempts = 3; // 1 initial attempt (already tried by the time this runs is not the case -- this IS attempt 1) + 2 retries
+    $lastError = null;
+
+    for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+        try {
+            return $this->settleToDestinationReceiving(
+                $sourceInstitution, $destinationInstitution, $currency, $amount, $reference
+            );
+        } catch (\Throwable $e) {
+            $lastError = $e;
+            error_log("[SwapService] Settlement attempt {$attempt}/{$maxAttempts} failed for {$identitySwap['swap_reference']} ({$sourceInstitution} -> {$destinationInstitution}): " . $e->getMessage());
+        }
+    }
+
+    // Retries exhausted -- genuinely not landing, not just flaky. Attempt
+    // to credit the already-debited amount back to the identifier the
+    // hold was originally placed against, mirroring settlePosDirect()'s
+    // direct-credit payload shape.
+    try {
+        $sourcePayload = json_decode($identitySwap['source_payload'] ?? '{}', true) ?: [];
+        $sourceId = $this->extractSourceIdentifier($sourcePayload);
+        $destinationIdentifier = $sourceId['identifier'] ?? ($identitySwap['source_identifier'] ?? null);
+
+        if (empty($destinationIdentifier)) {
+            throw new RuntimeException("No source identifier available to compensate against");
+        }
+
+        $adapter = $this->adapterFactory->getAdapter($sourceInstitution);
+        $compensationResult = $adapter->credit([
+            'reference' => $reference . '_COMPENSATE',
+            'amount' => $amount,
+            'currency' => $currency,
+            'destination_identifier' => $destinationIdentifier,
+            'destination_identifier_type' => $sourceId['type'] ?? 'account_number',
+            'destination_asset_type' => $identitySwap['source_asset_type'] ?? 'ACCOUNT',
+            'to_institution' => $sourceInstitution,
+            'destination_institution' => $sourceInstitution,
+            'action' => 'PROCESS_DEPOSIT_WITH_PROOF',
+            'reason' => 'Automatic compensation: debit succeeded but settlement to destination repeatedly failed',
+        ], [
+            'destination_institution' => $sourceInstitution,
+            'destination_identifier' => $destinationIdentifier,
+            'purpose' => 'debit_settlement_compensation',
+        ]);
+
+        if ($compensationResult['credited'] ?? false) {
+            $this->logger->warning("Automatic compensation succeeded: debited amount credited back to source after settlement retries were exhausted", [
+                'swap_reference' => $identitySwap['swap_reference'],
+                'hold_reference' => $identitySwap['hold_reference'],
+                'source_institution' => $sourceInstitution,
+                'destination_institution' => $destinationInstitution,
+                'amount' => $amount,
+                'currency' => $currency,
+                'attempts' => $maxAttempts,
+            ]);
+            throw new SettlementRecoveryException(
+                "Settlement to {$destinationInstitution} failed after {$maxAttempts} attempts for {$identitySwap['swap_reference']}; " .
+                "the debited amount was automatically credited back to the source -- no manual reconciliation needed.",
+                true
+            );
+        }
+
+        throw new RuntimeException("Compensating credit did not confirm success: " . ($compensationResult['message'] ?? 'no reason given'));
+    } catch (SettlementRecoveryException $e) {
+        throw $e; // the successful-compensation case above, pass through unchanged
+    } catch (\Throwable $compensationError) {
+        // Compensation also failed (or its success couldn't be confirmed
+        // -- the same "bank may have actually processed it without
+        // returning proof" ambiguity GenericInstitutionAdapter::credit()
+        // already documents elsewhere in this codebase). This genuinely
+        // needs a human: money may be in an ambiguous state.
+        $this->recordManualReconciliationRequired(
+            $identitySwap['swap_reference'], $identitySwap['hold_reference'], $sourceInstitution,
+            $destinationInstitution, $amount, $currency,
+            "Hold debited, settlement to receiving account failed after {$maxAttempts} attempts, AND automatic compensation back to source failed: " .
+            $compensationError->getMessage() . " (original settlement error: " . ($lastError ? $lastError->getMessage() : 'unknown') . ")"
+        );
+        throw new SettlementRecoveryException(
+            "Settlement to {$destinationInstitution} failed after {$maxAttempts} attempts for {$identitySwap['swap_reference']}, " .
+            "and automatic compensation back to source also failed -- flagged for manual reconciliation: " . $compensationError->getMessage(),
+            false
+        );
     }
 }
 
@@ -5835,75 +6187,25 @@ private function consumeEarmarkedBalance(string $institution, string $identifier
 public function cancelExpiredIdentitySwaps(): array
 {
     error_log("[SwapService] ===== cancelExpiredIdentitySwaps =====");
- 
+
     $results = ['total_expired' => 0, 'cancelled' => 0, 'errors' => 0, 'details' => []];
- 
+
     $sql = "
         SELECT * FROM identity_swap_holds
         WHERE status = 'pending'
         AND hold_expires_at < NOW()
     ";
- 
+
     try {
         $stmt = $this->swapDB->prepare($sql);
         $stmt->execute();
         $expiredSwaps = $stmt->fetchAll(PDO::FETCH_ASSOC);
         $results['total_expired'] = count($expiredSwaps);
- 
+
         foreach ($expiredSwaps as $swap) {
             try {
-                $levy = (float)($swap['levy_amount'] ?? 0);
-                $sourceInstitution = $swap['source_institution'];
-                $swapRef = $swap['swap_reference'];
- 
-                if ($levy > 0) {
-                    try {
-                        $this->settlement->invoiceFee(
-                            $swapRef,
-                            $sourceInstitution,
-                            $this->getParticipantId('VOUCHMORPH'),
-                            'SWAP_LEVY',
-                            $levy,
-                            $swap['currency'] ?? 'BWP'
-                        );
- 
-                        $adapter = $this->adapterFactory->getAdapter($sourceInstitution);
-                        $adapter->debit([
-                            'reference' => $swapRef . '_EXPIRED_LEVY',
-                            'hold_reference' => $swap['hold_reference'],
-                            'amount' => $levy,
-                            'reason' => 'Identity swap expired unclaimed - withholding non-refundable levy',
-                            'from_institution' => $sourceInstitution,
-                            'source_institution' => $sourceInstitution,
-                        ], []);
-                    } catch (Exception $e) {
-                        error_log("[SwapService] Failed to withhold levy on expired identity swap {$swapRef}: " . $e->getMessage());
-                    }
-                }
- 
-                $adapter = $this->adapterFactory->getAdapter($sourceInstitution);
-                $releaseResult = $adapter->releaseHold([
-                    'hold_reference' => $swap['hold_reference'],
-                    'action' => 'RELEASE_HOLD',
-                    'reason' => "Identity swap expired after 24 hours. Withheld levy: {$levy}."
-                ], []);
- 
-                $this->updateIdentityHoldStatus($swap['hold_id'], 'expired', [
-                    'release_result' => $releaseResult,
-                    'levy_withheld' => $levy,
-                    'expired_at' => date('Y-m-d H:i:s')
-                ]);
- 
-                $this->updateHoldStatus($swap['hold_id'], $levy > 0 ? 'PARTIALLY_RELEASED' : 'RELEASED');
- 
+                $results['details'][] = $this->expireIdentitySwap($swap);
                 $results['cancelled']++;
-                $results['details'][] = [
-                    'swap_reference' => $swap['swap_reference'],
-                    'hold_id' => $swap['hold_id'],
-                    'levy_withheld' => $levy,
-                    'status' => 'expired'
-                ];
- 
             } catch (Exception $e) {
                 error_log("[SwapService] Failed to cancel swap {$swap['swap_reference']}: " . $e->getMessage());
                 $results['errors']++;
@@ -5914,13 +6216,256 @@ public function cancelExpiredIdentitySwaps(): array
                 ];
             }
         }
- 
+
         return $results;
- 
+
     } catch (PDOException $e) {
         error_log("[SwapService] Failed to get expired swaps: " . $e->getMessage());
         throw new RuntimeException("Failed to cancel expired swaps: " . $e->getMessage());
     }
+}
+
+/**
+ * Reads Fh (the hold-time fee) out of an identity_swap_holds row's
+ * metadata->hold_fee, as written by storeIdentityHold() (Increment 1).
+ *
+ * FIX: this used to be a plain $swap['levy_amount'] column read --
+ * nothing in this codebase ever writes that column, so it always
+ * evaluated to 0 regardless of the real fee. The actual computed Fh
+ * lives in metadata->hold_fee->total_fee.
+ *
+ * Honors metadata->hold_fee->waived (set by waiveIdentityHoldFee(),
+ * called from rollbackAtomicSwap() on VouchMorph system failure -- the
+ * spec's one confirmed Fh waiver case) so an already-waived hold is
+ * never withheld again here.
+ *
+ * Pure/stateless (no $this usage) and static so it's testable via
+ * reflection without constructing the full SwapService dependency graph.
+ */
+private static function extractHoldFeeFromMetadata(?string $metadataJson): float
+{
+    $metadata = json_decode($metadataJson ?? '{}', true) ?: [];
+    $holdFee = $metadata['hold_fee'] ?? [];
+
+    if (!empty($holdFee['waived'])) {
+        return 0.0;
+    }
+
+    return (float)($holdFee['total_fee'] ?? 0);
+}
+
+/**
+ * Spec §7 Phase D's government/personal split, extended per the client's
+ * clarification that business/trust-sourced money behaves like
+ * government money on expiry (owed to the identity, not a lapsed gift).
+ * A source_account_type this codebase doesn't recognize -- including the
+ * safe-default 'PERSONAL' verifySourceAccountType() falls back to on any
+ * classification failure -- is treated as NOT owed, the stricter,
+ * most-protective-of-the-sender branch.
+ */
+private static function isSourceMoneyOwedToIdentity(?string $sourceAccountType): bool
+{
+    return in_array($sourceAccountType, ['GOVERNMENT', 'BUSINESS_OR_TRUST'], true);
+}
+
+/**
+ * Point X's obligation calculation (swap-to-identity algorithm v2, plan
+ * §5 / spec §8 2h): groups a pool's LANDED holds by source institution
+ * and nets each hold's own Fh out of its contribution, since Fh was
+ * already earned and collected at Moment 1 (Point H) and isn't part of
+ * what the source owes the destination for the value it transferred.
+ * Failed holds ($landedHoldIds excludes them) never settle.
+ *
+ * Returns [institution => netted amount], ready for one
+ * updateNetPosition() call per institution (spec: "Point X is applied
+ * ONCE, fanning obligations out to every Ii" -- Ii meaning institution,
+ * not hold, hence the grouping rather than one call per hold).
+ *
+ * Pure/stateless (no $this usage) and static so this financial
+ * calculation is directly testable without constructing the full
+ * SwapService dependency graph.
+ */
+private static function computeNetObligationsByInstitution(array $holds, array $landedHoldIds): array
+{
+    $landedByInstitution = [];
+    foreach ($holds as $hold) {
+        if (!in_array((int)$hold['hold_id'], $landedHoldIds, true)) {
+            continue;
+        }
+        $holdAmount = (float)$hold['amount'];
+        $holdFh = self::extractHoldFeeFromMetadata($hold['metadata'] ?? null);
+        $sourceInst = $hold['source_institution'];
+        $landedByInstitution[$sourceInst] = round(
+            ($landedByInstitution[$sourceInst] ?? 0.0) + ($holdAmount - $holdFh),
+            2
+        );
+    }
+    return $landedByInstitution;
+}
+
+/**
+ * Spec §8 2b / plan §6: sums a pool of pending identity_swap_holds rows
+ * into T (gross) and Fh (sum of each hold's own hold-time fee, already
+ * earned at placement), returning A = T - Fh -- what the client can
+ * actually claim. Invariant #9: "The client is shown A, never T. They
+ * can never claim Fh." Shared by previewIdentityClaimAvailable() and the
+ * cash-now validation in both finalizeAggregatedIdentityClaim() (agent)
+ * and finalizeAggregatedIdentityClaimSelfService() -- one calculation,
+ * not duplicated per call site.
+ *
+ * Pure/stateless (no $this usage) and static so this financial
+ * calculation is directly testable without constructing the full
+ * SwapService dependency graph.
+ */
+private static function computeAvailableForPendingHolds(array $holds): array
+{
+    $gross = round((float)array_sum(array_column($holds, 'amount')), 2);
+    $fh = round(array_sum(array_map(
+        fn(array $hold) => self::extractHoldFeeFromMetadata($hold['metadata'] ?? null),
+        $holds
+    )), 2);
+
+    return [
+        'gross' => $gross,
+        'hold_fees' => $fh,
+        'available' => round($gross - $fh, 2),
+    ];
+}
+
+/**
+ * Phase D of the swap-to-identity algorithm v2 (plan §8): a single
+ * expired-and-unclaimed swap's disposition. Fh is withheld in both
+ * branches -- the only difference is where the remaining balance A goes.
+ * GOVERNMENT/BUSINESS_OR_TRUST money is owed to the identity and cannot
+ * be un-sent, so it parks in a reservation account at the SOURCE
+ * institution (Point Z's expiry-time call site); PERSONAL money is a
+ * lapsed gift that releases back to the sender. Either way the source
+ * institution pays Fh -- it performed the reservation.
+ */
+private function expireIdentitySwap(array $swap): array
+{
+    $swapRef = $swap['swap_reference'];
+    $sourceInstitution = $swap['source_institution'];
+    $currency = $swap['currency'] ?? 'BWP';
+    $t = (float)$swap['amount'];
+
+    $fh = self::extractHoldFeeFromMetadata($swap['metadata'] ?? null);
+    $a = round($t - $fh, 2);
+
+    if ($fh > 0) {
+        try {
+            $this->settlement->invoiceFee(
+                $swapRef,
+                $sourceInstitution,
+                $this->getParticipantId('VOUCHMORPH'),
+                'SWAP_LEVY',
+                $fh,
+                $currency
+            );
+
+            $adapter = $this->adapterFactory->getAdapter($sourceInstitution);
+            $adapter->debit([
+                'reference' => $swapRef . '_EXPIRED_LEVY',
+                'hold_reference' => $swap['hold_reference'],
+                'amount' => $fh,
+                'reason' => 'Identity swap expired unclaimed - withholding non-refundable hold-time fee (Fh)',
+                'from_institution' => $sourceInstitution,
+                'source_institution' => $sourceInstitution,
+            ], []);
+        } catch (Exception $e) {
+            error_log("[SwapService] Failed to withhold Fh on expired identity swap {$swapRef}: " . $e->getMessage());
+        }
+    }
+
+    $sourceAccountType = $swap['source_account_type'] ?? 'PERSONAL';
+    $adapter = $this->adapterFactory->getAdapter($sourceInstitution);
+
+    // Staged rollout: the park-vs-release branch is the real
+    // behavior-changing part of this rewrite (money that always released
+    // to the sender before can now park indefinitely instead) -- gated
+    // per source institution behind capabilities.claim_algorithm_v2 so no
+    // live institution is surprised by it before opting in. Fh withholding
+    // above stays unconditional -- it's a fix to logic that already always
+    // intended to withhold (the old levy_amount read just always
+    // evaluated to zero), not new behavior.
+    $parkingEnabled = $this->isClaimAlgorithmV2Enabled($sourceInstitution);
+
+    if ($parkingEnabled && self::isSourceMoneyOwedToIdentity($sourceAccountType) && $a > 0) {
+        $owner = $this->findVerifiedIdentityOwner($swap['identity_type'], $swap['identity_value']);
+        $reservation = ($owner !== null && !empty($owner['user_id']))
+            ? $this->reservationAccountService->resolveOrCreateReservationAccount((int)$owner['user_id'], $sourceInstitution, $currency)
+            : ['supported' => false];
+
+        if (($reservation['status'] ?? null) === 'active') {
+            // Move A: hold -> reservation account at the source
+            // institution. The deposit lands the funds in the reservation
+            // account; releaseHold() below then just closes out the
+            // now-empty bank-side hold.
+            $this->reservationAccountService->depositToReservationAccount(
+                $sourceInstitution,
+                $currency,
+                $a,
+                $reservation['account_identifier'],
+                $reservation['account_identifier_type'] ?? 'account_number',
+                $swapRef . '_EXPIRED_PARK'
+            );
+
+            $releaseResult = $adapter->releaseHold([
+                'hold_reference' => $swap['hold_reference'],
+                'action' => 'RELEASE_HOLD',
+                'reason' => "Identity swap expired after 24 hours -- {$sourceAccountType} source, A={$a} parked to reservation account. Withheld Fh: {$fh}."
+            ], []);
+
+            $this->updateIdentityHoldStatus((int)$swap['hold_id'], 'parked', [
+                'release_result' => $releaseResult,
+                'fh_withheld' => $fh,
+                'parked_amount' => $a,
+                'reservation_account_id' => $reservation['id'] ?? null,
+                'source_account_type' => $sourceAccountType,
+                'expired_at' => date('Y-m-d H:i:s')
+            ]);
+            $this->updateHoldStatus((int)$swap['hold_id'], $fh > 0 ? 'PARTIALLY_RELEASED' : 'RELEASED');
+
+            return [
+                'swap_reference' => $swapRef,
+                'hold_id' => $swap['hold_id'],
+                'fh_withheld' => $fh,
+                'parked_amount' => $a,
+                'status' => 'parked'
+            ];
+        }
+
+        // Reservation account unavailable (unsupported institution,
+        // creation failed or still pending) -- fall through to the
+        // personal release path rather than leaving GOVERNMENT/
+        // BUSINESS_OR_TRUST money stuck in limbo. Logged loudly: this
+        // needs manual follow-up, since money that should have parked
+        // indefinitely instead returned to the sender.
+        error_log("[SwapService] Phase D: {$sourceAccountType} swap {$swapRef} could not park at a reservation account (status=" . ($reservation['status'] ?? 'unsupported') . ") -- releasing to source instead, needs manual follow-up");
+    }
+
+    // PERSONAL branch (or GOVERNMENT/BUSINESS_OR_TRUST fallback above):
+    // release A back to the source account.
+    $releaseResult = $adapter->releaseHold([
+        'hold_reference' => $swap['hold_reference'],
+        'action' => 'RELEASE_HOLD',
+        'reason' => "Identity swap expired after 24 hours. Withheld Fh: {$fh}."
+    ], []);
+
+    $this->updateIdentityHoldStatus((int)$swap['hold_id'], 'expired', [
+        'release_result' => $releaseResult,
+        'fh_withheld' => $fh,
+        'source_account_type' => $sourceAccountType,
+        'expired_at' => date('Y-m-d H:i:s')
+    ]);
+    $this->updateHoldStatus((int)$swap['hold_id'], $fh > 0 ? 'PARTIALLY_RELEASED' : 'RELEASED');
+
+    return [
+        'swap_reference' => $swapRef,
+        'hold_id' => $swap['hold_id'],
+        'fh_withheld' => $fh,
+        'status' => 'expired'
+    ];
 }
 
 
@@ -6532,6 +7077,49 @@ private function markIdentityHoldsAuthorized(string $identityType, string $ident
  * $destAccount, it collects all pending holds and hands them ONE call to
  * executeIdentityClaimWithSplit(), which does receiving -> holding -> split.
  */
+/**
+ * Spec invariant #9 / plan §6: lets a caller show the client A (what
+ * they can actually claim), never T (the gross total, which includes
+ * Fh -- already earned at hold placement and never claimable), before
+ * they choose how much to take now. Read-only: no money moves, no PIN
+ * required.
+ */
+public function previewIdentityClaimAvailable(string $identityType, string $identityValue): array
+{
+    $stmt = $this->swapDB->prepare("
+        SELECT * FROM identity_swap_holds
+        WHERE identity_type = :identity_type AND identity_value = :identity_value
+          AND status = 'pending' AND hold_expires_at > NOW()
+        ORDER BY created_at ASC
+    ");
+    $stmt->execute([':identity_type' => $identityType, ':identity_value' => $identityValue]);
+    $pendingHolds = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    if (empty($pendingHolds)) {
+        throw new RuntimeException("No pending balance found for this identity.");
+    }
+
+    $currencies = array_unique(array_column($pendingHolds, 'currency'));
+    if (count($currencies) > 1) {
+        throw new RuntimeException(
+            "This identity has pending balances in multiple currencies (" . implode(', ', $currencies) . "). " .
+            "Preview each currency separately, or contact VouchMorph support."
+        );
+    }
+
+    $totals = self::computeAvailableForPendingHolds($pendingHolds);
+
+    return [
+        'identity_type' => $identityType,
+        'identity_value' => $identityValue,
+        'currency' => $currencies[0] ?? 'BWP',
+        'hold_count' => count($pendingHolds),
+        'gross_total' => $totals['gross'],
+        'total_hold_fees' => $totals['hold_fees'],
+        'available' => $totals['available'],
+    ];
+}
+
 public function finalizeAggregatedIdentityClaim(
     string $identityType,
     string $identityValue,
@@ -6582,9 +7170,11 @@ public function finalizeAggregatedIdentityClaim(
         );
     }
 
-    $fullAmount = round((float)array_sum(array_column($pendingHolds, 'amount')), 2);
-    if ($cashNowAmount < 0 || $cashNowAmount > $fullAmount) {
-        throw new RuntimeException("Requested cash amount must be between 0 and {$fullAmount}.");
+    // Spec invariant #9: validate against A (T - Fh), never T -- Fh was
+    // already earned at hold placement and is never claimable.
+    $available = self::computeAvailableForPendingHolds($pendingHolds)['available'];
+    if ($cashNowAmount < 0 || $cashNowAmount > $available) {
+        throw new RuntimeException("Requested cash amount must be between 0 and {$available}.");
     }
 
     // 3. PIN check ONCE — the "green light" (unchanged)
@@ -6680,6 +7270,18 @@ public function finalizeAggregatedIdentityClaimSelfService(
             "This identity has pending balances in multiple currencies (" . implode(', ', $currencies) . "). " .
             "Claim each currency separately, or contact VouchMorph support."
         );
+    }
+
+    // Spec invariant #9: validate against A (T - Fh), never T. Previously
+    // unvalidated here -- executeIdentityClaimWithSplit() would silently
+    // cap an over-large $cashNowAmount to the full swept gross via min(),
+    // which could pay out up to T (including money that should have
+    // stayed uncollectible as Fh).
+    if ($cashNowAmount !== null) {
+        $available = self::computeAvailableForPendingHolds($pendingHolds)['available'];
+        if ($cashNowAmount < 0 || $cashNowAmount > $available) {
+            throw new RuntimeException("Requested cash amount must be between 0 and {$available}.");
+        }
     }
 
     $holdWithPin = null;
@@ -6886,17 +7488,72 @@ public function executeIdentityClaimWithSplit(
             ? $this->reservationAccountService->resolveOrCreateReservationAccount($ownerUserId, $destinationInstitution, $currency)
             : ['supported' => false];
 
+        $depositedToReservation = false;
+        // Which owner_user_id (if any) to tag the pooled-holding fallback
+        // with -- see below for why this differs from $ownerUserId itself
+        // when the reservation deposit was actually attempted.
+        $fallbackOwnerUserId = $ownerUserId;
+
         if (($reservation['status'] ?? null) === 'active') {
-            $this->reservationAccountService->depositToReservationAccount(
-                $destinationInstitution,
-                $currency,
-                $remainder,
-                $reservation['account_identifier'],
-                $reservation['account_identifier_type'] ?? 'account_number',
-                $consolidationReference . '_RESACC'
-            );
-            $reservationAccountId = $reservation['id'] ?? null;
-        } else {
+            try {
+                $this->reservationAccountService->depositToReservationAccount(
+                    $destinationInstitution,
+                    $currency,
+                    $remainder,
+                    $reservation['account_identifier'],
+                    $reservation['account_identifier_type'] ?? 'account_number',
+                    $consolidationReference . '_RESACC'
+                );
+                $reservationAccountId = $reservation['id'] ?? null;
+                $depositedToReservation = true;
+            } catch (\Throwable $e) {
+                // The reservation account itself is fine (it's active and
+                // stays that way for the next claim) -- only THIS deposit
+                // is in doubt. Crucially, "failed" here can mean "the bank
+                // actually credited it but didn't return a proof we could
+                // verify" (GenericInstitutionAdapter::credit() treats a
+                // missing transaction_reference as failure even then) --
+                // so we do NOT know the money didn't land. Falling back to
+                // a normal pooled hold tagged with this owner would let the
+                // sweep job later deposit the SAME remainder into the SAME
+                // reservation account a second time if the bank really did
+                // process it. Recording it WITHOUT an owner instead means
+                // it parks in the pool exactly like it would have for an
+                // institution with no reservation-account support at all --
+                // never auto-swept, tracked, and left for manual
+                // reconciliation against the bank's own records, same as
+                // 100% of identity_holding_positions rows before this
+                // feature existed.
+                $fallbackOwnerUserId = null;
+
+                // The fallback below places a NEW hold on the pooled
+                // account for this same amount, which is only correct if
+                // the deposit genuinely never landed. If it's this specific
+                // "no proof" ambiguity rather than an outright network/bank
+                // failure, that assumption might be wrong -- flag it as
+                // needing priority reconciliation (check the reservation
+                // account's actual balance at the bank) rather than a
+                // routine failure, since ops can't tell the two apart from
+                // the pooled-holding audit trail alone.
+                $isAmbiguousSuccess = str_contains($e->getMessage(), 'cannot confirm funds were credited');
+                $this->logger->error(
+                    $isAmbiguousSuccess
+                        ? "AMBIGUOUS reservation account deposit (bank may have already credited it) -- falling back to a NEW pooled hold for the same amount; verify the reservation account's real balance before relying on either record"
+                        : "Deposit into reservation account failed, falling back to pooled holding (untagged, needs manual reconciliation)",
+                    [
+                        'institution' => $destinationInstitution,
+                        'reservation_account_id' => $reservation['id'] ?? null,
+                        'reservation_account_identifier' => $reservation['account_identifier'] ?? null,
+                        'consolidation_reference' => $consolidationReference,
+                        'amount' => $remainder,
+                        'ambiguous_success' => $isAmbiguousSuccess,
+                        'error' => $e->getMessage(),
+                    ]
+                );
+            }
+        }
+
+        if (!$depositedToReservation) {
             $holdingPositionId = $this->placeHoldOnHoldingRemainder(
                 $destinationInstitution,
                 $currency,
@@ -6905,8 +7562,103 @@ public function executeIdentityClaimWithSplit(
                 $identityValue,
                 $landedHoldIds,
                 $consolidationReference,
-                $ownerUserId
+                $fallbackOwnerUserId
             );
+        }
+    }
+
+    // ------------------------------------------------------------
+    // Settlement reordering, part 2 (plan §3b): for every landed hold
+    // whose source institution has claim_algorithm_v2 enabled,
+    // finalizeHoldToReceiving() left it in 'settled_pending_payout'
+    // rather than 'completed' -- Step 4 (the payout attempt just above)
+    // has now run, so it's safe to close those out. If Step 4 threw, this
+    // code never executes at all (PHP propagates the exception straight
+    // out of the method), so those holds correctly stay in
+    // 'settled_pending_payout' rather than being marked done.
+    // ------------------------------------------------------------
+    foreach ($holds as $hold) {
+        if (!in_array((int)$hold['hold_id'], $landedHoldIds, true)) {
+            continue;
+        }
+        if ($this->isClaimAlgorithmV2Enabled($hold['source_institution'])) {
+            $this->updateIdentityHoldStatus((int)$hold['hold_id'], 'completed', [
+                'final_destination_type' => 'HOLDING_CONSOLIDATED',
+                'consolidation_reference' => $consolidationReference,
+                'payout_confirmed' => true,
+            ]);
+        }
+    }
+
+    // ------------------------------------------------------------
+    // Point X (swap-to-identity algorithm v2, plan §5): record the
+    // obligation ledger for this claim. Fires here, after Step 4 has run
+    // (or, per the block just above, not at all if Step 4 threw) -- this
+    // settles the source-institution-to-destination-institution leg,
+    // which is already real and complete once Steps 1-3 land (the money
+    // physically reached the destination's HOLDING account); it doesn't
+    // wait on the same "did Step 4 pay the actual beneficiary" question
+    // the hold's own terminal status above does, since that's a separate
+    // fact about the same pool.
+    //
+    // R (the reservation-account remainder leg above) generates no
+    // obligation and no invoice, per spec: it never left the identity's
+    // control, it just changed which account it sits in.
+    //
+    // Staged rollout: gated per DESTINATION institution behind
+    // capabilities.claim_algorithm_v2 -- this is where the claim
+    // consolidates, and these calls generate real settlement_queue rows
+    // and fee invoices a live institution hasn't seen before. Skipped
+    // entirely when disabled, preserving the exact pre-existing behavior
+    // (no Point X calls in this flow at all).
+    // ------------------------------------------------------------
+    if ($this->isClaimAlgorithmV2Enabled($destinationInstitution)) {
+        $landedByInstitution = self::computeNetObligationsByInstitution($holds, $landedHoldIds);
+
+        foreach ($landedByInstitution as $sourceInst => $nettedAmount) {
+            if ($nettedAmount <= 0) {
+                continue;
+            }
+            try {
+                $this->settlement->updateNetPosition(
+                    $consolidationReference,
+                    $sourceInst,
+                    $destinationInstitution,
+                    $nettedAmount,
+                    'IDENTITY_CLAIM',
+                    $currency
+                );
+            } catch (\Throwable $e) {
+                error_log("[SwapService] Point X: updateNetPosition failed for {$sourceInst} -> {$destinationInstitution} on {$consolidationReference}: " . $e->getMessage());
+            }
+        }
+
+        // Fd's platform cut: invoice the DESTINATION institution -- it's
+        // the one physically holding the undelivered difference between
+        // what it swept in and what it was told to pay out (Fd = C - N
+        // never left its own holding account). The source institution(s)'
+        // own share of Fd (distribution.split.source_institution_percent)
+        // is a genuinely open design question for a mixed-source pool
+        // (approved plan's judgment call, spec open question (c): which
+        // institution's Fd schedule applies) -- not settled here,
+        // deliberately left for a follow-up once that's answered rather
+        // than guessed at.
+        if ($feeBreakdown !== null) {
+            $platformShare = (float)($feeBreakdown['components']['revenue_split']['platform']['amount'] ?? 0);
+            if ($platformShare > 0) {
+                try {
+                    $this->settlement->invoiceFee(
+                        $consolidationReference,
+                        $destinationInstitution,
+                        $this->getParticipantId($destinationInstitution),
+                        'IDENTITY_CLAIM_PLATFORM_FEE',
+                        $platformShare,
+                        $currency
+                    );
+                } catch (\Throwable $e) {
+                    error_log("[SwapService] Point X: invoiceFee failed for {$destinationInstitution} on {$consolidationReference}: " . $e->getMessage());
+                }
+            }
         }
     }
 
@@ -9302,7 +10054,7 @@ private function generateCashoutToken(array $payload, string $institution, float
     // IDENTITY SWAP HELPER METHODS
     // ============================================================================
 
-   private function storeIdentityHold(array $payload, string $swapRef, array $holdResult, int $holdId, bool $isReusedHold = false): array
+   private function storeIdentityHold(array $payload, string $swapRef, array $holdResult, int $holdId, bool $isReusedHold = false, ?string $sourceAccountType = null): array
 {
     $sourceInstitution = $this->extractSourceInstitution($payload);
     $identityType = strtolower($payload['identity_type']);
@@ -9310,6 +10062,36 @@ private function generateCashoutToken(array $payload, string $institution, float
  
     $owner = $this->findVerifiedIdentityOwner($identityType, $identityValue);
     $notificationPhone = $payload['notification_phone'] ?? $payload['beneficiary_phone'] ?? null;
+
+    // ============================================================
+    // Point Z, creation-time call site (swap-to-identity algorithm v2,
+    // §3 Phase A step 1f / plan §4): guarantee this identity has a
+    // reservation-account parking spot at the SOURCE institution before
+    // it's needed, so Phase D's expiry branch (Increment 4) has
+    // somewhere to park GOVERNMENT/BUSINESS_OR_TRUST money without a
+    // bank round-trip at expiry time. Runs for every fresh
+    // identity_swap_holds row, not just the first in a pool -- each
+    // source institution contributing to a pool needs its own
+    // reservation account, since Phase D operates per-hold/per-source at
+    // expiry, not once per whole pool.
+    //
+    // Fire-and-forget by design: a reservation-account creation failure
+    // here must never fail the swap. Point Z's other two call sites
+    // (claim-time against destination, expiry-time against source) are
+    // both already tolerant of pending/failed reservation accounts --
+    // this one is no different, it's just running earlier.
+    // ============================================================
+    if ($owner !== null && !empty($owner['user_id'])) {
+        try {
+            $this->reservationAccountService->resolveOrCreateReservationAccount(
+                (int)$owner['user_id'],
+                $sourceInstitution,
+                $payload['currency'] ?? 'BWP'
+            );
+        } catch (\Throwable $e) {
+            error_log("[SwapService] Point Z creation-time call failed for user_id={$owner['user_id']} at {$sourceInstitution} (non-fatal, hold placement continues): " . $e->getMessage());
+        }
+    }
 
     // FIX: this used to read $levyAmount from feesConfig directly and never
     // use it anywhere -- dead code, no fee was ever actually calculated or
@@ -9346,7 +10128,15 @@ private function generateCashoutToken(array $payload, string $institution, float
             ['institution' => $sourceInstitution]
         ));
         $holdFeeAmount = (float)($holdFeeBreakdown['total_fee'] ?? 0);
-        $holdLevyAmount = (float)($holdFeeBreakdown['swap_levy'] ?? 0);
+        // calculateFeesWithDetails() never threads FeeService::calculateFees()'s
+        // separate 'swap_levy' key through its return value (only 'total_fee' and
+        // a nested 'components' block survive the wrapper) -- reading
+        // $holdFeeBreakdown['swap_levy'] here always evaluated to 0 regardless of
+        // config. IDENTITY_HOLD's fees.json block sets F1 == F7 by design (Fh is
+        // entirely the levy at hold time -- see that block's comments), so
+        // total_fee IS the levy amount for this product; mirror it instead of
+        // reading a key that was never actually populated.
+        $holdLevyAmount = $holdFeeAmount;
     }
  
     $claimType = null;
@@ -9464,14 +10254,14 @@ private function generateCashoutToken(array $payload, string $institution, float
             hold_reference, hold_id, hold_expires_at, status,
             source_payload, metadata, created_by,
             otp_pin_hash, otp_pin_encrypted, otp_pin_sent_to, otp_pin_sent_at,
-            requires_dual_confirmation, claim_type
+            requires_dual_confirmation, claim_type, source_account_type
         ) VALUES (
             :swap_ref, :source_institution, :source_identifier, :asset_type,
             :amount, :currency, :identity_type, :identity_value,
             :hold_reference, :hold_id, :expires_at, 'pending',
             :source_payload::jsonb, :metadata::jsonb, :created_by,
             :otp_pin_hash, :otp_pin_encrypted, :otp_pin_sent_to, :otp_pin_sent_at,
-            :requires_dual, :claim_type
+            :requires_dual, :claim_type, :source_account_type
         ) RETURNING hold_id
     ";
  
@@ -9496,7 +10286,11 @@ private function generateCashoutToken(array $payload, string $institution, float
                 'hold_fee' => [
                     'total_fee' => $holdFeeAmount,
                     'swap_levy' => $holdLevyAmount,
-                    'breakdown' => $holdFeeBreakdown['breakdown'] ?? [],
+                    // Per-slot fee breakdown lives inside calculateFeesWithDetails()'s
+                    // 'components' key, not a top-level 'breakdown' key -- that key
+                    // never existed on this return value, so the old read here was
+                    // always [].
+                    'breakdown' => $holdFeeBreakdown['components']['breakdown'] ?? [],
                     // must be netted out of source's obligation at
                     // settlement time -- see the FIX comment above
                     // $holdFeeBreakdown for why this isn't deducted
@@ -9509,7 +10303,8 @@ private function generateCashoutToken(array $payload, string $institution, float
             ':otp_pin_sent_to' => $otpHash ? $otpDestination : null,
             ':otp_pin_sent_at' => $otpHash ? date('Y-m-d H:i:s') : null,
             ':requires_dual' => $requiresDual ? 't' : 'f',
-            ':claim_type' => $claimType
+            ':claim_type' => $claimType,
+            ':source_account_type' => $sourceAccountType
         ]);
  
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -9657,18 +10452,35 @@ private function trackIdentityOtpSmsAttempt(
     
     private function updateIdentityHoldStatus(int $holdId, string $status, array $additionalData = []): void
     {
-        $validStatuses = ['pending', 'confirmed', 'completed', 'expired', 'cancelled'];
+        // 'parked' added for Phase D (swap-to-identity algorithm v2, §7/§8):
+        // an expired GOVERNMENT/BUSINESS_OR_TRUST-sourced swap whose balance
+        // was moved into a reservation account at the source institution
+        // rather than released back to the sender -- distinct from
+        // 'expired', which means the money actually returned to the source.
+        //
+        // 'settled_pending_payout' added for settlement reordering (plan
+        // §3b): a hold whose value has landed at the destination
+        // institution's HOLDING account (Steps 1-3 of
+        // executeIdentityClaimWithSplit() complete) but where Step 4
+        // (actual payout to the beneficiary) hasn't been confirmed yet --
+        // distinct from 'completed', which now means Step 4 was also
+        // confirmed, not just Steps 1-3. Only used when
+        // capabilities.claim_algorithm_v2 is enabled for the hold's
+        // source institution; otherwise 'completed' is still set directly
+        // at the same point it always was.
+        $validStatuses = ['pending', 'confirmed', 'completed', 'expired', 'cancelled', 'parked', 'settled_pending_payout'];
         if (!in_array($status, $validStatuses)) {
             throw new RuntimeException("Invalid status: {$status}");
         }
-        
+
         $setClauses = [];
         $params = [':hold_id' => $holdId, ':status' => $status];
-        
+
         $timestampMap = [
             'confirmed' => 'confirmed_at',
             'completed' => 'completed_at',
-            'expired' => 'expired_at'
+            'expired' => 'expired_at',
+            'parked' => 'expired_at',
         ];
         
         if (isset($timestampMap[$status])) {

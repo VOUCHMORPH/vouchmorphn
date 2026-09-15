@@ -77,7 +77,17 @@ class FakeInstitutionAdapter implements InstitutionAdapterInterface
     public function credit(array $payload, array $context): array
     {
         self::$creditCalls[$this->institution][] = $payload;
-        return self::$creditResponses[$this->institution] ?? ['credited' => true, 'success' => true, 'transaction_reference' => 'FAKE_TXN'];
+
+        $configured = self::$creditResponses[$this->institution] ?? null;
+        if ($configured === null) {
+            return ['credited' => true, 'success' => true, 'transaction_reference' => 'FAKE_TXN'];
+        }
+        // A queue (list of responses, one per call) if the first element is
+        // itself an array; otherwise treat it as a single fixed response.
+        if (isset($configured[0]) && is_array($configured[0])) {
+            return count($configured) > 1 ? array_shift(self::$creditResponses[$this->institution]) : $configured[0];
+        }
+        return $configured;
     }
 
     public function verifyAsset(array $payload, array $context): array { return ['verified' => false, 'success' => false]; }
@@ -147,6 +157,8 @@ class ReservationAccountServiceTest extends TestCase
                 owner_user_id INTEGER,
                 swept_to_reservation_account_id INTEGER,
                 swept_at TEXT,
+                hold_released_at TEXT,
+                sweep_claimed_at TEXT,
                 created_at TEXT DEFAULT (datetime('now'))
             )
         ");
@@ -462,9 +474,11 @@ class ReservationAccountServiceTest extends TestCase
         $this->assertSame(0, $firstAttempt['swept']);
         $this->assertSame(1, $firstAttempt['failed']);
 
-        $stmt = $this->db->prepare("SELECT status FROM identity_holding_positions WHERE id = ?");
+        $stmt = $this->db->prepare("SELECT status, hold_released_at FROM identity_holding_positions WHERE id = ?");
         $stmt->execute([$positionId]);
-        $this->assertSame('open', $stmt->fetchColumn());
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        $this->assertSame('sweep_failed', $row['status']);
+        $this->assertEmpty($row['hold_released_at']);
 
         // Second attempt: bank is healthy again.
         FakeInstitutionAdapter::$releaseHoldResponses[$institution] = ['released' => true, 'success' => true];
@@ -474,5 +488,266 @@ class ReservationAccountServiceTest extends TestCase
 
         $stmt->execute([$positionId]);
         $this->assertSame('swept', $stmt->fetchColumn());
+    }
+
+    // ------------------------------------------------------------
+    // 10. A position already claimed by a concurrent sweep (status =
+    // 'sweeping', simulating the callback and cron racing each other)
+    // is never double-processed by this run.
+    // ------------------------------------------------------------
+    public function testSweepSkipsPositionAlreadyClaimedByConcurrentSweep(): void
+    {
+        $institution = 'ZURUBANK';
+
+        $this->db->prepare("
+            INSERT INTO reservation_accounts (user_id, institution, currency, status, account_identifier)
+            VALUES (51, ?, 'BWP', 'active', 'RESACC-CONCURRENT')
+        ")->execute([$institution]);
+        $accountId = (int)$this->db->lastInsertId();
+
+        // Already claimed by "another" concurrent sweep run.
+        $this->db->prepare("
+            INSERT INTO identity_holding_positions (institution, currency, hold_reference, amount, status, owner_user_id)
+            VALUES (?, 'BWP', 'HOLD-REF-CONCURRENT', 40.00, 'sweeping', 51)
+        ")->execute([$institution]);
+        $positionId = (int)$this->db->lastInsertId();
+
+        $service = $this->makeService($institution);
+        $result = $service->sweepOpenPositionsFor($accountId);
+
+        $this->assertSame(0, $result['swept']);
+        $this->assertSame(0, $result['failed']);
+        $this->assertArrayNotHasKey($institution, FakeInstitutionAdapter::$releaseHoldCalls);
+        $this->assertArrayNotHasKey($institution, FakeInstitutionAdapter::$creditCalls);
+
+        $stmt = $this->db->prepare("SELECT status FROM identity_holding_positions WHERE id = ?");
+        $stmt->execute([$positionId]);
+        $this->assertSame('sweeping', $stmt->fetchColumn());
+    }
+
+    // ------------------------------------------------------------
+    // 11. Release succeeds but the deposit fails: a retry must NOT
+    // re-release the (already-released) hold_reference — most bank APIs
+    // reject a second release of the same hold.
+    // ------------------------------------------------------------
+    public function testSweepRetryDoesNotReReleaseAnAlreadyReleasedHold(): void
+    {
+        $institution = 'CAZACOM';
+
+        $this->db->prepare("
+            INSERT INTO reservation_accounts (user_id, institution, currency, status, account_identifier)
+            VALUES (61, ?, 'BWP', 'active', 'RESACC-PARTIAL')
+        ")->execute([$institution]);
+        $accountId = (int)$this->db->lastInsertId();
+
+        $this->db->prepare("
+            INSERT INTO identity_holding_positions (institution, currency, hold_reference, amount, status, owner_user_id)
+            VALUES (?, 'BWP', 'HOLD-REF-PARTIAL', 90.00, 'open', 61)
+        ")->execute([$institution]);
+        $positionId = (int)$this->db->lastInsertId();
+
+        // Release always succeeds; deposit fails once then succeeds.
+        FakeInstitutionAdapter::$releaseHoldResponses[$institution] = ['released' => true, 'success' => true];
+        FakeInstitutionAdapter::$creditResponses[$institution] = [
+            ['credited' => false, 'success' => false, 'message' => 'network blip'],
+            ['credited' => true, 'success' => true, 'transaction_reference' => 'FAKE_TXN'],
+        ];
+
+        $service = $this->makeService($institution);
+
+        $first = $service->sweepOpenPositionsFor($accountId);
+        $this->assertSame(0, $first['swept']);
+        $this->assertSame(1, $first['failed']);
+        $this->assertCount(1, FakeInstitutionAdapter::$releaseHoldCalls[$institution] ?? []);
+
+        $stmt = $this->db->prepare("SELECT status, hold_released_at FROM identity_holding_positions WHERE id = ?");
+        $stmt->execute([$positionId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        $this->assertSame('sweep_failed', $row['status']);
+        $this->assertNotEmpty($row['hold_released_at']);
+
+        $second = $service->sweepOpenPositionsFor($accountId);
+        $this->assertSame(1, $second['swept']);
+        $this->assertSame(0, $second['failed']);
+
+        // Still exactly one release call across BOTH attempts.
+        $this->assertCount(1, FakeInstitutionAdapter::$releaseHoldCalls[$institution] ?? []);
+        $this->assertCount(2, FakeInstitutionAdapter::$creditCalls[$institution] ?? []);
+
+        $stmt->execute([$positionId]);
+        $this->assertSame('swept', $stmt->fetch(PDO::FETCH_ASSOC)['status']);
+    }
+
+    // ------------------------------------------------------------
+    // 12. A reservation_accounts row orphaned mid-creation (crashed
+    // before the bank was ever reached: response_payload still NULL,
+    // stuck 'pending' well past the staleness window) is reclaimed and
+    // retried rather than silently falling back to pooled holding forever.
+    // ------------------------------------------------------------
+    public function testOrphanedPendingAccountIsReclaimedAfterStaleness(): void
+    {
+        $institution = 'SACCUSSALIS';
+
+        $this->db->prepare("
+            INSERT INTO reservation_accounts (user_id, institution, currency, status, bank_reference, response_payload, requested_at)
+            VALUES (71, ?, 'BWP', 'pending', 'RESACC_71_ORPHAN', NULL, datetime('now', '-20 minutes'))
+        ")->execute([$institution]);
+
+        FakeInstitutionAdapter::$createReservationAccountResponses[$institution] = [[
+            'success' => true,
+            'status' => 'active',
+            'account_identifier' => 'RESACC-RECOVERED',
+        ]];
+
+        $service = $this->makeService($institution);
+        $result = $service->resolveOrCreateReservationAccount(71, $institution, 'BWP');
+
+        $this->assertSame('active', $result['status']);
+        $this->assertSame('RESACC-RECOVERED', $result['account_identifier']);
+        $this->assertSame(1, $this->countReservationAccounts(71, $institution, 'BWP'));
+        $this->assertSame(1, FakeInstitutionAdapter::$createReservationAccountCallCounts[$institution] ?? 0);
+    }
+
+    // ------------------------------------------------------------
+    // 13. A genuinely async-pending account (the bank DID acknowledge —
+    // response_payload is set) must NEVER be reclaimed by the staleness
+    // timeout, no matter how old, since it's still legitimately waiting
+    // on the bank's own callback.
+    // ------------------------------------------------------------
+    public function testGenuineAsyncPendingAccountIsNeverReclaimedByStaleness(): void
+    {
+        $institution = 'MTN';
+
+        $this->db->prepare("
+            INSERT INTO reservation_accounts (user_id, institution, currency, status, bank_reference, response_payload, requested_at)
+            VALUES (81, ?, 'BWP', 'pending', 'RESACC_81_ASYNC', '{\"status\":\"pending\"}', datetime('now', '-1 hour'))
+        ")->execute([$institution]);
+
+        $service = $this->makeService($institution);
+        $result = $service->resolveOrCreateReservationAccount(81, $institution, 'BWP');
+
+        $this->assertSame('pending', $result['status']);
+        $this->assertSame(1, $this->countReservationAccounts(81, $institution, 'BWP'));
+        $this->assertArrayNotHasKey($institution, FakeInstitutionAdapter::$createReservationAccountCallCounts);
+    }
+
+    // ------------------------------------------------------------
+    // 14. A position stuck in 'sweeping' because its worker died
+    // mid-flight is reclaimed (-> 'sweep_failed', so the ordinary sweep
+    // query picks it back up next run) once stale enough.
+    // ------------------------------------------------------------
+    public function testStaleSweepingPositionIsReclaimed(): void
+    {
+        $this->db->exec("
+            INSERT INTO identity_holding_positions (institution, currency, amount, status, owner_user_id, sweep_claimed_at)
+            VALUES ('ZURUBANK', 'BWP', 30.00, 'sweeping', 91, datetime('now', '-20 minutes'))
+        ");
+        $positionId = (int)$this->db->lastInsertId();
+
+        $service = $this->makeService('ZURUBANK');
+        $reclaimed = $service->reclaimStaleSweepingPositions(50);
+
+        $this->assertSame(1, $reclaimed);
+
+        $stmt = $this->db->prepare("SELECT status FROM identity_holding_positions WHERE id = ?");
+        $stmt->execute([$positionId]);
+        $this->assertSame('sweep_failed', $stmt->fetchColumn());
+    }
+
+    // ------------------------------------------------------------
+    // 15. A position that's only just been claimed (a worker is
+    // plausibly still alive and working on it) must NOT be touched.
+    // ------------------------------------------------------------
+    public function testFreshSweepingPositionIsNotReclaimed(): void
+    {
+        $this->db->exec("
+            INSERT INTO identity_holding_positions (institution, currency, amount, status, owner_user_id, sweep_claimed_at)
+            VALUES ('ZURUBANK', 'BWP', 30.00, 'sweeping', 92, datetime('now'))
+        ");
+        $positionId = (int)$this->db->lastInsertId();
+
+        $service = $this->makeService('ZURUBANK');
+        $reclaimed = $service->reclaimStaleSweepingPositions(50);
+
+        $this->assertSame(0, $reclaimed);
+
+        $stmt = $this->db->prepare("SELECT status FROM identity_holding_positions WHERE id = ?");
+        $stmt->execute([$positionId]);
+        $this->assertSame('sweeping', $stmt->fetchColumn());
+    }
+
+    // ------------------------------------------------------------
+    // 16. getById() / closePosition() -- Increment 7 (residual rollover,
+    // swap-to-identity algorithm v2 §9 / plan §7). SwapService::
+    // initiateResidualRollover() looks a position up by id (it's not
+    // resolving by user/institution/currency, the caller already knows
+    // which position it wants) and closes it once a new hold representing
+    // its value exists.
+    // ------------------------------------------------------------
+    public function testGetByIdReturnsTheAccountRow(): void
+    {
+        $this->db->exec("
+            INSERT INTO reservation_accounts (user_id, institution, currency, status, account_identifier)
+            VALUES (77, 'ZURUBANK', 'BWP', 'active', 'ACC-ROLLOVER-1')
+        ");
+        $id = (int)$this->db->lastInsertId();
+
+        $service = $this->makeService('ZURUBANK');
+        $row = $service->getById($id);
+
+        $this->assertNotNull($row);
+        $this->assertSame('ACC-ROLLOVER-1', $row['account_identifier']);
+        $this->assertSame('active', $row['status']);
+    }
+
+    public function testGetByIdReturnsNullForUnknownId(): void
+    {
+        $service = $this->makeService('ZURUBANK');
+        $this->assertNull($service->getById(999999));
+    }
+
+    public function testClosePositionTransitionsActiveToConsumed(): void
+    {
+        $this->db->exec("
+            INSERT INTO reservation_accounts (user_id, institution, currency, status, account_identifier)
+            VALUES (78, 'ZURUBANK', 'BWP', 'active', 'ACC-ROLLOVER-2')
+        ");
+        $id = (int)$this->db->lastInsertId();
+
+        $service = $this->makeService('ZURUBANK');
+        $closed = $service->closePosition($id);
+
+        $this->assertTrue($closed);
+        $this->assertSame('consumed', $service->getById($id)['status']);
+    }
+
+    public function testClosePositionIsCompareAndSwapNotDoubleCloseable(): void
+    {
+        // Spec §9 3f: "close position P (fully consumed)" -- must happen
+        // exactly once. A second close attempt (e.g. a retried rollover
+        // request) must not report success against an already-consumed
+        // position.
+        $this->db->exec("
+            INSERT INTO reservation_accounts (user_id, institution, currency, status, account_identifier)
+            VALUES (79, 'ZURUBANK', 'BWP', 'active', 'ACC-ROLLOVER-3')
+        ");
+        $id = (int)$this->db->lastInsertId();
+
+        $service = $this->makeService('ZURUBANK');
+        $this->assertTrue($service->closePosition($id));
+        $this->assertFalse($service->closePosition($id), 'second close attempt must not succeed');
+    }
+
+    public function testClosePositionRefusesToCloseAPendingOrFailedAccount(): void
+    {
+        $this->db->exec("
+            INSERT INTO reservation_accounts (user_id, institution, currency, status, account_identifier)
+            VALUES (80, 'ZURUBANK', 'BWP', 'pending', NULL)
+        ");
+        $pendingId = (int)$this->db->lastInsertId();
+
+        $service = $this->makeService('ZURUBANK');
+        $this->assertFalse($service->closePosition($pendingId));
+        $this->assertSame('pending', $service->getById($pendingId)['status']);
     }
 }
