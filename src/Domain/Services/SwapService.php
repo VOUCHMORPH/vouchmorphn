@@ -9459,6 +9459,36 @@ private function generateCashoutToken(array $payload, string $institution, float
     $owner = $this->findVerifiedIdentityOwner($identityType, $identityValue);
     $notificationPhone = $payload['notification_phone'] ?? $payload['beneficiary_phone'] ?? null;
 
+    // ============================================================
+    // Point Z, creation-time call site (swap-to-identity algorithm v2,
+    // §3 Phase A step 1f / plan §4): guarantee this identity has a
+    // reservation-account parking spot at the SOURCE institution before
+    // it's needed, so Phase D's expiry branch (Increment 4) has
+    // somewhere to park GOVERNMENT/BUSINESS_OR_TRUST money without a
+    // bank round-trip at expiry time. Runs for every fresh
+    // identity_swap_holds row, not just the first in a pool -- each
+    // source institution contributing to a pool needs its own
+    // reservation account, since Phase D operates per-hold/per-source at
+    // expiry, not once per whole pool.
+    //
+    // Fire-and-forget by design: a reservation-account creation failure
+    // here must never fail the swap. Point Z's other two call sites
+    // (claim-time against destination, expiry-time against source) are
+    // both already tolerant of pending/failed reservation accounts --
+    // this one is no different, it's just running earlier.
+    // ============================================================
+    if ($owner !== null && !empty($owner['user_id'])) {
+        try {
+            $this->reservationAccountService->resolveOrCreateReservationAccount(
+                (int)$owner['user_id'],
+                $sourceInstitution,
+                $payload['currency'] ?? 'BWP'
+            );
+        } catch (\Throwable $e) {
+            error_log("[SwapService] Point Z creation-time call failed for user_id={$owner['user_id']} at {$sourceInstitution} (non-fatal, hold placement continues): " . $e->getMessage());
+        }
+    }
+
     // FIX: this used to read $levyAmount from feesConfig directly and never
     // use it anywhere -- dead code, no fee was ever actually calculated or
     // charged for placing this hold. Now computes a real fee via the same
