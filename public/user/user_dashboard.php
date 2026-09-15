@@ -167,6 +167,12 @@ foreach ($assets as $assetKey => $assetConfig) {
         'fields' => $assetConfig['fields'] ?? []
     ];
 }
+
+function asset($rel) {
+    $file = __DIR__ . '/' . ltrim($rel, '/');
+    $v = @filemtime($file) ?: time();
+    return '/user/' . ltrim($rel, '/') . '?v=' . $v;
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -694,8 +700,8 @@ input[type=number] { -moz-appearance: textfield; }
 #swapReadinessHint.warning { background: rgba(184,134,11,0.08); border-left: 3px solid var(--warning); padding: 12px 16px; }
 #swapReadinessHint.success { background: rgba(31,138,84,0.08); border-left: 3px solid var(--success); padding: 12px 16px; color: var(--success); }    
 </style>
-<link rel="stylesheet" href="/user/assets/vm-motion.css">
-<link rel="stylesheet" href="/user/assets/vm-type.css">   
+<link rel="stylesheet" href="/assets/vm-motion.css">
+<link rel="stylesheet" href="/assets/vm-type.css">   
 </head>
 <body>
 
@@ -6178,6 +6184,6 @@ document.addEventListener('keydown', function(e) {
     } 
 });
 </script>
-<script src="/user/assets/vm-motion.js"></script>
+<script src="/assets/vm-motion.js"></script>
 </body>
 </html>
