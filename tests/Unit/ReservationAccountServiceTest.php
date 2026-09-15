@@ -675,4 +675,79 @@ class ReservationAccountServiceTest extends TestCase
         $stmt->execute([$positionId]);
         $this->assertSame('sweeping', $stmt->fetchColumn());
     }
+
+    // ------------------------------------------------------------
+    // 16. getById() / closePosition() -- Increment 7 (residual rollover,
+    // swap-to-identity algorithm v2 §9 / plan §7). SwapService::
+    // initiateResidualRollover() looks a position up by id (it's not
+    // resolving by user/institution/currency, the caller already knows
+    // which position it wants) and closes it once a new hold representing
+    // its value exists.
+    // ------------------------------------------------------------
+    public function testGetByIdReturnsTheAccountRow(): void
+    {
+        $this->db->exec("
+            INSERT INTO reservation_accounts (user_id, institution, currency, status, account_identifier)
+            VALUES (77, 'ZURUBANK', 'BWP', 'active', 'ACC-ROLLOVER-1')
+        ");
+        $id = (int)$this->db->lastInsertId();
+
+        $service = $this->makeService('ZURUBANK');
+        $row = $service->getById($id);
+
+        $this->assertNotNull($row);
+        $this->assertSame('ACC-ROLLOVER-1', $row['account_identifier']);
+        $this->assertSame('active', $row['status']);
+    }
+
+    public function testGetByIdReturnsNullForUnknownId(): void
+    {
+        $service = $this->makeService('ZURUBANK');
+        $this->assertNull($service->getById(999999));
+    }
+
+    public function testClosePositionTransitionsActiveToConsumed(): void
+    {
+        $this->db->exec("
+            INSERT INTO reservation_accounts (user_id, institution, currency, status, account_identifier)
+            VALUES (78, 'ZURUBANK', 'BWP', 'active', 'ACC-ROLLOVER-2')
+        ");
+        $id = (int)$this->db->lastInsertId();
+
+        $service = $this->makeService('ZURUBANK');
+        $closed = $service->closePosition($id);
+
+        $this->assertTrue($closed);
+        $this->assertSame('consumed', $service->getById($id)['status']);
+    }
+
+    public function testClosePositionIsCompareAndSwapNotDoubleCloseable(): void
+    {
+        // Spec §9 3f: "close position P (fully consumed)" -- must happen
+        // exactly once. A second close attempt (e.g. a retried rollover
+        // request) must not report success against an already-consumed
+        // position.
+        $this->db->exec("
+            INSERT INTO reservation_accounts (user_id, institution, currency, status, account_identifier)
+            VALUES (79, 'ZURUBANK', 'BWP', 'active', 'ACC-ROLLOVER-3')
+        ");
+        $id = (int)$this->db->lastInsertId();
+
+        $service = $this->makeService('ZURUBANK');
+        $this->assertTrue($service->closePosition($id));
+        $this->assertFalse($service->closePosition($id), 'second close attempt must not succeed');
+    }
+
+    public function testClosePositionRefusesToCloseAPendingOrFailedAccount(): void
+    {
+        $this->db->exec("
+            INSERT INTO reservation_accounts (user_id, institution, currency, status, account_identifier)
+            VALUES (80, 'ZURUBANK', 'BWP', 'pending', NULL)
+        ");
+        $pendingId = (int)$this->db->lastInsertId();
+
+        $service = $this->makeService('ZURUBANK');
+        $this->assertFalse($service->closePosition($pendingId));
+        $this->assertSame('pending', $service->getById($pendingId)['status']);
+    }
 }

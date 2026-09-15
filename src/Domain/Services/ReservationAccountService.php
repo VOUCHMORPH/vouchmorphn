@@ -27,6 +27,15 @@ class ReservationAccountService
     private const STATUS_ACTIVE = 'active';
     private const STATUS_FAILED = 'failed';
 
+    // Terminal state for residual rollover (swap-to-identity algorithm v2,
+    // §9 / plan §7): a position that's been pulled into a new claim as a
+    // synthetic hold and fully consumed there -- never reused. See
+    // closePosition(). Distinct from 'failed' (never worked in the first
+    // place) and from simply being empty (an active account with a zero
+    // real-world balance is still 'active' -- VouchMorph doesn't track a
+    // local balance, the bank is the source of truth on that).
+    private const STATUS_CONSUMED = 'consumed';
+
     // Bounded wait for a concurrent creation already in flight to resolve,
     // rather than holding a DB transaction open across the bank's HTTP call.
     // Kept short because this runs synchronously inside a user-facing claim
@@ -328,6 +337,43 @@ class ReservationAccountService
         $stmt->execute([':u' => $ownerUserId, ':i' => $institution, ':c' => $currency]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         return $row ?: null;
+    }
+
+    /**
+     * Looks up a reservation account by its own id, for residual rollover
+     * (§9 / plan §7) -- the caller already knows which position it wants
+     * to pull into a new claim, rather than resolving by (user, institution,
+     * currency) as every other call site does.
+     */
+    public function getById(int $id): ?array
+    {
+        $stmt = $this->db->prepare("SELECT * FROM reservation_accounts WHERE id = :id");
+        $stmt->execute([':id' => $id]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    }
+
+    /**
+     * Closes an active reservation position after it's been fully
+     * consumed by a rollover (§9 3f: "close position P (fully consumed)").
+     * Compare-and-swap on status='active' so a position can never be
+     * closed twice, or closed out from under a concurrent
+     * resolveOrCreateReservationAccount() call that's mid-flight against
+     * it. Returns whether THIS call actually closed it.
+     */
+    public function closePosition(int $id): bool
+    {
+        $stmt = $this->db->prepare("
+            UPDATE reservation_accounts
+            SET status = :consumed, updated_at = now()
+            WHERE id = :id AND status = :active
+        ");
+        $stmt->execute([
+            ':consumed' => self::STATUS_CONSUMED,
+            ':id' => $id,
+            ':active' => self::STATUS_ACTIVE,
+        ]);
+        return $stmt->rowCount() > 0;
     }
 
     private function toResult(array $row): array

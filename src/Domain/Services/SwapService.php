@@ -4509,6 +4509,100 @@ $this->recordSettlementPending(
         throw $e;
     }
 }
+
+/**
+ * Residual rollover (swap-to-identity algorithm v2, §9 / plan §7): pulls
+ * an existing reservation position into a NEW claim as a fresh hold,
+ * re-priced with its own Fh -- the client's confirmed decision was
+ * spec §11e's simplest default, "accept it, charge Fh again every time,"
+ * so this method has no exemption logic to skip Point H for a
+ * reservation-sourced hold.
+ *
+ * A reservation account is, from the adapter's perspective, just another
+ * bank account with its own account_identifier -- this reuses the exact
+ * same verifyAssetSigned()/placeHoldSigned()/storeIdentityHold() path
+ * every other swap-to-identity hold goes through (Point Z's creation-time
+ * call included, already wired inside initiateSwapToIdentity() since
+ * Increment 3) rather than inventing a parallel "debit a reservation
+ * account" mechanism. The resulting identity_swap_holds row is
+ * structurally indistinguishable from any other pending hold once
+ * created, so it joins the SAME multi-hold pool for this identity with
+ * zero changes needed to executeIdentityClaimWithSplit() itself -- spec
+ * 3d's "proceed exactly as §8" is satisfied by reuse, not by a parallel
+ * pooling path.
+ *
+ * VouchMorph doesn't track a running balance for a reservation account
+ * locally (the bank is the source of truth, same principle used
+ * everywhere else in this codebase) -- the real balance is discovered
+ * fresh from the bank via verifyAssetSigned() before the hold amount is
+ * decided, then the ENTIRE discovered balance is rolled over (the whole
+ * position, not a client-chosen slice, matching the spec's framing of P
+ * as "one more contributing source", not a partial one).
+ */
+public function initiateResidualRollover(int $reservationAccountId, string $identityType, string $identityValue): array
+{
+    $reservation = $this->reservationAccountService->getById($reservationAccountId);
+    if ($reservation === null || $reservation['status'] !== 'active') {
+        throw new RuntimeException("Reservation account {$reservationAccountId} is not an active position available for rollover.");
+    }
+
+    $institution = $reservation['institution'];
+    $identifier = $reservation['account_identifier'];
+    $identifierType = $reservation['account_identifier_type'] ?? 'account_number';
+    $currency = $reservation['currency'];
+
+    $verification = $this->verifyAssetSigned([
+        'source_identifier' => $identifier,
+        'source_identifier_type' => $identifierType,
+        'asset_type' => 'ACCOUNT',
+        'currency' => $currency,
+    ], $institution);
+
+    if (!($verification['verified'] ?? false)) {
+        throw new RuntimeException("Could not verify reservation account {$reservationAccountId} at {$institution}: " . ($verification['message'] ?? 'Unknown reason'));
+    }
+
+    $available = (float)($verification['balance'] ?? 0);
+    if ($available <= 0) {
+        throw new RuntimeException("Reservation account {$reservationAccountId} has no available balance to roll over.");
+    }
+
+    $payload = [
+        'amount' => $available,
+        'from_institution' => $institution,
+        'source_institution' => $institution,
+        'source_identifier' => $identifier,
+        'source_identifier_type' => $identifierType,
+        'identifier_type' => $identifierType,
+        'currency' => $currency,
+        'identity_type' => $identityType,
+        'identity_value' => $identityValue,
+        'asset_type' => 'ACCOUNT',
+        'reference' => $this->generateReference(),
+        'hold_reason' => 'RESIDUAL_ROLLOVER',
+    ];
+
+    $result = $this->initiateSwapToIdentity($payload);
+
+    // Close P only after a new hold representing its value genuinely
+    // exists -- never before, so a failure partway through leaves P
+    // exactly as it was (still active, safe to retry the rollover)
+    // rather than closed with nothing to show for it.
+    $closed = $this->reservationAccountService->closePosition($reservationAccountId);
+    if (!$closed) {
+        // Extremely unlikely (would mean P's status changed between the
+        // check at the top of this method and now) -- the new hold above
+        // is real regardless, so this is a bookkeeping inconsistency to
+        // flag, not a reason to fail a rollover that already succeeded.
+        error_log("[SwapService] initiateResidualRollover: reservation account {$reservationAccountId} was not 'active' when closePosition() ran -- rollover hold was still created successfully, needs a bookkeeping check");
+    }
+
+    $result['rolled_over_from_reservation_account_id'] = $reservationAccountId;
+    $result['rolled_over_amount'] = $available;
+
+    return $result;
+}
+
     public function confirmAndFinalizeIdentitySwap(array $payload): array
 {
     error_log("[SwapService] ===== confirmAndFinalizeIdentitySwap =====");
@@ -6210,6 +6304,35 @@ private static function computeNetObligationsByInstitution(array $holds, array $
 }
 
 /**
+ * Spec §8 2b / plan §6: sums a pool of pending identity_swap_holds rows
+ * into T (gross) and Fh (sum of each hold's own hold-time fee, already
+ * earned at placement), returning A = T - Fh -- what the client can
+ * actually claim. Invariant #9: "The client is shown A, never T. They
+ * can never claim Fh." Shared by previewIdentityClaimAvailable() and the
+ * cash-now validation in both finalizeAggregatedIdentityClaim() (agent)
+ * and finalizeAggregatedIdentityClaimSelfService() -- one calculation,
+ * not duplicated per call site.
+ *
+ * Pure/stateless (no $this usage) and static so this financial
+ * calculation is directly testable without constructing the full
+ * SwapService dependency graph.
+ */
+private static function computeAvailableForPendingHolds(array $holds): array
+{
+    $gross = round((float)array_sum(array_column($holds, 'amount')), 2);
+    $fh = round(array_sum(array_map(
+        fn(array $hold) => self::extractHoldFeeFromMetadata($hold['metadata'] ?? null),
+        $holds
+    )), 2);
+
+    return [
+        'gross' => $gross,
+        'hold_fees' => $fh,
+        'available' => round($gross - $fh, 2),
+    ];
+}
+
+/**
  * Phase D of the swap-to-identity algorithm v2 (plan §8): a single
  * expired-and-unclaimed swap's disposition. Fh is withheld in both
  * branches -- the only difference is where the remaining balance A goes.
@@ -6954,6 +7077,49 @@ private function markIdentityHoldsAuthorized(string $identityType, string $ident
  * $destAccount, it collects all pending holds and hands them ONE call to
  * executeIdentityClaimWithSplit(), which does receiving -> holding -> split.
  */
+/**
+ * Spec invariant #9 / plan §6: lets a caller show the client A (what
+ * they can actually claim), never T (the gross total, which includes
+ * Fh -- already earned at hold placement and never claimable), before
+ * they choose how much to take now. Read-only: no money moves, no PIN
+ * required.
+ */
+public function previewIdentityClaimAvailable(string $identityType, string $identityValue): array
+{
+    $stmt = $this->swapDB->prepare("
+        SELECT * FROM identity_swap_holds
+        WHERE identity_type = :identity_type AND identity_value = :identity_value
+          AND status = 'pending' AND hold_expires_at > NOW()
+        ORDER BY created_at ASC
+    ");
+    $stmt->execute([':identity_type' => $identityType, ':identity_value' => $identityValue]);
+    $pendingHolds = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    if (empty($pendingHolds)) {
+        throw new RuntimeException("No pending balance found for this identity.");
+    }
+
+    $currencies = array_unique(array_column($pendingHolds, 'currency'));
+    if (count($currencies) > 1) {
+        throw new RuntimeException(
+            "This identity has pending balances in multiple currencies (" . implode(', ', $currencies) . "). " .
+            "Preview each currency separately, or contact VouchMorph support."
+        );
+    }
+
+    $totals = self::computeAvailableForPendingHolds($pendingHolds);
+
+    return [
+        'identity_type' => $identityType,
+        'identity_value' => $identityValue,
+        'currency' => $currencies[0] ?? 'BWP',
+        'hold_count' => count($pendingHolds),
+        'gross_total' => $totals['gross'],
+        'total_hold_fees' => $totals['hold_fees'],
+        'available' => $totals['available'],
+    ];
+}
+
 public function finalizeAggregatedIdentityClaim(
     string $identityType,
     string $identityValue,
@@ -7004,9 +7170,11 @@ public function finalizeAggregatedIdentityClaim(
         );
     }
 
-    $fullAmount = round((float)array_sum(array_column($pendingHolds, 'amount')), 2);
-    if ($cashNowAmount < 0 || $cashNowAmount > $fullAmount) {
-        throw new RuntimeException("Requested cash amount must be between 0 and {$fullAmount}.");
+    // Spec invariant #9: validate against A (T - Fh), never T -- Fh was
+    // already earned at hold placement and is never claimable.
+    $available = self::computeAvailableForPendingHolds($pendingHolds)['available'];
+    if ($cashNowAmount < 0 || $cashNowAmount > $available) {
+        throw new RuntimeException("Requested cash amount must be between 0 and {$available}.");
     }
 
     // 3. PIN check ONCE — the "green light" (unchanged)
@@ -7102,6 +7270,18 @@ public function finalizeAggregatedIdentityClaimSelfService(
             "This identity has pending balances in multiple currencies (" . implode(', ', $currencies) . "). " .
             "Claim each currency separately, or contact VouchMorph support."
         );
+    }
+
+    // Spec invariant #9: validate against A (T - Fh), never T. Previously
+    // unvalidated here -- executeIdentityClaimWithSplit() would silently
+    // cap an over-large $cashNowAmount to the full swept gross via min(),
+    // which could pay out up to T (including money that should have
+    // stayed uncollectible as Fh).
+    if ($cashNowAmount !== null) {
+        $available = self::computeAvailableForPendingHolds($pendingHolds)['available'];
+        if ($cashNowAmount < 0 || $cashNowAmount > $available) {
+            throw new RuntimeException("Requested cash amount must be between 0 and {$available}.");
+        }
     }
 
     $holdWithPin = null;
