@@ -1,170 +1,172 @@
 /* ==========================================================================
-   vm-type.css — VouchMorph display layer
+   vm-type.css — VouchMorph display layer  (v2)
    --------------------------------------------------------------------------
-   Loads AFTER the dashboard's inline <style> and overrides by source order,
-   so no selector here needs !important and nothing in user_dashboard.php
-   has to change except the one <link>.
+   Load AFTER the dashboard's inline <style>:
 
-   The trick that makes this work on JS-generated markup: the dashboard's
-   inline styles reference var(--font) and var(--font-mono). Redefining
-   those two variables reaches every one of them without touching the PHP.
+     <link rel="stylesheet" href="/user/assets/vm-motion.css">
+     <link rel="stylesheet" href="/user/assets/vm-type.css">
 
-   TYPE SYSTEM
-     Cormorant Garamond 300  — display. Large, widely tracked, never bold.
-     Inter 800               — the heavy voice. Amounts of consequence,
-                               primary actions, anything that must land.
-     Inter 400/600           — body and interface.
-     IBM Plex Mono 400/500   — data. References, identifiers, labels.
-     Brass #C8A265           — hairlines and rules only. Never fills.
+   Overrides by source order, so nothing here needs an important flag and
+   user_dashboard.php doesn't change.
 
-   Cormorant and Inter are the logout's pairing. IBM Plex Mono is an
-   addition — the system mono stack looked thin beside Cormorant. Drop it
-   from the @import and from --font-mono if you'd rather not carry it.
+   The dashboard's inline styles reference var(--font) and var(--font-mono).
+   Redefining those two variables reaches every JS-generated element without
+   touching the PHP.
+
+   TYPE SYSTEM — the one from the preview pages
+     Inter 800, letter-spacing -0.033em, line-height 1.03
+        Display. Every headline. Tight, heavy, negatively tracked. This is
+        the "No one moves money alone." setting.
+     Inter 700 / 600      interface — buttons, tile titles, row labels
+     Inter 400 / 500      body copy, set at 13-14.5px in the muted grey
+     IBM Plex Mono 400/500/600
+        Every label, eyebrow, identifier, reference and amount. Small,
+        widely tracked for labels; tabular for anything numeric.
+     Accent #00A878       hairlines and rules only, never fills
+
+   No serif anywhere. Cormorant belongs to logout.php — that page is a
+   closing title card and is allowed a different voice. The application
+   itself stays in one.
+
+   Only IBM Plex Mono is imported; Inter is already loaded by the dashboard.
    ========================================================================== */
 
-@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 
 /* ------------------------------------------------------------------ tokens */
 :root {
-  --font-display: 'Cormorant Garamond', Georgia, 'Times New Roman', serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Consolas, monospace;
-  --brass: #C8A265;
-  --brass-soft: rgba(200, 162, 101, .34);
   --hairline: rgba(16, 30, 27, .10);
+  --rule: rgba(0, 168, 120, .38);
+
+  /* the display setting, in one place */
+  --disp-weight: 800;
+  --disp-track: -.033em;
+  --disp-leading: 1.03;
 }
 
-/* Tabular figures everywhere a number can change. Without this, money
-   jitters horizontally as digits update and the whole thing feels cheap. */
-[style*="--font-mono"], .myc-source-amt, .myc-panel-total, .review-hero-amount,
-.arcade-num, .qr-full-suffix, .myc-card-number, .combine-row-amt,
-.myc-contributor-amt, .preview-row .value, .swap-amount-display input,
-.ledger-sentence input[type=number], .tab-hero-input, .progress-ring-pct {
+/* Tabular figures wherever a number can change. Without this, money shifts
+   sideways as digits update and the interface feels cheap. */
+.myc-source-amt, .myc-panel-total, .review-hero-amount, .arcade-num,
+.qr-full-suffix, .myc-card-number, .combine-row-amt, .myc-contributor-amt,
+.preview-row .value, .swap-amount-display input, .progress-ring-pct,
+.tab-hero-input, .ledger-sentence input[type=number] {
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum" 1, "lnum" 1;
 }
 
 /* ------------------------------------------------------------------ header */
 .brand {
-  font-family: var(--font-display);
-  font-weight: 400;
-  font-size: 22px;
-  letter-spacing: .30em;
-  text-indent: .30em;
-  text-transform: uppercase;
+  font-weight: 800;
+  font-size: 19px;
+  letter-spacing: -.018em;
 }
-.brand sup { font-size: 7px; letter-spacing: 0; vertical-align: super; }
+.brand sup { font-size: 8px; font-weight: 700; letter-spacing: 0; }
 .shell-header { border-bottom-color: var(--hairline); }
-.shell-header-inner { height: 78px; }
-.back-btn {
+.back-btn, .user-chip, .test-mode-badge {
   font-family: var(--font-mono);
-  font-size: 10.5px; font-weight: 500;
-  letter-spacing: .14em;
+  font-weight: 500;
+  letter-spacing: .08em;
 }
-.user-chip {
-  font-family: var(--font-mono);
-  font-weight: 500; font-size: 12px; letter-spacing: .06em;
-  border: 1px solid var(--primary);
-}
-.test-mode-badge {
-  font-family: var(--font-mono);
-  font-weight: 500; letter-spacing: .14em; font-size: 9px;
-}
+.back-btn { font-size: 10.5px; }
+.user-chip { font-size: 11.5px; border: 1px solid var(--primary); }
+.test-mode-badge { font-size: 9px; letter-spacing: .14em; }
 
 /* --------------------------------------------------------------------- hub */
 .hub-eyebrow {
   font-family: var(--font-mono);
-  font-weight: 400; font-size: 10px; letter-spacing: .34em;
-  text-indent: .34em; margin-bottom: 18px;
+  font-weight: 400;
+  font-size: 10.5px;
+  letter-spacing: .18em;
+  margin-bottom: 14px;
 }
 .hub-title {
-  font-family: var(--font-display);
-  font-weight: 300;
-  font-size: clamp(34px, 5.4vw, 52px);
-  letter-spacing: .01em;
-  line-height: 1.12;
-  margin-bottom: 46px;
+  font-weight: var(--disp-weight);
+  font-size: clamp(30px, 4.9vw, 48px);
+  letter-spacing: var(--disp-track);
+  line-height: var(--disp-leading);
+  max-width: 15ch;
+  margin: 0 auto 42px;
 }
-#hubView { padding-top: 62px; }
 
 .product-tile {
   border-color: var(--hairline);
-  padding: 30px 26px 26px;
-  transition: border-color .25s ease, transform .25s cubic-bezier(.16,1,.3,1);
+  padding: 26px 24px 22px;
+  transition: border-color .2s ease, transform .25s cubic-bezier(.16,1,.3,1);
 }
 .product-tile:hover { transform: translateY(-3px); border-color: var(--primary); }
 .product-tile-icon {
-  width: 42px; height: 42px; margin-bottom: 22px;
-  background: transparent;
-  border: 1px solid var(--primary);
+  width: 40px; height: 40px; margin-bottom: 20px;
+  background: transparent; border: 1px solid var(--primary);
 }
-.product-tile-icon svg { width: 19px; height: 19px; stroke: var(--primary); }
+.product-tile-icon svg { width: 18px; height: 18px; stroke: var(--primary); }
 .product-tile:hover .product-tile-icon { background: var(--primary); }
 .product-tile:hover .product-tile-icon svg { stroke: #fff; }
 .product-tile-title {
-  font-family: var(--font-display);
-  font-weight: 400;
-  font-size: 25px;
-  letter-spacing: .01em;
-  margin-bottom: 8px;
+  font-weight: 800;
+  font-size: 19px;
+  letter-spacing: -.018em;
+  line-height: 1.15;
+  margin-bottom: 7px;
 }
-.product-tile-sub { font-size: 13.5px; line-height: 1.6; }
+.product-tile-sub { font-size: 12.5px; line-height: 1.6; color: var(--text-muted); }
 .product-tile-arrow {
   font-family: var(--font-mono);
   font-size: 10px; font-weight: 500;
-  letter-spacing: .16em; text-transform: uppercase;
-  color: var(--text-muted);
+  letter-spacing: .14em; text-transform: uppercase;
+  color: var(--text-dim);
 }
 .product-tile:hover .product-tile-arrow { color: var(--accent); }
 
 /* ------------------------------------------------------------ product views */
 .product-view-eyebrow {
   font-family: var(--font-mono);
-  font-weight: 400; font-size: 9.5px; letter-spacing: .32em; text-indent: .32em;
+  font-weight: 400; font-size: 10px; letter-spacing: .18em;
 }
 .product-view-title {
-  font-family: var(--font-display);
-  font-weight: 300;
-  font-size: clamp(30px, 4.4vw, 42px);
-  letter-spacing: .015em;
-  margin-top: 8px;
+  font-weight: var(--disp-weight);
+  font-size: clamp(26px, 4vw, 39px);
+  letter-spacing: var(--disp-track);
+  line-height: var(--disp-leading);
+  margin-top: 9px;
 }
-.product-view-header { margin-bottom: 34px; }
+.product-view-header { margin-bottom: 32px; }
 .product-view-header::after {
   content: ""; display: block;
-  width: 46px; height: 1px; background: var(--brass-soft);
-  margin: 20px auto 0;
+  width: 40px; height: 2px; background: var(--rule);
+  margin: 18px auto 0;
 }
-.info-btn { font-family: var(--font-mono); font-weight: 500; }
+.info-btn { font-family: var(--font-mono); font-weight: 500; font-size: 10px; letter-spacing: .1em; }
 
 /* ------------------------------------------------------------------ wizard */
 .swap-step-number {
   font-family: var(--font-mono);
-  font-weight: 400; font-size: 9.5px; letter-spacing: .28em; text-indent: .28em;
+  font-weight: 400; font-size: 10px; letter-spacing: .18em;
 }
 .swap-step-title {
-  font-family: var(--font-display);
-  font-weight: 300;
-  font-size: clamp(27px, 3.8vw, 36px);
-  letter-spacing: .015em;
-  margin-top: 6px;
+  font-weight: var(--disp-weight);
+  font-size: clamp(24px, 3.5vw, 33px);
+  letter-spacing: -.028em;
+  line-height: 1.06;
+  margin-top: 7px;
 }
-.swap-step-sub { font-size: 13px; margin-top: 8px; }
-.swap-step-dot { height: 2px; width: 46px; border-radius: 0; }
+.swap-step-sub { font-size: 12.5px; margin-top: 8px; line-height: 1.6; }
+.swap-step-dot { height: 2px; width: 44px; border-radius: 0; }
 
 .swap-amount-display .currency {
   font-family: var(--font-mono);
-  font-size: 10px; font-weight: 500; letter-spacing: .28em; text-indent: .28em;
+  font-size: 10px; font-weight: 500; letter-spacing: .22em;
   color: var(--text-dim);
 }
 .swap-amount-display input {
   font-family: var(--font-mono);
-  font-weight: 500;
-  font-size: clamp(44px, 8vw, 62px);
-  letter-spacing: -.01em;
+  font-weight: 600;
+  font-size: clamp(42px, 7.5vw, 58px);
+  letter-spacing: -.02em;
   width: 260px;
 }
 
-.source-option, .dest-option { border-width: 1px; border-color: var(--hairline); }
+.source-option, .dest-option { border-color: var(--hairline); }
 .source-option:hover, .dest-option:hover { border-color: var(--primary); }
 .source-option.active, .dest-option.active {
   border-color: var(--primary); background: var(--surface);
@@ -172,262 +174,219 @@
 }
 .source-option .label, .dest-option .label {
   font-family: var(--font-mono);
-  font-size: 9.5px; font-weight: 500;
-  letter-spacing: .12em; text-transform: uppercase;
+  font-size: 10px; font-weight: 500; letter-spacing: .1em; text-transform: uppercase;
 }
+.source-option .sub, .dest-option .sub { font-size: 12px; }
 .source-option .badge {
   font-family: var(--font-mono); font-weight: 500;
-  border-radius: 0; letter-spacing: .08em;
+  border-radius: 0; letter-spacing: .06em; font-size: 9.5px;
 }
 
 /* --------------------------------------------------------------- the money */
-/* Amounts are the only place Inter 800 appears at size. Everything else
-   defers to it, which is what makes it read as the important thing. */
 .review-hero-label {
   font-family: var(--font-mono);
-  font-weight: 400; font-size: 9.5px; letter-spacing: .28em; text-indent: .28em;
+  font-weight: 400; font-size: 10px; letter-spacing: .2em;
 }
 .review-hero-amount {
   font-family: var(--font-mono);
-  font-weight: 500;
-  font-size: clamp(36px, 5.4vw, 48px);
-  letter-spacing: -.015em;
+  font-weight: 600;
+  font-size: clamp(34px, 5vw, 46px);
+  letter-spacing: -.025em;
 }
-.review-hero { border-bottom-color: var(--brass-soft); padding-bottom: 22px; }
-.review-hero-note { font-family: var(--font-mono); font-size: 10px; font-weight: 400; letter-spacing: .1em; }
+.review-hero { border-bottom-color: var(--hairline); padding-bottom: 20px; }
+.review-hero-note { font-family: var(--font-mono); font-size: 10px; letter-spacing: .06em; }
 
 .myc-panel-total, .myc-source-amt, .combine-row-amt, .myc-contributor-amt {
-  font-family: var(--font-mono); font-weight: 500; letter-spacing: -.01em;
+  font-family: var(--font-mono); font-weight: 600; letter-spacing: -.015em;
 }
 .preview-row span:first-child {
-  font-family: var(--font-mono);
-  font-weight: 400; font-size: 9.5px; letter-spacing: .18em;
+  font-family: var(--font-mono); font-weight: 400; font-size: 10px; letter-spacing: .12em;
 }
 .preview-row .value { font-family: var(--font-mono); font-weight: 500; }
-.preview-row .value.highlight { font-weight: 600; font-size: 19px; }
+.preview-row .value.highlight { font-weight: 600; font-size: 19px; letter-spacing: -.02em; }
 
 /* ----------------------------------------------------------------- buttons */
+/* The dashboard uppercases button text. Sentence case at 700 reads better
+   beside Inter 800 headlines and stops the page shouting in two registers. */
 .btn {
-  font-family: var(--font);
-  font-weight: 800;
-  font-size: 11.5px;
-  letter-spacing: .16em;
-  text-indent: .16em;
-  padding: 19px 26px;
-  transition: background .22s ease, color .22s ease, border-color .22s ease;
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: -.005em;
+  text-transform: none;
+  padding: 17px 24px;
+  transition: background .2s ease, color .2s ease, border-color .2s ease;
 }
-.btn-secondary, .btn.secondary {
-  font-weight: 600; letter-spacing: .02em; text-indent: 0;
-  text-transform: none; font-size: 13px;
-  border-color: var(--border-strong);
-}
-.btn-sm { letter-spacing: .02em; text-indent: 0; font-weight: 600; }
+.btn-secondary, .btn.secondary { font-weight: 600; border-color: var(--border-strong); }
+.btn-sm { font-size: 12px; font-weight: 600; letter-spacing: 0; }
 .quick-link {
   font-family: var(--font-mono);
-  font-weight: 500; font-size: 10px; letter-spacing: .12em;
+  font-weight: 500; font-size: 10px; letter-spacing: .1em;
   border-color: var(--hairline);
 }
 .quick-link.muted { font-family: var(--font); font-weight: 500; letter-spacing: 0; font-size: 12px; }
-.ledger-link { font-family: var(--font); font-weight: 500; text-underline-offset: 4px; }
+.ledger-link { font-weight: 600; text-underline-offset: 4px; }
 
 /* ------------------------------------------------------------------ panels */
 .myc-panel, .source-card, .hook-row-card, .toolbox-accordion,
-.combine-row-card, .tab-source-card, .msb-card {
+.combine-row-card, .tab-source-card, .msb-card, .progress-card {
   border-color: var(--hairline);
 }
 .myc-panel-title, .toolbox-group-title, .field-label, .field-group label {
   font-family: var(--font-mono);
   font-weight: 400;
-  font-size: 9.5px;
-  letter-spacing: .20em;
+  font-size: 10px;
+  letter-spacing: .16em;
   color: var(--text-dim);
 }
 .myc-source-tile, .myc-contributor-tile, .myc-avatar-tile {
-  font-family: var(--font-mono); font-weight: 500; letter-spacing: .04em;
+  font-family: var(--font-mono); font-weight: 600; letter-spacing: .02em;
 }
-.myc-source-inst { font-size: 13.5px; font-weight: 600; }
-.myc-source-ident { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .02em; }
+.myc-source-inst { font-size: 13.5px; font-weight: 700; letter-spacing: -.012em; }
+.myc-source-ident { font-family: var(--font-mono); font-size: 10.5px; }
 
 .toolbox-accordion-summary {
-  font-family: var(--font-mono);
-  font-weight: 500; font-size: 10.5px; letter-spacing: .20em;
+  font-family: var(--font-mono); font-weight: 500; font-size: 10.5px; letter-spacing: .16em;
 }
-.toolbox-row-label { font-size: 14.5px; font-weight: 500; }
+.toolbox-row-label { font-size: 14px; font-weight: 600; letter-spacing: -.01em; }
 .toolbox-badge { font-family: var(--font-mono); font-weight: 600; font-size: 10px; }
 
-.progress-card { border-color: var(--hairline); padding: 18px 20px; }
-.progress-card-title { font-size: 13.5px; font-weight: 600; }
-.progress-card-sub { font-family: var(--font-mono); font-size: 10px; letter-spacing: .08em; }
+.progress-card-title { font-size: 13.5px; font-weight: 700; letter-spacing: -.012em; }
+.progress-card-sub { font-family: var(--font-mono); font-size: 10px; letter-spacing: .06em; }
 .progress-ring-pct { font-family: var(--font-mono); font-weight: 600; font-size: 13px; }
 
 .repeat-card-title {
-  font-family: var(--font-mono);
-  font-weight: 400; font-size: 9.5px; letter-spacing: .22em;
+  font-family: var(--font-mono); font-weight: 400; font-size: 10px; letter-spacing: .18em;
 }
-.repeat-card-sub { font-size: 13.5px; font-weight: 600; }
+.repeat-card-sub { font-size: 13.5px; font-weight: 700; letter-spacing: -.012em; }
 
 /* -------------------------------------------------------------- the card */
-/* This is the one object a user shows other people. It should look like
-   something issued, not something rendered. */
+/* The one object a user shows other people. Ink, accent hairlines, mono. */
 .myc-card-visual {
-  background: linear-gradient(150deg, #16241F 0%, #04120E 62%, #0A1712 100%);
-  border: 1px solid rgba(200,162,101,.22);
+  background: linear-gradient(148deg, #16241F 0%, #04120E 60%, #0A1712 100%);
+  border: 1px solid rgba(0, 168, 120, .26);
 }
 .myc-card-visual::before {
   background:
-    repeating-linear-gradient(58deg, rgba(200,162,101,.055) 0 1px, transparent 1px 7px),
-    repeating-linear-gradient(-58deg, rgba(0,168,120,.05) 0 1px, transparent 1px 9px);
+    repeating-linear-gradient(58deg, rgba(0,168,120,.06) 0 1px, transparent 1px 7px),
+    repeating-linear-gradient(-58deg, rgba(234,242,239,.035) 0 1px, transparent 1px 9px);
   top: 0; right: 0; width: 100%; height: 100%; transform: none;
 }
 .myc-card-visual::after {
   content: ""; position: absolute; inset: 9px;
-  border: 1px solid rgba(200,162,101,.16); pointer-events: none;
+  border: 1px solid rgba(0, 168, 120, .16); pointer-events: none;
 }
 .myc-card-mark {
-  font-family: var(--font-display);
-  font-weight: 400; font-size: 13px;
-  letter-spacing: .26em; text-indent: .26em; text-transform: uppercase;
-  color: rgba(240,228,204,.92);
+  font-weight: 800; font-size: 15px; letter-spacing: -.018em;
+  color: rgba(240, 246, 243, .95);
 }
-.myc-card-mark sup { color: var(--brass); letter-spacing: 0; }
+.myc-card-mark sup { color: var(--accent); font-size: 7px; }
 .myc-card-status {
   font-family: var(--font-mono);
-  font-weight: 400; font-size: 8px; letter-spacing: .18em;
-  border-color: rgba(200,162,101,.3); color: rgba(240,228,204,.6);
+  font-weight: 500; font-size: 8.5px; letter-spacing: .14em;
+  border-color: rgba(0,168,120,.32); color: rgba(240,246,243,.6);
 }
-.myc-card-status.active { color: var(--brass); border-color: rgba(200,162,101,.55); }
+.myc-card-status.active { color: var(--accent); border-color: rgba(0,168,120,.6); }
 .myc-card-number {
   font-family: var(--font-mono);
-  font-weight: 400; font-size: 16px; letter-spacing: .16em;
-  color: rgba(240,228,204,.88);
+  font-weight: 500; font-size: 16px; letter-spacing: .14em;
+  color: rgba(240, 246, 243, .9);
 }
 .myc-card-name {
   font-family: var(--font-mono);
-  font-size: 8.5px; letter-spacing: .22em;
-  color: rgba(240,228,204,.42);
+  font-size: 8.5px; letter-spacing: .18em;
+  color: rgba(240, 246, 243, .42);
 }
 .myc-qr-panel { border-color: var(--hairline); }
-.myc-qr-frame { border-color: var(--brass-soft); }
-.myc-qr-caption { font-family: var(--font-mono); font-size: 10px; letter-spacing: .1em; }
+.myc-qr-frame { border-color: rgba(0,168,120,.3); }
+.myc-qr-caption { font-family: var(--font-mono); font-size: 10px; letter-spacing: .08em; }
 .myc-qr-tap-hint {
   font-family: var(--font-mono); font-weight: 500;
-  font-size: 9px; letter-spacing: .18em; color: var(--brass);
+  font-size: 9px; letter-spacing: .14em; color: var(--accent);
 }
-.qr-full-suffix { font-family: var(--font-mono); font-weight: 500; letter-spacing: .16em; }
+.qr-full-suffix { font-family: var(--font-mono); font-weight: 600; letter-spacing: .12em; }
 
 /* ------------------------------------------------------------------ modals */
 .modal { border-color: var(--border-strong); }
-.modal-header { background: var(--surface); border-bottom-color: var(--brass-soft); padding: 20px 24px; }
+.modal-header { background: var(--surface); border-bottom-color: var(--hairline); padding: 19px 24px; }
 .modal-header h2 {
   font-family: var(--font-mono);
-  font-weight: 400; font-size: 10px; letter-spacing: .26em; text-indent: .26em;
+  font-weight: 400; font-size: 10px; letter-spacing: .2em;
 }
-#modalBody { padding: 24px; }
 .result-box .result-title {
-  font-family: var(--font-display);
-  font-weight: 300; font-size: 28px; letter-spacing: .015em;
+  font-weight: 800; font-size: 25px; letter-spacing: -.026em; line-height: 1.1;
 }
-.result-box .result-sub { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .08em; }
-.result-box .icon { color: var(--accent); font-size: 34px; }
-.result-box .atm-code .code, .atm-code .code {
-  font-family: var(--font-mono); font-weight: 500; letter-spacing: .28em;
-}
-.result-stat { border-left-color: var(--brass); font-size: 12.5px; }
-.preview-reassure { font-family: var(--font-mono); font-size: 10px; letter-spacing: .08em; }
+.result-box .result-sub { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .06em; }
+.result-box .icon { color: var(--accent); font-size: 32px; }
+.atm-code .code { font-family: var(--font-mono); font-weight: 600; letter-spacing: .24em; }
+.result-stat { border-left-color: var(--accent); font-size: 12.5px; }
+.preview-reassure { font-family: var(--font-mono); font-size: 10px; letter-spacing: .06em; }
 .confirm-box p { font-size: 13.5px; }
 
 /* --------------------------------------------------- the combine console */
-/* The arcade console was the one screen in a phosphor-green terminal
-   palette. Against Cormorant and brass it read as a different product.
-   Same layout, same affordances, restyled to the house palette — delete
-   this block to get the green terminal back. */
-.arcade-console {
-  background: #04120E;
-  border: 1px solid rgba(200,162,101,.28);
-  color: #EDE7DA;
-  padding: 20px;
-}
-.arcade-num {
-  font-family: var(--font-mono);
-  font-weight: 500; font-size: 34px; letter-spacing: -.01em;
-  color: var(--brass);
-}
+/* The arcade console was the only screen in a phosphor-green terminal
+   palette. Same layout and controls, house palette. Delete this block to
+   get the green terminal back. */
+.arcade-console { background: #04120E; border: 1px solid rgba(0,168,120,.3); color: #EAF2EF; padding: 20px; }
+.arcade-num { font-family: var(--font-mono); font-weight: 600; font-size: 34px; letter-spacing: -.02em; color: var(--accent); }
 .arcade-target-input {
-  background: transparent; color: #F0E4CC;
-  border: 1px solid rgba(200,162,101,.4);
-  font-family: var(--font-mono); font-weight: 500;
+  background: transparent; color: #EAF2EF;
+  border: 1px solid rgba(0,168,120,.4);
+  font-family: var(--font-mono); font-weight: 600;
 }
-.arcade-target-input:focus { outline: none; border-color: var(--brass); }
-.arcade-seg { background: rgba(240,228,204,.07); border: none; height: 3px; }
-.arcade-seg.on { background: var(--brass); }
+.arcade-target-input:focus { outline: none; border-color: var(--accent); }
+.arcade-seg { background: rgba(234,242,239,.08); border: none; height: 3px; }
+.arcade-seg.on { background: var(--accent); }
 .arcade-strip { gap: 3px; }
 .arcade-strat-btn {
-  background: transparent; color: rgba(240,228,204,.52);
-  border: 1px solid rgba(240,228,204,.14);
-  font-family: var(--font-mono); font-weight: 400;
-  font-size: 8.5px; letter-spacing: .1em; padding: 9px 2px;
+  background: transparent; color: rgba(234,242,239,.5);
+  border: 1px solid rgba(234,242,239,.14);
+  font-family: var(--font-mono); font-weight: 500;
+  font-size: 8.5px; letter-spacing: .08em; padding: 9px 2px;
 }
-.arcade-strat-btn.active {
-  background: transparent; color: var(--brass);
-  border-color: var(--brass);
-}
-.arcade-hint {
-  font-family: var(--font); font-size: 11px; letter-spacing: 0;
-  color: rgba(240,228,204,.42);
-}
-.arcade-row {
-  background: transparent;
-  border: none; border-bottom: 1px solid rgba(240,228,204,.10);
-  padding: 12px 2px;
-}
+.arcade-strat-btn.active { background: transparent; color: var(--accent); border-color: var(--accent); }
+.arcade-hint { font-family: var(--font); font-size: 11px; letter-spacing: 0; color: rgba(234,242,239,.42); }
+.arcade-row { background: transparent; border: none; border-bottom: 1px solid rgba(234,242,239,.1); padding: 12px 2px; }
 .arcade-row .swatch { width: 3px; height: 22px; }
-.arcade-row .title { font-family: var(--font); font-size: 13px; font-weight: 600; color: #F0E4CC; }
-.arcade-row .sub { font-family: var(--font-mono); font-size: 10px; color: rgba(240,228,204,.4); }
-.arcade-row .amt { font-family: var(--font-mono); font-weight: 500; color: #F0E4CC; }
+.arcade-row .title { font-family: var(--font); font-size: 13px; font-weight: 700; letter-spacing: -.012em; color: #EAF2EF; }
+.arcade-row .sub { font-family: var(--font-mono); font-size: 10px; color: rgba(234,242,239,.4); }
+.arcade-row .amt { font-family: var(--font-mono); font-weight: 600; color: #EAF2EF; }
 .arcade-status {
-  border: none; border-top: 1px solid rgba(240,228,204,.14);
-  font-family: var(--font-mono); font-weight: 400;
-  font-size: 10px; letter-spacing: .16em;
-  color: rgba(240,228,204,.45); padding: 14px 0 4px;
+  border: none; border-top: 1px solid rgba(234,242,239,.14);
+  font-family: var(--font-mono); font-weight: 500;
+  font-size: 10px; letter-spacing: .14em;
+  color: rgba(234,242,239,.45); padding: 14px 0 4px;
 }
-.arcade-status.ready { color: var(--brass); background: transparent; border-top-color: var(--brass-soft); }
+.arcade-status.ready { color: var(--accent); background: transparent; border-top-color: rgba(0,168,120,.35); }
 .arcade-add-btn {
-  background: transparent; border: 1px solid rgba(240,228,204,.18);
-  color: rgba(240,228,204,.6);
-  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: .16em; padding: 12px;
+  background: transparent; border: 1px solid rgba(234,242,239,.18);
+  color: rgba(234,242,239,.6);
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: .14em; padding: 12px;
 }
-.arcade-add-btn:hover { border-color: var(--brass); color: var(--brass); }
+.arcade-add-btn:hover { border-color: var(--accent); color: var(--accent); }
 .arcade-readout { align-items: center; }
 
-/* ---------------------------------------------------------------- activity */
-#activityCount { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .06em; }
-#activitySearchInput, #toolboxSearchInput { font-size: 14px; }
-
 /* ------------------------------------------------------------------ footer */
-.page-footer { border-top-color: var(--hairline); padding-top: 30px; }
-.page-footer .footer-copy {
-  font-family: var(--font-mono); font-size: 10px; letter-spacing: .14em;
-}
+.page-footer { border-top-color: var(--hairline); padding-top: 28px; }
+.page-footer .footer-copy { font-family: var(--font-mono); font-size: 10px; letter-spacing: .1em; }
 .page-footer .footer-links span { font-size: 12.5px; font-weight: 500; }
 
-/* ------------------------------------------------------------------ misc */
+/* -------------------------------------------------------------------- misc */
+#activityCount { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .04em; }
 .message { font-size: 13px; }
-.empty-source-box { border-color: var(--border-strong); }
-.dropdown-select { border-color: var(--border-strong); }
-.saved-source-row .row-inst { font-size: 13px; font-weight: 600; }
+.empty-source-box, .dropdown-select { border-color: var(--border-strong); }
+.saved-source-row .row-inst { font-size: 13px; font-weight: 700; letter-spacing: -.012em; }
 .saved-source-row .row-ident { font-family: var(--font-mono); font-size: 10.5px; }
-.theme-chip { font-family: var(--font-mono); font-size: 10px; letter-spacing: .12em; }
+.theme-chip { font-family: var(--font-mono); font-size: 10px; letter-spacing: .1em; }
 .source-status-badge, .source-card .source-status {
-  font-family: var(--font-mono); font-weight: 500; letter-spacing: .1em;
+  font-family: var(--font-mono); font-weight: 500; letter-spacing: .08em;
 }
-.unhook-link { font-family: var(--font-mono); font-weight: 500; font-size: 9px; letter-spacing: .1em; }
+.unhook-link { font-family: var(--font-mono); font-weight: 500; font-size: 9px; letter-spacing: .08em; }
 
-/* Cormorant is optically small — bump it a touch on narrow screens so the
-   display sizes don't collapse into the body copy. */
+/* Negative tracking has to relax as type gets smaller or it closes up. */
 @media (max-width: 520px) {
-  .hub-title { font-size: 32px; }
-  .product-tile-title { font-size: 22px; }
-  .product-view-title { font-size: 28px; }
-  .swap-step-title { font-size: 26px; }
-  .brand { font-size: 18px; letter-spacing: .22em; text-indent: .22em; }
+  .hub-title { font-size: 29px; letter-spacing: -.026em; }
+  .product-view-title { font-size: 25px; letter-spacing: -.024em; }
+  .swap-step-title { font-size: 22px; letter-spacing: -.022em; }
+  .product-tile-title { font-size: 18px; }
+  .brand { font-size: 17px; }
 }
