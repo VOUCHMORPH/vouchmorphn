@@ -12,6 +12,30 @@ var REDUCED = matchMedia('(prefers-reduced-motion:reduce)').matches;
 var DIGITS  = '0123456789';
 var LETTERS = ' ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
+/* --------------------------------------------------------------------------
+ * Reading the dashboard's state.
+ *
+ * The dashboard declares everything with `let` / `const` at the top level of
+ * a classic <script>. Those do NOT become properties of window — only `var`
+ * and function declarations do. They ARE global bindings though, and every
+ * classic script on the page shares one global scope, so a bare reference
+ * from this file resolves to them.
+ *
+ * G() reads a binding that way and swallows the ReferenceError if the name
+ * is ever renamed or removed, so nothing in here can throw on a missing
+ * global. Never use window.<name> for dashboard state — it is always
+ * undefined and fails silently, which is exactly how this broke the
+ * first time.
+ * ----------------------------------------------------------------------- */
+function G(read, fallback) {
+  try { var v = read(); return v === undefined ? fallback : v; }
+  catch (e) { return fallback; }
+}
+function participantName(code) {
+  var P = G(function () { return PARTICIPANTS; }, null);
+  return (P && P[code] && P[code].name) || code || '';
+}
+
 /* ------------------------------------------------------------------ audio */
 var AC = null, master = null, soundOn = false, lastClack = 0;
 
@@ -401,8 +425,7 @@ Theatre.prototype.finish = function () {
 function normalise(list) {
   return (list || []).map(function (c) {
     return {
-      name: (window.PARTICIPANTS && PARTICIPANTS[c.institution] && PARTICIPANTS[c.institution].name) ||
-            c.institution || c.name || 'Source',
+      name: c.institution ? participantName(c.institution) : (c.name || 'Source'),
       id: c.identifier || c.source_identifier || c.id || '',
       amount: Number(c.available_balance != null ? c.available_balance :
               (c.authorized_amount != null ? c.authorized_amount :
@@ -554,6 +577,26 @@ var Rail = {
     this.board = moneyBoard(host.querySelector('.vm-rail-amt-board'), 26, Math.max(this.total, 999));
     this.board.set(this.total);
     return this;
+  },
+  /* Render existing holds without touching the running total. Used when the
+     card view mounts the rail on a card that already has sources hooked —
+     pushing them through push() would either double the total or, if you
+     pass 0 to avoid that, render a column of misleading +0.00 rows. */
+  seed: function (items) {
+    if (!this.el || !items || !items.length) return;
+    var list = this.el.querySelector('.vm-rail-list');
+    var empty = list.querySelector('.vm-rail-empty');
+    if (empty) empty.remove();
+    items.forEach(function (it) {
+      var row = document.createElement('div');
+      row.className = 'vm-rail-item';
+      row.innerHTML =
+        '<span class="vm-rail-mark hook">+</span>' +
+        '<span class="vm-rail-txt"><span class="vm-rail-inst">' + it.label + '</span>' +
+        '<span class="vm-rail-when">held</span></span>' +
+        '<span class="vm-rail-amt up">' + Number(it.amount || 0).toFixed(2) + '</span>';
+      list.appendChild(row);
+    });
   },
   push: function (kind, label, amount) {
     if (!this.el) return;
@@ -711,31 +754,46 @@ window.VM = {
 
 /* ======================================================================
    AUTO-WIRING — wraps the dashboard's existing globals.
-   Each wrap is guarded, so if you rename or remove a function nothing
-   here throws; the motion layer simply doesn't attach to that one.
+
+   Function declarations DO land on window, so wrap() works as written and
+   reassigning window.<fn> genuinely changes what the dashboard's own bare
+   call sites resolve to. Only the *state* needed G().
+
+   Every wrap is guarded: rename or delete one of these functions and the
+   motion layer quietly skips it rather than throwing.
    ====================================================================== */
 function wrap(name, factory) {
   if (typeof window[name] === 'function') window[name] = factory(window[name]);
 }
 
+/* Currency for anything card-related, read live each time. */
+function cardCurrency() {
+  return G(function () {
+    return (myCard && ((myCard.hook && myCard.hook.currency) || myCard.currency)) || 'BWP';
+  }, 'BWP');
+}
+function cardHook() {
+  return G(function () { return myCard && myCard.hook; }, null);
+}
+
 // 1. Hook success -> clamp ceremony, then the existing success screen.
 wrap('showHookSuccess', function (orig) {
-  return function (count, freshSources) {
-    var cur = (window.myCard && (myCard.hook && myCard.hook.currency || myCard.currency)) || 'BWP';
+  return function () {
     var args = arguments, self = this;
-    Ceremony.hook(freshSources || [], cur).then(function () {
-      orig.apply(self, args);
-    });
+    var fresh = args[1] || [];
+    Ceremony.hook(fresh, cardCurrency()).then(function () { orig.apply(self, args); });
     return undefined;
   };
 });
 
-// 2. Unhook everything -> release ceremony after the API confirms.
+// 2. Unhook everything -> release ceremony once the API confirms.
+//    The contributor list is snapshotted BEFORE the call, because orig()
+//    finishes by calling loadCardView(), which replaces myCard wholesale.
 wrap('executeUnhook', function (orig) {
   return async function () {
-    var held = (window.myCard && myCard.hook && myCard.hook.contributors) || [];
-    var cur  = (window.myCard && myCard.hook && myCard.hook.currency) || 'BWP';
-    var snapshot = held.slice();
+    var hook = cardHook();
+    var snapshot = (hook && hook.contributors ? hook.contributors : []).slice();
+    var cur = cardCurrency();
     var r = await orig.apply(this, arguments);
     if (snapshot.length) await Ceremony.unhook(snapshot, cur);
     return r;
@@ -745,36 +803,67 @@ wrap('executeUnhook', function (orig) {
 // 3. Single-source unhook -> same ceremony, one node.
 wrap('executeUnhookSource', function (orig) {
   return async function () {
-    var id = window.pendingExecution && pendingExecution.payload && pendingExecution.payload.hookSourceId;
-    var held = (window.myCard && myCard.hook && myCard.hook.contributors) || [];
-    var one = held.filter(function (c) { return c.hook_source_id === id; });
-    var cur = (window.myCard && myCard.hook && myCard.hook.currency) || 'BWP';
+    var id = G(function () {
+      return pendingExecution && pendingExecution.payload && pendingExecution.payload.hookSourceId;
+    }, null);
+    var hook = cardHook();
+    var one = (hook && hook.contributors ? hook.contributors : []).filter(function (c) {
+      return c.hook_source_id === id;
+    });
+    var cur = cardCurrency();
     var r = await orig.apply(this, arguments);
     if (one.length) await Ceremony.unhook(one, cur);
     return r;
   };
 });
 
+/* Build the source list for a wizard swap from whichever mode was used. */
+function wizardSources(ws) {
+  if (ws.source === 'VMCARD') {
+    return G(function () { return vmCardSources; }, []) || [];
+  }
+  if (ws.source === 'COMBINE') {
+    /* multiSources rows carry their identifier inside .fields, keyed by the
+       asset config. Passing the raw row would make normalise() fall through
+       to row.id — the numeric row counter — and print "3" as an account. */
+    return (ws.multiSources || [])
+      .filter(function (r) { return !r._draft; })
+      .map(function (r) {
+        var ident = '';
+        var cfg = G(function () { return getAssetConfig(r.assetType); }, null);
+        var idField = cfg && (cfg.fields || []).filter(function (f) {
+          return f.vault_field !== 'pin' && f.name !== 'amount';
+        })[0];
+        if (idField && r.fields) ident = r.fields[idField.name] || '';
+        return { institution: r.institution, identifier: ident, amount: r.amount };
+      });
+  }
+  var singleIdent = '';
+  var cfg = G(function () { return getAssetConfig(ws.fromAsset); }, null);
+  var f0 = cfg && (cfg.fields || []).filter(function (f) {
+    return f.vault_field !== 'pin' && f.name !== 'amount';
+  })[0];
+  if (f0 && ws.fromFields) singleIdent = ws.fromFields[f0.name] || '';
+  return [{ institution: ws.fromInst, identifier: singleIdent, amount: ws.amount }];
+}
+
 // 4. Wizard result -> routing ceremony, then the existing result modal.
 wrap('showWizardResultModal', function (orig) {
-  return function (response, journeyData) {
+  return function (response) {
     var args = arguments, self = this;
-    var ws = window.wizardState || {};
-    var data = (response && response.data) || {};
-    var sources;
-    if (ws.source === 'VMCARD' && window.vmCardSources) sources = vmCardSources;
-    else if (ws.source === 'COMBINE') sources = (ws.multiSources || []).filter(function (r) { return !r._draft; });
-    else sources = [{ institution: ws.fromInst, identifier: '', amount: ws.amount }];
+    var ws = G(function () { return wizardState; }, null);
+    if (!ws) { return orig.apply(self, args); }
 
+    var data = (response && response.data) || {};
     var destName, destId;
     if (ws.destType === 'IDENTITY') {
       destName = ws.identityValue || 'Recipient';
-      destId = (ws.identityType || '').replace(/_/g, ' ');
+      destId = String(ws.identityType || '').replace(/_/g, ' ');
     } else if (ws.destType === 'CASHOUT') {
       destName = 'Cash — ' + (ws.deliveryMethod || 'ATM');
       destId = ws.beneficiaryPhone || '';
     } else {
-      destName = (window.PARTICIPANTS && PARTICIPANTS[ws.toInst] && PARTICIPANTS[ws.toInst].name) || ws.toInst || 'Destination';
+      destName = participantName(ws.toInst) || 'Destination';
       destId = '';
     }
 
@@ -782,7 +871,7 @@ wrap('showWizardResultModal', function (orig) {
       amount: Number(data.amount != null ? data.amount : ws.amount) || 0,
       currency: ws.currency || 'BWP',
       kind: ws.destType || 'DEPOSIT',
-      sources: sources,
+      sources: wizardSources(ws),
       destName: destName,
       destId: destId,
       reference: response && (response.swap_reference || data.reference)
@@ -812,7 +901,8 @@ wrap('showTransactionReport', function (orig) {
 wrap('renderCardViewBody', function (orig) {
   return function () {
     var html = orig.apply(this, arguments);
-    if (window.myCard && myCard.is_active) {
+    var active = G(function () { return myCard && myCard.is_active; }, false);
+    if (active) {
       setTimeout(function () {
         var area = document.getElementById('sessionStatusArea');
         if (!area || document.getElementById('vmRail')) return;
@@ -820,18 +910,31 @@ wrap('renderCardViewBody', function (orig) {
         holder.id = 'vmRail';
         holder.style.marginBottom = '14px';
         area.parentNode.insertBefore(holder, area);
-        var hook = myCard.hook;
-        Rail.mount(holder, (hook && hook.total_held) || 0, (hook && hook.currency) || myCard.currency || 'BWP');
+
+        var hook = cardHook();
+        Rail.mount(holder, (hook && hook.total_held) || 0, cardCurrency());
         if (hook && hook.contributors) {
-          hook.contributors.slice().reverse().forEach(function (c) {
-            var nm = (window.PARTICIPANTS && PARTICIPANTS[c.institution] && PARTICIPANTS[c.institution].name) || c.institution;
-            Rail.push('hook', nm, 0);
-          });
+          Rail.seed(hook.contributors.map(function (c) {
+            return { label: participantName(c.institution), amount: c.held_amount };
+          }));
         }
       }, 30);
     }
     return html;
   };
 });
+
+/* One-time sanity check, console only. If the dashboard ever renames these,
+   the ceremonies silently lose their data — this says so out loud instead. */
+setTimeout(function () {
+  var missing = [];
+  if (G(function () { return wizardState; }, null) === null) missing.push('wizardState');
+  if (G(function () { return PARTICIPANTS; }, null) === null) missing.push('PARTICIPANTS');
+  if (typeof window.showWizardResultModal !== 'function') missing.push('showWizardResultModal()');
+  if (missing.length) {
+    console.warn('[vm-motion] cannot see: ' + missing.join(', ') +
+      ' — ceremonies will run with empty data. Check the dashboard script loaded first.');
+  }
+}, 1200);
 
 })();
