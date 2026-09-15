@@ -1237,7 +1237,15 @@ private function getDecryptedRefreshToken(array $source): ?string
  */
 private function runInSavepoint(string $label, callable $fn)
 {
-    $safeName = 'sp_' . preg_replace('/[^a-zA-Z0-9_]/', '_', $label);
+    // Outside a transaction every statement autocommits on its own, so a
+    // failure can't poison later statements and SAVEPOINT isn't allowed
+    // ("SAVEPOINT can only be used in transaction blocks"). Just run it.
+    if (!$this->swapDB->inTransaction()) {
+        return $fn();
+    }
+
+    // Postgres identifiers max out at 63 bytes.
+    $safeName = substr('sp_' . preg_replace('/[^a-zA-Z0-9_]/', '_', $label), 0, 63);
 
     try {
         $this->swapDB->exec("SAVEPOINT {$safeName}");
@@ -1385,20 +1393,26 @@ private function populateTrackingTables(array $swapData, array $details, ?array 
         // No additional tracking needed here
         $populated[] = 'identity_swap_holds (already populated)';
 
-    } elseif ($swapType === 'MULTI_SOURCE' || $swapType === 'MULTI_DESTINATION') {
-        // Multi-source/destination swaps have their own tracking
-        // No additional tracking needed here
-        $populated[] = 'multi_destination_swaps (already populated)';
+    } elseif ($swapType === 'MULTI_SOURCE') {
+        // Tracked by PoolCoordinator in virtual_funding_pools /
+        // pool contributions. Nothing is checked here, so don't claim
+        // anything in $populated.
+    } elseif ($swapType === 'MULTI_DESTINATION') {
+        // Tracked in multi_destination_swaps by the multi-destination flow.
     }
 
     // ============================================================
     // 4. Populate audit_logs (optional but recommended)
     // ============================================================
     try {
-        $this->runInSavepoint('audit_log_' . $swapRef, function () use ($swapRef, $swapType, $swapData, $details, $userId) {
-            $this->populateAuditLog($swapRef, $swapType, $swapData, $details, $userId);
+        $auditWritten = $this->runInSavepoint('audit_log_' . $swapRef, function () use ($swapRef, $swapType, $swapData, $details, $userId) {
+            return $this->populateAuditLog($swapRef, $swapType, $swapData, $details, $userId);
         });
-        $populated[] = 'audit_logs';
+        if ($auditWritten) {
+            $populated[] = 'audit_logs';
+        } else {
+            $errors[] = 'audit_logs: not written (see audit_log_failures)';
+        }
     } catch (\Throwable $e) {
         $errors[] = 'audit_logs: ' . $e->getMessage();
         $this->logger->warning("Failed to populate audit_logs", [
@@ -1445,10 +1459,10 @@ public function recordPoolSwapTransaction(array $swapData, array $details): void
     $this->populateTrackingTables($swapData, $details);
 }
 
-private function populateAuditLog(string $swapRef, string $swapType, array $swapData, array $details, ?int $userId = null): void
+private function populateAuditLog(string $swapRef, string $swapType, array $swapData, array $details, ?int $userId = null): bool
 {
     // Use the single writeAuditLogEntry() method for consistency
-    $this->writeAuditLogEntry(
+    return $this->writeAuditLogEntry(
         'swap_requests',
         $swapRef,
         'SWAP_' . strtoupper($swapType) . '_CREATED',
@@ -1476,7 +1490,9 @@ private function writeAuditLogEntry(
     string $performedByType = 'system',
     ?int $performedById = 0,
     ?array $detailsPayload = null
-): void {
+): bool {
+    // Returns true only if the row really landed in audit_logs.
+    $fallbackType = $this->swapTypeFromAuditAction($action);
     try {
         $stmt = $this->swapDB->query("SELECT * FROM audit_logs LIMIT 0");
         $cols = [];
@@ -1484,13 +1500,13 @@ private function writeAuditLogEntry(
             $cols[] = $stmt->getColumnMeta($i)['name'];
         }
     } catch (\Throwable $e) {
-        $this->writeAuditFallback($entityId, $action, 'audit_logs table unreadable: ' . $e->getMessage(), $userId);
-        return;
+        $this->writeAuditFallback($entityId, $fallbackType, 'audit_logs table unreadable: ' . $e->getMessage(), $userId);
+        return false;
     }
 
     if (!in_array('entity_id', $cols)) {
-        $this->writeAuditFallback($entityId, $action, "audit_logs missing 'entity_id' - columns: " . implode(', ', $cols), $userId);
-        return;
+        $this->writeAuditFallback($entityId, $fallbackType, "audit_logs missing 'entity_id' - columns: " . implode(', ', $cols), $userId);
+        return false;
     }
 
     // Fetch the previous hash for chaining. Global chain (not per-entity)
@@ -1499,9 +1515,11 @@ private function writeAuditLogEntry(
     $prevHash = null;
     if (in_array('entry_hash', $cols)) {
         try {
-            $prevHash = $this->swapDB->query(
-                "SELECT entry_hash FROM audit_logs ORDER BY audit_id DESC LIMIT 1"
-            )->fetchColumn() ?: null;
+            $prevHash = $this->runInSavepoint('audit_prev_hash_' . uniqid(), function () {
+                return $this->swapDB->query(
+                    "SELECT entry_hash FROM audit_logs ORDER BY audit_id DESC LIMIT 1"
+                )->fetchColumn() ?: null;
+            });
         } catch (\Throwable $e) {
             // No prior rows, or column doesn't exist yet - chain starts at null.
         }
@@ -1531,7 +1549,8 @@ private function writeAuditLogEntry(
         'performed_at' => $performedAt,
         'performed_by_type' => $performedByType,
         'performed_by_id' => $performedById,
-        'audit_uuid' => uniqid('audit_', true),
+        // Must be a real UUID - the column is uuid-typed. uniqid() caused 22P02.
+        'audit_uuid' => $this->generateUuidV4(),
         'timestamp' => $performedAt,
         'user_id' => $userId,
         'prev_hash' => $prevHash,
@@ -1568,12 +1587,34 @@ private function writeAuditLogEntry(
             $stmt = $this->swapDB->prepare($sql);
             $stmt->execute($params);
         });
+        return true;
     } catch (\Throwable $e) {
-        $this->writeAuditFallback($entityId, $action, 'Audit log insert failed: ' . $e->getMessage(), $userId);
+        $this->writeAuditFallback($entityId, $fallbackType, 'Audit log insert failed: ' . $e->getMessage(), $userId);
+        return false;
     }
 }
 
  
+private function generateUuidV4(): string
+{
+    $b = random_bytes(16);
+    $b[6] = chr((ord($b[6]) & 0x0f) | 0x40);
+    $b[8] = chr((ord($b[8]) & 0x3f) | 0x80);
+    return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($b), 4));
+}
+
+/**
+ * Turns an audit action like 'SWAP_MULTI_SOURCE_CREATED' into the swap
+ * type 'MULTI_SOURCE' for audit_log_failures.swap_type.
+ */
+private function swapTypeFromAuditAction(string $action): string
+{
+    if (preg_match('/^SWAP_(.+)_CREATED$/', $action, $m)) {
+        return $m[1];
+    }
+    return substr($action, 0, 50);
+}
+
 /**
  * Dead-simple, fixed-schema fallback for when the real audit_logs write
  * can't happen. Deliberately has NO dynamic column introspection and NO
@@ -1662,7 +1703,20 @@ private function writeAuditFallback(string $swapRef, string $swapType, string $r
     private function populateSwapRequest(string $swapRef, array $swapData, array $details, ?int $userId = null): ?int
     {
         // Extract forex data from feeCalculationDetails
-        $forexRate = $this->feeCalculationDetails['exchange_rate'] ?? null;
+        // Multi-source pool swaps never go through calculateFeesWithDetails(),
+        // so feeCalculationDetails is empty for them. Fall back to the rate
+        // the caller passed in, then to 1.0 for same-currency swaps.
+        // swap_requests.forex_rate is NOT NULL.
+        $fromCurrency = $details['currency'] ?? $swapData['currency'] ?? 'BWP';
+        $toCurrency = $details['destination_currency'] ?? $swapData['destination_currency'] ?? $fromCurrency;
+        $forexRate = $this->feeCalculationDetails['exchange_rate']
+            ?? $details['forex_rate']
+            ?? ($fromCurrency === $toCurrency ? 1.0 : null);
+        if ($forexRate === null) {
+            throw new \RuntimeException(
+                "No forex rate available for {$fromCurrency}->{$toCurrency} swap {$swapRef}"
+            );
+        }
         $forexFeePercent = $this->feeCalculationDetails['forex_fee_percent'] ?? null;
         $forexFeeAmount = $this->feeCalculationDetails['forex_fee_amount'] ?? null;
         $totalForexFee = $this->feeCalculationDetails['total_forex_fee'] ?? null;
@@ -1761,8 +1815,11 @@ $completedAt = (strtolower($status) === 'completed') ? $this->nowWithMicros() : 
         return $swapId > 0 ? $swapId : null;
         
     } catch (PDOException $e) {
+        // Rethrow: runInSavepoint() must see the real error so it can
+        // ROLLBACK TO SAVEPOINT. Swallowing it here left the transaction
+        // aborted (25P02) for every later statement.
         $this->logger->error("Failed to populate swap_requests", ['error' => $e->getMessage(), 'swap_ref' => $swapRef]);
-        return null;
+        throw $e;
     }
     }
 
@@ -1841,6 +1898,7 @@ $completedAt = (strtolower($status) === 'completed') ? $this->nowWithMicros() : 
             
         } catch (PDOException $e) {
             $this->logger->error("Failed to populate swap_transactions", ['error' => $e->getMessage(), 'swap_id' => $swapId, 'swap_ref' => $swapRef]);
+            throw $e; // let runInSavepoint() roll back
         }
     }
 
@@ -1931,6 +1989,7 @@ $completedAt = (strtolower($status) === 'completed') ? $this->nowWithMicros() : 
             
         } catch (PDOException $e) {
             $this->logger->error("Failed to populate cashout_authorizations", ['error' => $e->getMessage(), 'swap_ref' => $swapRef]);
+            throw $e; // let runInSavepoint() roll back
         }
     }
     
@@ -1939,17 +1998,19 @@ $completedAt = (strtolower($status) === 'completed') ? $this->nowWithMicros() : 
     // Get beneficiary phone from identity_swap_holds
     $clientPhone = null;
     try {
-        $stmt = $this->swapDB->prepare("
-            SELECT otp_pin_sent_to 
-            FROM identity_swap_holds 
-            WHERE swap_reference = :swap_ref
-            LIMIT 1
-        ");
-        $stmt->execute([':swap_ref' => $swapRef]);
-        $result = $stmt->fetch(PDO::FETCH_ASSOC);
-        if ($result && !empty($result['otp_pin_sent_to'])) {
-            $clientPhone = $result['otp_pin_sent_to'];
-        }
+        // Own savepoint: a failed SELECT also aborts a Postgres transaction,
+        // and we want to carry on with the fallback phone below.
+        $clientPhone = $this->runInSavepoint('deposit_phone_' . $swapRef, function () use ($swapRef) {
+            $stmt = $this->swapDB->prepare("
+                SELECT otp_pin_sent_to 
+                FROM identity_swap_holds 
+                WHERE swap_reference = :swap_ref
+                LIMIT 1
+            ");
+            $stmt->execute([':swap_ref' => $swapRef]);
+            $result = $stmt->fetch(PDO::FETCH_ASSOC);
+            return ($result && !empty($result['otp_pin_sent_to'])) ? $result['otp_pin_sent_to'] : null;
+        });
     } catch (PDOException $e) {
         $this->logger->warning("Failed to get beneficiary phone", ['error' => $e->getMessage()]);
     }
@@ -1959,8 +2020,10 @@ $completedAt = (strtolower($status) === 'completed') ? $this->nowWithMicros() : 
         $clientPhone = $details['client_phone'] ?? 
                        $details['beneficiary_phone'] ?? 
                        $details['notification_phone'] ?? 
-                       'unknown_' . substr($swapRef, 0, 20);
+                       // client_phone is VARCHAR(20): 'UNK_' + last 16 chars of the ref.
+                       'UNK_' . substr($swapRef, -16);
     }
+    $clientPhone = substr((string)$clientPhone, 0, 20);
 
     $sql = "
         INSERT INTO deposit_transactions (
@@ -2045,6 +2108,7 @@ $completedAt = (strtolower($status) === 'completed') ? $this->nowWithMicros() : 
         
     } catch (PDOException $e) {
         $this->logger->error("Failed to populate deposit_transactions", ['error' => $e->getMessage(), 'swap_ref' => $swapRef]);
+        throw $e; // let runInSavepoint() roll back
     }
 }
 
