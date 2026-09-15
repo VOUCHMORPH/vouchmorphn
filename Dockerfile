@@ -52,6 +52,15 @@ COPY public/ public/
 # worker service AND the cron entries defined in railway.json's "cron"
 # block depend on this directory existing in the built image.
 COPY scripts/ scripts/
+# FIX (15 Sep 2026): same class of bug as the scripts/ fix above --
+# database/ (the tracked .sql migration files under database/migrations/)
+# was never copied into the image either, so
+# public/admin/run_swap_identity_v2_migrations.php (and any future
+# browser-based migration runner) failed with "Migration file not found
+# on this deployment" on every container built from this Dockerfile,
+# regardless of whether the file existed in the git repo. Tiny directory
+# (a handful of .sql files, tens of KB) -- no build-size concern.
+COPY database/ database/
 COPY docker/nginx.conf /etc/nginx/sites-enabled/default
 RUN composer dump-autoload --optimize --no-interaction
 EXPOSE 9000
