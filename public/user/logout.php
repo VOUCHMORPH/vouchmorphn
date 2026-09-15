@@ -2,120 +2,20 @@
 /* ============================================================================
  * logout.php — VouchMorph
  * ----------------------------------------------------------------------------
- * Order matters here:
- *   1. read what we need from the session
- *   2. fetch today's swaps (before the session is gone)
- *   3. destroy the session and clear the cookie
- *   4. only then emit any output
+ * "Dusk over the water."
  *
- * The user is logged out by the time a single byte reaches the browser.
- * Everything below step 3 is a five-second farewell on the way to login.php.
+ * The session is destroyed before a single byte of HTML is sent. Everything
+ * after that is a farewell on the way to login.php, and it can fail in any
+ * way it likes without affecting whether the user is actually logged out.
+ *
+ * No database call. The sequence shows no session figures, so querying for
+ * them would only add latency and one more way for logout to break.
  * ========================================================================== */
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-/* --- 1. what we need, before the session goes -------------------------- */
-$sessionUser = $_SESSION['user'] ?? [];
-$userId = $sessionUser['user_id'] ?? $sessionUser['id'] ?? ($_SESSION['user_id'] ?? null);
-$userId = is_numeric($userId) ? (int) $userId : null;
-
-/* --- 2. today's departures ---------------------------------------------
- * ADJUST THIS ONE BLOCK to match your schema. The dashboard's
- * /api/v1/swap/history.php already returns this shape, so the column names
- * below are taken from it — but the table name is a guess, and the code
- * checks that the table exists before querying so a wrong guess degrades to
- * an empty board instead of a fatal error.
- *
- * If the board comes up with only the THIS SESSION row, this is why: point
- * SWAP_TABLE_CANDIDATES at the right table.
- * -------------------------------------------------------------------- */
-const SWAP_TABLE_CANDIDATES = ['swaps', 'swap_transactions', 'transactions', 'swap_records'];
-const MAX_ROWS = 3;   // keeps the whole sequence at five seconds
-
-$departures   = [];
-$sessionTotal = 0.0;
-$currency     = 'BWP';
-
-if ($userId) {
-    try {
-        $dsn = getenv('DATABASE_URL');
-        if ($dsn) {
-            $p = parse_url($dsn);
-            $pdo = new PDO(
-                sprintf(
-                    'pgsql:host=%s;port=%d;dbname=%s;connect_timeout=2',
-                    $p['host'],
-                    $p['port'] ?? 5432,
-                    ltrim($p['path'] ?? '', '/')
-                ),
-                $p['user'] ?? '',
-                urldecode($p['pass'] ?? ''),
-                [
-                    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                    PDO::ATTR_TIMEOUT => 3,
-                ]
-            );
-
-            // Which of the candidate tables actually exists?
-            $in = implode(',', array_fill(0, count(SWAP_TABLE_CANDIDATES), '?'));
-            $st = $pdo->prepare(
-                "SELECT table_name FROM information_schema.tables
-                 WHERE table_schema = 'public' AND table_name IN ($in) LIMIT 1"
-            );
-            $st->execute(SWAP_TABLE_CANDIDATES);
-            $table = $st->fetchColumn();
-
-            if ($table) {
-                $q = $pdo->prepare(
-                    "SELECT created_at, swap_type, source_institution,
-                            destination_institution, amount, currency
-                     FROM \"{$table}\"
-                     WHERE user_id = :uid
-                       AND created_at >= CURRENT_DATE
-                     ORDER BY created_at DESC
-                     LIMIT :lim"
-                );
-                $q->bindValue(':uid', $userId, PDO::PARAM_INT);
-                $q->bindValue(':lim', MAX_ROWS, PDO::PARAM_INT);
-                $q->execute();
-
-                foreach ($q->fetchAll(PDO::FETCH_ASSOC) as $row) {
-                    $amount = (float) ($row['amount'] ?? 0);
-                    $sessionTotal += $amount;
-                    if (!empty($row['currency'])) {
-                        $currency = strtoupper(substr($row['currency'], 0, 3));
-                    }
-
-                    $from = strtoupper((string) ($row['source_institution'] ?? 'SOURCE'));
-                    $type = strtoupper((string) ($row['swap_type'] ?? 'DEPOSIT'));
-                    if ($type === 'IDENTITY') {
-                        $to = 'IDENTITY';
-                    } elseif ($type === 'CASHOUT') {
-                        $to = 'CASH:ATM';
-                    } else {
-                        $to = strtoupper((string) ($row['destination_institution'] ?? 'DEST'));
-                    }
-
-                    $departures[] = [
-                        'time'   => date('H:i', strtotime((string) $row['created_at'])),
-                        'route'  => substr($from, 0, 8) . ' > ' . substr($to, 0, 9),
-                        'amount' => number_format($amount, 2),
-                    ];
-                }
-                // oldest first, the way a board reads
-                $departures = array_reverse($departures);
-            }
-        }
-    } catch (Throwable $e) {
-        // A farewell screen must never be the thing that breaks logout.
-        error_log('[logout] departures lookup failed: ' . $e->getMessage());
-        $departures = [];
-    }
-}
-
-/* --- 3. destroy everything --------------------------------------------- */
 $_SESSION = [];
 session_unset();
 session_destroy();
@@ -126,118 +26,115 @@ if (ini_get('session.use_cookies')) {
         $cp['path'], $cp['domain'], $cp['secure'], $cp['httponly']);
 }
 
-/* --- 4. output ---------------------------------------------------------- */
 header('Cache-Control: no-store, no-cache, must-revalidate');
 header('Pragma: no-cache');
-
-$BOARD = json_encode([
-    'rows'     => $departures,
-    'total'    => number_format($sessionTotal, 2),
-    'currency' => $currency,
-], JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<!-- If JS is off or fails, land on login anyway. -->
-<meta http-equiv="refresh" content="12;url=login.php">
+<!-- If JS is off or fails, land on login regardless. -->
+<meta http-equiv="refresh" content="20;url=login.php">
 <title>VouchMorph — signed out</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400&family=Inter:wght@400;600&display=swap" rel="stylesheet">
 <style>
 :root{
-  --ink:#04120E;--flap:#141F1B;--flap-hi:#1C2C26;--flap-ink:#F2F5F3;
-  --gold:#FFD24A;--accent:#00A878;--hot:#FF7A59;
+  --cor:'Cormorant Garamond',Georgia,'Times New Roman',serif;
   --f:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;
   --m:ui-monospace,SFMono-Regular,'Cascadia Mono',Consolas,monospace;
+  --brass:#C8A265;
 }
 *{margin:0;padding:0;box-sizing:border-box}
-html,body{width:100%;height:100%;background:var(--ink);overflow:hidden;font-family:var(--f)}
-body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:8;
-  background:repeating-linear-gradient(0deg,rgba(255,255,255,.02) 0 1px,transparent 1px 3px)}
-body.gold{background:#120C00}
+html,body{width:100%;height:100%;background:#000;overflow:hidden;font-family:var(--f)}
 
-.flap{position:relative;display:inline-block;background:var(--flap);color:var(--flap-ink);
-  font-family:var(--m);font-weight:700;text-align:center;overflow:hidden;
-  box-shadow:inset 0 0 0 1px rgba(255,255,255,.05),0 1px 0 rgba(0,0,0,.55)}
-.flap .h{position:absolute;left:0;right:0;overflow:hidden;display:flex;justify-content:center;background:var(--flap)}
-.flap .h.t{top:0;height:50%;align-items:flex-start;background:linear-gradient(180deg,var(--flap-hi),var(--flap))}
-.flap .h.b{bottom:0;height:50%;align-items:flex-end;background:linear-gradient(180deg,var(--flap),#0E1815)}
-.flap .h span{display:block;line-height:1}
-.flap .h.b span{transform:translateY(-50%)}
-.flap .seam{position:absolute;left:0;right:0;top:50%;height:1px;background:rgba(0,0,0,.72);z-index:6}
-.flap .fx{position:absolute;left:0;right:0;overflow:hidden;display:flex;justify-content:center;
-  backface-visibility:hidden;transform-style:preserve-3d;z-index:5}
-.flap .fx.t{top:0;height:50%;align-items:flex-start;transform-origin:bottom;
-  background:linear-gradient(180deg,var(--flap-hi),var(--flap))}
-.flap .fx.b{bottom:0;height:50%;align-items:flex-end;transform-origin:top;
-  background:linear-gradient(180deg,var(--flap),#0E1815)}
-.flap .fx span{display:block;line-height:1}
-.flap .fx.b span{transform:translateY(-50%)}
-.gold-line .flap{--flap:#3A2E06;--flap-hi:#4C3C09;color:var(--gold);
-  box-shadow:inset 0 0 0 1px rgba(255,210,74,.18),0 1px 0 rgba(0,0,0,.55)}
+#cv{position:fixed;inset:0;width:100%;height:100%;z-index:1}
+.grain{position:fixed;inset:0;z-index:2;pointer-events:none;opacity:.06;
+  background-image:radial-gradient(circle at 1px 1px,#fff 1px,transparent 0);
+  background-size:3px 3px;mix-blend-mode:overlay}
+.vig{position:fixed;inset:0;z-index:3;pointer-events:none;
+  background:radial-gradient(ellipse at 50% 46%,transparent 30%,rgba(0,0,0,.88) 100%)}
 
-.wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;z-index:3;
-  opacity:0;transition:opacity .34s ease}
-.wrap.in{opacity:1}
-.inner{width:100%;max-width:940px;padding:20px}
+.words{position:fixed;inset:0;z-index:6;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;text-align:center;padding:34px;pointer-events:none}
+.ln{position:absolute;opacity:0;transition:opacity 2.1s ease;
+  font-family:var(--cor);font-weight:300;color:#F0E4CC}
+.ln.in{opacity:1}
+.m1{font-size:clamp(17px,2.5vw,27px);letter-spacing:.13em;font-style:italic;max-width:22ch}
+.m2{font-size:clamp(24px,6.2vw,72px);letter-spacing:.24em;text-indent:.24em;color:#F6ECD6;
+  white-space:nowrap}
 
-.hdr{display:flex;justify-content:space-between;align-items:baseline;
-  border-bottom:1px solid rgba(255,255,255,.16);padding-bottom:9px;margin-bottom:12px}
-.hdr .l{font-family:var(--m);font-size:11px;letter-spacing:.28em;color:var(--accent)}
-.hdr .r{font-family:var(--m);font-size:11px;letter-spacing:.14em;color:rgba(234,242,239,.4)}
-.cols{display:flex;gap:9px;font-family:var(--m);font-size:9px;letter-spacing:.16em;
-  color:rgba(234,242,239,.3);margin-bottom:8px}
-.rows{display:flex;flex-direction:column;gap:5px}
-.row{display:flex;gap:9px;opacity:0;transition:opacity .25s}
-.row.up{opacity:1}
-.row.session{margin-top:11px;padding-top:11px;border-top:1px dashed rgba(255,255,255,.18)}
-.seg{display:flex;gap:2px}
+.tail{position:absolute;display:flex;flex-direction:column;align-items:center;
+  transform:translateY(clamp(60px,9.5vw,110px))}
+.hairline{width:0;height:1px;background:rgba(200,162,101,.55);
+  transition:width 2.4s cubic-bezier(.16,1,.3,1)}
+.hairline.in{width:min(340px,46vw)}
+.wordmark{font-family:var(--cor);font-weight:400;font-size:clamp(13px,1.7vw,18px);
+  letter-spacing:.46em;text-indent:.46em;color:rgba(240,228,204,.74);
+  margin-top:clamp(16px,2vw,24px);opacity:0;transition:opacity 1.8s ease}
+.wordmark.in{opacity:1}
+.tagline{font-family:var(--m);font-size:9px;letter-spacing:.34em;
+  color:rgba(240,228,204,.28);margin-top:13px;opacity:0;transition:opacity 1.6s ease}
+.tagline.in{opacity:1}
 
-.close{margin-top:28px;text-align:center;min-height:78px}
-.line{display:flex;justify-content:center}
-.tag{font-family:var(--m);font-size:9.5px;letter-spacing:.2em;margin-top:12px;opacity:0;transition:opacity .5s}
-.tag.in{opacity:1}
-.tag.common{color:rgba(234,242,239,.32)}
-.tag.uncommon{color:#5AC8FA}
-.tag.rare{color:var(--hot)}
-.tag.legendary{color:var(--gold);text-shadow:0 0 14px rgba(255,210,74,.5)}
+#skip,#snd{position:fixed;top:18px;z-index:40;background:transparent;
+  border:1px solid rgba(240,228,204,.15);color:rgba(240,228,204,.38);
+  font:600 10.5px/1 var(--f);letter-spacing:.08em;padding:10px 15px;cursor:pointer}
+#skip{right:18px}
+#snd{right:96px}
+#skip:hover,#snd:hover{color:#F0E4CC;border-color:rgba(240,228,204,.5)}
+#snd.on{color:var(--brass);border-color:rgba(200,162,101,.55)}
+#skip:focus-visible,#snd:focus-visible{outline:1px solid var(--brass);outline-offset:2px}
 
-#skip{position:fixed;top:16px;right:16px;z-index:20;background:transparent;
-  border:1px solid rgba(255,255,255,.2);color:rgba(234,242,239,.62);
-  font:700 11px/1 var(--f);letter-spacing:.05em;padding:10px 15px;cursor:pointer}
-#skip:hover{color:#fff;border-color:#fff}
-#skip:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-#snd{position:fixed;top:16px;right:104px;z-index:20;background:transparent;
-  border:1px solid rgba(255,255,255,.2);color:rgba(234,242,239,.62);
-  font:700 11px/1 var(--f);letter-spacing:.05em;padding:10px 15px;cursor:pointer}
-#snd.on{color:var(--accent);border-color:var(--accent)}
-noscript div{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
-  color:#F2F5F3;font-size:15px;z-index:30;background:var(--ink)}
-noscript a{color:var(--accent)}
-@media(prefers-reduced-motion:reduce){*,*::before,*::after{transition-duration:.01ms!important;animation-duration:.01ms!important}}
+noscript div{position:fixed;inset:0;z-index:60;background:#000;display:flex;
+  align-items:center;justify-content:center;color:#F0E4CC;font-size:15px;
+  font-family:var(--cor);letter-spacing:.08em}
+noscript a{color:var(--brass);margin-left:8px}
+
+@media(prefers-reduced-motion:reduce){
+  *,*::before,*::after{transition-duration:.01ms!important;animation-duration:.01ms!important}
+}
 </style>
 </head>
 <body>
 
-<noscript><div>You have been signed out. <a href="login.php">&nbsp;Return to login</a></div></noscript>
+<noscript><div>You have been signed out.<a href="login.php">Return to login</a></div></noscript>
+
+<canvas id="cv"></canvas>
+<i class="grain"></i><i class="vig"></i>
+
+<div class="words" id="words">
+  <div class="ln m1" id="l1">Rich is a number that sits still.</div>
+  <div class="ln m1" id="l2">Wealth is the part that moves.</div>
+  <div class="ln m2" id="l3">YOU ARE WEALTHY</div>
+  <div class="tail">
+    <div class="hairline" id="hr"></div>
+    <div class="wordmark" id="wm">VOUCHMORPH</div>
+    <div class="tagline" id="tg">UNTIL NEXT TIME</div>
+  </div>
+</div>
 
 <button id="snd" type="button">Sound off</button>
 <button id="skip" type="button">Skip</button>
-
-<div class="wrap" id="wrap"><div class="inner" id="inner"></div></div>
 
 <script>
 (function () {
 'use strict';
 
-var BOARD = <?php echo $BOARD ?: '{"rows":[],"total":"0.00","currency":"BWP"}'; ?>;
+/* --------------------------------------------------------------------------
+ * PACE — 1.0 is the full cut, about 16.4s end to end. 0.7 gives roughly 11.5s
+ * and still reads as unhurried. Below about 0.55 it stops feeling deliberate
+ * and starts feeling like a transition, which defeats the whole thing.
+ * ----------------------------------------------------------------------- */
+var PACE = 1.0;
+
 var RED = matchMedia('(prefers-reduced-motion:reduce)').matches;
-var SET = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,:>";
+var T0 = performance.now();
 var done = false;
+function el() { return (performance.now() - T0) / 1000; }
+function at(ms) { return ms * PACE; }
 
 function leave() {
   if (done) return;
@@ -246,267 +143,290 @@ function leave() {
 }
 document.getElementById('skip').onclick = leave;
 document.addEventListener('keydown', function (e) { if (e.key === 'Escape') leave(); });
-/* Hard backstop: never strand anyone here. */
-setTimeout(leave, 9000);
+/* Hard backstop — nobody is ever stranded on this page. */
+setTimeout(leave, at(16400) + 2600);
 
-/* ------------------------------------------------------------- audio */
-var AC = null, master = null, snd = false, lastClack = 0;
+/* ============================================================== audio ==
+ * A minor waltz, 3/4 at 66bpm: Dm - Gm - A7, resolving to D major with a
+ * Picardy third as the closing line arrives. Scheduled from wherever we
+ * currently are, so enabling sound mid-sequence still lands in time.
+ * ==================================================================== */
+var AC = null, mg = null, snd = false, scored = false, voices = [];
 try { snd = localStorage.getItem('vm_sound') === '1'; } catch (e) {}
+
 function ainit() {
   if (!AC) {
     var C = window.AudioContext || window.webkitAudioContext;
-    if (!C) return;
-    AC = new C(); master = AC.createGain(); master.gain.value = .45; master.connect(AC.destination);
+    if (!C) return false;
+    AC = new C();
+    mg = AC.createGain();
+    mg.gain.value = 0.44;
+    mg.connect(AC.destination);
   }
-  if (AC.state === 'suspended') AC.resume();
+  return true;
 }
-function nbuf(s) {
-  var n = Math.floor(AC.sampleRate * s), b = AC.createBuffer(1, n, AC.sampleRate), d = b.getChannelData(0);
-  for (var i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
-  return b;
+function bow(f, when, dur, vol, det) {
+  if (!AC) return;
+  if (when < 0) { dur += when; when = 0; if (dur <= 0.25) return; }
+  var t = AC.currentTime + when;
+  var o = AC.createOscillator(), g = AC.createGain();
+  o.type = 'sine';
+  o.frequency.setValueAtTime(f, t);
+  if (det) o.detune.setValueAtTime(det, t);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol, t + dur * 0.34);
+  g.gain.setValueAtTime(vol, t + dur * 0.62);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(mg);
+  o.start(t); o.stop(t + dur + 0.08);
+  voices.push(o);
 }
-function clack() {
-  if (!snd || !AC) return;
-  var now = AC.currentTime;
-  if (now - lastClack < .012) return;
-  lastClack = now;
-  var s = AC.createBufferSource(); s.buffer = nbuf(.045);
-  var f = AC.createBiquadFilter(); f.type = 'bandpass';
-  f.frequency.value = 2000 + Math.random() * 1100; f.Q.value = 1.7;
+function pluck(f, when, dur, vol) {
+  if (!AC || when < -0.05) return;
+  var t = AC.currentTime + Math.max(0, when);
+  var o = AC.createOscillator(), g = AC.createGain();
+  o.type = 'triangle';
+  o.frequency.setValueAtTime(f, t);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol, t + 0.012);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(mg);
+  o.start(t); o.stop(t + dur + 0.05);
+  voices.push(o);
+}
+function roomTone(offset) {
+  if (!AC) return;
+  var dur = Math.max(2, at(15000) / 1000 - offset);
+  var n = Math.floor(AC.sampleRate * Math.min(dur, 17));
+  var b = AC.createBuffer(1, n, AC.sampleRate), d = b.getChannelData(0), i;
+  for (i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+  var t = AC.currentTime, s = AC.createBufferSource(); s.buffer = b;
+  var f = AC.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 240; f.Q.value = 0.5;
   var g = AC.createGain();
-  g.gain.setValueAtTime(.13, now); g.gain.exponentialRampToValueAtTime(.001, now + .04);
-  s.connect(f); f.connect(g); g.connect(master); s.start(now); s.stop(now + .055);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(0.030, t + 2.4);
+  g.gain.setValueAtTime(0.030, t + Math.max(2.5, dur - 2.2));
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  s.connect(f); f.connect(g); g.connect(mg);
+  s.start(t); s.stop(t + dur);
+  voices.push(s);
 }
-function tone(fr, du, ty, vo, to) {
-  if (!snd || !AC) return;
-  var now = AC.currentTime, o = AC.createOscillator(), g = AC.createGain();
-  o.type = ty || 'sine'; o.frequency.setValueAtTime(fr, now);
-  if (to) o.frequency.exponentialRampToValueAtTime(to, now + du);
-  g.gain.setValueAtTime(vo || .14, now); g.gain.exponentialRampToValueAtTime(.001, now + du);
-  o.connect(g); g.connect(master); o.start(now); o.stop(now + du + .02);
+
+var B = 0.909 * PACE, BAR = B * 3;
+function startScore(offset) {
+  if (scored || !AC) return;
+  scored = true;
+  roomTone(offset);
+
+  var CH = [
+    { b: 146.8, c: [220.0, 293.7, 349.2] },   /* Dm */
+    { b:  98.0, c: [196.0, 233.1, 293.7] },   /* Gm */
+    { b: 110.0, c: [164.8, 220.0, 277.2] }    /* A7 */
+  ];
+  var MEL = [
+    [[0, 440.0, 1.5]],
+    [[0, 466.2, 0.75], [0.75, 440.0, 0.75], [1.5, 392.0, 1.0]],
+    [[0, 349.2, 0.9], [1.0, 329.6, 1.1]]
+  ];
+  for (var i = 0; i < 3; i++) {
+    var t = i * BAR - offset, ch = CH[i], k;
+    bow(ch.b, t, BAR * 0.94, 0.070);
+    bow(ch.b * 1.5, t, BAR * 0.94, 0.024, 6);
+    for (k = 0; k < 3; k++) bow(ch.c[k], t + B, B * 1.7, 0.028, k * 4 - 4);
+    for (k = 0; k < 3; k++) bow(ch.c[k], t + B * 2, B * 0.85, 0.021, k * 4 - 4);
+    (function (t2) {
+      MEL[i].forEach(function (n) {
+        pluck(n[1], t2 + n[0] * PACE, n[2] * PACE, 0.055);
+        pluck(n[1] * 2, t2 + n[0] * PACE + 0.015, n[2] * PACE * 0.5, 0.013);
+      });
+    })(t);
+  }
+  /* D major. The one warm gesture in the whole piece. */
+  var res = 3 * BAR - offset;
+  [146.8, 220.0, 293.7, 370.0].forEach(function (f, i) {
+    bow(f, res, 6.2, 0.052, i * 3);
+  });
 }
-function thud()  { tone(94, .4, 'sine', .28, 42); }
-function latch() { tone(230, .16, 'square', .06, 130); }
-function ding()  { tone(880, .35, 'sine', .10); setTimeout(function(){ tone(1320,.45,'sine',.07); }, 80); }
-function fanfare(){ [523,659,784,1047,1319].forEach(function(f,i){ setTimeout(function(){ tone(f,.55,'triangle',.10); }, i*105); }); }
 
 var sndBtn = document.getElementById('snd');
-function paintSnd(){ sndBtn.textContent = snd ? 'Sound on' : 'Sound off'; sndBtn.classList.toggle('on', snd); }
+function paintSnd() {
+  sndBtn.textContent = snd ? 'Sound on' : 'Sound off';
+  sndBtn.classList.toggle('on', snd);
+}
 paintSnd();
 sndBtn.onclick = function () {
   snd = !snd;
   try { localStorage.setItem('vm_sound', snd ? '1' : '0'); } catch (e) {}
-  if (snd) { ainit(); latch(); }
   paintSnd();
+  if (snd) {
+    if (ainit()) AC.resume().then(function () { startScore(el()); }).catch(function () {});
+  } else if (mg && AC) {
+    try { mg.gain.linearRampToValueAtTime(0.0001, AC.currentTime + 0.4); } catch (e) {}
+  }
 };
-if (snd) ainit();   // resumes silently if the context is already unlocked
-
-/* -------------------------------------------------------------- flap */
-function Flap(host, size, speed) {
-  this.i = 0; this.busy = false; this.q = null; this.D = speed || 22;
-  var el = document.createElement('div');
-  el.className = 'flap';
-  el.style.width = Math.round(size * .68) + 'px';
-  el.style.height = size + 'px';
-  el.style.fontSize = Math.round(size * .72) + 'px';
-  el.innerHTML = '<div class="h t"><span> </span></div><div class="h b"><span> </span></div>' +
-    '<div class="seam"></div><div class="fx t" style="display:none"><span></span></div>' +
-    '<div class="fx b" style="display:none"><span></span></div>';
-  host.appendChild(el);
-  this.ht = el.querySelector('.h.t span'); this.hb = el.querySelector('.h.b span');
-  this.ft = el.querySelector('.fx.t');     this.fb = el.querySelector('.fx.b');
-  this.fts = this.ft.querySelector('span'); this.fbs = this.fb.querySelector('span');
+/* If the browser already trusts us — the click on Log out often counts —
+   the score starts on its own. If not, the button is right there. */
+if (snd && ainit()) {
+  AC.resume().then(function () {
+    if (AC.state === 'running') startScore(el());
+  }).catch(function () {});
 }
-Flap.prototype.to = function (ch) {
-  var s = this, t = SET.indexOf(ch);
-  if (t < 0) t = 0;
-  if (t === this.i) return Promise.resolve();
-  if (this.busy) { this.q = ch; return Promise.resolve(); }
-  this.busy = true;
-  var g = 0;
-  function step() {
-    if (s.i === t || g++ > 60) {
-      s.busy = false;
-      if (s.q) { var q = s.q; s.q = null; s.to(q); }
-      return Promise.resolve();
+
+/* ============================================================== canvas = */
+var cv = document.getElementById('cv'), g = cv.getContext('2d'),
+    W = 0, H = 0, DPR = Math.min(devicePixelRatio || 1, 2), i;
+function csize() {
+  W = innerWidth; H = innerHeight;
+  cv.width = W * DPR; cv.height = H * DPR;
+  g.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+addEventListener('resize', csize);
+csize();
+
+function towers(seed, span) {
+  var s = seed, out = [], x = -40;
+  function r() { s = (s * 16807) % 2147483647; return s / 2147483647; }
+  while (x < span + 60) {
+    var w = 26 + r() * 74;
+    out.push({ x: x, w: w, h: 0.20 + r() * 0.52,
+               steps: 1 + ((r() * 3) | 0), spire: r() < 0.14, mast: r() < 0.07 });
+    x += w + 3 + r() * 14;
+  }
+  return out;
+}
+var far = towers(11, W * 1.25), mid = towers(37, W * 1.20), near = towers(91, W * 1.15);
+
+var motes = [];
+for (i = 0; i < 80; i++) motes.push({
+  x: Math.random() * W, y: Math.random() * H,
+  r: 0.5 + Math.random() * 1.5, v: 4 + Math.random() * 13, p: Math.random() * 6.283
+});
+
+function drawRank(list, base, scale, shade, winA, t) {
+  for (var a = 0; a < list.length; a++) {
+    var tw = list[a], hh = tw.h * base * scale, w = tw.w * scale,
+        x = tw.x * scale, y = base - hh, j;
+    g.fillStyle = shade;
+    for (j = 0; j < tw.steps; j++) {
+      var f = j / tw.steps, ww = w * (1 - f * 0.30), yy = y + hh * f * 0.34;
+      g.fillRect(x + (w - ww) / 2, yy, ww, base - yy);
     }
-    var f = SET[s.i];
-    s.i = (s.i + 1) % SET.length;
-    return s.flip(f, SET[s.i]).then(step);
-  }
-  return step();
-};
-Flap.prototype.flip = function (f, t) {
-  var s = this;
-  return new Promise(function (res) {
-    if (RED) { s.ht.textContent = t; s.hb.textContent = t; res(); return; }
-    var D = s.D;
-    s.ht.textContent = t; s.fts.textContent = f; s.fbs.textContent = t;
-    s.ft.style.display = 'flex'; s.fb.style.display = 'flex';
-    s.ft.style.transition = 'none'; s.fb.style.transition = 'none';
-    s.ft.style.transform = 'rotateX(0deg)'; s.fb.style.transform = 'rotateX(90deg)';
-    void s.ft.offsetHeight;
-    s.ft.style.transition = 'transform ' + (D/2) + 'ms linear';
-    s.ft.style.transform = 'rotateX(-90deg)';
-    clack();
-    setTimeout(function () {
-      s.ft.style.display = 'none';
-      s.fb.style.transition = 'transform ' + (D/2) + 'ms cubic-bezier(.4,1.5,.6,1)';
-      s.fb.style.transform = 'rotateX(0deg)';
-    }, D/2);
-    setTimeout(function () { s.hb.textContent = t; s.fb.style.display = 'none'; res(); }, D + 4);
-  });
-};
-function seg(host, size, width, speed) {
-  var d = document.createElement('div'); d.className = 'seg'; host.appendChild(d);
-  var f = [], i;
-  for (i = 0; i < width; i++) f.push(new Flap(d, size, speed));
-  return {
-    flaps: f,
-    set: function (txt, stagger) {
-      var s = String(txt).toUpperCase().padEnd(width, ' ').slice(0, width);
-      for (var k = 0; k < width; k++) (function (k) {
-        setTimeout(function () { f[k].to(s[k]); }, (stagger || 0) * k);
-      })(k);
+    if (tw.spire) {
+      var sw = w * 0.20;
+      g.fillRect(x + w / 2 - sw / 2, y - hh * 0.20, sw, hh * 0.22);
+      g.beginPath();
+      g.moveTo(x + w / 2, y - hh * 0.34);
+      g.lineTo(x + w / 2 + sw * 0.55, y - hh * 0.19);
+      g.lineTo(x + w / 2 - sw * 0.55, y - hh * 0.19);
+      g.closePath(); g.fill();
     }
-  };
+    if (tw.mast) {
+      g.fillRect(x + w / 2 - 1, y - hh * 0.42, 2, hh * 0.24);
+      g.globalAlpha = 0.5 + 0.5 * Math.sin(t * 2.1 + a);
+      g.fillStyle = 'rgba(255,150,90,.9)';
+      g.beginPath(); g.arc(x + w / 2, y - hh * 0.44, 1.8, 0, 6.283); g.fill();
+      g.globalAlpha = 1; g.fillStyle = shade;
+    }
+    if (winA > 0) {
+      var cols = Math.max(1, Math.floor(w / 13)), rows = Math.max(2, Math.floor(hh / 17));
+      for (j = 0; j < cols * rows; j++) {
+        if (((a * 7 + j * 13) % 10) < 4) continue;
+        var cc = j % cols, rr = (j / cols) | 0;
+        g.globalAlpha = winA * (0.28 + ((a * 3 + j * 5) % 7) / 12);
+        g.fillStyle = '#FFC271';
+        g.fillRect(x + 6 + cc * ((w - 10) / cols), y + 9 + rr * ((hh - 14) / rows),
+                   Math.max(1.4, (w - 10) / cols - 5), 3.2);
+      }
+      g.globalAlpha = 1; g.fillStyle = shade;
+    }
+  }
 }
 
-/* --------------------------------------------------------- sign-offs */
-var SIGNOFFS = [
-  { id:'until',    w:4,  t:'UNTIL NEXT TIME',   r:'common' },
-  { id:'balanced', w:4,  t:'LEDGER BALANCED',   r:'common' },
-  { id:'gowell',   w:4,  t:'GO WELL',           r:'common' },
-  { id:'allclear', w:4,  t:'ALL HOLDS CLEAR',   r:'common' },
-  { id:'soon',     w:4,  t:'SEE YOU SOON',      r:'common' },
-  { id:'sala',     w:2,  t:'SALA SENTLE',       r:'uncommon' },
-  { id:'tsamaya',  w:2,  t:'TSAMAYA SENTLE',    r:'uncommon' },
-  { id:'gate',     w:2,  t:'GATE SHUT',         r:'uncommon' },
-  { id:'nothing',  w:2,  t:'NOTHING LEFT',      r:'uncommon' },
-  { id:'sleeps',   w:1,  t:'THE SWITCH SLEEPS', r:'rare' },
-  { id:'kea',      w:1,  t:'KE A LEBOGA',       r:'rare' },
-  { id:'pula',     w:.5, t:'PULA',              r:'legendary' }
-];
-function roll() {
-  var total = 0, i;
-  for (i = 0; i < SIGNOFFS.length; i++) total += SIGNOFFS[i].w;
-  var r = Math.random() * total, acc = 0;
-  for (i = 0; i < SIGNOFFS.length; i++) { acc += SIGNOFFS[i].w; if (r <= acc) return SIGNOFFS[i]; }
-  return SIGNOFFS[0];
+function frame() {
+  if (done) return;
+  var t = el();
+  var reveal = RED ? 1 : Math.min(1, t / (3.4 * PACE));
+  var push = 1 + t * 0.0075;
+  var k;
+
+  var q = g.createLinearGradient(0, 0, 0, H);
+  q.addColorStop(0, '#07070A');
+  q.addColorStop(.44, '#12100E');
+  q.addColorStop(.66, 'rgba(' + Math.round(58 * reveal) + ',' + Math.round(34 * reveal) + ',' + Math.round(18 * reveal) + ',1)');
+  q.addColorStop(.80, 'rgba(' + Math.round(128 * reveal) + ',' + Math.round(74 * reveal) + ',' + Math.round(30 * reveal) + ',1)');
+  q.addColorStop(1, '#0B0805');
+  g.fillStyle = q; g.fillRect(0, 0, W, H);
+
+  var sy = H * 0.80;
+  var sg = g.createRadialGradient(W * 0.62, sy, 6, W * 0.62, sy, Math.min(W, H) * 0.55 * push);
+  sg.addColorStop(0, 'rgba(255,196,120,' + (0.50 * reveal) + ')');
+  sg.addColorStop(.35, 'rgba(214,132,54,' + (0.18 * reveal) + ')');
+  sg.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = sg; g.fillRect(0, 0, W, H);
+
+  for (k = 0; k < 4; k++) {
+    g.globalAlpha = 0.05 * reveal;
+    g.fillStyle = '#C98B4A';
+    g.fillRect(0, H * (0.60 + k * 0.055) + Math.sin(t * 0.25 + k) * 4, W, H * 0.028);
+  }
+  g.globalAlpha = 1;
+
+  var b = H * 0.855;
+  g.save();
+  g.translate(W * 0.5, b); g.scale(push, push); g.translate(-W * 0.5, -b);
+  drawRank(far,  b,             1.00, 'rgba(16,13,12,' + (0.86 * reveal) + ')', 0.10 * reveal, t);
+  drawRank(mid,  b + H * 0.035, 1.06, 'rgba(9,8,8,'    + (0.94 * reveal) + ')', 0.22 * reveal, t);
+  drawRank(near, b + H * 0.085, 1.14, 'rgba(3,3,3,'    + (0.98 * reveal) + ')', 0.34 * reveal, t);
+  g.restore();
+
+  g.globalAlpha = reveal * 0.5;
+  var wg = g.createLinearGradient(0, H * 0.88, 0, H);
+  wg.addColorStop(0, 'rgba(60,34,14,.7)');
+  wg.addColorStop(1, 'rgba(4,3,2,1)');
+  g.fillStyle = wg; g.fillRect(0, H * 0.88, W, H * 0.12);
+  for (k = 0; k < 26; k++) {
+    g.globalAlpha = reveal * (0.03 + Math.random() * 0.05);
+    g.fillStyle = '#E2A768';
+    g.fillRect(Math.random() * W, H * 0.885 + Math.random() * H * 0.10, 10 + Math.random() * 70, 1);
+  }
+  g.globalAlpha = 1;
+
+  for (k = 0; k < motes.length; k++) {
+    var m = motes[k];
+    m.y -= m.v * 0.012;
+    if (m.y < 0) m.y = H;
+    g.globalAlpha = reveal * (0.05 + 0.10 * Math.sin(t * 0.8 + m.p));
+    g.fillStyle = '#F2CFA0';
+    g.beginPath(); g.arc(m.x + Math.sin(t * 0.35 + m.p) * 10, m.y, m.r, 0, 6.283); g.fill();
+  }
+  g.globalAlpha = 1;
+
+  requestAnimationFrame(frame);
 }
-var FOUND = {};
-try { FOUND = JSON.parse(localStorage.getItem('vm_signoffs') || '{}'); } catch (e) { FOUND = {}; }
+requestAnimationFrame(frame);
 
-var eggHeld = false;
-document.addEventListener('keydown', function (e) { if (e.key === 'v' || e.key === 'V') eggHeld = true; });
-document.addEventListener('keyup',   function (e) { if (e.key === 'v' || e.key === 'V') eggHeld = false; });
+/* ============================================================ the words = */
+function show(id) { var e = document.getElementById(id); if (e && !done) e.classList.add('in'); }
+function hide(id) { var e = document.getElementById(id); if (e && !done) e.classList.remove('in'); }
 
-/* ---------------------------------------------------------- sequence */
-var wait = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+setTimeout(function () { show('l1'); }, at(2400));
+setTimeout(function () { hide('l1'); }, at(5200));
+setTimeout(function () { show('l2'); }, at(5600));
+setTimeout(function () { hide('l2'); }, at(8200));
+setTimeout(function () { show('l3'); }, at(8700));
+setTimeout(function () { show('hr'); }, at(10100));
+setTimeout(function () { show('wm'); }, at(11100));
+setTimeout(function () { show('tg'); }, at(12200));
 
-async function play() {
-  var pick = roll();
-  var mob = innerWidth < 720;
-  var S = mob ? 12 : 16;
-  var Wtime = 5, Wroute = mob ? 15 : 20, Wamt = 10, Wstat = 10;
-  var rowsData = (BOARD.rows || []).slice(0, 3);
-
-  var inner = document.getElementById('inner');
-  inner.innerHTML =
-    '<div class="hdr"><span class="l">DEPARTURES</span><span class="r" id="hc"></span></div>' +
-    '<div class="cols" id="cols"></div>' +
-    '<div class="rows" id="rows"></div>' +
-    '<div class="close"><div class="line" id="line"></div><div class="tag" id="tag"></div></div>';
-
-  document.getElementById('hc').textContent =
-    new Date().toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' }) + '  ·  GABORONE';
-
-  var cw = Math.round(S * .68) + 2;
-  var cols = document.getElementById('cols');
-  [['TIME',Wtime],['ROUTE',Wroute],['AMOUNT',Wamt],['STATUS',Wstat]].forEach(function (c) {
-    var d = document.createElement('div');
-    d.style.width = (c[1] * cw) + 'px';
-    d.textContent = c[0];
-    cols.appendChild(d);
-  });
-
-  var host = document.getElementById('rows');
-  function mkRow(cls) {
-    var r = document.createElement('div');
-    r.className = 'row' + (cls ? ' ' + cls : '');
-    host.appendChild(r);
-    return { el:r, time:seg(r,S,Wtime,20), route:seg(r,S,Wroute,20),
-             amt:seg(r,S,Wamt,20), stat:seg(r,S,Wstat,20) };
-  }
-  var rows = rowsData.map(function () { return mkRow(); });
-  var sess = mkRow('session');
-
-  document.getElementById('wrap').classList.add('in');
-  await wait(RED ? 0 : 260);
+setTimeout(function () {
   if (done) return;
-
-  for (var i = 0; i < rows.length; i++) {
-    rows[i].el.classList.add('up');
-    rows[i].time.set(rowsData[i].time, 12);
-    rows[i].route.set(rowsData[i].route, 12);
-    rows[i].amt.set(rowsData[i].amount, 12);
-    rows[i].stat.set('BOARDING', 12);
-    await wait(260);
-    if (done) return;
-  }
-
-  sess.el.classList.add('up');
-  sess.time.set('NOW', 12);
-  sess.route.set('THIS SESSION', 12);
-  sess.amt.set(BOARD.total || '0.00', 12);
-  sess.stat.set('OPEN', 12);
-  await wait(520);
-  if (done) return;
-
-  for (var j = 0; j < rows.length; j++) (function (j) {
-    setTimeout(function () {
-      if (!done) { rows[j].stat.set('DEPARTED', 10); latch(); }
-    }, j * 130);
-  })(j);
-  await wait(rows.length * 130 + 330);
-  if (done) return;
-
-  sess.stat.set('SIGNED OUT', 10);
-  thud();
-  await wait(600);
-  if (done) return;
-
-  var text = eggHeld ? 'GO ON THEN' : pick.t;
-  var lineHost = document.getElementById('line');
-  if (pick.r === 'legendary') {
-    document.body.classList.add('gold');
-    lineHost.classList.add('gold-line');
-    fanfare();
-  } else if (pick.r === 'rare') {
-    ding();
-  }
-  seg(lineHost, mob ? 18 : 26, Math.max(text.length, 10), 32).set(text, 40);
-  await wait(pick.r === 'legendary' ? 1150 : 800);
-  if (done) return;
-
-  var isNew = !FOUND[pick.id];
-  FOUND[pick.id] = true;
-  var n = 0, k;
-  for (k in FOUND) if (FOUND.hasOwnProperty(k)) n++;
-  try { localStorage.setItem('vm_signoffs', JSON.stringify(FOUND)); } catch (e) {}
-
-  var tag = document.getElementById('tag');
-  tag.className = 'tag in ' + pick.r;
-  tag.textContent = (isNew ? 'NEW · ' : '') + pick.r.toUpperCase() +
-                    ' · ' + n + ' OF ' + SIGNOFFS.length + ' FOUND';
-
-  await wait(pick.r === 'legendary' ? 1250 : 950);
-  document.getElementById('wrap').classList.remove('in');
-  await wait(300);
-  leave();
-}
-
-play().catch(function (e) { console.error('[logout]', e); leave(); });
+  var w = document.getElementById('words');
+  w.style.transition = 'opacity 1.6s ease';
+  w.style.opacity = '0';
+  cv.style.transition = 'opacity 1.6s ease';
+  cv.style.opacity = '0';
+}, at(14600));
+setTimeout(leave, at(16400));
 
 })();
 </script>
