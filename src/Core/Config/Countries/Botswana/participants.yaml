@@ -40,12 +40,11 @@ participants:
       cashout: true
       identity_holding: true
       reservation_accounts: true
-      # Gates swap-to-identity algorithm v2 behavior added after the
-      # reservation-account primitive above (Phase D's park-vs-release
-      # expiry branch, Point X's obligation-ledger wiring). False until
-      # this participant is deliberately verified and flipped on -- see
-      # the approved plan's staged-rollout section.
-      claim_algorithm_v2: false
+      # Flipped true (15 Sep 2026) to exercise the v2 algorithm end-to-end
+      # against this one sandbox institution before enabling it anywhere
+      # else -- staged rollout per the approved plan. Every other
+      # participant in this file stays false until ZURUBANK is verified.
+      claim_algorithm_v2: true
 
     hold_model: NATIVE
 
