@@ -1183,10 +1183,10 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
     public function getAccounts(array $payload, array $context): array
     {
         $this->context = array_merge($context, $payload);
-        
+
         try {
             $this->ensureConsent();
-            
+
             return [
                 'success' => true,
                 'accounts' => [
@@ -1198,12 +1198,128 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
                     ]
                 ]
             ];
-            
+
         } catch (\Exception $e) {
             return [
                 'success' => false,
                 'message' => $e->getMessage(),
                 'accounts' => []
+            ];
+        }
+    }
+
+    // ============================================================
+    // RESERVATION ACCOUNTS
+    // ============================================================
+
+    public function createReservationAccount(array $payload, array $context): array
+    {
+        $this->context = array_merge($context, $payload);
+
+        try {
+            $this->ensureConsent();
+
+            if (!method_exists($this->bankClient, 'createReservationAccountSigned')) {
+                return [
+                    'success' => false,
+                    'created' => false,
+                    'status' => 'failed',
+                    'message' => "{$this->institution}'s bank client does not implement createReservationAccountSigned()",
+                ];
+            }
+
+            $createPayload = $payload;
+
+            if (!isset($createPayload['reference'])) {
+                $createPayload['reference'] = $context['bank_reference'] ?? uniqid('resacc_');
+            }
+            if (!isset($createPayload['action'])) {
+                $createPayload['action'] = 'CREATE_RESERVATION_ACCOUNT';
+            }
+            if (!isset($createPayload['timestamp'])) {
+                $createPayload['timestamp'] = time();
+            }
+            if (!isset($createPayload['requester'])) {
+                $createPayload['requester'] = 'VOUCHMORPH';
+            }
+            if (!isset($createPayload['to_institution'])) {
+                $createPayload['to_institution'] = $this->institution;
+            }
+            if (!isset($createPayload['destination_institution'])) {
+                $createPayload['destination_institution'] = $this->institution;
+            }
+
+            $result = $this->bankClient->createReservationAccountSigned($createPayload);
+
+            if (!($result['success'] ?? false)) {
+                return [
+                    'success' => false,
+                    'created' => false,
+                    'status' => 'failed',
+                    'message' => $result['message'] ?? $result['curl_error'] ?? 'Reservation account creation failed (HTTP ' . ($result['status_code'] ?? 'unknown') . ')',
+                    'status_code' => $result['status_code'] ?? 0,
+                    'raw_response' => $result['raw_response'] ?? null,
+                ];
+            }
+
+            return [
+                'success' => true,
+                'created' => true,
+                'status' => $result['status'] ?? 'pending',
+                'account_identifier' => $result['account_identifier'] ?? null,
+                'account_identifier_type' => $result['account_identifier_type'] ?? 'account_number',
+                'bank_reference' => $result['bank_reference'] ?? $result['reference'] ?? $createPayload['reference'],
+                'message' => $result['message'] ?? 'Reservation account request accepted',
+                'raw_response' => $result['raw_response'] ?? null,
+                'status_code' => $result['status_code'] ?? 0,
+            ];
+
+        } catch (\Exception $e) {
+            return [
+                'success' => false,
+                'created' => false,
+                'status' => 'failed',
+                'message' => $e->getMessage(),
+            ];
+        }
+    }
+
+    public function getReservationAccountStatus(array $payload, array $context): array
+    {
+        $this->context = array_merge($context, $payload);
+
+        try {
+            $this->ensureConsent();
+
+            if (!method_exists($this->bankClient, 'getReservationAccountStatus')) {
+                return [
+                    'success' => false,
+                    'status' => 'unknown',
+                    'message' => "{$this->institution}'s bank client does not implement getReservationAccountStatus()",
+                ];
+            }
+
+            $statusPayload = $payload;
+            if (!isset($statusPayload['action'])) {
+                $statusPayload['action'] = 'GET_RESERVATION_ACCOUNT_STATUS';
+            }
+
+            $result = $this->bankClient->getReservationAccountStatus($statusPayload);
+
+            return [
+                'success' => $result['success'] ?? false,
+                'status' => $result['status'] ?? 'unknown',
+                'account_identifier' => $result['account_identifier'] ?? null,
+                'account_identifier_type' => $result['account_identifier_type'] ?? 'account_number',
+                'message' => $result['message'] ?? ($result['success'] ?? false ? 'Checked' : 'Check failed'),
+                'raw_response' => $result['raw_response'] ?? null,
+            ];
+
+        } catch (\Exception $e) {
+            return [
+                'success' => false,
+                'status' => 'unknown',
+                'message' => $e->getMessage(),
             ];
         }
     }

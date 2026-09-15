@@ -422,6 +422,11 @@ if ($currentSection === 'auth' && preg_match('/^    ([a-z_]+): (.+)$/', $line, $
             'reverse_transaction' => ['common', 'reverse'],
             'account_balance' => ['source', 'get_balance'],
             'transactions' => ['source', 'get_transactions'],
+            'create_reservation_account' => ['reservation_accounts', 'create_account'],
+            'createReservationAccount' => ['reservation_accounts', 'create_account'],
+            'createReservationAccountSigned' => ['reservation_accounts', 'create_account'],
+            'get_reservation_account_status' => ['reservation_accounts', 'get_account_status'],
+            'getReservationAccountStatus' => ['reservation_accounts', 'get_account_status'],
         ];
         
         if ($this->yamlEndpoints && isset($yamlPathMap[$action])) {
@@ -1670,6 +1675,96 @@ public function placeHold(array $payload): array
     }
 
     // ============================================================================
+    // RESERVATION ACCOUNTS
+    //
+    // Asks the institution to open a dedicated, bank-controlled account for
+    // one beneficiary (used to hold the unclaimed remainder of an identity
+    // swap instead of a shared pooled holding account -- see
+    // Domain\Services\ReservationAccountService). May respond synchronously
+    // (account_identifier present, status=active) or asynchronously
+    // (status=pending, confirmed later via the callbacks.reservation_account_confirmed
+    // webhook or a getReservationAccountStatus() poll).
+    // ============================================================================
+
+    public function createReservationAccount(array $payload): array
+    {
+        error_log("=== GENERIC BANK CLIENT: createReservationAccount ===");
+
+        if (!isset($payload['reference'])) {
+            $payload['reference'] = 'RESACC_' . bin2hex(random_bytes(6));
+        }
+        if (!isset($payload['action'])) {
+            $payload['action'] = 'CREATE_RESERVATION_ACCOUNT';
+        }
+        if (!isset($payload['timestamp'])) {
+            $payload['timestamp'] = time();
+        }
+
+        $result = $this->send('create_reservation_account', $payload);
+
+        $data = $result['data'] ?? [];
+
+        if (!$result['success']) {
+            return [
+                'success' => false,
+                'created' => false,
+                'status' => 'failed',
+                'message' => $data['message'] ?? $result['curl_error'] ?? 'Reservation account creation failed',
+                'reference' => $payload['reference'],
+                'status_code' => $result['status_code'] ?? 0,
+                'data' => $data,
+                'curl_error' => $result['curl_error'] ?? null,
+                'raw_response' => $result['raw_response'] ?? null,
+            ];
+        }
+
+        // The bank may confirm the account immediately (account_identifier
+        // present) or only acknowledge the request (status: pending) and
+        // confirm later via callback -- both are a "success" HTTP-wise, so
+        // status distinguishes them for the caller.
+        $accountIdentifier = $data['account_identifier'] ?? $data['identifier'] ?? null;
+        $status = $data['status'] ?? ($accountIdentifier ? 'active' : 'pending');
+
+        return [
+            'success' => true,
+            'created' => true,
+            'status' => $status,
+            'account_identifier' => $accountIdentifier,
+            'account_identifier_type' => $data['account_identifier_type'] ?? $data['identifier_type'] ?? 'account_number',
+            'reference' => $payload['reference'],
+            'bank_reference' => $data['bank_reference'] ?? $data['reference'] ?? $payload['reference'],
+            'message' => $data['message'] ?? 'Reservation account request accepted',
+            'data' => $data,
+            'status_code' => $result['status_code'] ?? 0,
+            'raw_response' => $result['raw_response'] ?? null,
+        ];
+    }
+
+    public function getReservationAccountStatus(array $payload): array
+    {
+        error_log("=== GENERIC BANK CLIENT: getReservationAccountStatus ===");
+
+        if (!isset($payload['action'])) {
+            $payload['action'] = 'GET_RESERVATION_ACCOUNT_STATUS';
+        }
+
+        $result = $this->send('get_reservation_account_status', $payload);
+
+        $data = $result['data'] ?? [];
+
+        return [
+            'success' => $result['success'] ?? false,
+            'status' => $data['status'] ?? 'unknown',
+            'account_identifier' => $data['account_identifier'] ?? $data['identifier'] ?? null,
+            'account_identifier_type' => $data['account_identifier_type'] ?? $data['identifier_type'] ?? 'account_number',
+            'message' => $data['message'] ?? ($result['success'] ? 'Checked' : 'Check failed'),
+            'data' => $data,
+            'status_code' => $result['status_code'] ?? 0,
+            'raw_response' => $result['raw_response'] ?? null,
+        ];
+    }
+
+    // ============================================================================
     // SIGNED METHODS - STANDARDIZED
     // ============================================================================
 
@@ -1688,6 +1783,13 @@ public function placeHold(array $payload): array
     $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
     return $this->placeHold($signedPayload);
 }
+
+    public function createReservationAccountSigned(array $payload): array
+    {
+        error_log("=== GENERIC BANK CLIENT: createReservationAccountSigned ===");
+        $signedPayload = $this->createSignedPayload($payload, 'VOUCHMORPH');
+        return $this->createReservationAccount($signedPayload);
+    }
 
     public function processDepositWithProof(array $payload): array
     {
