@@ -6010,6 +6010,41 @@ private static function isSourceMoneyOwedToIdentity(?string $sourceAccountType):
 }
 
 /**
+ * Point X's obligation calculation (swap-to-identity algorithm v2, plan
+ * §5 / spec §8 2h): groups a pool's LANDED holds by source institution
+ * and nets each hold's own Fh out of its contribution, since Fh was
+ * already earned and collected at Moment 1 (Point H) and isn't part of
+ * what the source owes the destination for the value it transferred.
+ * Failed holds ($landedHoldIds excludes them) never settle.
+ *
+ * Returns [institution => netted amount], ready for one
+ * updateNetPosition() call per institution (spec: "Point X is applied
+ * ONCE, fanning obligations out to every Ii" -- Ii meaning institution,
+ * not hold, hence the grouping rather than one call per hold).
+ *
+ * Pure/stateless (no $this usage) and static so this financial
+ * calculation is directly testable without constructing the full
+ * SwapService dependency graph.
+ */
+private static function computeNetObligationsByInstitution(array $holds, array $landedHoldIds): array
+{
+    $landedByInstitution = [];
+    foreach ($holds as $hold) {
+        if (!in_array((int)$hold['hold_id'], $landedHoldIds, true)) {
+            continue;
+        }
+        $holdAmount = (float)$hold['amount'];
+        $holdFh = self::extractHoldFeeFromMetadata($hold['metadata'] ?? null);
+        $sourceInst = $hold['source_institution'];
+        $landedByInstitution[$sourceInst] = round(
+            ($landedByInstitution[$sourceInst] ?? 0.0) + ($holdAmount - $holdFh),
+            2
+        );
+    }
+    return $landedByInstitution;
+}
+
+/**
  * Phase D of the swap-to-identity algorithm v2 (plan §8): a single
  * expired-and-unclaimed swap's disposition. Fh is withheld in both
  * branches -- the only difference is where the remaining balance A goes.
@@ -7174,6 +7209,68 @@ public function executeIdentityClaimWithSplit(
                 $consolidationReference,
                 $fallbackOwnerUserId
             );
+        }
+    }
+
+    // ------------------------------------------------------------
+    // Point X (swap-to-identity algorithm v2, plan §5): record the
+    // obligation ledger for this claim. Wired here, additively, without
+    // moving WHEN anything happens -- it fires at the same point the
+    // audit log entry below always has (after payout has been attempted).
+    // Settlement reordering (a separate, later increment) is what will
+    // gate this on Step 4 having actually CONFIRMED delivery rather than
+    // merely having been attempted; until then this inherits the same
+    // "attempted, not necessarily confirmed" timing the rest of this
+    // method already has.
+    //
+    // R (the reservation-account remainder leg above) generates no
+    // obligation and no invoice, per spec: it never left the identity's
+    // control, it just changed which account it sits in.
+    // ------------------------------------------------------------
+    $landedByInstitution = self::computeNetObligationsByInstitution($holds, $landedHoldIds);
+
+    foreach ($landedByInstitution as $sourceInst => $nettedAmount) {
+        if ($nettedAmount <= 0) {
+            continue;
+        }
+        try {
+            $this->settlement->updateNetPosition(
+                $consolidationReference,
+                $sourceInst,
+                $destinationInstitution,
+                $nettedAmount,
+                'IDENTITY_CLAIM',
+                $currency
+            );
+        } catch (\Throwable $e) {
+            error_log("[SwapService] Point X: updateNetPosition failed for {$sourceInst} -> {$destinationInstitution} on {$consolidationReference}: " . $e->getMessage());
+        }
+    }
+
+    // Fd's platform cut: invoice the DESTINATION institution -- it's the
+    // one physically holding the undelivered difference between what it
+    // swept in and what it was told to pay out (Fd = C - N never left its
+    // own holding account). The source institution(s)' own share of Fd
+    // (distribution.split.source_institution_percent) is a genuinely open
+    // design question for a mixed-source pool (approved plan's judgment
+    // call, spec open question (c): which institution's Fd schedule
+    // applies) -- not settled here, deliberately left for a follow-up
+    // once that's answered rather than guessed at.
+    if ($feeBreakdown !== null) {
+        $platformShare = (float)($feeBreakdown['components']['revenue_split']['platform']['amount'] ?? 0);
+        if ($platformShare > 0) {
+            try {
+                $this->settlement->invoiceFee(
+                    $consolidationReference,
+                    $destinationInstitution,
+                    $this->getParticipantId($destinationInstitution),
+                    'IDENTITY_CLAIM_PLATFORM_FEE',
+                    $platformShare,
+                    $currency
+                );
+            } catch (\Throwable $e) {
+                error_log("[SwapService] Point X: invoiceFee failed for {$destinationInstitution} on {$consolidationReference}: " . $e->getMessage());
+            }
         }
     }
 
