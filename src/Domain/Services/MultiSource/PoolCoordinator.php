@@ -325,6 +325,10 @@ class PoolCoordinator
         // ============================================================
         try {
             $sourceInstitutions = implode(', ', array_unique(array_column($contributions, 'institution')));
+            // Same request as createPool() -> in-memory snapshot; deferred
+            // confirmation -> the copy reloaded from pool metadata.
+            $poolForexRate = $this->forexRateSnapshot['rate']
+                ?? (is_array($pool['forex_rate'] ?? null) ? ($pool['forex_rate']['rate'] ?? null) : null);
             $this->swapService->recordPoolSwapTransaction(
                 [
                     'swap_type' => 'MULTI_SOURCE',
@@ -338,6 +342,9 @@ class PoolCoordinator
                 ],
                 [
                     'status' => 'completed',
+                    'currency' => $pool['currency'] ?? 'BWP',
+                    'destination_currency' => $pool['destination_currency'] ?? $pool['currency'] ?? 'BWP',
+                    'forex_rate' => $poolForexRate,
                     'source_institution' => $sourceInstitutions,
                     'destination_institution' => $pool['destination_institution'] ?? null,
                     'destination_identifier' => $pool['destination_identifier'] ?? null,
@@ -447,6 +454,11 @@ class PoolCoordinator
                 'destination_identifier_type' => $destinationIdentifier['type'] ?? null,
                 'destination_asset_type' => $destinationAssetType,
                 'user_id' => $payload['user_id'] ?? null,
+                // Needed by completeDeferredPool() when the pool is
+                // confirmed in a later request, where $this->forexRateSnapshot
+                // is no longer set.
+                'destination_currency' => $payload['destination_currency'] ?? 'BWP',
+                'forex_rate' => $this->forexRateSnapshot['rate'] ?? null,
             ],
         ];
         
@@ -485,6 +497,8 @@ class PoolCoordinator
             'identity_value' => $metadata['identity_value'] ?? null,
             'beneficiary_phone' => $metadata['beneficiary_phone'] ?? null,
             'user_id' => $metadata['user_id'] ?? null,
+            'destination_currency' => $metadata['destination_currency'] ?? ($row['currency'] ?? 'BWP'),
+            'forex_rate' => isset($metadata['forex_rate']) ? ['rate' => (float)$metadata['forex_rate']] : null,
         ];
 
         $contributionRows = $this->contributionRepository->getAllByPoolIdAsArray($poolId);
