@@ -497,6 +497,22 @@ private function extractBeneficiaryPartyData(array $payload): array
         }
     }
 
+    /**
+     * Staged-rollout gate for the swap-to-identity algorithm v2 behavior
+     * that changes real money movement or reporting for a live
+     * institution: Phase D's government/business-trust-vs-personal expiry
+     * branch, and Point X's obligation-ledger wiring. Mirrors
+     * ReservationAccountService::isSupported()'s exact lookup pattern
+     * against the same participants.yaml capabilities block. Defaults to
+     * false (old behavior) for any institution that hasn't explicitly
+     * opted in, or isn't found in config at all.
+     */
+    private function isClaimAlgorithmV2Enabled(string $institution): bool
+    {
+        $participant = $this->participants[$institution] ?? $this->participants[strtoupper($institution)] ?? null;
+        return (bool)($participant['capabilities']['claim_algorithm_v2'] ?? false);
+    }
+
    public function extractDestinationIdentifier(array $payload): array
 {
     $destinationIdentifier = null;
@@ -6092,7 +6108,17 @@ private function expireIdentitySwap(array $swap): array
     $sourceAccountType = $swap['source_account_type'] ?? 'PERSONAL';
     $adapter = $this->adapterFactory->getAdapter($sourceInstitution);
 
-    if (self::isSourceMoneyOwedToIdentity($sourceAccountType) && $a > 0) {
+    // Staged rollout: the park-vs-release branch is the real
+    // behavior-changing part of this rewrite (money that always released
+    // to the sender before can now park indefinitely instead) -- gated
+    // per source institution behind capabilities.claim_algorithm_v2 so no
+    // live institution is surprised by it before opting in. Fh withholding
+    // above stays unconditional -- it's a fix to logic that already always
+    // intended to withhold (the old levy_amount read just always
+    // evaluated to zero), not new behavior.
+    $parkingEnabled = $this->isClaimAlgorithmV2Enabled($sourceInstitution);
+
+    if ($parkingEnabled && self::isSourceMoneyOwedToIdentity($sourceAccountType) && $a > 0) {
         $owner = $this->findVerifiedIdentityOwner($swap['identity_type'], $swap['identity_value']);
         $reservation = ($owner !== null && !empty($owner['user_id']))
             ? $this->reservationAccountService->resolveOrCreateReservationAccount((int)$owner['user_id'], $sourceInstitution, $currency)
@@ -7226,50 +7252,60 @@ public function executeIdentityClaimWithSplit(
     // R (the reservation-account remainder leg above) generates no
     // obligation and no invoice, per spec: it never left the identity's
     // control, it just changed which account it sits in.
+    //
+    // Staged rollout: gated per DESTINATION institution behind
+    // capabilities.claim_algorithm_v2 -- this is where the claim
+    // consolidates, and these calls generate real settlement_queue rows
+    // and fee invoices a live institution hasn't seen before. Skipped
+    // entirely when disabled, preserving the exact pre-existing behavior
+    // (no Point X calls in this flow at all).
     // ------------------------------------------------------------
-    $landedByInstitution = self::computeNetObligationsByInstitution($holds, $landedHoldIds);
+    if ($this->isClaimAlgorithmV2Enabled($destinationInstitution)) {
+        $landedByInstitution = self::computeNetObligationsByInstitution($holds, $landedHoldIds);
 
-    foreach ($landedByInstitution as $sourceInst => $nettedAmount) {
-        if ($nettedAmount <= 0) {
-            continue;
-        }
-        try {
-            $this->settlement->updateNetPosition(
-                $consolidationReference,
-                $sourceInst,
-                $destinationInstitution,
-                $nettedAmount,
-                'IDENTITY_CLAIM',
-                $currency
-            );
-        } catch (\Throwable $e) {
-            error_log("[SwapService] Point X: updateNetPosition failed for {$sourceInst} -> {$destinationInstitution} on {$consolidationReference}: " . $e->getMessage());
-        }
-    }
-
-    // Fd's platform cut: invoice the DESTINATION institution -- it's the
-    // one physically holding the undelivered difference between what it
-    // swept in and what it was told to pay out (Fd = C - N never left its
-    // own holding account). The source institution(s)' own share of Fd
-    // (distribution.split.source_institution_percent) is a genuinely open
-    // design question for a mixed-source pool (approved plan's judgment
-    // call, spec open question (c): which institution's Fd schedule
-    // applies) -- not settled here, deliberately left for a follow-up
-    // once that's answered rather than guessed at.
-    if ($feeBreakdown !== null) {
-        $platformShare = (float)($feeBreakdown['components']['revenue_split']['platform']['amount'] ?? 0);
-        if ($platformShare > 0) {
+        foreach ($landedByInstitution as $sourceInst => $nettedAmount) {
+            if ($nettedAmount <= 0) {
+                continue;
+            }
             try {
-                $this->settlement->invoiceFee(
+                $this->settlement->updateNetPosition(
                     $consolidationReference,
+                    $sourceInst,
                     $destinationInstitution,
-                    $this->getParticipantId($destinationInstitution),
-                    'IDENTITY_CLAIM_PLATFORM_FEE',
-                    $platformShare,
+                    $nettedAmount,
+                    'IDENTITY_CLAIM',
                     $currency
                 );
             } catch (\Throwable $e) {
-                error_log("[SwapService] Point X: invoiceFee failed for {$destinationInstitution} on {$consolidationReference}: " . $e->getMessage());
+                error_log("[SwapService] Point X: updateNetPosition failed for {$sourceInst} -> {$destinationInstitution} on {$consolidationReference}: " . $e->getMessage());
+            }
+        }
+
+        // Fd's platform cut: invoice the DESTINATION institution -- it's
+        // the one physically holding the undelivered difference between
+        // what it swept in and what it was told to pay out (Fd = C - N
+        // never left its own holding account). The source institution(s)'
+        // own share of Fd (distribution.split.source_institution_percent)
+        // is a genuinely open design question for a mixed-source pool
+        // (approved plan's judgment call, spec open question (c): which
+        // institution's Fd schedule applies) -- not settled here,
+        // deliberately left for a follow-up once that's answered rather
+        // than guessed at.
+        if ($feeBreakdown !== null) {
+            $platformShare = (float)($feeBreakdown['components']['revenue_split']['platform']['amount'] ?? 0);
+            if ($platformShare > 0) {
+                try {
+                    $this->settlement->invoiceFee(
+                        $consolidationReference,
+                        $destinationInstitution,
+                        $this->getParticipantId($destinationInstitution),
+                        'IDENTITY_CLAIM_PLATFORM_FEE',
+                        $platformShare,
+                        $currency
+                    );
+                } catch (\Throwable $e) {
+                    error_log("[SwapService] Point X: invoiceFee failed for {$destinationInstitution} on {$consolidationReference}: " . $e->getMessage());
+                }
             }
         }
     }
