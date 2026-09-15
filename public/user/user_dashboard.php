@@ -695,6 +695,7 @@ input[type=number] { -moz-appearance: textfield; }
 #swapReadinessHint.success { background: rgba(31,138,84,0.08); border-left: 3px solid var(--success); padding: 12px 16px; color: var(--success); }    
 </style>
 <link rel="stylesheet" href="/assets/vm-motion.css">
+<link rel="stylesheet" href="/assets/vm-type.css">   
 </head>
 <body>
 
