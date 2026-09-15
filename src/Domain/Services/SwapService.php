@@ -5356,24 +5356,60 @@ private function finalizeHoldToReceiving(
         $this->debitHoldToSourceSettlement($identitySwap);
 
         $reference = $identitySwap['swap_reference'] . '_SETTLE';
-        $netLanded = $this->settleToDestinationReceiving(
-            $sourceInstitution, $destinationInstitution, $currency, $amount, $reference
-        );
+
+        // Staged rollout (swap-to-identity algorithm v2, plan §3a): once
+        // enabled for this source institution, a settlement failure after
+        // a successful debit gets automatic recovery (retry, then a
+        // compensating credit back to source) instead of going straight
+        // to a manual-reconciliation-only flag. Gated per SOURCE
+        // institution -- it's the source's money and the source's debit
+        // this recovers, same actor the existing manual-reconciliation
+        // record already names.
+        $netLanded = $this->isClaimAlgorithmV2Enabled($sourceInstitution)
+            ? $this->retrySettlementOrCompensate(
+                $identitySwap, $sourceInstitution, $destinationInstitution, $currency, $amount, $reference
+            )
+            : $this->settleToDestinationReceiving(
+                $sourceInstitution, $destinationInstitution, $currency, $amount, $reference
+            );
 
         $this->updateReceivingDepositStatus($recvId, 'landed', $reference);
-        $this->updateIdentityHoldStatus((int)$identitySwap['hold_id'], 'completed', [
-            'final_destination_type' => 'HOLDING_CONSOLIDATED',
-            'consolidation_reference' => $consolidationReference,
-        ]);
+
+        // Staged rollout (plan §3b): when enabled, this hold's value has
+        // only reached the destination's HOLDING account so far -- Step 4
+        // (actual payout to the beneficiary) hasn't happened yet, that
+        // runs later in executeIdentityClaimWithSplit(), after every hold
+        // in the pool reaches this point. 'completed' is reserved for
+        // once Step 4 is also confirmed (see the transition after Step 4
+        // there). When disabled, 'completed' is set here directly, same
+        // as it always was.
+        $this->updateIdentityHoldStatus((int)$identitySwap['hold_id'],
+            $this->isClaimAlgorithmV2Enabled($sourceInstitution) ? 'settled_pending_payout' : 'completed',
+            [
+                'final_destination_type' => 'HOLDING_CONSOLIDATED',
+                'consolidation_reference' => $consolidationReference,
+            ]
+        );
 
         return ['success' => true, 'net_amount' => $netLanded, 'hold_id' => $identitySwap['hold_id']];
 
+    } catch (SettlementRecoveryException $e) {
+        // retrySettlementOrCompensate() already recorded whatever needed
+        // recording (nothing, if it successfully compensated; a manual
+        // reconciliation flag, if compensation also failed) before
+        // throwing -- do not do either again here.
+        $this->updateReceivingDepositStatus($recvId, 'failed', null);
+        throw $e;
     } catch (\Throwable $e) {
         $this->updateReceivingDepositStatus($recvId, 'failed', null);
         if ($this->currentHoldId && strpos($e->getMessage(), 'Failed to debit') === false) {
             // Hold was debited but settlement onward failed — money is
             // gone from the source but hasn't landed anywhere confirmed.
             // Flag for manual reconciliation rather than losing track of it.
+            // (Institutions with claim_algorithm_v2 enabled never reach
+            // this branch for a post-debit settlement failure -- that
+            // path throws SettlementRecoveryException instead, caught
+            // above.)
             $this->recordManualReconciliationRequired(
                 $identitySwap['swap_reference'], $identitySwap['hold_reference'], $sourceInstitution,
                 $destinationInstitution, $amount, $currency,
@@ -5381,6 +5417,119 @@ private function finalizeHoldToReceiving(
             );
         }
         throw $e;
+    }
+}
+
+/**
+ * Automatic recovery for "debit succeeded, settlement onward failed"
+ * (swap-to-identity algorithm v2, plan §3a). Before falling back to a
+ * manual-reconciliation-only flag: retry settlement itself a bounded
+ * number of times (the common case -- a transient network/timeout blip,
+ * not a real problem with the money; $reference is stable across
+ * retries, so this relies on the destination adapter treating a repeat
+ * credit with the same reference as idempotent, same assumption the rest
+ * of this codebase's retry paths already make). If retries are
+ * exhausted, attempt ONE compensating credit back to the source
+ * identifier the hold came from, so the source customer isn't left short
+ * with nothing to show for a debit that never delivered anywhere.
+ *
+ * Always throws SettlementRecoveryException on any non-success path --
+ * from the caller's perspective this hold did not land at the
+ * destination either way, so it must end up in
+ * executeIdentityClaimWithSplit()'s $failedHolds, not $landedHoldIds --
+ * but $wasCompensated tells the difference between "self-healed, source
+ * was made whole automatically" and "still needs a human."
+ */
+private function retrySettlementOrCompensate(
+    array $identitySwap,
+    string $sourceInstitution,
+    string $destinationInstitution,
+    string $currency,
+    float $amount,
+    string $reference
+): float {
+    $maxAttempts = 3; // 1 initial attempt (already tried by the time this runs is not the case -- this IS attempt 1) + 2 retries
+    $lastError = null;
+
+    for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+        try {
+            return $this->settleToDestinationReceiving(
+                $sourceInstitution, $destinationInstitution, $currency, $amount, $reference
+            );
+        } catch (\Throwable $e) {
+            $lastError = $e;
+            error_log("[SwapService] Settlement attempt {$attempt}/{$maxAttempts} failed for {$identitySwap['swap_reference']} ({$sourceInstitution} -> {$destinationInstitution}): " . $e->getMessage());
+        }
+    }
+
+    // Retries exhausted -- genuinely not landing, not just flaky. Attempt
+    // to credit the already-debited amount back to the identifier the
+    // hold was originally placed against, mirroring settlePosDirect()'s
+    // direct-credit payload shape.
+    try {
+        $sourcePayload = json_decode($identitySwap['source_payload'] ?? '{}', true) ?: [];
+        $sourceId = $this->extractSourceIdentifier($sourcePayload);
+        $destinationIdentifier = $sourceId['identifier'] ?? ($identitySwap['source_identifier'] ?? null);
+
+        if (empty($destinationIdentifier)) {
+            throw new RuntimeException("No source identifier available to compensate against");
+        }
+
+        $adapter = $this->adapterFactory->getAdapter($sourceInstitution);
+        $compensationResult = $adapter->credit([
+            'reference' => $reference . '_COMPENSATE',
+            'amount' => $amount,
+            'currency' => $currency,
+            'destination_identifier' => $destinationIdentifier,
+            'destination_identifier_type' => $sourceId['type'] ?? 'account_number',
+            'destination_asset_type' => $identitySwap['source_asset_type'] ?? 'ACCOUNT',
+            'to_institution' => $sourceInstitution,
+            'destination_institution' => $sourceInstitution,
+            'action' => 'PROCESS_DEPOSIT_WITH_PROOF',
+            'reason' => 'Automatic compensation: debit succeeded but settlement to destination repeatedly failed',
+        ], [
+            'destination_institution' => $sourceInstitution,
+            'destination_identifier' => $destinationIdentifier,
+            'purpose' => 'debit_settlement_compensation',
+        ]);
+
+        if ($compensationResult['credited'] ?? false) {
+            $this->logger->warning("Automatic compensation succeeded: debited amount credited back to source after settlement retries were exhausted", [
+                'swap_reference' => $identitySwap['swap_reference'],
+                'hold_reference' => $identitySwap['hold_reference'],
+                'source_institution' => $sourceInstitution,
+                'destination_institution' => $destinationInstitution,
+                'amount' => $amount,
+                'currency' => $currency,
+                'attempts' => $maxAttempts,
+            ]);
+            throw new SettlementRecoveryException(
+                "Settlement to {$destinationInstitution} failed after {$maxAttempts} attempts for {$identitySwap['swap_reference']}; " .
+                "the debited amount was automatically credited back to the source -- no manual reconciliation needed.",
+                true
+            );
+        }
+
+        throw new RuntimeException("Compensating credit did not confirm success: " . ($compensationResult['message'] ?? 'no reason given'));
+    } catch (SettlementRecoveryException $e) {
+        throw $e; // the successful-compensation case above, pass through unchanged
+    } catch (\Throwable $compensationError) {
+        // Compensation also failed (or its success couldn't be confirmed
+        // -- the same "bank may have actually processed it without
+        // returning proof" ambiguity GenericInstitutionAdapter::credit()
+        // already documents elsewhere in this codebase). This genuinely
+        // needs a human: money may be in an ambiguous state.
+        $this->recordManualReconciliationRequired(
+            $identitySwap['swap_reference'], $identitySwap['hold_reference'], $sourceInstitution,
+            $destinationInstitution, $amount, $currency,
+            "Hold debited, settlement to receiving account failed after {$maxAttempts} attempts, AND automatic compensation back to source failed: " .
+            $compensationError->getMessage() . " (original settlement error: " . ($lastError ? $lastError->getMessage() : 'unknown') . ")"
+        );
+        throw new SettlementRecoveryException(
+            "Settlement to {$destinationInstitution} failed after {$maxAttempts} attempts for {$identitySwap['swap_reference']}, " .
+            "and automatic compensation back to source also failed -- flagged for manual reconciliation: " . $compensationError->getMessage(),
+            false
+        );
     }
 }
 
@@ -7239,15 +7388,38 @@ public function executeIdentityClaimWithSplit(
     }
 
     // ------------------------------------------------------------
+    // Settlement reordering, part 2 (plan §3b): for every landed hold
+    // whose source institution has claim_algorithm_v2 enabled,
+    // finalizeHoldToReceiving() left it in 'settled_pending_payout'
+    // rather than 'completed' -- Step 4 (the payout attempt just above)
+    // has now run, so it's safe to close those out. If Step 4 threw, this
+    // code never executes at all (PHP propagates the exception straight
+    // out of the method), so those holds correctly stay in
+    // 'settled_pending_payout' rather than being marked done.
+    // ------------------------------------------------------------
+    foreach ($holds as $hold) {
+        if (!in_array((int)$hold['hold_id'], $landedHoldIds, true)) {
+            continue;
+        }
+        if ($this->isClaimAlgorithmV2Enabled($hold['source_institution'])) {
+            $this->updateIdentityHoldStatus((int)$hold['hold_id'], 'completed', [
+                'final_destination_type' => 'HOLDING_CONSOLIDATED',
+                'consolidation_reference' => $consolidationReference,
+                'payout_confirmed' => true,
+            ]);
+        }
+    }
+
+    // ------------------------------------------------------------
     // Point X (swap-to-identity algorithm v2, plan §5): record the
-    // obligation ledger for this claim. Wired here, additively, without
-    // moving WHEN anything happens -- it fires at the same point the
-    // audit log entry below always has (after payout has been attempted).
-    // Settlement reordering (a separate, later increment) is what will
-    // gate this on Step 4 having actually CONFIRMED delivery rather than
-    // merely having been attempted; until then this inherits the same
-    // "attempted, not necessarily confirmed" timing the rest of this
-    // method already has.
+    // obligation ledger for this claim. Fires here, after Step 4 has run
+    // (or, per the block just above, not at all if Step 4 threw) -- this
+    // settles the source-institution-to-destination-institution leg,
+    // which is already real and complete once Steps 1-3 land (the money
+    // physically reached the destination's HOLDING account); it doesn't
+    // wait on the same "did Step 4 pay the actual beneficiary" question
+    // the hold's own terminal status above does, since that's a separate
+    // fact about the same pool.
     //
     // R (the reservation-account remainder leg above) generates no
     // obligation and no invoice, per spec: it never left the identity's
@@ -10105,7 +10277,18 @@ private function trackIdentityOtpSmsAttempt(
         // was moved into a reservation account at the source institution
         // rather than released back to the sender -- distinct from
         // 'expired', which means the money actually returned to the source.
-        $validStatuses = ['pending', 'confirmed', 'completed', 'expired', 'cancelled', 'parked'];
+        //
+        // 'settled_pending_payout' added for settlement reordering (plan
+        // §3b): a hold whose value has landed at the destination
+        // institution's HOLDING account (Steps 1-3 of
+        // executeIdentityClaimWithSplit() complete) but where Step 4
+        // (actual payout to the beneficiary) hasn't been confirmed yet --
+        // distinct from 'completed', which now means Step 4 was also
+        // confirmed, not just Steps 1-3. Only used when
+        // capabilities.claim_algorithm_v2 is enabled for the hold's
+        // source institution; otherwise 'completed' is still set directly
+        // at the same point it always was.
+        $validStatuses = ['pending', 'confirmed', 'completed', 'expired', 'cancelled', 'parked', 'settled_pending_payout'];
         if (!in_array($status, $validStatuses)) {
             throw new RuntimeException("Invalid status: {$status}");
         }
