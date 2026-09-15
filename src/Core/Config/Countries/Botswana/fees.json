@@ -5,6 +5,39 @@
     "currency": "BWP",
     "description": "Hard cap applied uniformly to every VouchMorph-initiated money movement in this country — swaps, cashouts, card hooks, activations. Not an institution-specific limit (those live in participants.yaml); this is VouchMorph's own risk ceiling."
   },
+  "IDENTITY_HOLD": {
+    "description": "Fh -- hold-time fee (swap levy), earned the instant a real hold exists at the source institution for a swap-to-identity. Always applied: charged whether the client claims in full, claims part, claims nothing, or the hold expires untouched. Purpose-independent by design -- computed at hold placement, before the client has chosen CASHOUT vs DEPOSIT, so it cannot vary by a purpose that isn't known yet. Client decision (2026-09-15): Fh = the swap levy only, identical for CASHOUT and DEPOSIT -- no separate 'hold fee' line item. F1 equals F7 here (the entire hold-time charge IS the levy); the source/destination institutions' own share of a swap's economics is earned later, at delivery, via CASHOUT/DEPOSIT's own F1/F7 (see those blocks) -- this block does not double-charge on top of that.",
+    "fee_components": {
+      "F1": {
+        "amount": 1.00,
+        "description": "Total hold-time fee (Fh) -- equals the swap levy below. Read as calculateFees()'s 'total_fee' and stored in identity_swap_holds.metadata.hold_fee.total_fee by storeIdentityHold(); consumed later by cancelExpiredIdentitySwaps() on expiry."
+      },
+      "F7": {
+        "amount": 1.00,
+        "description": "VouchMorph swap levy (internal fee, owned and retained by VouchMorph -- NOT a government-mandated levy, despite the name). Identical amount to F1 above by design for this product."
+      }
+    },
+    "distribution": {
+      "apply_after_fees": ["F7"],
+      "base_distribution_amount": "F1 - F7",
+      "description": "F1 - F7 = 0 for this product -- Fh is 100% VouchMorph's levy at hold time, nothing split to source/destination here. Source and destination institutions earn their share later, at delivery, from CASHOUT/DEPOSIT's own distribution.",
+      "split": {
+        "platform_percent": 100,
+        "platform_owner": "VOUCHMORPH",
+        "source_institution_percent": 0,
+        "source_owner": "SOURCE_INSTITUTION",
+        "destination_institution_percent": 0,
+        "destination_owner": "DESTINATION_INSTITUTION"
+      }
+    },
+    "example_calculation": {
+      "T_held": "any amount -- Fh is flat, not a percentage of T",
+      "Fh_total_fee": 1.00,
+      "Fh_swap_levy": 1.00,
+      "distributable_pool": 0.00
+    }
+  },
+
   "CASHOUT": {
     "description": "Cashout swap fee - client pays P10 upfront",
     "fee_components": {
@@ -38,16 +71,16 @@
     },
     "destination_split": {
       "apply_to": "destination_institution_share",
-      "description": "Destination share is split into generate code fee (earned immediately) and cashout completion fee (earned on success)",
-      "generate_code_fee_percent": 10,
-      "cashout_fee_percent": 90,
+      "description": "Changed 2026-09-15 to match the swap-to-identity algorithm v2 spec: 'No source is debited at generation time, and no Fd is earned at generation time.' Destination's entire share is now earned only at redemption -- code generation moves real funds into the destination's HOLDING account but is not delivery, so it earns nothing. Previously split 10%/90% generate/redeem; the 10% generation-time payout is retired.",
+      "generate_code_fee_percent": 0,
+      "cashout_fee_percent": 100,
       "generate_code_earned_at": "code_generation",
       "cashout_earned_at": "cashout_completion"
     },
     "earnings_rules": {
       "generate_code_fee_earned_at": "code_generation",
       "cashout_fee_earned_at": "cashout_completion",
-      "description": "Generate code fee is earned immediately. Cashout fee is earned only after successful cashout."
+      "description": "Generate code fee is 0% as of 2026-09-15 -- nothing is earned at generation. Full destination share is earned only after successful cashout redemption."
     },
     "retry_rules": {
       "fee_type": "F10",
@@ -68,8 +101,9 @@
       "platform_share_35%": 3.15,
       "source_share_15%": 1.35,
       "destination_share_50%": 4.50,
-      "generate_code_fee_10%": 0.45,
-      "cashout_completion_fee_90%": 4.05
+      "generate_code_fee_0%": 0.00,
+      "cashout_completion_fee_100%": 4.50,
+      "note": "F7 levy above is CASHOUT's own distributable-pool levy, separate from IDENTITY_HOLD's Fh (also 1.00) charged earlier at hold placement -- see the IDENTITY_HOLD block."
     }
   },
   "DEPOSIT": {

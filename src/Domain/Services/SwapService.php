@@ -9401,7 +9401,15 @@ private function generateCashoutToken(array $payload, string $institution, float
             ['institution' => $sourceInstitution]
         ));
         $holdFeeAmount = (float)($holdFeeBreakdown['total_fee'] ?? 0);
-        $holdLevyAmount = (float)($holdFeeBreakdown['swap_levy'] ?? 0);
+        // calculateFeesWithDetails() never threads FeeService::calculateFees()'s
+        // separate 'swap_levy' key through its return value (only 'total_fee' and
+        // a nested 'components' block survive the wrapper) -- reading
+        // $holdFeeBreakdown['swap_levy'] here always evaluated to 0 regardless of
+        // config. IDENTITY_HOLD's fees.json block sets F1 == F7 by design (Fh is
+        // entirely the levy at hold time -- see that block's comments), so
+        // total_fee IS the levy amount for this product; mirror it instead of
+        // reading a key that was never actually populated.
+        $holdLevyAmount = $holdFeeAmount;
     }
  
     $claimType = null;
@@ -9551,7 +9559,11 @@ private function generateCashoutToken(array $payload, string $institution, float
                 'hold_fee' => [
                     'total_fee' => $holdFeeAmount,
                     'swap_levy' => $holdLevyAmount,
-                    'breakdown' => $holdFeeBreakdown['breakdown'] ?? [],
+                    // Per-slot fee breakdown lives inside calculateFeesWithDetails()'s
+                    // 'components' key, not a top-level 'breakdown' key -- that key
+                    // never existed on this return value, so the old read here was
+                    // always [].
+                    'breakdown' => $holdFeeBreakdown['components']['breakdown'] ?? [],
                     // must be netted out of source's obligation at
                     // settlement time -- see the FIX comment above
                     // $holdFeeBreakdown for why this isn't deducted
