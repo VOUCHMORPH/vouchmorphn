@@ -39,7 +39,7 @@ participants:
       deposit: true
       cashout: true
       identity_holding: true
-      reservation_accounts: false   # flip once ZURUBANK confirms bank-side reservation-account support + real endpoints
+      reservation_accounts: true
 
     hold_model: NATIVE
 
@@ -110,7 +110,7 @@ participants:
       deposit: true
       cashout: true
       identity_holding: true
-      reservation_accounts: false   # flip once ABSA confirms bank-side reservation-account support + real endpoints
+      reservation_accounts: true
 
     hold_model: NATIVE
 
@@ -183,7 +183,7 @@ participants:
       deposit: true
       cashout: true
       identity_holding: true
-      reservation_accounts: false   # flip once SACCUSSALIS confirms bank-side reservation-account support + real endpoints
+      reservation_accounts: true
 
     hold_model: NATIVE
 
@@ -240,7 +240,7 @@ participants:
       deposit: true
       cashout: false
       identity_holding: true
-      reservation_accounts: false   # flip once CAZACOM confirms bank-side reservation-account support + real endpoints
+      reservation_accounts: true
 
     hold_model: NATIVE
 
@@ -312,7 +312,7 @@ participants:
       deposit: true
       cashout: false
       identity_holding: true
-      reservation_accounts: false   # flip once MTN confirms bank-side reservation-account support + real endpoints
+      reservation_accounts: true
 
     hold_model: NATIVE
 
