@@ -5928,75 +5928,25 @@ private function consumeEarmarkedBalance(string $institution, string $identifier
 public function cancelExpiredIdentitySwaps(): array
 {
     error_log("[SwapService] ===== cancelExpiredIdentitySwaps =====");
- 
+
     $results = ['total_expired' => 0, 'cancelled' => 0, 'errors' => 0, 'details' => []];
- 
+
     $sql = "
         SELECT * FROM identity_swap_holds
         WHERE status = 'pending'
         AND hold_expires_at < NOW()
     ";
- 
+
     try {
         $stmt = $this->swapDB->prepare($sql);
         $stmt->execute();
         $expiredSwaps = $stmt->fetchAll(PDO::FETCH_ASSOC);
         $results['total_expired'] = count($expiredSwaps);
- 
+
         foreach ($expiredSwaps as $swap) {
             try {
-                $levy = (float)($swap['levy_amount'] ?? 0);
-                $sourceInstitution = $swap['source_institution'];
-                $swapRef = $swap['swap_reference'];
- 
-                if ($levy > 0) {
-                    try {
-                        $this->settlement->invoiceFee(
-                            $swapRef,
-                            $sourceInstitution,
-                            $this->getParticipantId('VOUCHMORPH'),
-                            'SWAP_LEVY',
-                            $levy,
-                            $swap['currency'] ?? 'BWP'
-                        );
- 
-                        $adapter = $this->adapterFactory->getAdapter($sourceInstitution);
-                        $adapter->debit([
-                            'reference' => $swapRef . '_EXPIRED_LEVY',
-                            'hold_reference' => $swap['hold_reference'],
-                            'amount' => $levy,
-                            'reason' => 'Identity swap expired unclaimed - withholding non-refundable levy',
-                            'from_institution' => $sourceInstitution,
-                            'source_institution' => $sourceInstitution,
-                        ], []);
-                    } catch (Exception $e) {
-                        error_log("[SwapService] Failed to withhold levy on expired identity swap {$swapRef}: " . $e->getMessage());
-                    }
-                }
- 
-                $adapter = $this->adapterFactory->getAdapter($sourceInstitution);
-                $releaseResult = $adapter->releaseHold([
-                    'hold_reference' => $swap['hold_reference'],
-                    'action' => 'RELEASE_HOLD',
-                    'reason' => "Identity swap expired after 24 hours. Withheld levy: {$levy}."
-                ], []);
- 
-                $this->updateIdentityHoldStatus($swap['hold_id'], 'expired', [
-                    'release_result' => $releaseResult,
-                    'levy_withheld' => $levy,
-                    'expired_at' => date('Y-m-d H:i:s')
-                ]);
- 
-                $this->updateHoldStatus($swap['hold_id'], $levy > 0 ? 'PARTIALLY_RELEASED' : 'RELEASED');
- 
+                $results['details'][] = $this->expireIdentitySwap($swap);
                 $results['cancelled']++;
-                $results['details'][] = [
-                    'swap_reference' => $swap['swap_reference'],
-                    'hold_id' => $swap['hold_id'],
-                    'levy_withheld' => $levy,
-                    'status' => 'expired'
-                ];
- 
             } catch (Exception $e) {
                 error_log("[SwapService] Failed to cancel swap {$swap['swap_reference']}: " . $e->getMessage());
                 $results['errors']++;
@@ -6007,13 +5957,182 @@ public function cancelExpiredIdentitySwaps(): array
                 ];
             }
         }
- 
+
         return $results;
- 
+
     } catch (PDOException $e) {
         error_log("[SwapService] Failed to get expired swaps: " . $e->getMessage());
         throw new RuntimeException("Failed to cancel expired swaps: " . $e->getMessage());
     }
+}
+
+/**
+ * Reads Fh (the hold-time fee) out of an identity_swap_holds row's
+ * metadata->hold_fee, as written by storeIdentityHold() (Increment 1).
+ *
+ * FIX: this used to be a plain $swap['levy_amount'] column read --
+ * nothing in this codebase ever writes that column, so it always
+ * evaluated to 0 regardless of the real fee. The actual computed Fh
+ * lives in metadata->hold_fee->total_fee.
+ *
+ * Honors metadata->hold_fee->waived (set by waiveIdentityHoldFee(),
+ * called from rollbackAtomicSwap() on VouchMorph system failure -- the
+ * spec's one confirmed Fh waiver case) so an already-waived hold is
+ * never withheld again here.
+ *
+ * Pure/stateless (no $this usage) and static so it's testable via
+ * reflection without constructing the full SwapService dependency graph.
+ */
+private static function extractHoldFeeFromMetadata(?string $metadataJson): float
+{
+    $metadata = json_decode($metadataJson ?? '{}', true) ?: [];
+    $holdFee = $metadata['hold_fee'] ?? [];
+
+    if (!empty($holdFee['waived'])) {
+        return 0.0;
+    }
+
+    return (float)($holdFee['total_fee'] ?? 0);
+}
+
+/**
+ * Spec §7 Phase D's government/personal split, extended per the client's
+ * clarification that business/trust-sourced money behaves like
+ * government money on expiry (owed to the identity, not a lapsed gift).
+ * A source_account_type this codebase doesn't recognize -- including the
+ * safe-default 'PERSONAL' verifySourceAccountType() falls back to on any
+ * classification failure -- is treated as NOT owed, the stricter,
+ * most-protective-of-the-sender branch.
+ */
+private static function isSourceMoneyOwedToIdentity(?string $sourceAccountType): bool
+{
+    return in_array($sourceAccountType, ['GOVERNMENT', 'BUSINESS_OR_TRUST'], true);
+}
+
+/**
+ * Phase D of the swap-to-identity algorithm v2 (plan §8): a single
+ * expired-and-unclaimed swap's disposition. Fh is withheld in both
+ * branches -- the only difference is where the remaining balance A goes.
+ * GOVERNMENT/BUSINESS_OR_TRUST money is owed to the identity and cannot
+ * be un-sent, so it parks in a reservation account at the SOURCE
+ * institution (Point Z's expiry-time call site); PERSONAL money is a
+ * lapsed gift that releases back to the sender. Either way the source
+ * institution pays Fh -- it performed the reservation.
+ */
+private function expireIdentitySwap(array $swap): array
+{
+    $swapRef = $swap['swap_reference'];
+    $sourceInstitution = $swap['source_institution'];
+    $currency = $swap['currency'] ?? 'BWP';
+    $t = (float)$swap['amount'];
+
+    $fh = self::extractHoldFeeFromMetadata($swap['metadata'] ?? null);
+    $a = round($t - $fh, 2);
+
+    if ($fh > 0) {
+        try {
+            $this->settlement->invoiceFee(
+                $swapRef,
+                $sourceInstitution,
+                $this->getParticipantId('VOUCHMORPH'),
+                'SWAP_LEVY',
+                $fh,
+                $currency
+            );
+
+            $adapter = $this->adapterFactory->getAdapter($sourceInstitution);
+            $adapter->debit([
+                'reference' => $swapRef . '_EXPIRED_LEVY',
+                'hold_reference' => $swap['hold_reference'],
+                'amount' => $fh,
+                'reason' => 'Identity swap expired unclaimed - withholding non-refundable hold-time fee (Fh)',
+                'from_institution' => $sourceInstitution,
+                'source_institution' => $sourceInstitution,
+            ], []);
+        } catch (Exception $e) {
+            error_log("[SwapService] Failed to withhold Fh on expired identity swap {$swapRef}: " . $e->getMessage());
+        }
+    }
+
+    $sourceAccountType = $swap['source_account_type'] ?? 'PERSONAL';
+    $adapter = $this->adapterFactory->getAdapter($sourceInstitution);
+
+    if (self::isSourceMoneyOwedToIdentity($sourceAccountType) && $a > 0) {
+        $owner = $this->findVerifiedIdentityOwner($swap['identity_type'], $swap['identity_value']);
+        $reservation = ($owner !== null && !empty($owner['user_id']))
+            ? $this->reservationAccountService->resolveOrCreateReservationAccount((int)$owner['user_id'], $sourceInstitution, $currency)
+            : ['supported' => false];
+
+        if (($reservation['status'] ?? null) === 'active') {
+            // Move A: hold -> reservation account at the source
+            // institution. The deposit lands the funds in the reservation
+            // account; releaseHold() below then just closes out the
+            // now-empty bank-side hold.
+            $this->reservationAccountService->depositToReservationAccount(
+                $sourceInstitution,
+                $currency,
+                $a,
+                $reservation['account_identifier'],
+                $reservation['account_identifier_type'] ?? 'account_number',
+                $swapRef . '_EXPIRED_PARK'
+            );
+
+            $releaseResult = $adapter->releaseHold([
+                'hold_reference' => $swap['hold_reference'],
+                'action' => 'RELEASE_HOLD',
+                'reason' => "Identity swap expired after 24 hours -- {$sourceAccountType} source, A={$a} parked to reservation account. Withheld Fh: {$fh}."
+            ], []);
+
+            $this->updateIdentityHoldStatus((int)$swap['hold_id'], 'parked', [
+                'release_result' => $releaseResult,
+                'fh_withheld' => $fh,
+                'parked_amount' => $a,
+                'reservation_account_id' => $reservation['id'] ?? null,
+                'source_account_type' => $sourceAccountType,
+                'expired_at' => date('Y-m-d H:i:s')
+            ]);
+            $this->updateHoldStatus((int)$swap['hold_id'], $fh > 0 ? 'PARTIALLY_RELEASED' : 'RELEASED');
+
+            return [
+                'swap_reference' => $swapRef,
+                'hold_id' => $swap['hold_id'],
+                'fh_withheld' => $fh,
+                'parked_amount' => $a,
+                'status' => 'parked'
+            ];
+        }
+
+        // Reservation account unavailable (unsupported institution,
+        // creation failed or still pending) -- fall through to the
+        // personal release path rather than leaving GOVERNMENT/
+        // BUSINESS_OR_TRUST money stuck in limbo. Logged loudly: this
+        // needs manual follow-up, since money that should have parked
+        // indefinitely instead returned to the sender.
+        error_log("[SwapService] Phase D: {$sourceAccountType} swap {$swapRef} could not park at a reservation account (status=" . ($reservation['status'] ?? 'unsupported') . ") -- releasing to source instead, needs manual follow-up");
+    }
+
+    // PERSONAL branch (or GOVERNMENT/BUSINESS_OR_TRUST fallback above):
+    // release A back to the source account.
+    $releaseResult = $adapter->releaseHold([
+        'hold_reference' => $swap['hold_reference'],
+        'action' => 'RELEASE_HOLD',
+        'reason' => "Identity swap expired after 24 hours. Withheld Fh: {$fh}."
+    ], []);
+
+    $this->updateIdentityHoldStatus((int)$swap['hold_id'], 'expired', [
+        'release_result' => $releaseResult,
+        'fh_withheld' => $fh,
+        'source_account_type' => $sourceAccountType,
+        'expired_at' => date('Y-m-d H:i:s')
+    ]);
+    $this->updateHoldStatus((int)$swap['hold_id'], $fh > 0 ? 'PARTIALLY_RELEASED' : 'RELEASED');
+
+    return [
+        'swap_reference' => $swapRef,
+        'hold_id' => $swap['hold_id'],
+        'fh_withheld' => $fh,
+        'status' => 'expired'
+    ];
 }
 
 
@@ -9848,18 +9967,24 @@ private function trackIdentityOtpSmsAttempt(
     
     private function updateIdentityHoldStatus(int $holdId, string $status, array $additionalData = []): void
     {
-        $validStatuses = ['pending', 'confirmed', 'completed', 'expired', 'cancelled'];
+        // 'parked' added for Phase D (swap-to-identity algorithm v2, §7/§8):
+        // an expired GOVERNMENT/BUSINESS_OR_TRUST-sourced swap whose balance
+        // was moved into a reservation account at the source institution
+        // rather than released back to the sender -- distinct from
+        // 'expired', which means the money actually returned to the source.
+        $validStatuses = ['pending', 'confirmed', 'completed', 'expired', 'cancelled', 'parked'];
         if (!in_array($status, $validStatuses)) {
             throw new RuntimeException("Invalid status: {$status}");
         }
-        
+
         $setClauses = [];
         $params = [':hold_id' => $holdId, ':status' => $status];
-        
+
         $timestampMap = [
             'confirmed' => 'confirmed_at',
             'completed' => 'completed_at',
-            'expired' => 'expired_at'
+            'expired' => 'expired_at',
+            'parked' => 'expired_at',
         ];
         
         if (isset($timestampMap[$status])) {
