@@ -15,6 +15,7 @@ use Domain\Services\ContributionCalculator;
 use Domain\Services\MultiSourceFeeCalculator;
 use Domain\Services\MultiSource\MultiSourceSwapOrchestrator;
 use Domain\Services\Compliance\SanctionsScreeningService;
+use Domain\Services\ReservationAccountService;
 use Infrastructure\Adapters\InstitutionAdapterFactory;
 use Infrastructure\SMS\SmsNotificationService;
 use Infrastructure\Mojaloop\IdempotencyService;
@@ -86,6 +87,7 @@ class SwapService
     private FeeService $feeService;
     private ForexService $forexService;
     private SanctionsScreeningService $sanctionsScreening;
+    private ReservationAccountService $reservationAccountService;
     private ?CardService $cardService = null;
     private ?SmsNotificationService $smsService = null;
     private ?ContributionCalculator $contributionCalculator = null;
@@ -183,6 +185,13 @@ $this->certificateManager = \Infrastructure\Crypto\CertificateManagerFactory::ge
             $this->logger
         );
         $this->logger->info("InstitutionAdapterFactory initialized");
+
+        $this->reservationAccountService = new ReservationAccountService(
+            $this->swapDB,
+            $this->participants,
+            $this->adapterFactory,
+            $this->logger
+        );
         
      $this->settlement = new HybridSettlementStrategy($this->swapDB, [], $this->participants);
 $this->sanctionsScreening = new SanctionsScreeningService(
@@ -5517,7 +5526,8 @@ private function placeHoldOnHoldingRemainder(
     string $identityType,
     string $identityValue,
     array $sourceHoldIds,
-    string $consolidationReference
+    string $consolidationReference,
+    ?int $ownerUserId = null
 ): int {
     $accounts = $this->getIdentityHoldingAccounts($institution, $currency);
 
@@ -5554,10 +5564,10 @@ private function placeHoldOnHoldingRemainder(
         INSERT INTO identity_holding_positions (
             identity_type, identity_value, institution, currency,
             holding_identifier, hold_reference, amount, source_hold_ids,
-            consolidation_reference, status
+            consolidation_reference, status, owner_user_id
         ) VALUES (
             :type, :value, :inst, :ccy, :holding_id, :hold_ref, :amount,
-            :source_holds::jsonb, :consol_ref, 'open'
+            :source_holds::jsonb, :consol_ref, 'open', :owner_user_id
         ) RETURNING id
     ");
     $stmt->execute([
@@ -5565,6 +5575,7 @@ private function placeHoldOnHoldingRemainder(
         ':ccy' => $currency, ':holding_id' => $accounts['holding_identifier'],
         ':hold_ref' => $result['hold_reference'] ?? null, ':amount' => $amount,
         ':source_holds' => json_encode($sourceHoldIds), ':consol_ref' => $consolidationReference,
+        ':owner_user_id' => $ownerUserId,
     ]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     $positionId = $row ? (int)$row['id'] : 0;
@@ -6861,19 +6872,42 @@ public function executeIdentityClaimWithSplit(
     }
 
     // ------------------------------------------------------------
-    // STEP 5: hold whatever's left, no bounce-back re-swap.
+    // STEP 5: whatever's left either lands in the beneficiary's own
+    // bank-controlled reservation account (when the destination
+    // institution supports one and we can resolve who the beneficiary
+    // actually is), or falls back to the pooled holding-account hold,
+    // exactly as before.
     // ------------------------------------------------------------
     $holdingPositionId = null;
+    $reservationAccountId = null;
     if ($remainder > 0) {
-        $holdingPositionId = $this->placeHoldOnHoldingRemainder(
-            $destinationInstitution,
-            $currency,
-            $remainder,
-            $identityType,
-            $identityValue,
-            $landedHoldIds,
-            $consolidationReference
-        );
+        $ownerUserId = $this->resolveClaimOwnerUserId($confirmedByType, $confirmedById, $identityType, $identityValue);
+        $reservation = $ownerUserId !== null
+            ? $this->reservationAccountService->resolveOrCreateReservationAccount($ownerUserId, $destinationInstitution, $currency)
+            : ['supported' => false];
+
+        if (($reservation['status'] ?? null) === 'active') {
+            $this->reservationAccountService->depositToReservationAccount(
+                $destinationInstitution,
+                $currency,
+                $remainder,
+                $reservation['account_identifier'],
+                $reservation['account_identifier_type'] ?? 'account_number',
+                $consolidationReference . '_RESACC'
+            );
+            $reservationAccountId = $reservation['id'] ?? null;
+        } else {
+            $holdingPositionId = $this->placeHoldOnHoldingRemainder(
+                $destinationInstitution,
+                $currency,
+                $remainder,
+                $identityType,
+                $identityValue,
+                $landedHoldIds,
+                $consolidationReference,
+                $ownerUserId
+            );
+        }
     }
 
     // Audit trail for the consolidation as a whole.
@@ -6912,8 +6946,34 @@ public function executeIdentityClaimWithSplit(
         'payout_result' => $payoutResult,
         'remainder_held' => $remainder,
         'holding_position_id' => $holdingPositionId,
+        'reservation_account_id' => $reservationAccountId,
     ];
 }
+
+/**
+ * Resolves the identity being claimed to the person who actually owns it,
+ * so reservation-account lookups key on the PERSON, not the identity value
+ * that happened to trigger this particular claim. A self-service claim
+ * already knows its owner (the logged-in session user); an agent-confirmed
+ * claim has to look it up, since the agent is not the beneficiary.
+ * Returns null when no known account owns this identity (e.g. an
+ * unregistered recipient being paid out via agent CASHOUT) — callers treat
+ * that as "reservation accounts don't apply, use the existing pooled path".
+ */
+private function resolveClaimOwnerUserId(
+    string $confirmedByType,
+    ?int $confirmedById,
+    string $identityType,
+    string $identityValue
+): ?int {
+    if ($confirmedByType === 'user') {
+        return $confirmedById;
+    }
+
+    $owner = $this->findVerifiedIdentityOwner($identityType, $identityValue);
+    return $owner['user_id'] ?? null;
+}
+
 /**
  * Execute a single hold as its own independent transaction
  * This ensures that if one hold fails, others are not affected

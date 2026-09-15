@@ -90,7 +90,30 @@ interface InstitutionAdapterInterface
      * NOT part of swap flow
      */
     public function getAccounts(array $payload, array $context): array;
-    
+
+    // ============================================================
+    // RESERVATION ACCOUNTS - dedicated, bank-controlled accounts
+    // opened per beneficiary, used to hold the unclaimed remainder
+    // of an identity swap instead of a shared pooled holding account.
+    // Not applicable to every institution (see the reservation_accounts
+    // capability in participants.yaml) — a switch or acquirer that
+    // has no account concept of its own returns a not-applicable
+    // result rather than implementing real behavior.
+    // ============================================================
+
+    /**
+     * Ask the institution to open a reservation account. May respond
+     * synchronously (account_identifier present, status=active) or
+     * asynchronously (status=pending, confirmed later via callback).
+     */
+    public function createReservationAccount(array $payload, array $context): array;
+
+    /**
+     * Poll the institution for the current status of a previously
+     * requested reservation account.
+     */
+    public function getReservationAccountStatus(array $payload, array $context): array;
+
     // ============================================================
     // ADAPTER METADATA
     // ============================================================

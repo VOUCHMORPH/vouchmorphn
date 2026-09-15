@@ -57,12 +57,18 @@ ZURUBANK:
       verify_account: "/api/v1/verify_asset.php"
     internal:
       sweep: "/api/v1/internal/sweep.php"
+    reservation_accounts:
+      create_account: "/api/v1/accounts/reservation/create.php"
+      get_account_status: "/api/v1/accounts/reservation/status.php"
     common:
       transferWithProof: "/api/v1/transfer.php"
       reverse: "/api/v1/hold.php"
       status: "/api/v1/status"
       check_settlement: "/api/v1/settlement/check.php"
       health: "/health.php"
+
+  callbacks:
+    reservation_account_confirmed: "https://vouchmorphn-production.up.railway.app/api/v1/callbacks/reservation_account_confirmed.php"
 
   message_profile:
     timestamp_header: "X-Timestamp"
@@ -102,11 +108,17 @@ ABSA:
       verify_account: "/api/absa_participant.php?action=verify_account"
     internal:
       sweep: "/api/absa_participant.php?action=internal_sweep"
+    reservation_accounts:
+      create_account: "/api/absa_participant.php?action=create_reservation_account"
+      get_account_status: "/api/absa_participant.php?action=reservation_account_status"
     common:
       transferWithProof: "/api/absa_participant.php?action=process_deposit"
       status: "/api/absa_participant.php?action=check_status"
       check_settlement: "/api/absa_participant.php?action=check_settlement"
       health: "/health.php"
+
+  callbacks:
+    reservation_account_confirmed: "https://vouchmorphn-production.up.railway.app/api/v1/callbacks/reservation_account_confirmed.php"
 
   message_profile:
     timestamp_header: "X-Api-Timestamp"
@@ -162,6 +174,9 @@ SACCUSSALIS:
       verify_account: "/api/v1/verify_account.php"
     internal:
       sweep: "/api/v1/internal/sweep.php"
+    reservation_accounts:
+      create_account: "/api/v1/accounts/reservation/create.php"
+      get_account_status: "/api/v1/accounts/reservation/status.php"
     common:
       transferWithProof: "/api/v1/transfer.php"
       reverse: "/api/v1/hold.php"
@@ -171,6 +186,7 @@ SACCUSSALIS:
 
   callbacks:
     settlement_confirmed: "https://vouchmorphn-production.up.railway.app/api/v1/callbacks/settlement_confirmed.php"
+    reservation_account_confirmed: "https://vouchmorphn-production.up.railway.app/api/v1/callbacks/reservation_account_confirmed.php"
 
   message_profile:
     correlation_id_header: "X-Correlation-ID"
@@ -212,12 +228,18 @@ CAZACOM:
       verify_account: "/api/v1/mno/verify_wallet.php"
     internal:
       sweep: "/api/v1/mno/internal/sweep"
+    reservation_accounts:
+      create_account: "/api/v1/mno/reservation/create.php"
+      get_account_status: "/api/v1/mno/reservation/status.php"
     common:
       transferWithProof: "/api/v1/mno/transfer"
       reverse: "/api/v1/mno/reverse"
       status: "/api/v1/status"
       check_settlement: "/api/v1/mno/check_settlement"
       health: "/health"
+
+  callbacks:
+    reservation_account_confirmed: "https://vouchmorphn-production.up.railway.app/api/v1/callbacks/reservation_account_confirmed.php"
 
   message_profile:
     correlation_id_header: "X-Correlation-ID"
@@ -255,6 +277,9 @@ MTN:
       verify_account: "/api/mtn_momo_participant.php?action=wallet_balance"
     internal:
       sweep: "/api/mtn_momo_participant.php?action=internal_sweep"
+    reservation_accounts:
+      create_account: "/api/mtn_momo_participant.php?action=create_reservation_account"
+      get_account_status: "/api/mtn_momo_participant.php?action=reservation_account_status"
     common:
       transferWithProof: "/api/mtn_momo_participant.php?action=process_deposit"
       status: "/api/mtn_momo_participant.php?action=check_status"
@@ -263,6 +288,7 @@ MTN:
 
   callbacks:
     settlement_confirmed: "https://vouchmorphn-production.up.railway.app/api/v1/callbacks/settlement_confirmed.php"
+    reservation_account_confirmed: "https://vouchmorphn-production.up.railway.app/api/v1/callbacks/reservation_account_confirmed.php"
 
   message_profile:
     correlation_id_header: "X-Correlation-ID"

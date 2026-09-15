@@ -293,6 +293,8 @@ class CentralSwitchAdapter implements InstitutionAdapterInterface
     public function getTransactions(array $payload, array $context): array { return $this->notApplicable('getTransactions'); }
     public function checkSettlementStatus(array $payload, array $context): array { return $this->notApplicable('checkSettlementStatus'); }
     public function getAccounts(array $payload, array $context): array { return $this->notApplicable('getAccounts'); }
+    public function createReservationAccount(array $payload, array $context): array { return $this->notApplicable('createReservationAccount'); }
+    public function getReservationAccountStatus(array $payload, array $context): array { return $this->notApplicable('getReservationAccountStatus'); }
 
     public function supports(string $capability): bool
     {
