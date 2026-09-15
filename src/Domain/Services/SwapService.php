@@ -411,6 +411,92 @@ private function extractBeneficiaryPartyData(array $payload): array
         ];
     }
 
+    /**
+     * Classifies a raw bank-returned account_type into one of VouchMorph's
+     * three logical branches for Phase D expiry handling (swap-to-identity
+     * algorithm v2, §7/§8): government and business/trust money is *owed*
+     * to the identity and parks in a reservation account at the source
+     * institution on expiry; personal money is a lapsed gift that releases
+     * back to the sender.
+     *
+     * The raw bank vocabulary is not yet confirmed to map 1:1 onto these
+     * three buckets -- this mapping is a placeholder pending real sandbox
+     * verifyAccount() responses for source-side accounts, per the approved
+     * plan's flagged judgment call. Unrecognized types default to
+     * PERSONAL, matching verifySourceAccountType()'s own safe-default
+     * posture below.
+     */
+    private static function classifySourceAccountType(string $rawAccountType): string
+    {
+        $type = strtoupper(trim($rawAccountType));
+
+        $governmentTypes = ['GOVERNMENT', 'GOV', 'STATE', 'MUNICIPAL', 'PARASTATAL'];
+        $businessOrTrustTypes = ['BUSINESS', 'TRUST', 'CORPORATE', 'COMPANY', 'NGO', 'NON_PROFIT'];
+
+        if (in_array($type, $governmentTypes, true)) {
+            return 'GOVERNMENT';
+        }
+        if (in_array($type, $businessOrTrustTypes, true)) {
+            return 'BUSINESS_OR_TRUST';
+        }
+
+        return 'PERSONAL';
+    }
+
+    /**
+     * Classifies the SOURCE account's type at hold-placement time, so
+     * Phase D's expiry branch (cancelExpiredIdentitySwaps()) knows whether
+     * unclaimed money is owed to the identity or a lapsed gift. Reuses the
+     * existing verifyAccount() adapter call -- already implemented and
+     * proven against sandbox banks for the destination-registration path
+     * (see the agent-destination-account flow elsewhere in this class) --
+     * against the SOURCE identifier instead, rather than widening
+     * verifyAsset()'s contract across every sandbox bank.
+     *
+     * Never blocks the swap: any failure (adapter throws, the institution
+     * doesn't support verifyAccount for source-side lookups, no
+     * account_type comes back) defaults to PERSONAL -- the stricter, most
+     * protective branch, since money returns to the sender rather than
+     * parking indefinitely on an unconfirmed classification -- and logs
+     * loudly instead of failing the hold outright.
+     */
+    private function verifySourceAccountType(array $payload, string $sourceInstitution): string
+    {
+        try {
+            $sourceId = $this->extractSourceIdentifier($payload);
+            if (!$sourceId['has_value']) {
+                error_log("[SwapService] verifySourceAccountType: no source identifier to verify at {$sourceInstitution}, defaulting to PERSONAL");
+                return 'PERSONAL';
+            }
+
+            $adapter = $this->adapterFactory->getAdapter($sourceInstitution);
+            $verifyResult = $adapter->verifyAccount([
+                'action' => 'VERIFY_ACCOUNT',
+                'reference' => 'SOURCE_TYPE_' . ($payload['reference'] ?? $this->currentSwapRef ?? uniqid('source_type_')),
+                'account_identifier' => $sourceId['identifier'],
+                'identifier_type' => $sourceId['type'],
+                'requester' => 'VOUCHMORPH',
+                'timestamp' => time(),
+            ], [
+                'institution' => $sourceInstitution,
+                'purpose' => 'source_account_classification',
+            ]);
+
+            $rawAccountType = $verifyResult['account_type'] ?? $verifyResult['data']['account_type'] ?? '';
+            if ($rawAccountType === '') {
+                error_log("[SwapService] verifySourceAccountType: {$sourceInstitution} returned no account_type, defaulting to PERSONAL");
+                return 'PERSONAL';
+            }
+
+            $classified = self::classifySourceAccountType($rawAccountType);
+            error_log("[SwapService] verifySourceAccountType: {$sourceInstitution} account_type={$rawAccountType} classified as {$classified}");
+            return $classified;
+        } catch (\Throwable $e) {
+            error_log("[SwapService] verifySourceAccountType: verification failed at {$sourceInstitution}, defaulting to PERSONAL: " . $e->getMessage());
+            return 'PERSONAL';
+        }
+    }
+
    public function extractDestinationIdentifier(array $payload): array
 {
     $destinationIdentifier = null;
@@ -4356,13 +4442,20 @@ $this->recordSettlementPending(
             ];
         }
 
+        // Classified regardless of $skipHold: even when reusing an
+        // already-placed bank-side hold (multi-source pooling), this call
+        // still inserts a fresh identity_swap_holds row for THIS source
+        // institution, and Phase D needs to know its account type too.
+        $sourceAccountType = $this->verifySourceAccountType($payload, $sourceInstitution);
+
         error_log("[SwapService] STEP 3: Store identity mapping (PAUSED)");
         $identityHoldStored = $this->storeIdentityHold(
             $payload,
             $swapRef,
             $holdResult,
             $this->currentHoldId,
-            $skipHold
+            $skipHold,
+            $sourceAccountType
         );
         $identityHoldId = $identityHoldStored['hold_id'];
         $claimPin = $identityHoldStored['claim_pin'];
@@ -9357,7 +9450,7 @@ private function generateCashoutToken(array $payload, string $institution, float
     // IDENTITY SWAP HELPER METHODS
     // ============================================================================
 
-   private function storeIdentityHold(array $payload, string $swapRef, array $holdResult, int $holdId, bool $isReusedHold = false): array
+   private function storeIdentityHold(array $payload, string $swapRef, array $holdResult, int $holdId, bool $isReusedHold = false, ?string $sourceAccountType = null): array
 {
     $sourceInstitution = $this->extractSourceInstitution($payload);
     $identityType = strtolower($payload['identity_type']);
@@ -9527,14 +9620,14 @@ private function generateCashoutToken(array $payload, string $institution, float
             hold_reference, hold_id, hold_expires_at, status,
             source_payload, metadata, created_by,
             otp_pin_hash, otp_pin_encrypted, otp_pin_sent_to, otp_pin_sent_at,
-            requires_dual_confirmation, claim_type
+            requires_dual_confirmation, claim_type, source_account_type
         ) VALUES (
             :swap_ref, :source_institution, :source_identifier, :asset_type,
             :amount, :currency, :identity_type, :identity_value,
             :hold_reference, :hold_id, :expires_at, 'pending',
             :source_payload::jsonb, :metadata::jsonb, :created_by,
             :otp_pin_hash, :otp_pin_encrypted, :otp_pin_sent_to, :otp_pin_sent_at,
-            :requires_dual, :claim_type
+            :requires_dual, :claim_type, :source_account_type
         ) RETURNING hold_id
     ";
  
@@ -9576,7 +9669,8 @@ private function generateCashoutToken(array $payload, string $institution, float
             ':otp_pin_sent_to' => $otpHash ? $otpDestination : null,
             ':otp_pin_sent_at' => $otpHash ? date('Y-m-d H:i:s') : null,
             ':requires_dual' => $requiresDual ? 't' : 'f',
-            ':claim_type' => $claimType
+            ':claim_type' => $claimType,
+            ':source_account_type' => $sourceAccountType
         ]);
  
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
