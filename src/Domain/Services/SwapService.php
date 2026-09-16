@@ -5541,9 +5541,13 @@ private function finalizeHoldToReceiving(
         throw new RuntimeException("Source funds no longer available for hold {$identitySwap['hold_id']}. Claim cancelled for this hold.");
     }
 
+    // The 5th argument is the receiving ACCOUNT, not a status -- 'pending'
+    // was being written into receiving_identifier (the INSERT hardcodes
+    // status itself), so every row recorded the literal string 'pending'
+    // instead of the account the money was sent to.
     $recvId = $this->recordReceivingDepositAttempt(
         $consolidationReference, (int)$identitySwap['hold_id'], $destinationInstitution,
-        $currency, 'pending', $amount
+        $currency, $this->getIdentityHoldingAccounts($destinationInstitution, $currency)['receiving_identifier'], $amount
     );
 
     try {
@@ -5688,6 +5692,17 @@ private function retrySettlementOrCompensate(
         ]);
 
         if ($compensationResult['credited'] ?? false) {
+            // The money is back with the customer and the source bank's hold
+            // is spent, so this hold is finished -- leaving it 'pending'
+            // re-offers a balance that no longer exists, and the next claim
+            // attempt fails on the stale hold reference (the source bank no
+            // longer has it as HELD) rather than on anything real.
+            $this->updateIdentityHoldStatus((int)$identitySwap['hold_id'], 'cancelled', [
+                'compensated' => true,
+                'compensation_reference' => $reference . '_COMPENSATE',
+                'reason' => 'Settlement failed after debit; amount credited back to source',
+            ]);
+
             $this->logger->warning("Automatic compensation succeeded: debited amount credited back to source after settlement retries were exhausted", [
                 'swap_reference' => $identitySwap['swap_reference'],
                 'hold_reference' => $identitySwap['hold_reference'],
@@ -7477,6 +7492,21 @@ public function executeIdentityClaimWithSplit(
         throw new RuntimeException("destination_type must be 'DEPOSIT' or 'CASHOUT'");
     }
 
+    // The RECEIVING -> HOLDING -> payout model below needs the bank-side
+    // INTERNAL_SWEEP primitive that sweepReceivingToHolding()'s docblock
+    // flags as "NEW ADAPTER ACTION REQUIRED" -- no adapter implements
+    // internalSweep() yet, so this path throws at Step 3 for every
+    // institution. Rather than debiting real holds into a pipeline that
+    // cannot finish, fall back to paying the beneficiary directly out of
+    // each source institution's settlement account.
+    if (!$this->supportsIdentityConsolidation($destinationInstitution)) {
+        return $this->executeIdentityClaimDirect(
+            $holds, $destinationInstitution, $destinationType, $destinationDetails,
+            $cashNowAmount, $confirmedByType, $confirmedById, $beneficiaryPhone,
+            $identityType, $identityValue
+        );
+    }
+
     // Capability gate — fail loudly up front.
     $this->getIdentityHoldingAccounts($destinationInstitution, $currency);
 
@@ -7814,6 +7844,529 @@ public function executeIdentityClaimWithSplit(
         'remainder_held' => $remainder,
         'holding_position_id' => $holdingPositionId,
         'reservation_account_id' => $reservationAccountId,
+    ];
+}
+
+/**
+ * True when this institution can actually run the RECEIVING -> HOLDING ->
+ * payout consolidation, i.e. its adapter implements the INTERNAL_SWEEP
+ * primitive sweepReceivingToHolding() needs. Config alone can't answer
+ * this: capabilities.identity_holding only promises the bank has the two
+ * accounts, not that anything can move money between them.
+ */
+private function supportsIdentityConsolidation(string $institution): bool
+{
+    return method_exists($this->adapterFactory->getAdapter($institution), 'internalSweep');
+}
+
+/**
+ * Collapsed claim path: close every hold into its own source institution's
+ * settlement account, then pay the beneficiary in one credit per source
+ * institution — no VouchMorph-directed RECEIVING/HOLDING hops in between.
+ *
+ * The suspense-account flow isn't lost, it just moves inside the bank:
+ * settlePosToMerchant() always sends destination_identifier, which is
+ * exactly what a destination bank keys its own identity-swap sweep on
+ * (ZURUBANK's deposit endpoint records IDENTITY-RECEIVING ->
+ * IDENTITY-HOLDING -> the beneficiary's account off that field).
+ *
+ * Partial claims are refused up front, before anything is debited: parking
+ * a remainder needs the same bank-side holding account whose absence is
+ * why this path exists at all.
+ */
+private function executeIdentityClaimDirect(
+    array $holds,
+    string $destinationInstitution,
+    string $destinationType,
+    array $destinationDetails,
+    ?float $cashNowAmount,
+    string $confirmedByType,
+    ?int $confirmedById,
+    ?string $beneficiaryPhone,
+    string $identityType,
+    string $identityValue
+): array {
+    $currency = $holds[0]['currency'] ?? 'BWP';
+
+    // Compared against A (T - Fh), the same figure the callers validated
+    // $cashNowAmount against — comparing against gross T would reject a
+    // legitimate "claim everything" as if it were a partial.
+    $available = self::computeAvailableForPendingHolds($holds)['available'];
+    if ($cashNowAmount !== null && round($cashNowAmount, 2) < round($available, 2)) {
+        throw new RuntimeException(
+            "Claiming part of the balance isn't available at {$destinationInstitution} yet — the remainder " .
+            "would need a bank-side holding account this institution hasn't implemented. Claim the full " .
+            "{$available} {$currency} instead."
+        );
+    }
+
+    // A cashout code is drawn on the paying institution's own settlement
+    // account, so it can only cover money already sitting there. Checked
+    // here rather than only at payout time: reaching that check would mean
+    // debiting every hold and immediately compensating it all back, which
+    // the customer sees as their money leaving and returning for nothing.
+    if ($destinationType === 'CASHOUT') {
+        $elsewhere = array_values(array_unique(array_filter(
+            array_column($holds, 'source_institution'),
+            fn($inst) => $inst !== $destinationInstitution
+        )));
+        if (!empty($elsewhere)) {
+            throw new RuntimeException(
+                "A cashout code can only be drawn on money already held at the paying institution, and this " .
+                "claim's funds are at " . implode(', ', $elsewhere) . ", not {$destinationInstitution}. Until " .
+                "{$destinationInstitution} supports identity-swap consolidation, either take this as a deposit, " .
+                "or cash out at {$elsewhere[0]}."
+            );
+        }
+    }
+
+    $consolidationReference = 'CONSOL_' . time() . '_' . bin2hex(random_bytes(4));
+
+    // ------------------------------------------------------------
+    // Close every hold. Each one's value lands in ITS OWN source
+    // institution's settlement account, so a pooled claim spanning
+    // several sources stays correct — they converge at the payout below,
+    // not before it.
+    // ------------------------------------------------------------
+    $landedHoldIds = [];
+    $failedHolds = [];
+    $debitedByInstitution = [];
+
+    foreach ($holds as $hold) {
+        try {
+            $this->debitHoldForDirectClaim($hold, $consolidationReference);
+            $sourceInstitution = $hold['source_institution'];
+            $debitedByInstitution[$sourceInstitution] =
+                round(($debitedByInstitution[$sourceInstitution] ?? 0.0) + (float)$hold['amount'], 2);
+            $landedHoldIds[] = (int)$hold['hold_id'];
+        } catch (\Throwable $e) {
+            error_log("[SwapService] executeIdentityClaimDirect: hold {$hold['hold_id']} failed: " . $e->getMessage());
+            $failedHolds[] = [
+                'hold_id' => $hold['hold_id'],
+                'swap_reference' => $hold['swap_reference'],
+                'source_institution' => $hold['source_institution'] ?? 'unknown',
+                'gross_amount' => (float)$hold['amount'],
+                'status' => 'failed',
+                'error' => $e->getMessage(),
+            ];
+        }
+    }
+
+    if (empty($landedHoldIds)) {
+        $summary = implode('; ', array_map(
+            fn($f) => "{$f['source_institution']} (hold {$f['hold_id']}): {$f['error']}",
+            $failedHolds
+        ));
+        throw new RuntimeException("Claim could not be completed: {$summary}");
+    }
+
+    $totalDebited = round(array_sum($debitedByInstitution), 2);
+
+    // Fee applies only to money actually being delivered now — same rule
+    // as the consolidation path, and for the same reason: Fh rides on the
+    // interbank obligation netting below, it is not taken off the payout.
+    $feeBreakdown = null;
+    $netPayoutAmount = $totalDebited;
+    if ($totalDebited > 0) {
+        $feeBreakdown = $this->calculateFeesWithDetails(
+            $destinationType === 'CASHOUT' ? 'CASHOUT' : 'DEPOSIT',
+            $totalDebited,
+            array_merge($destinationDetails, [
+                'currency' => $currency,
+                'institution' => $destinationInstitution,
+                'destination_institution' => $destinationInstitution,
+                'asset_type' => $destinationDetails['destination_asset_type'] ?? 'ACCOUNT',
+            ])
+        );
+        $netPayoutAmount = round($feeBreakdown['net_amount_source_currency'] ?? $totalDebited, 2);
+    }
+
+    // ------------------------------------------------------------
+    // Deliver. Every hold above is already debited by this point, so a
+    // failure here leaves real money taken from customers and delivered
+    // nowhere — compensate it straight back rather than letting it sit.
+    // ------------------------------------------------------------
+    try {
+        $payoutResult = $this->deliverDirectClaim(
+            $debitedByInstitution, $netPayoutAmount, $destinationInstitution, $destinationType,
+            $destinationDetails, $currency, $beneficiaryPhone, $consolidationReference
+        );
+    } catch (\Throwable $e) {
+        $recovery = $this->compensateDebitedHolds(
+            $holds, $landedHoldIds, $consolidationReference, $destinationInstitution, $e->getMessage()
+        );
+        throw new SettlementRecoveryException(
+            "Payout to {$destinationInstitution} failed for this claim: " . $e->getMessage() . '. ' . $recovery['message'],
+            $recovery['fully_compensated']
+        );
+    }
+
+    foreach ($landedHoldIds as $holdId) {
+        $this->updateIdentityHoldStatus($holdId, 'completed', [
+            'final_destination_type' => $destinationType === 'CASHOUT' ? 'DIRECT_CASHOUT' : 'DIRECT_DEPOSIT',
+            'consolidation_reference' => $consolidationReference,
+            'payout_confirmed' => true,
+        ]);
+    }
+
+    // Point X obligation ledger — the source-to-destination leg is just as
+    // real here as under consolidation, so it is recorded identically
+    // (netted of each hold's Fh by computeNetObligationsByInstitution()).
+    if ($this->isClaimAlgorithmV2Enabled($destinationInstitution)) {
+        foreach (self::computeNetObligationsByInstitution($holds, $landedHoldIds) as $sourceInst => $nettedAmount) {
+            if ($nettedAmount <= 0 || $sourceInst === $destinationInstitution) {
+                continue; // an institution paying its own customer owes nobody
+            }
+            try {
+                $this->settlement->updateNetPosition(
+                    $consolidationReference, $sourceInst, $destinationInstitution,
+                    $nettedAmount, 'IDENTITY_CLAIM', $currency
+                );
+            } catch (\Throwable $e) {
+                error_log("[SwapService] Point X: updateNetPosition failed for {$sourceInst} -> {$destinationInstitution} on {$consolidationReference}: " . $e->getMessage());
+            }
+        }
+
+        $platformShare = (float)($feeBreakdown['components']['revenue_split']['platform']['amount'] ?? 0);
+        if ($platformShare > 0) {
+            try {
+                $this->settlement->invoiceFee(
+                    $consolidationReference, $destinationInstitution,
+                    $this->getParticipantId($destinationInstitution),
+                    'IDENTITY_CLAIM_PLATFORM_FEE', $platformShare, $currency
+                );
+            } catch (\Throwable $e) {
+                error_log("[SwapService] Point X: invoiceFee failed for {$destinationInstitution} on {$consolidationReference}: " . $e->getMessage());
+            }
+        }
+    }
+
+    $this->writeAuditLogEntry(
+        'identity_swap_holds',
+        $consolidationReference,
+        'IDENTITY_CLAIM_DIRECT',
+        'financial',
+        $confirmedById,
+        $confirmedByType,
+        $confirmedById ?? 0,
+        [
+            'identity_type' => $identityType,
+            'identity_value' => $identityValue,
+            'institution' => $destinationInstitution,
+            'holds_landed' => $landedHoldIds,
+            'holds_failed' => array_column($failedHolds, 'hold_id'),
+            'total_debited' => $totalDebited,
+            'payout_amount_net' => $netPayoutAmount,
+        ]
+    );
+
+    return [
+        'status' => empty($failedHolds) ? 'success' : 'partial_success',
+        'identity_type' => $identityType,
+        'identity_value' => $identityValue,
+        'currency' => $currency,
+        'consolidation_reference' => $consolidationReference,
+        'holds_landed' => count($landedHoldIds),
+        'holds_failed' => $failedHolds,
+        'total_consolidated' => $totalDebited,
+        'payout_amount_gross' => $totalDebited,
+        'fee' => $feeBreakdown,
+        'payout_amount_net' => $netPayoutAmount,
+        'payout_result' => $payoutResult,
+        'remainder_held' => 0.0,
+        'holding_position_id' => null,
+        'reservation_account_id' => null,
+    ];
+}
+
+/**
+ * Re-verifies the source asset, then closes the hold into the source
+ * institution's settlement account. The consolidation path's
+ * finalizeHoldToReceiving() does this too, then immediately pushes the
+ * proceeds onward to the destination's receiving pool; here the proceeds
+ * stay put until the single payout.
+ */
+private function debitHoldForDirectClaim(array $identitySwap, string $consolidationReference): void
+{
+    $sourceInstitution = $identitySwap['source_institution'];
+    $amount = (float)$identitySwap['amount'];
+
+    $sourcePayload = json_decode($identitySwap['source_payload'] ?? '{}', true) ?: [];
+    $sourcePayload['from_institution'] = $sourceInstitution;
+    $sourcePayload['source_institution'] = $sourceInstitution;
+    $sourcePayload['amount'] = $amount;
+    $sourcePayload['currency'] = $identitySwap['currency'] ?? 'BWP';
+    $sourcePayload['asset_type'] = $identitySwap['source_asset_type'] ?? 'ACCOUNT';
+
+    // verifyAssetSigned() reads these straight into the signed request's
+    // reference fields — see finalizeHoldToReceiving()'s note on why they
+    // must be set before verifying, not after.
+    $this->currentSwapRef = $identitySwap['swap_reference'];
+    $this->currentHoldReference = $identitySwap['hold_reference'];
+    $this->currentHoldId = (int)$identitySwap['hold_id'];
+
+    $verificationResult = $this->verifyAssetSigned($sourcePayload, $sourceInstitution);
+    if (!($verificationResult['verified'] ?? false)) {
+        throw new RuntimeException("Source funds no longer available for hold {$identitySwap['hold_id']}. Claim cancelled for this hold.");
+    }
+
+    $this->debitHoldToSourceSettlement($identitySwap);
+
+    $this->updateIdentityHoldStatus((int)$identitySwap['hold_id'], 'settled_pending_payout', [
+        'final_destination_type' => 'DIRECT_CLAIM',
+        'consolidation_reference' => $consolidationReference,
+    ]);
+}
+
+/**
+ * Pays the claim out of the settlement accounts the holds were just
+ * debited into. A deposit splits across source institutions (each funds
+ * its own share of the same beneficiary account); a cashout cannot, since
+ * one code can only be drawn on one institution's money.
+ */
+private function deliverDirectClaim(
+    array $debitedByInstitution,
+    float $netPayoutAmount,
+    string $destinationInstitution,
+    string $destinationType,
+    array $destinationDetails,
+    string $currency,
+    ?string $beneficiaryPhone,
+    string $consolidationReference
+): array {
+    $totalGross = array_sum($debitedByInstitution);
+    if ($totalGross <= 0 || $netPayoutAmount <= 0) {
+        throw new RuntimeException("Nothing left to pay out after fees for {$consolidationReference}.");
+    }
+
+    if ($destinationType === 'CASHOUT') {
+        $elsewhere = array_values(array_filter(
+            array_keys($debitedByInstitution),
+            fn($inst) => $inst !== $destinationInstitution
+        ));
+        if (!empty($elsewhere)) {
+            throw new RuntimeException(
+                "A cashout code can only be drawn on money already held at the paying institution, and this " .
+                "claim's funds are at " . implode(', ', $elsewhere) . ", not {$destinationInstitution}. Until " .
+                "{$destinationInstitution} supports identity-swap consolidation, either take this as a deposit, " .
+                "or cash out at {$elsewhere[0]}."
+            );
+        }
+        return $this->generateCashoutFromSettlement(
+            $destinationInstitution, $currency, $netPayoutAmount,
+            $destinationDetails['delivery_method'] ?? 'ATM',
+            $beneficiaryPhone, $consolidationReference . '_PAYOUT'
+        );
+    }
+
+    $destIdentifier = $destinationDetails['destination_identifier'] ?? null;
+    if (empty($destIdentifier)) {
+        throw new RuntimeException("destination_identifier is required to deposit a claim.");
+    }
+
+    $legs = [];
+
+    foreach (self::splitNetPayoutByInstitution($debitedByInstitution, $netPayoutAmount) as $sourceInstitution => $share) {
+        $this->settlePosToMerchant(
+            $sourceInstitution,
+            $destinationInstitution,
+            $destIdentifier,
+            $destinationDetails['destination_identifier_type'] ?? 'account_number',
+            $currency,
+            $share,
+            $consolidationReference . '_PAYOUT_' . $sourceInstitution
+        );
+
+        $legs[] = ['source_institution' => $sourceInstitution, 'amount' => $share];
+    }
+
+    return [
+        'success' => true,
+        'destination_identifier' => $destIdentifier,
+        'legs' => $legs,
+    ];
+}
+
+/**
+ * Divides one payout across the source institutions funding it, in
+ * proportion to what each was debited. The final leg takes the remainder
+ * rather than its own rounded share, so the legs always sum to exactly
+ * $netPayoutAmount -- splitting by rounded percentages alone loses or
+ * invents cents, and this is real money leaving real settlement accounts.
+ * Legs that round to nothing are dropped rather than sent as zero credits.
+ *
+ * Pure/stateless and static so the arithmetic is testable without the full
+ * SwapService dependency graph, same as
+ * computeNetObligationsByInstitution().
+ */
+private static function splitNetPayoutByInstitution(array $debitedByInstitution, float $netPayoutAmount): array
+{
+    $totalGross = array_sum($debitedByInstitution);
+    if ($totalGross <= 0) {
+        return [];
+    }
+
+    $shares = [];
+    $creditedSoFar = 0.0;
+    $remainingLegs = count($debitedByInstitution);
+
+    foreach ($debitedByInstitution as $sourceInstitution => $grossShare) {
+        $remainingLegs--;
+        $share = $remainingLegs === 0
+            ? round($netPayoutAmount - $creditedSoFar, 2)
+            : round($netPayoutAmount * ($grossShare / $totalGross), 2);
+
+        if ($share <= 0) {
+            continue;
+        }
+
+        $creditedSoFar = round($creditedSoFar + $share, 2);
+        $shares[$sourceInstitution] = $share;
+    }
+
+    return $shares;
+}
+
+/**
+ * Cashout counterpart of generateCashoutFromHolding() for institutions
+ * without a working identity HOLDING account — the code is drawn on the
+ * institution's own settlement account, where debitHoldToSourceSettlement()
+ * just put the money. Only valid when the paying institution IS the source,
+ * which deliverDirectClaim() enforces before calling this.
+ */
+private function generateCashoutFromSettlement(
+    string $institution,
+    string $currency,
+    float $amount,
+    string $deliveryMethod,
+    ?string $beneficiaryPhone,
+    string $reference
+): array {
+    $settlement = $this->getSourceSettlementAccount($institution, $currency);
+
+    $result = $this->adapterFactory->getAdapter($institution)->generateCashoutToken([
+        'reference' => $reference,
+        'amount' => $amount,
+        'currency' => $currency,
+        'delivery_method' => $deliveryMethod,
+        'beneficiary_phone' => $beneficiaryPhone,
+        'from_institution' => $institution,
+        'source_institution' => $institution,
+        'source_identifier' => $settlement['identifier'],
+        'source_type' => 'INSTITUTION_SETTLEMENT_ACCOUNT',
+        'to_institution' => $institution,
+        'destination_institution' => $institution,
+        'action' => 'GENERATE_TOKEN',
+    ], [
+        'source_institution' => $institution,
+        'destination_institution' => $institution,
+        'source_type' => 'INSTITUTION_SETTLEMENT_ACCOUNT',
+    ]);
+
+    if (!($result['success'] ?? false)) {
+        throw new RuntimeException("Cashout generation failed: " . ($result['message'] ?? 'Unknown error'));
+    }
+
+    if ($beneficiaryPhone && isset($result['atm_pin']) && $this->smsService) {
+        try {
+            $this->smsService->sendCashoutCode($beneficiaryPhone, $result['atm_pin'], $amount, $result['voucher_number'] ?? null);
+        } catch (Exception $e) {
+            error_log("[SwapService] SMS failed but continuing: " . $e->getMessage());
+        }
+    }
+
+    return [
+        'success' => true,
+        'transaction_reference' => $result['transaction_reference'] ?? null,
+        'swap_code' => $result['voucher_number'] ?? $result['swap_code'] ?? null,
+        'atm_code' => $result['atm_pin'] ?? null,
+        'expires_at' => $result['expires_at'] ?? date('Y-m-d H:i:s', strtotime('+24 hours')),
+    ];
+}
+
+/**
+ * Credits already-debited holds back to the accounts they came from, after
+ * a payout failed. Each hold that makes it back is marked 'cancelled' —
+ * leaving it 'pending' would re-offer money the customer already has back,
+ * and the source bank's hold is spent, so the next claim attempt would fail
+ * on a stale hold reference rather than on anything real.
+ */
+private function compensateDebitedHolds(
+    array $holds,
+    array $holdIds,
+    string $consolidationReference,
+    string $destinationInstitution,
+    string $payoutError
+): array {
+    $compensated = [];
+    $stranded = [];
+
+    foreach ($holds as $hold) {
+        if (!in_array((int)$hold['hold_id'], $holdIds, true)) {
+            continue;
+        }
+
+        $sourceInstitution = $hold['source_institution'];
+        $amount = (float)$hold['amount'];
+        $currency = $hold['currency'] ?? 'BWP';
+        $reference = $consolidationReference . '_COMPENSATE_' . $hold['hold_id'];
+
+        try {
+            $sourcePayload = json_decode($hold['source_payload'] ?? '{}', true) ?: [];
+            $sourceId = $this->extractSourceIdentifier($sourcePayload);
+            $destinationIdentifier = $sourceId['identifier'] ?? ($hold['source_identifier'] ?? null);
+            if (empty($destinationIdentifier)) {
+                throw new RuntimeException("No source identifier available to compensate against");
+            }
+
+            $result = $this->adapterFactory->getAdapter($sourceInstitution)->credit([
+                'reference' => $reference,
+                'amount' => $amount,
+                'currency' => $currency,
+                'destination_identifier' => $destinationIdentifier,
+                'destination_identifier_type' => $sourceId['type'] ?? 'account_number',
+                'destination_asset_type' => $hold['source_asset_type'] ?? 'ACCOUNT',
+                'to_institution' => $sourceInstitution,
+                'destination_institution' => $sourceInstitution,
+                'action' => 'PROCESS_DEPOSIT_WITH_PROOF',
+                'reason' => 'Automatic compensation: hold debited but claim payout failed',
+            ], [
+                'destination_institution' => $sourceInstitution,
+                'destination_identifier' => $destinationIdentifier,
+                'purpose' => 'debit_payout_compensation',
+            ]);
+
+            if (!($result['credited'] ?? false)) {
+                throw new RuntimeException($result['message'] ?? 'no reason given');
+            }
+
+            $this->updateIdentityHoldStatus((int)$hold['hold_id'], 'cancelled', [
+                'consolidation_reference' => $consolidationReference,
+                'compensated' => true,
+                'compensation_reference' => $reference,
+                'reason' => 'Payout failed after debit; amount credited back to source',
+            ]);
+            $compensated[] = $hold['hold_id'];
+
+        } catch (\Throwable $e) {
+            $this->recordManualReconciliationRequired(
+                $hold['swap_reference'], $hold['hold_reference'], $sourceInstitution,
+                $destinationInstitution, $amount, $currency,
+                "Hold debited for claim {$consolidationReference}, payout failed ({$payoutError}), AND automatic compensation back to source failed: " . $e->getMessage()
+            );
+            $stranded[] = $hold['hold_id'];
+        }
+    }
+
+    $fullyCompensated = empty($stranded);
+
+    return [
+        'fully_compensated' => $fullyCompensated,
+        'compensated' => $compensated,
+        'stranded' => $stranded,
+        'message' => $fullyCompensated
+            ? 'The debited amounts were automatically credited back to source -- no manual reconciliation needed.'
+            : 'Some debited amounts could NOT be credited back (holds ' . implode(', ', $stranded) . ') and are flagged for manual reconciliation.',
     ];
 }
 
