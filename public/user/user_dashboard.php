@@ -4995,23 +4995,16 @@ async function submitDirectClaim() {
     if (!pin) { showMessage('Please enter your claim PIN.', 'warning'); return; }
     if (!/^\d{4,6}$/.test(pin)) { showMessage('PIN must be 4-6 digits.', 'warning'); return; }
 
-    // FIX: claim_identity.php resolves by identity_type + identity_value,
-    // never by swap_reference (see submitClaim()'s comment for why) --
-    // unlike that button, this form only has the reference the user
-    // typed in, so look the identity up first via details.php (already
-    // used elsewhere in this file for the same reference-based lookup)
-    // before calling claim_identity.php.
-    const lookup = await callApi(CONFIG.API_BASE + '/api/v1/swap/details.php', { reference: swapRef });
-    const identity = lookup.ok ? (lookup.body.swap || lookup.body.data || {}).identity : null;
-    if (!identity || !identity.identity_type || !identity.identity_value) {
-        showMessage('Could not find an identity swap for that reference.', 'error');
-        return;
-    }
-
+    // FIX: this form only has the reference the recipient typed in, not
+    // identity_type/identity_value. It used to resolve those first via
+    // details.php, but that endpoint only allows a session user to view
+    // swaps THEY sent -- the recipient claiming someone else's money is
+    // never that user, so the lookup always failed with "Swap not
+    // found" before the claim even ran. claim_identity.php now resolves
+    // identity_type/identity_value from swap_reference itself (the PIN
+    // check is the real authorization), so just send the reference.
     const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/claim_identity.php', {
         swap_reference: swapRef,
-        identity_type: identity.identity_type,
-        identity_value: identity.identity_value,
         pin,
     });
     if (!result.ok) { showMessage('Claim failed: ' + friendlyApiError(result.error), 'error'); return; }
