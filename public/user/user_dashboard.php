@@ -4588,12 +4588,20 @@ async function submitClaim(swapReference) {
     };
     let destInst = null, destIdentifier = null;
 
-    if (destType === 'DEPOSIT') {
+    // FIX: claim_identity.php requires destination_institution for
+    // CASHOUT too (which network to dispense the code through), not
+    // just DEPOSIT -- read it unconditionally instead of only inside
+    // the DEPOSIT branch, or every CASHOUT claim 400s.
+    if (destType !== 'HOOK') {
         destInst = document.getElementById('claimDestInst').value;
-        destIdentifier = document.getElementById('claimDestIdentifier').value.trim();
+        if (!destInst) { showMessage('Select a destination institution.', 'warning'); return; }
         payload.destination_institution = destInst;
+    }
+
+    if (destType === 'DEPOSIT') {
+        destIdentifier = document.getElementById('claimDestIdentifier').value.trim();
         payload.destination_identifier = destIdentifier;
-        if (!destInst || !destIdentifier) { showMessage('Select a destination institution and enter an account/wallet number.', 'warning'); return; }
+        if (!destIdentifier) { showMessage('Enter an account/wallet number.', 'warning'); return; }
     } else if (destType === 'HOOK') {
         if (!claimHookCardSuffix) { showMessage('Choose which card to hook this to first.', 'warning'); return; }
         payload.card_suffix = claimHookCardSuffix;
@@ -4609,7 +4617,7 @@ async function submitClaim(swapReference) {
     } else if (destType === 'DEPOSIT') {
         destLabel = `Deposit to ${PARTICIPANTS[destInst]?.name || destInst} — ${destIdentifier}`;
     } else {
-        destLabel = 'Cashout';
+        destLabel = `Cashout via ${PARTICIPANTS[destInst]?.name || destInst}`;
     }
 
     const bodyHtml = `
@@ -4984,6 +4992,11 @@ function renderFinalizeIdentityModal() {
             <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">If you received a swap notification, enter the claim PIN below to complete the transaction.</div>
             <div class="field-group"><label>Swap reference</label><input id="directClaimRef" placeholder="e.g. SWAP_123456789"></div>
             <div class="field-group"><label>Claim PIN</label><input type="password" id="directClaimPin" placeholder="Enter the PIN you received" maxlength="6"></div>
+            <div class="field-group"><label>Receive as</label><select id="directClaimDestType" onchange="toggleDirectClaimDestFields(this.value)"><option value="CASHOUT">Cashout (ATM / Agent code)</option><option value="DEPOSIT">Deposit to an account/wallet</option></select></div>
+            <div class="field-group"><label id="directClaimDestInstLabel">Cashout via</label><select id="directClaimDestInst"><option value="">Select institution</option>${Object.keys(PARTICIPANTS).map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('')}</select></div>
+            <div id="directClaimDepositFields" style="display:none;">
+                <div class="field-group"><label>Account / wallet number</label><input id="directClaimDestIdentifier" placeholder="Account number or phone"></div>
+            </div>
             <div class="cta-row"><button class="btn btn-primary" onclick="submitDirectClaim()">Claim swap</button></div>
         </div>
         <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px;font-size:11px;color:var(--text-dim);">
@@ -4991,6 +5004,12 @@ function renderFinalizeIdentityModal() {
         </div>`;
 }
 
+// FIX: claim_identity.php requires destination_institution for BOTH
+// CASHOUT and DEPOSIT (it's who you're cashing out through, same as
+// who you'd deposit into) -- the institution selector used to live
+// only inside the DEPOSIT-only block below, so every CASHOUT claim
+// 400'd with "destination_institution is required for CASHOUT"
+// before it ever reached the PIN check.
 function openClaimForm(idx) {
     const claim = pendingClaims[idx];
     if (!claim) return;
@@ -5002,8 +5021,8 @@ function openClaimForm(idx) {
         </div>
         <div class="field-group"><label>Claim PIN</label><input type="password" id="claimPin" inputmode="numeric" maxlength="6" placeholder="&bull;&bull;&bull;&bull;"><div class="help">${pinHint}</div></div>
         <div class="field-group"><label>Receive as</label><select id="claimDestType" onchange="toggleClaimDestFields(this.value)"><option value="CASHOUT">Cashout (ATM / Agent code)</option><option value="DEPOSIT">Deposit to an account/wallet</option></select></div>
+        <div class="field-group"><label id="claimDestInstLabel">Cashout via</label><select id="claimDestInst"><option value="">Select institution</option>${Object.keys(PARTICIPANTS).map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('')}</select></div>
         <div id="claimDepositFields" style="display:none;">
-            <div class="field-group"><label>Destination institution</label><select id="claimDestInst"><option value="">Select institution</option>${Object.keys(PARTICIPANTS).map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('')}</select></div>
             <div class="field-group"><label>Account / wallet number</label><input id="claimDestIdentifier" placeholder="Account number or phone"></div>
         </div>
         <div class="cta-row"><button class="btn btn-secondary" onclick="openFinalizeIdentityModal()">Back</button><button class="btn btn-primary" onclick="submitClaim('${claim.swap_reference}')">Finalize</button></div>`;
@@ -5013,6 +5032,15 @@ function openClaimForm(idx) {
 function toggleClaimDestFields(type) {
     const el = document.getElementById('claimDepositFields');
     if (el) el.style.display = type === 'DEPOSIT' ? 'block' : 'none';
+    const label = document.getElementById('claimDestInstLabel');
+    if (label) label.textContent = type === 'DEPOSIT' ? 'Destination institution' : 'Cashout via';
+}
+
+function toggleDirectClaimDestFields(type) {
+    const el = document.getElementById('directClaimDepositFields');
+    if (el) el.style.display = type === 'DEPOSIT' ? 'block' : 'none';
+    const label = document.getElementById('directClaimDestInstLabel');
+    if (label) label.textContent = type === 'DEPOSIT' ? 'Destination institution' : 'Cashout via';
 }
 
 async function submitDirectClaim() {
@@ -5022,6 +5050,23 @@ async function submitDirectClaim() {
     if (!pin) { showMessage('Please enter your claim PIN.', 'warning'); return; }
     if (!/^\d{4,6}$/.test(pin)) { showMessage('PIN must be 4-6 digits.', 'warning'); return; }
 
+    // FIX: this form never collected a destination at all, but
+    // claim_identity.php requires destination_institution for both
+    // CASHOUT and DEPOSIT -- every manual claim 400'd with
+    // "destination_institution is required for CASHOUT" regardless of
+    // whether the reference/PIN were even correct.
+    const destType = document.getElementById('directClaimDestType').value;
+    const destInst = document.getElementById('directClaimDestInst').value;
+    if (!destInst) { showMessage('Select a destination institution.', 'warning'); return; }
+
+    const payload = { swap_reference: swapRef, pin, destination_type: destType, destination_institution: destInst };
+
+    if (destType === 'DEPOSIT') {
+        const destIdentifier = document.getElementById('directClaimDestIdentifier').value.trim();
+        if (!destIdentifier) { showMessage('Enter an account/wallet number.', 'warning'); return; }
+        payload.destination_identifier = destIdentifier;
+    }
+
     // FIX: this form only has the reference the recipient typed in, not
     // identity_type/identity_value. It used to resolve those first via
     // details.php, but that endpoint only allows a session user to view
@@ -5030,10 +5075,7 @@ async function submitDirectClaim() {
     // found" before the claim even ran. claim_identity.php now resolves
     // identity_type/identity_value from swap_reference itself (the PIN
     // check is the real authorization), so just send the reference.
-    const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/claim_identity.php', {
-        swap_reference: swapRef,
-        pin,
-    });
+    const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/claim_identity.php', payload);
     if (!result.ok) { showMessage('Claim failed: ' + friendlyApiError(result.error), 'error'); return; }
     closeModal();
     showMessage('Funds claimed successfully! 🎉', 'success');
