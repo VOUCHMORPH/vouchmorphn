@@ -4956,6 +4956,10 @@ function openFinalizeIdentityModal() {
 }
 
 function renderFinalizeIdentityModal() {
+    const defaultInst = (userSources[0] && userSources[0].institution) || Object.keys(PARTICIPANTS)[0] || '';
+    const instOptionsHtml = Object.keys(PARTICIPANTS).map(code =>
+        `<option value="${code}" ${code === defaultInst ? 'selected' : ''}>${PARTICIPANTS[code]?.name || code}</option>`
+    ).join('');
     const claimsHtml = pendingClaims.length === 0
         ? `<div style="font-size:12px;color:var(--text-dim);margin-bottom:16px;">No identity money is currently waiting for you.</div>`
         : `<div style="margin-bottom:16px;">${pendingClaims.map((c, i) => {
@@ -4993,7 +4997,7 @@ function renderFinalizeIdentityModal() {
             <div class="field-group"><label>Swap reference</label><input id="directClaimRef" placeholder="e.g. SWAP_123456789"></div>
             <div class="field-group"><label>Claim PIN</label><input type="password" id="directClaimPin" placeholder="Enter the PIN you received" maxlength="6"></div>
             <div class="field-group"><label>Receive as</label><select id="directClaimDestType" onchange="toggleDirectClaimDestFields(this.value)"><option value="CASHOUT">Cashout (ATM / Agent code)</option><option value="DEPOSIT">Deposit to an account/wallet</option></select></div>
-            <div class="field-group"><label id="directClaimDestInstLabel">Cashout via</label><select id="directClaimDestInst"><option value="">Select institution</option>${Object.keys(PARTICIPANTS).map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('')}</select></div>
+            <div class="field-group"><label id="directClaimDestInstLabel">Cashout via</label><select id="directClaimDestInst">${instOptionsHtml}</select></div>
             <div id="directClaimDepositFields" style="display:none;">
                 <div class="field-group"><label>Account / wallet number</label><input id="directClaimDestIdentifier" placeholder="Account number or phone"></div>
             </div>
@@ -5014,6 +5018,17 @@ function openClaimForm(idx) {
     const claim = pendingClaims[idx];
     if (!claim) return;
     const pinHint = claim.claim_type === 'otp_pin' ? 'Use the one-time PIN sent by SMS when this money was sent.' : 'Use your VouchMorph transaction PIN.';
+    // FIX: picking a destination institution is a real choice (it's whose
+    // ATM/agent network dispenses the cashout code, or who you're
+    // depositing into) so it can't just be removed -- but for the common
+    // case it doesn't need to be an active decision every time. Default it
+    // to wherever the recipient already has a linked account, so claiming
+    // is just "enter PIN, confirm" unless they want to send it somewhere
+    // else.
+    const defaultInst = (userSources[0] && userSources[0].institution) || Object.keys(PARTICIPANTS)[0] || '';
+    const instOptionsHtml = Object.keys(PARTICIPANTS).map(code =>
+        `<option value="${code}" ${code === defaultInst ? 'selected' : ''}>${PARTICIPANTS[code]?.name || code}</option>`
+    ).join('');
     const body = `
         <div style="background:var(--accent-soft);padding:14px;margin-bottom:14px;">
             <div style="font-size:20px;font-weight:600;color:var(--accent);font-family:var(--font-mono);">${formatMoney(claim.amount, claim.currency)}</div>
@@ -5021,7 +5036,7 @@ function openClaimForm(idx) {
         </div>
         <div class="field-group"><label>Claim PIN</label><input type="password" id="claimPin" inputmode="numeric" maxlength="6" placeholder="&bull;&bull;&bull;&bull;"><div class="help">${pinHint}</div></div>
         <div class="field-group"><label>Receive as</label><select id="claimDestType" onchange="toggleClaimDestFields(this.value)"><option value="CASHOUT">Cashout (ATM / Agent code)</option><option value="DEPOSIT">Deposit to an account/wallet</option></select></div>
-        <div class="field-group"><label id="claimDestInstLabel">Cashout via</label><select id="claimDestInst"><option value="">Select institution</option>${Object.keys(PARTICIPANTS).map(code => `<option value="${code}">${PARTICIPANTS[code]?.name || code}</option>`).join('')}</select></div>
+        <div class="field-group"><label id="claimDestInstLabel">Cashout via</label><select id="claimDestInst">${instOptionsHtml}</select></div>
         <div id="claimDepositFields" style="display:none;">
             <div class="field-group"><label>Account / wallet number</label><input id="claimDestIdentifier" placeholder="Account number or phone"></div>
         </div>
