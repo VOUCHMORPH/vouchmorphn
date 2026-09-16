@@ -74,6 +74,42 @@ class SwapService
         return implode(', ', array_merge(self::IDENTITY_TYPES_SELF_SERVICE, self::IDENTITY_TYPES_AGENT_VERIFIABLE));
     }
 
+    // ============================================================
+    // FIX: nothing normalized identity_value before matching a sender's
+    // typed-in recipient identifier against the recipient's registered
+    // identity — "71234567" (as registered) and "+26771234567" (as a
+    // sender typed it) are the same phone number to a person but never
+    // matched as strings, so pending identity swaps silently never
+    // surfaced for the recipient. Canonicalize to E.164 for phone
+    // (Botswana has no trunk prefix — 8-digit local numbers get "267"
+    // prepended), lowercase for email, and strip incidental
+    // whitespace/dashes for ID documents (the identity-value field's
+    // own placeholder hints a dashed format: "0000 - 0000 - 0000").
+    // ============================================================
+    private static function normalizeIdentityValue(string $identityType, string $identityValue): string
+    {
+        $identityType = strtolower(trim($identityType));
+        $value = trim($identityValue);
+
+        if ($identityType === 'phone') {
+            $digits = preg_replace('/\D/', '', $value) ?? '';
+            if (strpos($digits, '00') === 0) {
+                $digits = substr($digits, 2); // international dialing prefix
+            }
+            if (strlen($digits) === 8) {
+                $digits = '267' . $digits; // bare local number, no trunk prefix in Botswana
+            }
+            return '+' . $digits;
+        }
+
+        if ($identityType === 'email') {
+            return strtolower($value);
+        }
+
+        // national_id, voter_id, voters_id, birth_certificate, drivers_license, passport, nickname
+        return preg_replace('/[\s\-]+/', '', $value) ?? $value;
+    }
+
     private PDO $swapDB;
     private array $config = [];
     private array $participants = [];
@@ -4383,6 +4419,7 @@ $this->recordSettlementPending(
     if (!$this->isValidIdentityType($identityType)) {
         throw new RuntimeException("Invalid identity_type. Must be one of: " . $this->validIdentityTypesLabel());
     }
+    $payload['identity_value'] = self::normalizeIdentityValue($identityType, (string)$payload['identity_value']);
 
     $skipHold = isset($payload['_skip_hold']) && $payload['_skip_hold'] === true;
     $swapRef = $payload['reference'] ?? $this->currentSwapRef ?? $this->generateReference();
@@ -4874,8 +4911,17 @@ return $result;
 
     public function getPendingIdentitySwaps(string $identityType, string $identityValue, string $status = 'pending'): array
     {
+        // FIX: matched h.identity_value by exact string equality, so a
+        // hold stored as "71234567" never matched a lookup for
+        // "+26771234567" even though they're the same phone number --
+        // identity_value wasn't normalized anywhere until now (see
+        // normalizeIdentityValue()), and holds created before that fix
+        // shipped are still stored in whatever raw format the sender
+        // typed. Filter by identity_type only in SQL, then compare
+        // normalized values in PHP so this keeps working for that
+        // already-stored data without a backfill.
         $sql = "
-            SELECT 
+            SELECT
                 h.hold_id,
                 h.swap_reference,
                 h.amount,
@@ -4889,34 +4935,37 @@ return $result;
                 h.source_identifier,
                 h.metadata,
                 ht.status as hold_status,
-                CASE 
+                CASE
                     WHEN h.hold_expires_at < NOW() THEN 'expired'
                     ELSE h.status
                 END as current_status
             FROM identity_swap_holds h
             LEFT JOIN hold_transactions ht ON h.hold_id = ht.hold_id
             WHERE h.identity_type = :identity_type
-                AND h.identity_value = :identity_value
         ";
-        
+
         if ($status !== 'all') {
             $sql .= " AND h.status = :status AND h.hold_expires_at > NOW()";
         }
-        
+
         $sql .= " ORDER BY h.created_at DESC";
-        
+
         try {
             $stmt = $this->swapDB->prepare($sql);
             $params = [
                 ':identity_type' => $identityType,
-                ':identity_value' => $identityValue
             ];
             if ($status !== 'all') {
                 $params[':status'] = $status;
             }
             $stmt->execute($params);
-            return $stmt->fetchAll(PDO::FETCH_ASSOC);
-            
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $normalizedTarget = self::normalizeIdentityValue($identityType, $identityValue);
+            return array_values(array_filter($rows, function (array $row) use ($identityType, $normalizedTarget) {
+                return self::normalizeIdentityValue($identityType, (string)$row['identity_value']) === $normalizedTarget;
+            }));
+
         } catch (PDOException $e) {
             error_log("[SwapService] Failed to get pending identity swaps: " . $e->getMessage());
             throw new RuntimeException("Failed to get pending identity swaps: " . $e->getMessage());
@@ -12098,6 +12147,7 @@ public function getSourceAvailableBalanceDetailed(array $source): array
     if ($identityValue === '') {
         throw new RuntimeException("identity_value is required");
     }
+    $identityValue = self::normalizeIdentityValue($identityType, $identityValue);
 
     // ============================================================
     // FIX: Self-service identity addition can ONLY use phone, email, 
@@ -12309,6 +12359,7 @@ public function addVerifiedIdentityAsAgent(
     if ($identityValue === '') {
         throw new RuntimeException("identity_value is required");
     }
+    $identityValue = self::normalizeIdentityValue($identityType, $identityValue);
 
     if (!in_array($identityType, self::IDENTITY_PROFILE_GOVERNMENT_TYPES, true)) {
         throw new RuntimeException(
