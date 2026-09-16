@@ -38,6 +38,42 @@ $identityType = strtolower(trim((string)($body['identity_type'] ?? '')));
 $identityValue = trim((string)($body['identity_value'] ?? ''));
 $pin = (string)($body['pin'] ?? '');
 $destinationType = strtoupper((string)($body['destination_type'] ?? 'CASHOUT'));
+$swapReference = trim((string)($body['swap_reference'] ?? ''));
+
+require_once __DIR__ . '/../../../../src/Core/Database/DBConnection.php';
+require_once __DIR__ . '/../../../../vendor/autoload.php';
+require_once __DIR__ . '/../../../../src/Domain/Services/SwapService.php';
+require_once __DIR__ . '/../../../../src/Core/Config/LoadCountry.php';
+
+use Core\Database\DBConnection;
+use Domain\Services\SwapService;
+use Core\Config\LoadCountry;
+
+$db = DBConnection::getConnection();
+
+// ============================================================
+// FIX: the manual "enter swap reference + PIN" form on the dashboard
+// (submitDirectClaim()) only has the reference the recipient typed in,
+// not the identity_type/identity_value -- it used to resolve those via
+// /swap/details.php, but that endpoint restricts session access to
+// swaps the LOGGED-IN USER owns (the sender), which the recipient
+// claiming someone else's money never is. That made every manual claim
+// fail with "Swap not found" before the claim logic even ran. Resolve
+// identity_type/identity_value directly from the hold row here instead
+// -- no ownership check needed, since the PIN itself (verified inside
+// finalizeAggregatedIdentityClaimSelfService()) is the real
+// authorization for a claim, exactly like the aggregated identity_type
+// + identity_value path above.
+// ============================================================
+if (($identityType === '' || $identityValue === '') && $swapReference !== '') {
+    $stmt = $db->prepare("SELECT identity_type, identity_value FROM identity_swap_holds WHERE swap_reference = :ref LIMIT 1");
+    $stmt->execute([':ref' => $swapReference]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if ($row) {
+        $identityType = strtolower((string)$row['identity_type']);
+        $identityValue = (string)$row['identity_value'];
+    }
+}
 
 if ($identityType === '' || $identityValue === '') {
     http_response_code(400);
@@ -82,17 +118,7 @@ if ($destinationType === 'DEPOSIT') {
     $destinationDetails['delivery_method'] = $body['delivery_method'] ?? 'ATM';
 }
 
-require_once __DIR__ . '/../../../../src/Core/Database/DBConnection.php';
-require_once __DIR__ . '/../../../../vendor/autoload.php';
-require_once __DIR__ . '/../../../../src/Domain/Services/SwapService.php';
-require_once __DIR__ . '/../../../../src/Core/Config/LoadCountry.php';
-
-use Core\Database\DBConnection;
-use Domain\Services\SwapService;
-use Core\Config\LoadCountry;
-
 try {
-    $db = DBConnection::getConnection();
     $country = $userData['country'] ?? getenv('VOUCHMORPH_COUNTRY') ?: 'Botswana';
     $swapService = new SwapService($db, LoadCountry::getConfig(), $country);
 
