@@ -1,0 +1,7 @@
+# PHPUnit's result cache, created by the cacheDirectory setting in
+# phpunit.xml. Local run state, not source.
+#
+# Deliberately narrow: this repo commits vendor/ and has never had a
+# .gitignore, so this covers only the artifact phpunit.xml introduces
+# rather than changing what the repo tracks.
+.phpunit.cache/

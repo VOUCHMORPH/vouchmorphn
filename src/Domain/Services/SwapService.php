@@ -146,11 +146,37 @@ class SwapService
     private ?int $currentHoldId = null;
     private ?string $currentHoldReference = null;
     private ?string $currentHoldInstitution = null;
+    // The receipt for the source debit on the swap currently in flight, and
+    // whether we had to mint it ourselves because the institution returned
+    // none. Both go into the audit trail so a reference can always be traced
+    // back to who issued it. See debitSource().
+    private ?string $currentDebitReference = null;
+    private bool $currentDebitReferenceIsLocal = false;
+    // Anything populateTrackingTables() could not write for the swap in
+    // flight. Read once in executeAtomicSwap() to decide between
+    // recording_status 'complete' and 'exceptions'. Deliberately NOT
+    // cleared by resetAtomicState(), which commitAtomicSwap() calls before
+    // the response is assembled; beginAtomicSwap() clears it per swap.
+    private array $recordingExceptions = [];
     private array $executedSteps = [];
     private array $stepResults = [];
     private array $signedPayloads = [];
     private array $pendingRemainder = [];
-    private bool $postDeliveryDebitFailure = false;   // NEW
+    // Set when a source debit fails AFTER the destination already received
+    // real value. rollbackAtomicSwap() reads these to skip the hold release
+    // (releasing would double-pay) and to write the
+    // swap_manual_reconciliation_required row a human settles from.
+    //
+    // The three detail properties were previously undeclared -- created
+    // dynamically at assignment, which PHP 8.2 deprecates, and never
+    // cleared by resetAtomicState(). That meant a second swap in the same
+    // request could inherit the first one's amount and destination and
+    // write them into a reconciliation record used to settle real money
+    // with a bank. Declared and reset with the flag they belong to.
+    private bool $postDeliveryDebitFailure = false;
+    private ?string $postDeliveryDestinationInstitution = null;
+    private float $postDeliveryAmount = 0.0;
+    private string $postDeliveryCurrency = 'BWP';
 
     public function __construct(
         PDO $swapDB, 
@@ -1451,7 +1477,15 @@ private function runInSavepoint(string $label, callable $fn)
  *    failure cannot affect any other table or the outer commit.
  * 4. Detailed logging of what was populated and what failed.
  */
-private function populateTrackingTables(array $swapData, array $details, ?array $destResponse = null): void
+/**
+ * @return array{populated: string[], errors: string[]} What actually
+ *         landed and what did not. This used to return void and log a
+ *         warning, which meant a swap could move real money, fail to write
+ *         the swap_requests row that IS its reference, and still return
+ *         plain success to the caller. Callers now propagate the errors
+ *         into their response as recording_status/recording_exceptions.
+ */
+private function populateTrackingTables(array $swapData, array $details, ?array $destResponse = null): array
 {
     $swapType = $swapData['swap_type'] ?? 'STANDARD';
     $swapRef = $swapData['reference'] ?? $this->currentSwapRef;
@@ -1472,6 +1506,14 @@ private function populateTrackingTables(array $swapData, array $details, ?array 
             $populated[] = 'swap_requests (id: ' . $swapId . ')';
         } else {
             $errors[] = 'swap_requests returned no swap_id';
+            // No swap_id means no master row, which means this reference
+            // does not exist anywhere queryable. Dead-letter it.
+            $this->writeAuditFallback(
+                $swapRef,
+                $swapType,
+                'swap_requests returned no swap_id - transaction has no reference record',
+                $userId
+            );
         }
     } catch (\Throwable $e) {
         $errors[] = 'swap_requests: ' . $e->getMessage();
@@ -1481,6 +1523,18 @@ private function populateTrackingTables(array $swapData, array $details, ?array 
         ]);
         // Safely continued: the SAVEPOINT rollback above already undid
         // only this insert's effect, so the outer transaction is intact.
+        //
+        // But "safely continued" is not the same as "fine". swap_requests
+        // is the row that makes this reference exist at all; without it the
+        // money has moved and nothing records that it did. Guarantee a
+        // durable trace before carrying on, and let the caller see the
+        // failure in its response rather than only in a log line.
+        $this->writeAuditFallback(
+            $swapRef,
+            $swapType,
+            'swap_requests insert failed - transaction has no reference record: ' . $e->getMessage(),
+            $userId
+        );
     }
 
     // ============================================================
@@ -1561,12 +1615,13 @@ private function populateTrackingTables(array $swapData, array $details, ?array 
     // 4. Populate audit_logs (optional but recommended)
     // ============================================================
     try {
-        $auditWritten = $this->runInSavepoint('audit_log_' . $swapRef, function () use ($swapRef, $swapType, $swapData, $details, $userId) {
-            return $this->populateAuditLog($swapRef, $swapType, $swapData, $details, $userId);
+        $auditWritten = $this->runInSavepoint('audit_log_' . $swapRef, function () use ($swapRef, $swapType, $swapData, $details, $userId, $destResponse) {
+            return $this->populateAuditLog($swapRef, $swapType, $swapData, $details, $userId, $destResponse);
         });
         if ($auditWritten) {
             $populated[] = 'audit_logs';
         } else {
+            // writeAuditLogEntry() has already dead-lettered this one.
             $errors[] = 'audit_logs: not written (see audit_log_failures)';
         }
     } catch (\Throwable $e) {
@@ -1575,10 +1630,19 @@ private function populateTrackingTables(array $swapData, array $details, ?array 
             'reference' => $swapRef,
             'error' => $e->getMessage()
         ]);
+        // The savepoint itself blew up, so writeAuditLogEntry() never got
+        // to record its own fallback. Do it here instead -- money moved
+        // and this transaction has no audit row.
+        $this->writeAuditFallback(
+            $swapRef,
+            $swapType,
+            'audit_logs savepoint failed: ' . $e->getMessage(),
+            $userId
+        );
     }
 
     // ============================================================
-    // 5. Log summary
+    // 5. Log summary and hand the outcome back to the caller
     // ============================================================
     if (empty($errors)) {
         $this->logger->info("All tracking tables populated successfully", [
@@ -1587,13 +1651,24 @@ private function populateTrackingTables(array $swapData, array $details, ?array 
             'tables' => $populated
         ]);
     } else {
-        $this->logger->warning("Tracking tables populated with errors", [
+        // critical, not warning: money has moved and some part of the
+        // record of it is missing. The caller surfaces this as
+        // recording_status => 'exceptions' rather than plain success.
+        $this->logger->critical("Tracking tables populated with errors - transaction record is incomplete", [
             'reference' => $swapRef,
             'type' => $swapType,
             'populated' => $populated,
             'errors' => $errors
         ]);
     }
+
+    if (!empty($errors)) {
+        foreach ($errors as $error) {
+            $this->recordingExceptions[] = $swapRef . ': ' . $error;
+        }
+    }
+
+    return ['populated' => $populated, 'errors' => $errors];
 }
 
 /**
@@ -1615,8 +1690,73 @@ public function recordPoolSwapTransaction(array $swapData, array $details): void
     $this->populateTrackingTables($swapData, $details);
 }
 
-private function populateAuditLog(string $swapRef, string $swapType, array $swapData, array $details, ?int $userId = null): bool
-{
+/**
+ * The financial audit record for one completed swap.
+ *
+ * This used to pass $detailsPayload = null, so even when the insert
+ * succeeded the row said only "a swap of some kind was created" -- no
+ * amount, no currency, no counterparty, nothing about where the money
+ * actually went. An audit trail that cannot answer who / when / where is
+ * not an audit trail, so the full picture is assembled here and written
+ * to the row's JSON payload column.
+ *
+ * Shape deliberately mirrors swap_transactions.from_account_details /
+ * to_account_details (institution + identifier + asset_type) so the two
+ * records of the same movement line up when read side by side.
+ */
+private function populateAuditLog(
+    string $swapRef,
+    string $swapType,
+    array $swapData,
+    array $details,
+    ?int $userId = null,
+    ?array $destResponse = null
+): bool {
+    $auditPayload = [
+        // WHAT
+        'swap_type' => strtoupper($swapType),
+        'amount' => $swapData['amount'] ?? $details['amount'] ?? null,
+        'currency' => $swapData['currency'] ?? $details['currency'] ?? null,
+        'fee' => $this->feeCalculationDetails['total_fee'] ?? null,
+        'status' => $swapData['status'] ?? $details['status'] ?? null,
+
+        // WHERE FROM / WHERE TO -- the "where the money went" half
+        'source' => [
+            'institution' => $details['source_institution'] ?? $swapData['from_institution'] ?? null,
+            'identifier' => $details['source_identifier'] ?? null,
+            'asset_type' => $details['asset_type'] ?? null,
+        ],
+        'destination' => [
+            'institution' => $details['destination_institution'] ?? $swapData['to_institution'] ?? null,
+            'identifier' => $details['destination_identifier'] ?? null,
+            'asset_type' => $details['destination_asset_type'] ?? null,
+        ],
+
+        // THE RECEIPTS -- every reference this movement produced, so the
+        // certificate and any dispute can be traced from a single row.
+        'references' => [
+            'swap' => $swapRef,
+            'hold' => $this->currentHoldReference,
+            'debit' => $this->currentDebitReference,
+            'debit_reference_is_local' => $this->currentDebitReferenceIsLocal,
+            'destination' => $destResponse['transaction_reference'] ?? null,
+        ],
+
+        // WHO
+        'actor' => [
+            'user_id' => $userId,
+            'type' => $userId ? 'user' : 'system',
+            'ip_address' => $_SERVER['REMOTE_ADDR'] ?? null,
+            'channel' => $details['channel'] ?? $details['source_channel'] ?? null,
+        ],
+
+        // WHEN -- the swap's own start, not just the insert time that
+        // performed_at records.
+        'started_at' => $this->currentSwapStartedAt,
+        'client_initiated_at' => $this->currentClientInitiatedAt,
+        'recorded_at' => $this->nowWithMicros(),
+    ];
+
     // Use the single writeAuditLogEntry() method for consistency
     return $this->writeAuditLogEntry(
         'swap_requests',
@@ -1626,7 +1766,7 @@ private function populateAuditLog(string $swapRef, string $swapType, array $swap
         $userId,
         $userId ? 'user' : 'system',
         $userId ?? 0,
-        null
+        $auditPayload
     );
 }
 
@@ -1719,20 +1859,54 @@ private function writeAuditLogEntry(
             $params[":{$col}"] = $val;
         }
     }
-    // details/notes/metadata - whichever this deployment's schema has
+    // Where the who/when/where payload lands, whichever column this
+    // deployment's schema actually has.
+    //
+    // The list used to stop at details/notes/metadata -- none of which
+    // exist on any Botswana schema -- so the payload was silently dropped
+    // on exactly the deployment this system runs on. changes and new_value
+    // are jsonb and have been there all along; they need the ::jsonb cast,
+    // details/notes are plain text and must not have it.
     if ($detailsPayload !== null) {
-        foreach (['details', 'notes'] as $col) {
+        $encodedDetails = json_encode($detailsPayload);
+        $textColumns = ['details', 'notes'];
+        $jsonColumns = ['changes', 'new_value'];
+
+        $written = false;
+        foreach ($textColumns as $col) {
             if (in_array($col, $cols)) {
                 $fields[] = $col;
                 $placeholders[] = ":{$col}";
-                $params[":{$col}"] = json_encode($detailsPayload);
+                $params[":{$col}"] = $encodedDetails;
+                $written = true;
                 break;
             }
         }
+        if (!$written) {
+            foreach ($jsonColumns as $col) {
+                if (in_array($col, $cols)) {
+                    $fields[] = $col;
+                    $placeholders[] = ":{$col}::jsonb";
+                    $params[":{$col}"] = $encodedDetails;
+                    $written = true;
+                    break;
+                }
+            }
+        }
+        if (!$written) {
+            // No column on this schema can hold it. Say so rather than
+            // writing a row that looks complete but records nothing about
+            // the money -- the caller escalates this to the dead letter.
+            $this->logger->error('audit_logs has no column able to store the financial detail payload', [
+                'reference' => $entityId,
+                'columns' => $cols
+            ]);
+        }
+
         if (in_array('metadata', $cols)) {
             $fields[] = 'metadata';
             $placeholders[] = ':metadata::jsonb';
-            $params[':metadata'] = json_encode($detailsPayload);
+            $params[':metadata'] = $encodedDetails;
         }
     }
 
@@ -1795,19 +1969,7 @@ private function swapTypeFromAuditAction(string $action): string
  */
 private function writeAuditFallback(string $swapRef, string $swapType, string $reason, ?int $userId): void
 {
-    try {
-        $this->swapDB->exec("
-            CREATE TABLE IF NOT EXISTS audit_log_failures (
-                id BIGSERIAL PRIMARY KEY,
-                swap_reference VARCHAR(255) NOT NULL,
-                swap_type VARCHAR(50),
-                user_id INTEGER,
-                reason TEXT NOT NULL,
-                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-                resolved_at TIMESTAMP,
-                resolved_by VARCHAR(100)
-            )
-        ");
+    $insert = function () use ($swapRef, $swapType, $reason, $userId) {
         $stmt = $this->swapDB->prepare("
             INSERT INTO audit_log_failures (swap_reference, swap_type, user_id, reason)
             VALUES (:ref, :type, :user_id, :reason)
@@ -1818,6 +1980,39 @@ private function writeAuditFallback(string $swapRef, string $swapType, string $r
             ':user_id' => $userId,
             ':reason' => $reason
         ]);
+    };
+
+    try {
+        // Insert first, create only if the table genuinely isn't there.
+        //
+        // This used to run CREATE TABLE IF NOT EXISTS unconditionally,
+        // ahead of every write. That is DDL on the failure path of a money
+        // movement, inside whatever transaction the swap was holding --
+        // the one moment it is least likely to succeed, and it takes a
+        // lock on the way. The table is created up front by
+        // 2026_09_16_transaction_audit_integrity.sql now, so the DDL here
+        // is only a safety net for a database that predates it.
+        //
+        // Each attempt is wrapped in a SAVEPOINT: a failure here must not
+        // abort the caller's transaction, which on this path is a
+        // transaction whose money movement has already succeeded.
+        try {
+            $this->runInSavepoint('audit_fallback_' . uniqid(), $insert);
+        } catch (\Throwable $missingTable) {
+            $this->swapDB->exec("
+                CREATE TABLE IF NOT EXISTS audit_log_failures (
+                    id BIGSERIAL PRIMARY KEY,
+                    swap_reference VARCHAR(255) NOT NULL,
+                    swap_type VARCHAR(50),
+                    user_id INTEGER,
+                    reason TEXT NOT NULL,
+                    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                    resolved_at TIMESTAMP,
+                    resolved_by VARCHAR(100)
+                )
+            ");
+            $this->runInSavepoint('audit_fallback_retry_' . uniqid(), $insert);
+        }
         $this->logger->critical("Audit log write failed - recorded to audit_log_failures", [
             'swap_reference' => $swapRef,
             'reason' => $reason
@@ -2409,9 +2604,21 @@ public function recordExternalRailExecution(array $payload, array $railResult, s
         'execution_rail_reference' => $railResult['reference'] ?? null,
     ]);
 
-    $this->populateTrackingTables($swapData, $details, $railResult);
+    $tracking = $this->populateTrackingTables($swapData, $details, $railResult);
 
-    return ['reference' => $ref, 'status' => $swapData['status']];
+    // Switch-executed transfers never go through executeAtomicSwap(), so
+    // they need their own copy of the degraded-success contract: the
+    // transfer really happened on the external rail, but if the record of
+    // it did not land, the caller is told rather than handed a plain
+    // success. Read from the return value, not $this->recordingExceptions,
+    // because this path never called beginAtomicSwap() to reset it.
+    $response = ['reference' => $ref, 'status' => $swapData['status']];
+    $response['recording_status'] = empty($tracking['errors']) ? 'complete' : 'exceptions';
+    if (!empty($tracking['errors'])) {
+        $response['recording_exceptions'] = $tracking['errors'];
+    }
+
+    return $response;
 }
 
 
@@ -2565,7 +2772,25 @@ public function recordExternalRailExecution(array $payload, array $railResult, s
             if (!empty($this->feeCalculationDetails)) {
                 $result['fee_calculation_details'] = $this->feeCalculationDetails;
             }
-            
+
+            // ============================================================
+            // DEGRADED SUCCESS
+            // ============================================================
+            // The money moved and an external debit cannot be undone by a
+            // local rollback, so this still succeeds. But if any part of
+            // the record of it failed to write, the caller is told rather
+            // than being handed a plain success while the paper trail has
+            // a hole in it. Every failure counted here has also been
+            // dead-lettered to audit_log_failures for reconciliation.
+            //
+            // Set centrally, right after the dispatch, so it covers every
+            // swap type's handler instead of relying on each of them to
+            // remember.
+            $result['recording_status'] = empty($this->recordingExceptions) ? 'complete' : 'exceptions';
+            if (!empty($this->recordingExceptions)) {
+                $result['recording_exceptions'] = $this->recordingExceptions;
+            }
+
             $commitResult = $this->commitAtomicSwap();
             $result = array_merge($result, ['atomic_commit' => $commitResult]);
             
@@ -4320,7 +4545,7 @@ if (!($debitResult['debited'] ?? false)) {
     // does NOT release the source hold.
     $this->postDeliveryDebitFailure = true;
     $this->postDeliveryDestinationInstitution = $destinationInstitution;
-    $this->postDeliveryAmount = $netAmount;
+    $this->postDeliveryAmount = (float)$netAmount;
     $this->postDeliveryCurrency = $payload['currency'] ?? 'BWP';
     throw new RuntimeException("Debit failed after destination delivery succeeded: " . ($debitResult['message'] ?? 'Unknown error'));
 }
@@ -4333,7 +4558,10 @@ if (!($debitResult['debited'] ?? false)) {
 $this->recordSettlementPending(
     $this->currentSwapRef,
     $destinationInstitution,
-    $debitResult['transaction_reference'] ?? $this->currentSwapRef,
+    // debitSource() guarantees a reference here (minting a local one if the
+    // institution returned none), so this no longer silently substitutes the
+    // swap reference and makes a missing receipt look like a real one.
+    $debitResult['transaction_reference'],
     $netAmount,
     $payload['currency'] ?? 'BWP'
 );
@@ -8927,7 +9155,23 @@ public function isApprovedAgent(int $userId): bool
     
     $debitResult = $this->debitSource($payload, $sourceInstitution);
     if (!($debitResult['debited'] ?? false)) {
-        throw new RuntimeException("Debit failed");
+        // POST-DELIVERY FAILURE. processDestinationWithProof() above has
+        // already put real value at the destination. Releasing the source
+        // hold now would hand the customer their money back on top of
+        // that -- a double payment.
+        //
+        // This guard existed in executeSignedDeposit() (see its
+        // DEBIT_SOURCE block) but was missing here, so this path took
+        // rollbackAtomicSwap()'s release branch and paid out twice, while
+        // the rollback also discarded every tracking write -- leaving no
+        // swap_requests row, no ledger legs and no audit entry to notice
+        // it by. Setting the flag makes rollbackAtomicSwap() skip the
+        // release and record swap_manual_reconciliation_required instead.
+        $this->postDeliveryDebitFailure = true;
+        $this->postDeliveryDestinationInstitution = $destInstitution;
+        $this->postDeliveryAmount = (float)$netAmount;
+        $this->postDeliveryCurrency = $payload['currency'] ?? 'BWP';
+        throw new RuntimeException("Debit failed after destination delivery succeeded: " . ($debitResult['message'] ?? 'Unknown error'));
     }
 
     // FIX: mark the hold DEBITED, same as CASHOUT/DEPOSIT do
@@ -9557,13 +9801,47 @@ private function loadAtmNotesStrict(array $countryConfig, string $countryFallbac
         'signed_payloads' => $this->signedPayloads
     ]);
     $debited = $result['debited'] ?? false;
+
+    // ============================================================
+    // A SUCCESSFUL DEBIT ALWAYS CARRIES A REFERENCE
+    // ============================================================
+    // This used to return transaction_reference => null whenever the
+    // institution's response omitted one, and nothing downstream checked:
+    // recordSettlementPending() quietly substituted the swap reference,
+    // MultiSourceSwapExecutor stored an empty string, and the audit trail
+    // recorded no receipt for money that had genuinely left the source.
+    //
+    // Unlike the hold and credit steps, the debit step has no
+    // assertStepIntegrity() guard, and adding one would reject live
+    // adapters that legitimately never return a per-debit reference (card
+    // acquirers settle on the authorization code instead). So rather than
+    // failing the swap, mint a VouchMorph-side receipt in the same format
+    // as generateReference() and flag it as locally assigned, so a reader
+    // can always tell an institution's reference from one of ours.
+    $transactionReference = $result['transaction_reference'] ?? null;
+    $referenceIsLocal = false;
+    if ($debited && ($transactionReference === null || $transactionReference === '')) {
+        $transactionReference = 'DBT_' . time() . '_' . bin2hex(random_bytes(8));
+        $referenceIsLocal = true;
+        $this->logger->warning('Debit succeeded without an institution reference - assigned a local one', [
+            'swap_reference' => $this->currentSwapRef,
+            'institution' => $institution,
+            'assigned_reference' => $transactionReference
+        ]);
+    }
+    if ($debited) {
+        $this->currentDebitReference = $transactionReference;
+        $this->currentDebitReferenceIsLocal = $referenceIsLocal;
+    }
+
     // ============================================================
     // STANDARDIZED RESPONSE STRUCTURE
     // ============================================================
     return [
         'success' => $debited,
         'debited' => $debited,
-        'transaction_reference' => $result['transaction_reference'] ?? null,
+        'transaction_reference' => $transactionReference,
+        'transaction_reference_is_local' => $referenceIsLocal,
         'status' => $result['status'] ?? ($debited ? 'COMPLETED' : 'FAILED'),
         'message' => $result['message'] ?? ($debited ? 'Debit completed' : 'Debit failed'),
         'status_code' => $result['status_code'] ?? 0,
@@ -11296,6 +11574,7 @@ private function beginAtomicSwap(string $reference): void
     // populateSwapRequest() used to do after the whole swap had finished.
     $this->currentSwapStartedAt = $this->nowWithMicros();
     $this->inAtomicSwap = true;
+    $this->recordingExceptions = [];
     $this->executedSteps = [];
     $this->stepResults = [];
     $this->signedPayloads = [];
@@ -11416,6 +11695,38 @@ private function getHoldAssetContext(?int $holdId): array
         error_log("[SwapService] getHoldAssetContext failed for hold_id={$holdId}: " . $e->getMessage());
         return [];
     }
+}
+
+/**
+ * Public entry point for a caller that runs its own transaction and its
+ * own hold-release logic -- today MultiSourceSwapExecutor::execute(),
+ * which credits the destination once and then debits N sources, and so
+ * hits exactly the post-delivery state described below without going
+ * through beginAtomicSwap()/rollbackAtomicSwap() at all.
+ *
+ * Same narrow-surface rationale as recordPoolSwapTransaction(): the
+ * executor has no business reaching into this class's private internals,
+ * but it does need this one thing, and duplicating the write would give
+ * compliance two differently-shaped records of the same event.
+ */
+public function recordPostDeliveryDebitFailure(
+    string $swapRef,
+    ?string $holdReference,
+    ?string $sourceInstitution,
+    ?string $destinationInstitution,
+    float $amount,
+    string $currency,
+    string $reason
+): void {
+    $this->recordManualReconciliationRequired(
+        $swapRef,
+        $holdReference,
+        $sourceInstitution,
+        $destinationInstitution,
+        $amount,
+        $currency,
+        $reason
+    );
 }
 
 /**
@@ -11580,9 +11891,9 @@ private function recordManualReconciliationRequired(
             $swapRef ?? 'UNKNOWN',
             $holdReference,
             $holdInstitution,
-            $this->postDeliveryDestinationInstitution ?? null,
-            $this->postDeliveryAmount ?? 0.0,
-            $this->postDeliveryCurrency ?? 'BWP',
+            $this->postDeliveryDestinationInstitution,
+            $this->postDeliveryAmount,
+            $this->postDeliveryCurrency,
             $reason
         );
     }
@@ -11643,10 +11954,15 @@ private function recordManualReconciliationRequired(
         $this->currentHoldId = null;
         $this->currentHoldReference = null;
         $this->currentHoldInstitution = null;
+        $this->currentDebitReference = null;
+        $this->currentDebitReferenceIsLocal = false;
         $this->executedSteps = [];
         $this->stepResults = [];
         $this->signedPayloads = [];
-        $this->postDeliveryDebitFailure = false;   // NEW
+        $this->postDeliveryDebitFailure = false;
+        $this->postDeliveryDestinationInstitution = null;
+        $this->postDeliveryAmount = 0.0;
+        $this->postDeliveryCurrency = 'BWP';
     }
 
     private function executeStep(string $stepName, callable $operation)

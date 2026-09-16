@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  There was no phpunit config in this repo: tests were run by path
+  (vendor/bin/phpunit tests/Unit/SomeTest.php) and composer.json has no
+  scripts block, so "run the tests" had no single meaning.
+
+  tests/System and tests/certification are deliberately not listed. They are
+  standalone php scripts that bootstrap the app and talk to a live database
+  and live bank adapters, not PHPUnit test cases.
+-->
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+         bootstrap="vendor/autoload.php"
+         colors="true"
+         cacheDirectory=".phpunit.cache">
+    <testsuites>
+        <!--
+          The default suite: everything that runs with no infrastructure.
+          LicenceEnforcementTest is excluded because it require_once's
+          src/bootstrap.php at file scope, which exits the process outright
+          when no database is reachable, taking the whole run down with it.
+          Run it on its own against a configured database:
+              vendor/bin/phpunit tests/Unit/LicenceEnforcementTest.php
+        -->
+        <testsuite name="Unit">
+            <directory>tests/Unit</directory>
+            <exclude>tests/Unit/LicenceEnforcementTest.php</exclude>
+        </testsuite>
+
+        <!-- Needs DATABASE_URL and a reachable database. -->
+        <testsuite name="Integration">
+            <file>tests/Unit/LicenceEnforcementTest.php</file>
+        </testsuite>
+    </testsuites>
+</phpunit>
