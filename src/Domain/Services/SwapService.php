@@ -7500,6 +7500,7 @@ public function executeIdentityClaimWithSplit(
             $failedHolds[] = [
                 'hold_id' => $hold['hold_id'],
                 'swap_reference' => $hold['swap_reference'],
+                'source_institution' => $hold['source_institution'] ?? 'unknown',
                 'gross_amount' => (float)$hold['amount'],
                 'status' => 'failed',
                 'error' => $e->getMessage(),
@@ -7508,13 +7509,21 @@ public function executeIdentityClaimWithSplit(
     }
 
     if (empty($landedHoldIds)) {
-        // FIX: $failedHolds already carries each hold's real error, but it
-        // never reached the caller -- claim_identity.php's catch block
-        // only has $e->getMessage() to work with, so the dashboard showed
-        // this generic line for every failure regardless of cause. Surface
-        // the first (usually only, for a single-hold claim) real error.
-        $firstError = $failedHolds[0]['error'] ?? 'unknown error';
-        throw new RuntimeException("Claim could not be completed: {$firstError}");
+        // FIX: this used to surface only $failedHolds[0]'s error. For a
+        // pooled claim (multiple holds from different source institutions
+        // for the same identity), that silently hides every OTHER hold's
+        // failure reason behind whichever one happened to be processed
+        // first (oldest hold, since $holds is ORDER BY created_at ASC) --
+        // e.g. a longstanding stuck hold at one institution masking a
+        // brand-new, differently-broken hold at another. List every
+        // failure, tagged by source institution and hold id, so a
+        // multi-source pool's real state is visible instead of just the
+        // first one encountered.
+        $summary = implode('; ', array_map(
+            fn($f) => "{$f['source_institution']} (hold {$f['hold_id']}): {$f['error']}",
+            $failedHolds
+        ));
+        throw new RuntimeException("Claim could not be completed: {$summary}");
     }
 
     // ------------------------------------------------------------
