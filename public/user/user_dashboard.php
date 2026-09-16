@@ -5291,7 +5291,7 @@ function renderUserIdentityForm() {
             </div>
             <div class="field-group"><label>Identity value</label><input type="text" id="userIdentityValue" placeholder="Enter the ID number, phone, or email"></div>
             <div style="background:var(--accent-soft);border-left:3px solid var(--accent);padding:10px 14px;font-size:12px;margin-bottom:14px;">
-                Phone numbers are verified instantly via SMS. National IDs and other documents require in-person verification by a VouchMorph agent.
+                Phone numbers and emails are verified instantly with a code. National IDs and other documents require in-person verification by a VouchMorph agent.
             </div>
             <div id="regIdentityOtpFields" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
                 <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;" id="regIdentityOtpMessage"></div>
