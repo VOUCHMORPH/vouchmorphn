@@ -1289,6 +1289,33 @@ function maskIdentifier(value) {
 
 function escapeHtml(str) { const div = document.createElement('div'); div.textContent = str == null ? '' : String(str); return div.innerHTML; }
 
+// FIX: swap references and claim PINs are long, machine-generated
+// strings (e.g. "SWAP_1789550159_87a3f2c91b5e4d7a") shown once with no
+// way to copy them -- a user manually reading and retyping one into
+// the claim form easily drops characters (a truncated reference like
+// "SWAP_178955015987" doesn't match anything in the database, so the
+// claim fails with a confusing "identity_type and identity_value are
+// required" error that has nothing to do with the real problem).
+async function copyToClipboard(text, btn) {
+    try {
+        await navigator.clipboard.writeText(text);
+    } catch (e) {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); } catch (e2) { /* ignore */ }
+        document.body.removeChild(ta);
+    }
+    if (btn) {
+        const original = btn.textContent;
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = original; }, 1500);
+    }
+}
+
 // ============================================================
 // VIEW NAVIGATION
 // ============================================================
@@ -3423,16 +3450,16 @@ function showWizardResultModal(response, journeyData) {
         inner = `<div class="result-box" id="resultBoxRoot">
             <div class="icon">✓</div>
             <div class="result-title">Nice! Your cashout code is ready</div>
-            <div class="result-sub">Reference: ${escapeHtml(reference)}</div>
+            <div class="result-sub">Reference: ${escapeHtml(reference)} <button type="button" class="btn btn-secondary btn-sm" style="padding:1px 8px;font-size:10px;" data-copy="${escapeHtml(reference)}" onclick="copyToClipboard(this.dataset.copy, this)">Copy</button></div>
             ${data.atm_code || data.voucher_number ? `<div style="background:var(--surface-muted);padding:18px;border:1px solid var(--border);margin:12px 0;"><div style="font-size:24px;font-weight:700;font-family:var(--font-mono);letter-spacing:4px;color:var(--accent);">${escapeHtml(data.atm_code || data.voucher_number || '')}</div></div>` : ''}
             <div style="font-size:22px;font-weight:600;font-family:var(--font-mono);">${formatMoney(amount, wizardState.currency)}</div>
         </div>`;
     } else if (swapType === 'IDENTITY') {
-        const claimPinBox = data.claim_pin ? `<div style="background:var(--surface-muted);padding:12px;border:1px solid var(--border);margin:12px 0;"><div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Backup PIN — only share this if the recipient doesn't get the SMS</div><div style="font-size:20px;font-weight:700;font-family:var(--font-mono);letter-spacing:4px;color:var(--accent);">${escapeHtml(data.claim_pin)}</div></div>` : '';
+        const claimPinBox = data.claim_pin ? `<div style="background:var(--surface-muted);padding:12px;border:1px solid var(--border);margin:12px 0;"><div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Backup PIN — only share this if the recipient doesn't get the SMS</div><div style="display:flex;align-items:center;gap:10px;justify-content:center;"><div style="font-size:20px;font-weight:700;font-family:var(--font-mono);letter-spacing:4px;color:var(--accent);">${escapeHtml(data.claim_pin)}</div><button type="button" class="btn btn-secondary btn-sm" style="padding:1px 8px;font-size:10px;" data-copy="${escapeHtml(data.claim_pin)}" onclick="copyToClipboard(this.dataset.copy, this)">Copy</button></div></div>` : '';
         inner = `<div class="result-box" id="resultBoxRoot">
             <div class="icon">✓</div>
             <div class="result-title">Sent! They'll be notified now</div>
-            <div class="result-sub">Reference: ${escapeHtml(reference)}</div>
+            <div class="result-sub">Reference: ${escapeHtml(reference)} <button type="button" class="btn btn-secondary btn-sm" style="padding:1px 8px;font-size:10px;" data-copy="${escapeHtml(reference)}" onclick="copyToClipboard(this.dataset.copy, this)">Copy</button></div>
             <div style="margin:12px 0;font-size:13px;"><strong>${escapeHtml(wizardState.identityType)}: ${escapeHtml(wizardState.identityValue)}</strong></div>
             <div style="font-size:22px;font-weight:600;font-family:var(--font-mono);">${formatMoney(amount, wizardState.currency)}</div>${claimPinBox}
         </div>`;
@@ -3440,7 +3467,7 @@ function showWizardResultModal(response, journeyData) {
         inner = `<div class="result-box" id="resultBoxRoot">
             <div class="icon">✓</div>
             <div class="result-title">Nice! Your money's on its way</div>
-            <div class="result-sub">Reference: ${escapeHtml(reference)}</div>
+            <div class="result-sub">Reference: ${escapeHtml(reference)} <button type="button" class="btn btn-secondary btn-sm" style="padding:1px 8px;font-size:10px;" data-copy="${escapeHtml(reference)}" onclick="copyToClipboard(this.dataset.copy, this)">Copy</button></div>
             <div style="font-size:22px;font-weight:600;font-family:var(--font-mono);margin-top:12px;">${formatMoney(amount, wizardState.currency)}</div>
         </div>`;
     }
