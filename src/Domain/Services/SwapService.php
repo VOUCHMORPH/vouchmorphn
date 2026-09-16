@@ -10119,7 +10119,17 @@ private function generateCashoutToken(array $payload, string $institution, float
     $identityValue = $payload['identity_value'];
  
     $owner = $this->findVerifiedIdentityOwner($identityType, $identityValue);
-    $notificationPhone = $payload['notification_phone'] ?? $payload['beneficiary_phone'] ?? null;
+    // FIX: the wizard's "SMS notification" field is a SEPARATE, optional
+    // input from the identity value itself -- when the destination IS a
+    // phone number, nothing defaulted notification_phone to it, so unless
+    // the sender redundantly re-typed the same number into that optional
+    // field, notification_phone/beneficiary_phone came through empty.
+    // For an unverified/unregistered identity that meant no OTP was ever
+    // sent (claim_type fell through to 'dual_confirmation') and nothing
+    // arrived at the recipient's phone, despite the swap having been sent
+    // directly to that number.
+    $notificationPhone = $payload['notification_phone'] ?? $payload['beneficiary_phone']
+        ?? ($identityType === 'phone' ? $identityValue : null);
 
     // ============================================================
     // Point Z, creation-time call site (swap-to-identity algorithm v2,
@@ -10250,7 +10260,31 @@ private function generateCashoutToken(array $payload, string $institution, float
                     $this->trackIdentityOtpSmsAttempt($swapRef, $otpDestination, 'failed', $e->getMessage());
                 }
             } elseif ($otpDestinationType === 'email') {
-                error_log("[SwapService] Registered owner's contact is email ({$otpDestination}) - email OTP delivery not wired in this method yet, PIN available via account login fallback only");
+                // FIX: this used to only log and never actually send --
+                // EmailGatewayClient is now wired into this class (see
+                // registerUserIdentity()'s email OTP path), so a
+                // registered owner whose on-file contact is email no
+                // longer silently gets no PIN at all.
+                if ($this->emailService && $this->emailService->isConfigured()) {
+                    $emailResult = $this->emailService->sendEmail(
+                        $otpDestination,
+                        'Your VouchMorph claim PIN',
+                        "<html><body style='font-family:Arial,sans-serif;'>" .
+                        "<h2>Money is waiting for you</h2>" .
+                        "<p>Your claim PIN is: <strong style='font-size:24px;color:#00636e;'>{$otp}</strong></p>" .
+                        "<p>Log in to VouchMorph and use this PIN to finalize the claim, or read it out to an agent if they're assisting you.</p>" .
+                        "<hr><small>VouchMorph</small></body></html>"
+                    );
+                    if ($emailResult['success'] ?? false) {
+                        $this->trackIdentityOtpSmsAttempt($swapRef, $otpDestination, 'queued', null, 'EMAIL');
+                    } else {
+                        error_log("[SwapService] Failed to email claim PIN to registered owner: " . ($emailResult['message'] ?? 'unknown error'));
+                        $this->trackIdentityOtpSmsAttempt($swapRef, $otpDestination, 'failed', $emailResult['message'] ?? 'unknown error', 'EMAIL');
+                    }
+                } else {
+                    error_log("[SwapService] Registered owner's contact is email ({$otpDestination}) but email service is not configured - PIN available via account login fallback only");
+                    $this->trackIdentityOtpSmsAttempt($swapRef, $otpDestination, 'skipped_no_provider', null, 'EMAIL');
+                }
             }
 
             if ($otpFallbackUsed) {
@@ -10462,10 +10496,11 @@ private function trackIdentityOtpSmsAttempt(
     string $swapRef,
     string $phone,
     string $status,
-    ?string $providerError = null
+    ?string $providerError = null,
+    string $channel = 'SMS' // FIX: hardcoded 'SMS' below mislabeled the (now-wired) email OTP path's audit trail
 ): void {
-    $messageId = 'SMS_' . uniqid() . '_' . substr($swapRef, 0, 10);
-    
+    $messageId = $channel . '_' . uniqid() . '_' . substr($swapRef, 0, 10);
+
     $sql = "
         INSERT INTO message_outbox (
             message_id,
@@ -10477,7 +10512,7 @@ private function trackIdentityOtpSmsAttempt(
             sent_at
         ) VALUES (
             :message_id,
-            'SMS',
+            :channel,
             :destination,
             :payload::jsonb,
             :status,
@@ -10490,6 +10525,7 @@ private function trackIdentityOtpSmsAttempt(
         $stmt = $this->swapDB->prepare($sql);
         $stmt->execute([
             ':message_id' => $messageId,
+            ':channel' => $channel,
             ':destination' => $phone,
             ':payload' => json_encode([
                 'phone' => $phone,
@@ -10502,9 +10538,9 @@ private function trackIdentityOtpSmsAttempt(
             ':sent_at' => $status === 'queued' ? date('Y-m-d H:i:s') : null,
         ]);
 
-        error_log("[SwapService] Identity OTP SMS attempt tracked: swap_ref={$swapRef}, phone={$phone}, status={$status}, message_id={$messageId}");
+        error_log("[SwapService] Identity OTP {$channel} attempt tracked: swap_ref={$swapRef}, destination={$phone}, status={$status}, message_id={$messageId}");
     } catch (PDOException $e) {
-        error_log("[SwapService] Failed to track identity OTP SMS attempt: " . $e->getMessage());
+        error_log("[SwapService] Failed to track identity OTP {$channel} attempt: " . $e->getMessage());
     }
 }
     
@@ -10602,15 +10638,28 @@ private function generateOtpPin(): string
  
 private function findVerifiedIdentityOwner(string $identityType, string $identityValue): ?array
 {
+    // FIX: matched identity_value by exact string equality, same class of
+    // bug as getPendingIdentitySwaps() (see normalizeIdentityValue()) --
+    // a recipient whose registered identity predates that fix, or whose
+    // value was stored in a non-canonical format, was invisible here even
+    // though getPendingClaimsForUser() (already normalized) correctly
+    // showed them the pending swap. That meant they got silently routed
+    // down the "unregistered identity" branch in storeIdentityHold()
+    // instead of being recognized as the verified account owner they
+    // actually are. Filter by type in SQL, compare normalized in PHP.
     try {
+        $normalizedTarget = self::normalizeIdentityValue($identityType, $identityValue);
         $stmt = $this->swapDB->prepare("
-            SELECT user_id FROM user_identities
-            WHERE identity_type = :type AND identity_value = :value AND status = 'verified'
-            LIMIT 1
+            SELECT user_id, identity_value FROM user_identities
+            WHERE identity_type = :type AND status = 'verified'
         ");
-        $stmt->execute([':type' => $identityType, ':value' => $identityValue]);
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
-        return $row ? ['user_id' => (int)$row['user_id']] : null;
+        $stmt->execute([':type' => $identityType]);
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            if (self::normalizeIdentityValue($identityType, (string)$row['identity_value']) === $normalizedTarget) {
+                return ['user_id' => (int)$row['user_id']];
+            }
+        }
+        return null;
     } catch (PDOException $e) {
         error_log("[SwapService] findVerifiedIdentityOwner failed: " . $e->getMessage());
         return null;
