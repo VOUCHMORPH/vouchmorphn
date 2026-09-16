@@ -4561,6 +4561,31 @@ function showTransactionReport(response, session) {
 // ============================================================
 // IDENTITY CLAIMS
 // ============================================================
+// FIX: the destination-institution dropdowns below used to list every
+// participant, but SwapService::getIdentityHoldingAccounts() (called for
+// BOTH CASHOUT and DEPOSIT claims) rejects any institution whose
+// identity_accounts are still onboarding placeholders
+// ("REPLACE_WITH_REAL_..." in participants.yaml) or that lacks
+// capabilities.identity_holding entirely. Only ZURUBANK has real values
+// today, so picking (or defaulting to) any other institution made the
+// claim fail right after PIN entry with a "still a placeholder"/"not been
+// onboarded" error. Filter the list to institutions that will actually
+// succeed instead of relying on the user to already know which one works.
+function claimReadyInstitutions(currency) {
+    return Object.keys(PARTICIPANTS).filter(code => {
+        const p = PARTICIPANTS[code];
+        if (!p?.capabilities?.identity_holding) return false;
+        const accounts = p.identity_accounts || {};
+        const currencies = currency ? [currency] : Object.keys(accounts);
+        return currencies.some(cur => {
+            const a = accounts[cur];
+            if (!a || !a.receiving_identifier || !a.holding_identifier) return false;
+            return !String(a.receiving_identifier).startsWith('REPLACE_WITH_REAL')
+                && !String(a.holding_identifier).startsWith('REPLACE_WITH_REAL');
+        });
+    });
+}
+
 async function submitClaim(swapReference) {
     const pin = document.getElementById('claimPin').value.trim();
     const destType = document.getElementById('claimDestType').value;
@@ -4956,8 +4981,12 @@ function openFinalizeIdentityModal() {
 }
 
 function renderFinalizeIdentityModal() {
-    const defaultInst = (userSources[0] && userSources[0].institution) || Object.keys(PARTICIPANTS)[0] || '';
-    const instOptionsHtml = Object.keys(PARTICIPANTS).map(code =>
+    // Currency isn't known yet for the manual-reference claim below (the
+    // swap hasn't been looked up client-side), so this considers an
+    // institution ready if it's onboarded for ANY currency.
+    const readyInstitutions = claimReadyInstitutions();
+    const defaultInst = (userSources[0] && readyInstitutions.includes(userSources[0].institution) && userSources[0].institution) || readyInstitutions[0] || '';
+    const instOptionsHtml = readyInstitutions.map(code =>
         `<option value="${code}" ${code === defaultInst ? 'selected' : ''}>${PARTICIPANTS[code]?.name || code}</option>`
     ).join('');
     const claimsHtml = pendingClaims.length === 0
@@ -4997,11 +5026,12 @@ function renderFinalizeIdentityModal() {
             <div class="field-group"><label>Swap reference</label><input id="directClaimRef" placeholder="e.g. SWAP_123456789"></div>
             <div class="field-group"><label>Claim PIN</label><input type="password" id="directClaimPin" placeholder="Enter the PIN you received" maxlength="6"></div>
             <div class="field-group"><label>Receive as</label><select id="directClaimDestType" onchange="toggleDirectClaimDestFields(this.value)"><option value="CASHOUT">Cashout (ATM / Agent code)</option><option value="DEPOSIT">Deposit to an account/wallet</option></select></div>
-            <div class="field-group"><label id="directClaimDestInstLabel">Cashout via</label><select id="directClaimDestInst">${instOptionsHtml}</select></div>
+            <div class="field-group"><label id="directClaimDestInstLabel">Cashout via</label><select id="directClaimDestInst" ${readyInstitutions.length === 0 ? 'disabled' : ''}>${instOptionsHtml}</select></div>
             <div id="directClaimDepositFields" style="display:none;">
                 <div class="field-group"><label>Account / wallet number</label><input id="directClaimDestIdentifier" placeholder="Account number or phone"></div>
             </div>
-            <div class="cta-row"><button class="btn btn-primary" onclick="submitDirectClaim()">Claim swap</button></div>
+            ${readyInstitutions.length === 0 ? '<div style="font-size:12px;color:var(--danger);margin-bottom:10px;">No destination institution can currently receive claims. Contact VouchMorph support.</div>' : ''}
+            <div class="cta-row"><button class="btn btn-primary" onclick="submitDirectClaim()" ${readyInstitutions.length === 0 ? 'disabled' : ''}>Claim swap</button></div>
         </div>
         <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px;font-size:11px;color:var(--text-dim);">
             <span class="quick-link muted" onclick="closeModal();openAddIdentityModal();">Need to register a new identity instead? Click here &rarr;</span>
@@ -5025,8 +5055,9 @@ function openClaimForm(idx) {
     // to wherever the recipient already has a linked account, so claiming
     // is just "enter PIN, confirm" unless they want to send it somewhere
     // else.
-    const defaultInst = (userSources[0] && userSources[0].institution) || Object.keys(PARTICIPANTS)[0] || '';
-    const instOptionsHtml = Object.keys(PARTICIPANTS).map(code =>
+    const readyInstitutions = claimReadyInstitutions(claim.currency);
+    const defaultInst = (userSources[0] && readyInstitutions.includes(userSources[0].institution) && userSources[0].institution) || readyInstitutions[0] || '';
+    const instOptionsHtml = readyInstitutions.map(code =>
         `<option value="${code}" ${code === defaultInst ? 'selected' : ''}>${PARTICIPANTS[code]?.name || code}</option>`
     ).join('');
     const body = `
@@ -5036,11 +5067,12 @@ function openClaimForm(idx) {
         </div>
         <div class="field-group"><label>Claim PIN</label><input type="password" id="claimPin" inputmode="numeric" maxlength="6" placeholder="&bull;&bull;&bull;&bull;"><div class="help">${pinHint}</div></div>
         <div class="field-group"><label>Receive as</label><select id="claimDestType" onchange="toggleClaimDestFields(this.value)"><option value="CASHOUT">Cashout (ATM / Agent code)</option><option value="DEPOSIT">Deposit to an account/wallet</option></select></div>
-        <div class="field-group"><label id="claimDestInstLabel">Cashout via</label><select id="claimDestInst">${instOptionsHtml}</select></div>
+        <div class="field-group"><label id="claimDestInstLabel">Cashout via</label><select id="claimDestInst" ${readyInstitutions.length === 0 ? 'disabled' : ''}>${instOptionsHtml}</select></div>
         <div id="claimDepositFields" style="display:none;">
             <div class="field-group"><label>Account / wallet number</label><input id="claimDestIdentifier" placeholder="Account number or phone"></div>
         </div>
-        <div class="cta-row"><button class="btn btn-secondary" onclick="openFinalizeIdentityModal()">Back</button><button class="btn btn-primary" onclick="submitClaim('${claim.swap_reference}')">Finalize</button></div>`;
+        ${readyInstitutions.length === 0 ? '<div style="font-size:12px;color:var(--danger);margin-bottom:10px;">No destination institution can currently receive this claim. Contact VouchMorph support.</div>' : ''}
+        <div class="cta-row"><button class="btn btn-secondary" onclick="openFinalizeIdentityModal()">Back</button><button class="btn btn-primary" onclick="submitClaim('${claim.swap_reference}')" ${readyInstitutions.length === 0 ? 'disabled' : ''}>Finalize</button></div>`;
     openModal('Finalize identity swap', body);
 }
 
