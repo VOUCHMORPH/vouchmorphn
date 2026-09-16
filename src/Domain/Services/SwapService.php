@@ -5056,6 +5056,34 @@ return $result;
  * claim fails loudly and immediately rather than attempting to deposit into
  * an account that doesn't exist.
  */
+// FIX: participants.yaml's identity_accounts/settlement_account blocks were
+// scaffolded with literal "REPLACE_WITH_REAL_..." placeholder strings for
+// every institution, never filled in with real bank account numbers. Those
+// placeholders are non-empty, so the plain empty()-check below let them
+// through as if they were valid — VouchMorph would debit the source hold,
+// then send the placeholder string to the destination bank as a real
+// account identifier. Confirmed against SACCUSSALIS's own fix (their
+// credit_funds.php commit "Reject unresolved template placeholders"): the
+// placeholder got misused as a fallback phone value there and overflowed a
+// VARCHAR column, and this class's retry-on-settlement-failure logic then
+// re-issued DEBIT_FUNDS against a hold the bank had already marked
+// consumed on the first attempt -- which every bank's own generic-message
+// bug (SACCUSSALIS confirmed, likely others) reports as a misleading
+// "Bank communication failed" instead of the real cause. Reject the
+// placeholder here, before any bank call, so a still-unconfigured
+// institution fails claims cleanly instead of debiting money that can
+// never land anywhere.
+private function assertNotPlaceholderIdentifier(string $institution, string $field, string $value): void
+{
+    if (stripos($value, 'REPLACE_WITH_REAL') !== false) {
+        throw new RuntimeException(
+            "{$institution}'s {$field} is still a placeholder ({$value}), never configured with a real " .
+            "account/wallet number. Contact VouchMorph ops to complete onboarding before claims can " .
+            "settle at this institution."
+        );
+    }
+}
+
 private function getIdentityHoldingAccounts(string $institution, string $currency): array
 {
     $participant = $this->participants[$institution] ?? $this->participants[strtoupper($institution)] ?? null;
@@ -5081,6 +5109,8 @@ private function getIdentityHoldingAccounts(string $institution, string $currenc
             "to participants.yaml for this institution."
         );
     }
+    $this->assertNotPlaceholderIdentifier($institution, 'identity_accounts.' . $currency . '.receiving_identifier', $accounts['receiving_identifier']);
+    $this->assertNotPlaceholderIdentifier($institution, 'identity_accounts.' . $currency . '.holding_identifier', $accounts['holding_identifier']);
 
     return [
         'receiving_identifier' => $accounts['receiving_identifier'],
@@ -5109,6 +5139,7 @@ private function getSourceSettlementAccount(string $institution, string $currenc
             "account number with the bank before enabling this."
         );
     }
+    $this->assertNotPlaceholderIdentifier($institution, 'settlement_account.' . $currency . '.identifier', $account['identifier']);
 
     return [
         'identifier' => $account['identifier'],
