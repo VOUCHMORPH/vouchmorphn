@@ -7,7 +7,13 @@ declare(strict_types=1);
  * Run this on a schedule (every 2-5 minutes) — cron, Railway's cron
  * plugin, or any scheduler you already have:
  *
- *   */3 * * * * php /var/www/html/stuck_job_recovery.php >> /var/log/stuck_job_recovery.log 2>&1
+ * Written as an explicit minute list, not a step value: a literal "*"
+ * followed by "/" in this line closed the block comment, so everything
+ * after it parsed as PHP and this script died with "syntax error,
+ * unexpected token *" before recovering a single job. The list below is
+ * equivalent to every 3 minutes.
+ *
+ *   0,3,6,9,12,15,18,21,24,27,30,33,36,39,42,45,48,51,54,57 * * * * php /var/www/html/stuck_job_recovery.php >> /var/log/stuck_job_recovery.log 2>&1
  *
  * Finds any job left claimed by a worker that crashed, was killed, or
  * lost its database connection before finishing, and recovers it —

@@ -36,6 +36,19 @@ declare(strict_types=1);
  *    settlement_confirmation_worker.php's staleness check, included here
  *    too since this script is meant to be the single "is anything wrong"
  *    dashboard query, not just this one bug class.
+ * 4. swap_requests with status = 'completed' but NO audit_logs row for the
+ *    reference -- a transaction that finished without the record of who
+ *    moved the money, when, and where it went.
+ * 5. unresolved rows in audit_log_failures -- the dead letter every failed
+ *    audit write lands in. Nothing read this table before, so a swap could
+ *    move money, fail to record itself, write the fallback row, and have
+ *    that fallback sit unnoticed indefinitely.
+ *
+ * Note that checks 1-3 all key off hold_transactions.status = 'DEBITED'
+ * or a completed swap_requests row -- writes that are themselves rolled
+ * back in the failure modes where tracking never got written at all.
+ * Checks 4 and 5 are the ones that catch that case, because they key off
+ * the completed swap and the dead-letter table instead.
  *
  * WHAT IT DOES NOT DO:
  * It does NOT attempt to auto-correct anything. Auto-"fixing" a
@@ -44,8 +57,15 @@ declare(strict_types=1);
  * institution and confirm reality. This script's only side effect is
  * writing rows to swap_integrity_findings for review.
  *
- * SCHEDULING: run every 15-30 minutes.
- *   */15 * * * * php /path/to/swap_integrity_reconciler.php >> /var/log/vouchmorph/reconciler.log 2>&1
+ * SCHEDULING: run every 15-30 minutes. Written as an explicit minute list
+ * rather than a step value on purpose: a literal "*" followed by "/" in
+ * this crontab line closed THIS block comment, so everything after it was
+ * parsed as PHP and the whole script died with
+ * "syntax error, unexpected token *" before executing a single check.
+ * The compensating control for unrecorded money movement has therefore
+ * never actually run. The schedule below is equivalent to every 15 min.
+ *
+ *   0,15,30,45 * * * * php /path/to/swap_integrity_reconciler.php >> /var/log/vouchmorph/reconciler.log 2>&1
  */
 
 require_once __DIR__ . '/../../vendor/autoload.php'; // adjust to your actual vendor path
@@ -185,6 +205,92 @@ foreach ($staleSettlements as $row) {
     ]);
 
     logLine("FINDING [HIGH] SETTLEMENT_UNCONFIRMED_PAST_GRACE_PERIOD: swap_reference={$row['swap_uuid']} completed_at={$row['completed_at']}");
+    $totalFindings++;
+}
+
+// ============================================================
+// Check 4: completed swaps with no audit record
+// ============================================================
+// Every completed transaction is supposed to carry an audit row naming
+// who moved the money, when, and where it went -- written by
+// SwapService::populateAuditLog() via populateTrackingTables(). A
+// completed swap without one means the money moved and the record of it
+// did not, which is exactly the state audit_log_failures exists to
+// capture and which nothing detected before this check.
+//
+// LEFT JOIN rather than NOT EXISTS so the missing-row case is explicit,
+// and bounded to the same 30-day window the other checks use.
+//
+// The join is on audit_logs.entity_id, which is VARCHAR as of
+// 2026_09_16_transaction_audit_integrity.sql. Against a database that has
+// not had that migration applied the column is still bigint and this
+// comparison raises 22P02 -- which is itself the bug being looked for, so
+// the catch reports it rather than letting it kill the run.
+try {
+    $stmt = $db->query("
+        SELECT sr.swap_uuid, sr.amount, sr.from_currency, sr.status, sr.completed_at, sr.created_at
+        FROM swap_requests sr
+        LEFT JOIN audit_logs al ON al.entity_id = sr.swap_uuid
+        WHERE LOWER(sr.status) = 'completed'
+          AND sr.created_at > NOW() - INTERVAL '30 days'
+          AND al.audit_id IS NULL
+        ORDER BY sr.created_at DESC
+        LIMIT 500
+    ");
+    $missingAudit = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (Throwable $e) {
+    logLine('WARNING: completed-swap audit check could not run: ' . $e->getMessage()
+        . ' (audit_logs.entity_id may still be bigint - apply 2026_09_16_transaction_audit_integrity.sql)');
+    $missingAudit = [];
+}
+
+foreach ($missingAudit as $row) {
+    recordFinding($db, 'COMPLETED_SWAP_NO_AUDIT_RECORD', 'HIGH', $row['swap_uuid'], null, [
+        'amount' => $row['amount'],
+        'currency' => $row['from_currency'] ?? null,
+        'status' => $row['status'],
+        'created_at' => $row['created_at'],
+        'completed_at' => $row['completed_at'],
+    ]);
+
+    logLine("FINDING [HIGH] COMPLETED_SWAP_NO_AUDIT_RECORD: swap_reference={$row['swap_uuid']} amount={$row['amount']} created_at={$row['created_at']}");
+    $totalFindings++;
+}
+
+// ============================================================
+// Check 5: unresolved audit_log_failures
+// ============================================================
+// SwapService::writeAuditFallback() writes here whenever a normal audit
+// write could not happen. Its own comment says ops/compliance should
+// monitor the table directly -- but nothing ever did, so this surfaces
+// the backlog through the same findings table as everything else.
+//
+// The table is created by 2026_09_16_transaction_audit_integrity.sql;
+// tolerate its absence so this script still runs on a database that has
+// not had the migration applied yet.
+try {
+    $stmt = $db->query("
+        SELECT swap_reference, swap_type, reason, created_at
+        FROM audit_log_failures
+        WHERE resolved_at IS NULL
+          AND created_at > NOW() - INTERVAL '30 days'
+        ORDER BY created_at DESC
+        LIMIT 500
+    ");
+    $auditFailures = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (Throwable $e) {
+    logLine('audit_log_failures not queryable (migration not applied?): ' . $e->getMessage());
+    $auditFailures = [];
+}
+
+foreach ($auditFailures as $row) {
+    recordFinding($db, 'AUDIT_LOG_FAILURE_UNRESOLVED', 'HIGH', $row['swap_reference'], null, [
+        'swap_type' => $row['swap_type'],
+        'reason' => $row['reason'],
+        'created_at' => $row['created_at'],
+    ]);
+
+    logLine("FINDING [HIGH] AUDIT_LOG_FAILURE_UNRESOLVED: swap_reference={$row['swap_reference']} reason={$row['reason']}");
     $totalFindings++;
 }
 

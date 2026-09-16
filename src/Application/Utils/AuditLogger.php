@@ -72,7 +72,12 @@ class AuditLogger
      *   $auditLogger->log('CARD_AUTH_APPROVED', 'INFO', 'card_network', null, null, [...]);
      *
      * @param string      $action     What happened, e.g. 'CARD_AUTH_APPROVED' — written to both action and event_type
-     * @param string      $severity   e.g. 'INFO', 'WARNING', 'CRITICAL'
+     * @param string      $severity   e.g. 'info', 'warning', 'critical'. Normalized
+     *                                to lowercase before insert: audit_logs_severity_check
+     *                                only accepts info|warning|error|critical and Postgres
+     *                                compares case sensitively, so the uppercase values
+     *                                callers pass would otherwise fail the constraint on
+     *                                every write.
      * @param string      $category   e.g. 'card_network' — written to both category and entity_type
      * @param string|int|null $performedBy  Who/what performed the action — written to performed_by_id if numeric
      * @param string|int|null $entityId     Optional entity identifier — written to entity_id, falls back to $performedBy
@@ -92,6 +97,18 @@ class AuditLogger
         }
 
         try {
+            // audit_logs_severity_check accepts info|warning|error|critical,
+            // lowercase. Callers here pass 'INFO'/'WARNING'/'ERROR', which
+            // failed the constraint on every insert and was swallowed by the
+            // catch below -- so none of these rows were ever written.
+            $severity = strtolower($severity);
+            if ($severity === 'debug') {
+                $severity = 'info';
+            }
+            if (!in_array($severity, ['info', 'warning', 'error', 'critical'], true)) {
+                $severity = 'info';
+            }
+
             $performedById = is_numeric($performedBy) ? (int)$performedBy : null;
             $performedByType = $performedById !== null ? 'user' : 'system';
             $resolvedEntityId = $entityId !== null ? (string)$entityId : (string)($performedBy ?? $action);

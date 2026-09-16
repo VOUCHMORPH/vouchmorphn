@@ -656,18 +656,35 @@ if ($view === 'audit' && canView('audit')) {
 }
 
 // --- AUDIT CHAIN INTEGRITY CHECK ---
+// $chainState is one of 'intact' | 'broken' | 'unknown'.
+//
+// It used to be a plain boolean defaulting to false, with the query
+// wrapped in an empty catch. prev_hash and entry_hash did not exist on
+// any schema in this repo until
+// 2026_09_16_transaction_audit_integrity.sql added them, so the query
+// threw every time, was swallowed, left the flag false, and the panel
+// below rendered a confident "INTACT" for a tamper-evidence check that
+// had not run at all. A verification that could not be performed is not
+// a pass, so it now reports 'unknown' and says why.
 $chainBroken = false;
+$chainState = 'unknown';
+$chainError = null;
 if ($view === 'audit' && canView('audit')) {
     try {
         $rows = $db->query("SELECT audit_id, entity_type, entity_id, action, performed_at, performed_by_id, prev_hash, entry_hash FROM audit_logs ORDER BY audit_id ASC")->fetchAll(PDO::FETCH_ASSOC);
         $expectedPrev = null;
+        $chainState = 'intact';
         foreach ($rows as $r) {
-            if ($r['prev_hash'] !== $expectedPrev) { $chainBroken = true; break; }
+            if ($r['prev_hash'] !== $expectedPrev) { $chainBroken = true; $chainState = 'broken'; break; }
             $canonical = json_encode(['entity_type'=>$r['entity_type'],'entity_id'=>$r['entity_id'],'action'=>$r['action'],'performed_at'=>$r['performed_at'],'performed_by_id'=>$r['performed_by_id']]);
             $expectedPrev = hash('sha256', ($r['prev_hash'] ?? '') . $canonical);
-            if ($expectedPrev !== $r['entry_hash']) { $chainBroken = true; break; }
+            if ($expectedPrev !== $r['entry_hash']) { $chainBroken = true; $chainState = 'broken'; break; }
         }
-    } catch (Throwable $e) {}
+    } catch (Throwable $e) {
+        $chainState = 'unknown';
+        $chainError = $e->getMessage();
+        error_log('[admin_dashboard] audit chain verification could not run: ' . $e->getMessage());
+    }
 }
 
 $netPositions = [];
@@ -909,11 +926,29 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
             $stmt->execute([':ref' => $certRef]);
             $certData['swap_transactions'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
         } catch (Throwable $e) { $certData['swap_transactions'] = []; }
+        // audit_logs.entity_id holds the swap reference. It was declared
+        // bigint until 2026_09_16_transaction_audit_integrity.sql widened
+        // it, so this comparison used to raise 22P02, get swallowed here,
+        // and render "No audit entries recorded" for every transaction the
+        // system had ever issued. The LIKE arm additionally picks up the
+        // _DEST_n / _ID_n children of a multi-destination batch, which
+        // record themselves under sub-references derived from this one.
         try {
-            $stmt = $db->prepare("SELECT * FROM audit_logs WHERE entity_id = :ref ORDER BY performed_at ASC");
-            $stmt->execute([':ref' => $certRef]);
+            $stmt = $db->prepare("
+                SELECT * FROM audit_logs
+                WHERE entity_id = :ref OR entity_id LIKE :ref_children
+                ORDER BY performed_at ASC
+            ");
+            $stmt->execute([':ref' => $certRef, ':ref_children' => $certRef . '\_%']);
             $certData['audit'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        } catch (Throwable $e) { $certData['audit'] = []; }
+            $certData['audit_query_failed'] = false;
+        } catch (Throwable $e) {
+            $certData['audit'] = [];
+            // Distinguish "nothing to show" from "could not look": the
+            // certificate renders these differently.
+            $certData['audit_query_failed'] = true;
+            error_log('[admin_dashboard] certificate audit lookup failed for ' . $certRef . ': ' . $e->getMessage());
+        }
         try {
             $stmt = $db->prepare("SELECT * FROM message_outbox WHERE payload->>'swap_reference' = :ref ORDER BY created_at ASC");
             $stmt->execute([':ref' => $certRef]);
@@ -1107,6 +1142,36 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
             ");
             $integrityIssues['debited_holds_missing_swap_request'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
         } catch (Throwable $e) { $integrityIssues['debited_holds_missing_swap_request'] = []; }
+
+        // Completed transactions with no audit record. Every check above
+        // keys off hold_transactions.status = 'DEBITED' -- a write that is
+        // itself rolled back in the failure modes where nothing got
+        // tracked at all. This one keys off the completed swap instead, so
+        // it sees the case the others are blind to: the money moved, the
+        // reference exists, and the record of who moved it does not.
+        try {
+            $stmt = $db->query("
+                SELECT sr.swap_uuid, sr.amount, sr.from_currency, sr.status, sr.created_at
+                FROM swap_requests sr
+                LEFT JOIN audit_logs al ON al.entity_id = sr.swap_uuid
+                WHERE LOWER(sr.status) = 'completed' AND al.audit_id IS NULL
+                ORDER BY sr.created_at DESC LIMIT 500
+            ");
+            $integrityIssues['completed_swaps_missing_audit'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Throwable $e) { $integrityIssues['completed_swaps_missing_audit'] = []; }
+
+        // The audit dead letter itself. SwapService::writeAuditFallback()
+        // has always written here when a normal audit write could not
+        // happen, and nothing has ever read it.
+        try {
+            $stmt = $db->query("
+                SELECT swap_reference, swap_type, reason, created_at
+                FROM audit_log_failures
+                WHERE resolved_at IS NULL
+                ORDER BY created_at DESC LIMIT 500
+            ");
+            $integrityIssues['audit_write_failures'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Throwable $e) { $integrityIssues['audit_write_failures'] = []; }
 
         $integrityTotalIssues = array_sum(array_map('count', $integrityIssues));
 
@@ -1530,7 +1595,7 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
                 }, $certData['swap_transactions']));
             $body .= pdf_table_section('4 · Audit Trail', ['Action', 'Category', 'Performed By', 'At'],
                 array_map(fn($a) => [$a['action'] ?? '', $a['category'] ?? '', $a['performed_by'] ?? $a['performed_by_id'] ?? 'SYSTEM', fmtTs($a['performed_at'] ?? '')], $certData['audit']),
-                'Cryptographic signatures for each step are recorded in application logs, not yet in a queryable table — see engineering note on the on-screen certificate.');
+                'Cryptographic signatures for each step are recorded in application logs, not yet in a queryable table — see engineering note on the on-screen certificate. An empty section here on a completed transaction is itself a finding: check audit_log_failures and the Double-Spend & Duplicate-Debit report.');
             pdf_stream(pdf_page_shell('Transaction Certificate', 'Reference: ' . $certRef, $preparedBy, $body), 'vouchmorph_certificate_' . preg_replace('/[^A-Za-z0-9_\-]/', '', $certRef) . '.pdf');
         }
 
@@ -1544,6 +1609,11 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
                 array_map(fn($r) => [$r['key'], $r['distinct_refs']], $integrityIssues['idempotency_key_conflicts'] ?? []));
             $body .= pdf_table_section('Debited Holds Missing Swap Record', ['Hold ID', 'Swap Reference', 'Amount', 'Institution', 'Placed At'],
                 array_map(fn($r) => [$r['hold_id'], $r['swap_reference'], number_format((float)$r['amount'], 2), $r['source_institution'], $r['placed_at']], $integrityIssues['debited_holds_missing_swap_request'] ?? []));
+            $body .= pdf_table_section('Completed Transactions With No Audit Record', ['Reference', 'Amount', 'Currency', 'Status', 'Created'],
+                array_map(fn($r) => [$r['swap_uuid'], number_format((float)$r['amount'], 2), $r['from_currency'] ?? '', $r['status'], $r['created_at']], $integrityIssues['completed_swaps_missing_audit'] ?? []));
+            $body .= pdf_table_section('Audit Write Failures (Unresolved)', ['Reference', 'Type', 'Reason', 'Recorded'],
+                array_map(fn($r) => [$r['swap_reference'], $r['swap_type'] ?? '', $r['reason'], $r['created_at']], $integrityIssues['audit_write_failures'] ?? []),
+                'Each row is a transaction whose audit entry could not be written. The money movement already happened; these need a human to reconstruct the record.');
             pdf_stream(pdf_page_shell('Double-Spend & Duplicate-Debit Check', 'Automated integrity scan across the full ledger', $preparedBy, $body), 'vouchmorph_integrity_check_' . date('Ymd_His') . '.pdf');
         }
 
@@ -2992,7 +3062,14 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <?php endif; ?>
 
                     <div class="report-section-title">4 · Audit Trail</div>
-                    <?php if (empty($certData['audit'])): ?><p style="font-size:14px;color:var(--ink-300);">No audit entries recorded for this reference.</p><?php else: ?>
+                    <?php if (!empty($certData['audit_query_failed'])): ?>
+                    <p style="font-size:14px;color:var(--bad);font-weight:600;">
+                        Could not read the audit trail for this reference &mdash; the query itself failed.
+                        This is not the same as "no activity": treat it as an unverified certificate and
+                        check the application log. If <code>audit_logs.entity_id</code> is still
+                        <code>bigint</code>, apply <code>2026_09_16_transaction_audit_integrity.sql</code>.
+                    </p>
+                    <?php elseif (empty($certData['audit'])): ?><p style="font-size:14px;color:var(--bad);">No audit entries recorded for this reference &mdash; a completed transaction should always have at least one. Check <code>audit_log_failures</code>.</p><?php else: ?>
                     <div class="table-responsive"><table><thead><tr><th>Action</th><th>Category</th><th>Performed By</th><th>At</th></tr></thead><tbody>
                     <?php foreach ($certData['audit'] as $a): ?>
                     <tr><td><?php echo safeHtml($a['action'] ?? ''); ?></td><td><?php echo safeHtml($a['category'] ?? ''); ?></td><td><?php echo safeHtml($a['performed_by'] ?? $a['performed_by_id'] ?? 'SYSTEM'); ?></td><td><?php echo tsHtml($a['performed_at'] ?? ''); ?></td></tr>
@@ -3075,6 +3152,30 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <div class="table-responsive"><table><thead><tr><th>Hold ID</th><th>Swap Reference</th><th>Amount</th><th>Institution</th><th>Placed At</th></tr></thead><tbody>
                     <?php foreach ($integrityIssues['debited_holds_missing_swap_request'] as $row): ?>
                     <tr><td><?php echo safeHtml($row['hold_id']); ?></td><td><?php echo safeHtml($row['swap_reference']); ?></td><td><?php echo number_format((float)$row['amount'], 2); ?></td><td><?php echo safeHtml($row['source_institution']); ?></td><td><?php echo safeHtml($row['placed_at']); ?></td></tr>
+                    <?php endforeach; ?>
+                    </tbody></table></div>
+                    <?php endif; ?>
+
+                    <div class="report-section-title">Completed Transactions With No Audit Record</div>
+                    <?php if (empty($integrityIssues['completed_swaps_missing_audit'])): ?><p style="font-size:14px;color:var(--good);">✓ Clean — every completed transaction has an audit entry naming who moved the money, when, and where it went.</p>
+                    <?php else: ?>
+                    <div class="table-responsive"><table><thead><tr><th>Reference</th><th>Amount</th><th>Currency</th><th>Status</th><th>Created</th><th></th></tr></thead><tbody>
+                    <?php foreach ($integrityIssues['completed_swaps_missing_audit'] as $row): ?>
+                    <tr><td><strong><?php echo safeHtml($row['swap_uuid']); ?></strong></td><td><?php echo number_format((float)$row['amount'], 2); ?></td><td><?php echo safeHtml($row['from_currency'] ?? ''); ?></td><td><span class="status status-failed"><?php echo safeHtml($row['status']); ?></span></td><td><?php echo safeHtml($row['created_at']); ?></td><td><a href="?view=reports&report=transaction_certificate&ref=<?php echo urlencode($row['swap_uuid']); ?>" class="btn btn-sm">Certificate</a></td></tr>
+                    <?php endforeach; ?>
+                    </tbody></table></div>
+                    <?php endif; ?>
+
+                    <div class="report-section-title">Audit Write Failures (Unresolved)</div>
+                    <?php if (empty($integrityIssues['audit_write_failures'])): ?><p style="font-size:14px;color:var(--good);">✓ Clean — no transaction has failed to record its audit trail.</p>
+                    <?php else: ?>
+                    <p style="font-size:13px;color:var(--ink-500);margin-bottom:var(--sp-3);">
+                        Each row is a transaction whose audit entry could not be written. The money movement itself
+                        already happened — these need a human to reconstruct the record and mark them resolved.
+                    </p>
+                    <div class="table-responsive"><table><thead><tr><th>Reference</th><th>Type</th><th>Reason</th><th>Recorded</th><th></th></tr></thead><tbody>
+                    <?php foreach ($integrityIssues['audit_write_failures'] as $row): ?>
+                    <tr><td><strong><?php echo safeHtml($row['swap_reference']); ?></strong></td><td><?php echo safeHtml($row['swap_type'] ?? ''); ?></td><td style="font-size:12px;"><?php echo safeHtml($row['reason']); ?></td><td><?php echo safeHtml($row['created_at']); ?></td><td><a href="?view=reports&report=transaction_certificate&ref=<?php echo urlencode($row['swap_reference']); ?>" class="btn btn-sm">Certificate</a></td></tr>
                     <?php endforeach; ?>
                     </tbody></table></div>
                     <?php endif; ?>
@@ -3506,19 +3607,37 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             </div>
 
             <!-- Chain Integrity Status -->
-            <div class="card" style="border-left: 3px solid <?php echo $chainBroken ? 'var(--bad)' : 'var(--good)'; ?>;">
+            <?php
+            // Three states, not two. 'unknown' means the verification could
+            // not be performed at all -- which this panel used to render as
+            // a green "INTACT", the most misleading thing a tamper-evidence
+            // control can say.
+            $chainColor = ['intact' => 'var(--good)', 'broken' => 'var(--bad)', 'unknown' => 'var(--brass)'][$chainState] ?? 'var(--brass)';
+            $chainBadge = ['intact' => '✅ INTACT', 'broken' => '⚠️ BROKEN', 'unknown' => '❔ NOT VERIFIED'][$chainState] ?? '❔ NOT VERIFIED';
+            ?>
+            <div class="card" style="border-left: 3px solid <?php echo $chainColor; ?>;">
                 <div class="card-header">
                     <span class="card-title">🔗 Chain Integrity</span>
-                    <span class="card-badge <?php echo $chainBroken ? '' : 'brass'; ?>">
-                        <?php echo $chainBroken ? '⚠️ BROKEN' : '✅ INTACT'; ?>
+                    <span class="card-badge <?php echo $chainState === 'intact' ? 'brass' : ''; ?>">
+                        <?php echo $chainBadge; ?>
                     </span>
                 </div>
-                <div style="text-align:center; font-size:14px; color:<?php echo $chainBroken ? 'var(--bad)' : 'var(--good)'; ?>;">
-                    <?php if ($chainBroken): ?>
+                <div style="text-align:center; font-size:14px; color:<?php echo $chainColor; ?>;">
+                    <?php if ($chainState === 'broken'): ?>
                         <strong>One or more audit entries failed hash validation.</strong> The chain has been tampered with or a record is missing.
                         <div style="margin-top:var(--sp-3); font-size:12px; color:var(--ink-300);">
                             Check the full audit_export report for detailed inspection.
                             <a href="?view=reports&report=audit_export" class="btn btn-sm" style="margin-left:var(--sp-3);">View Audit Export</a>
+                        </div>
+                    <?php elseif ($chainState === 'unknown'): ?>
+                        <strong>The chain could not be verified.</strong> This is not a pass &mdash; the check itself
+                        did not complete, so nothing here says whether the audit trail is intact.
+                        <div style="margin-top:var(--sp-3); font-size:12px; color:var(--ink-300);">
+                            Most likely the <code>prev_hash</code> / <code>entry_hash</code> columns are missing:
+                            apply <code>2026_09_16_transaction_audit_integrity.sql</code>.
+                            <?php if ($chainError !== null): ?>
+                            <div style="margin-top:var(--sp-2);"><code><?php echo safeHtml($chainError); ?></code></div>
+                            <?php endif; ?>
                         </div>
                     <?php else: ?>
                         All audit entries passed hash validation. The chain is intact.
