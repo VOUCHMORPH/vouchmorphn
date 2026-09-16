@@ -5491,13 +5491,24 @@ private function finalizeHoldToReceiving(
     $sourcePayload['currency'] = $currency;
     $sourcePayload['asset_type'] = $identitySwap['source_asset_type'] ?? 'ACCOUNT';
 
+    // FIX: this method runs from the CLAIM path (finalizeAggregatedIdentityClaimSelfService
+    // -> executeIdentityClaimWithSplit -> here), on a fresh SwapService
+    // instance that never went through initiateSwapToIdentity()'s
+    // beginAtomicSwap()/currentSwapRef assignment -- $this->currentSwapRef
+    // was still null at this point. verifyAssetSigned() reads it directly
+    // into the 'reference'/'swap_reference' fields of the signed request
+    // sent to the source bank, so every re-verification at claim time was
+    // sending a null reference instead of this hold's actual one. Set it
+    // (and the hold identifiers, needed by the same call) before
+    // verifying, not after.
+    $this->currentSwapRef = $identitySwap['swap_reference'];
+    $this->currentHoldReference = $identitySwap['hold_reference'];
+    $this->currentHoldId = (int)$identitySwap['hold_id'];
+
     $verificationResult = $this->verifyAssetSigned($sourcePayload, $sourceInstitution);
     if (!($verificationResult['verified'] ?? false)) {
         throw new RuntimeException("Source funds no longer available for hold {$identitySwap['hold_id']}. Claim cancelled for this hold.");
     }
-
-    $this->currentHoldReference = $identitySwap['hold_reference'];
-    $this->currentHoldId = (int)$identitySwap['hold_id'];
 
     $recvId = $this->recordReceivingDepositAttempt(
         $consolidationReference, (int)$identitySwap['hold_id'], $destinationInstitution,
@@ -7466,7 +7477,13 @@ public function executeIdentityClaimWithSplit(
     }
 
     if (empty($landedHoldIds)) {
-        throw new RuntimeException("All underlying holds failed to reach the receiving account — nothing was claimed. See individual errors and retry.");
+        // FIX: $failedHolds already carries each hold's real error, but it
+        // never reached the caller -- claim_identity.php's catch block
+        // only has $e->getMessage() to work with, so the dashboard showed
+        // this generic line for every failure regardless of cause. Surface
+        // the first (usually only, for a single-hold claim) real error.
+        $firstError = $failedHolds[0]['error'] ?? 'unknown error';
+        throw new RuntimeException("Claim could not be completed: {$firstError}");
     }
 
     // ------------------------------------------------------------
