@@ -18,6 +18,7 @@ use Domain\Services\Compliance\SanctionsScreeningService;
 use Domain\Services\ReservationAccountService;
 use Infrastructure\Adapters\InstitutionAdapterFactory;
 use Infrastructure\SMS\SmsNotificationService;
+use Infrastructure\Email\EmailGatewayClient;
 use Infrastructure\Mojaloop\IdempotencyService;
 use Infrastructure\Crypto\SignatureVerifier;
 use Infrastructure\Crypto\MessageSigner;
@@ -126,6 +127,7 @@ class SwapService
     private ReservationAccountService $reservationAccountService;
     private ?CardService $cardService = null;
     private ?SmsNotificationService $smsService = null;
+    private ?EmailGatewayClient $emailService = null;
     private ?ContributionCalculator $contributionCalculator = null;
     private ?MultiSourceFeeCalculator $multiSourceFeeCalculator = null;
     private ?MultiSourceSwapOrchestrator $multiSourceOrchestrator = null;
@@ -252,7 +254,14 @@ $this->forexService = new ForexService(
 if (!empty($commConfig)) {
     $this->smsService = new SmsNotificationService($this->swapDB, $commConfig);
 }
-        
+
+// EmailGatewayClient self-reports whether SMTP_HOST/USERNAME/PASSWORD
+// are configured and fails loud-but-gracefully (returns success=false,
+// doesn't throw) rather than requiring a config gate like SmsNotificationService
+// above — safe to always construct, same as its other existing callers
+// (register.php, login.php) already do.
+$this->emailService = new EmailGatewayClient($countryConfig['email'] ?? []);
+
        $vouchmorphConfig = $this->participants['vouchmorph'] ?? [];
 if (!empty($vouchmorphConfig)) {
     $this->cardService = new CardService($this->swapDB, $this->countryCode, $vouchmorphConfig, $this->feeService, $this->forexService);
@@ -12251,30 +12260,67 @@ public function getSourceAvailableBalanceDetailed(array $source): array
         ];
     }
 
-    // Email path - self-service with email verification
+    // Email path - self-service with email OTP verification, same
+    // pattern as the phone branch above (EmailGatewayClient now wired
+    // in — this used to fall back to pending_review, an unbounded wait
+    // on manual ops approval, since there was no email-sending service
+    // available from this method).
     if ($identityType === 'email') {
-        // For email, we could send a verification link or OTP via email
-        // For now, we'll mark it as pending_review since we don't have 
-        // an email OTP service in this method yet
+        if (!filter_var($identityValue, FILTER_VALIDATE_EMAIL)) {
+            throw new RuntimeException("Please enter a valid email address.");
+        }
+        if (!$this->emailService || !$this->emailService->isConfigured()) {
+            throw new RuntimeException("Email verification is not available right now - try again later.");
+        }
+
+        $otp = $this->generateOtpPin();
+        $otpHash = password_hash($otp, PASSWORD_DEFAULT);
+
         $stmt = $this->swapDB->prepare("
             INSERT INTO user_identities (
-                user_id, identity_type, identity_value, status, created_at
+                user_id, identity_type, identity_value, status,
+                otp_pin_hash, otp_expires_at, created_at
             ) VALUES (
-                :user_id, :type, :value, 'pending_review', NOW()
+                :user_id, :type, :value, 'pending_otp',
+                :otp_hash, :otp_expires_at, NOW()
             ) RETURNING id
         ");
         $stmt->execute([
             ':user_id' => $userId,
             ':type' => $identityType,
             ':value' => $identityValue,
+            ':otp_hash' => $otpHash,
+            ':otp_expires_at' => date('Y-m-d H:i:s', time() + 600),
         ]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        $attemptId = $row ? (int)$row['id'] : 0;
 
-        error_log("[SwapService] registerUserIdentity: email identity submitted, user_id={$userId}");
+        $subject = "Your VouchMorph Verification Code";
+        $body = "
+            <html>
+            <body style='font-family: Arial, sans-serif;'>
+                <h2>Verify your email</h2>
+                <p>Your verification code is: <strong style='font-size: 24px; color: #00636e;'>{$otp}</strong></p>
+                <p>This code expires in 10 minutes.</p>
+                <p><strong>Never share this code with anyone, including VouchMorph staff.</strong></p>
+                <hr>
+                <small>VouchMorph</small>
+            </body>
+            </html>
+        ";
+        $sendResult = $this->emailService->sendEmail($identityValue, $subject, $body);
+        if (!($sendResult['success'] ?? false)) {
+            error_log("[SwapService] registerUserIdentity: failed to email verification code: " . ($sendResult['message'] ?? 'unknown error'));
+            throw new RuntimeException("Could not send the verification code - try again.");
+        }
+
+        error_log("[SwapService] registerUserIdentity: OTP sent for email identity, user_id={$userId}, attempt_id={$attemptId}");
 
         return [
-            'requires_otp' => false,
-            'status' => 'pending_review',
-            'message' => 'Email submitted for verification. Please check your email for a verification link.',
+            'requires_otp' => true,
+            'attempt_id' => $attemptId,
+            'status' => 'pending_otp',
+            'message' => 'A verification code has been emailed to this address.',
         ];
     }
 
