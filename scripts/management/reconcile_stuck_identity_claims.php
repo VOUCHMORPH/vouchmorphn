@@ -13,8 +13,10 @@
  * reference as unknown (ZURUBANK words this as "Voucher not found for hold
  * reference: <ref>") rather than anything about the real problem.
  *
- * SwapService now marks such holds 'cancelled' at the moment it credits the
- * money back, so this only has to clean up holds stranded before that fix.
+ * Claims no longer work this way: the beneficiary is now paid at the
+ * destination FIRST and the hold is only debited once that succeeds, so a
+ * failed claim leaves the hold untouched and nothing to clean up. This
+ * exists for holds stranded by the old debit-first order.
  *
  * WHAT IT WILL AND WON'T TOUCH
  * ----------------------------
