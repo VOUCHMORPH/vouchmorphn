@@ -97,4 +97,30 @@ class DirectClaimPayoutSplitTest extends TestCase
         $this->assertSame([], $this->split([], 100.00));
         $this->assertSame([], $this->split(['ZURUBANK' => 0.0], 100.00));
     }
+
+    /**
+     * The claim splits the pool twice off the same per-institution weights:
+     * once for the cash-now payout and once for the remainder parked in the
+     * beneficiary's reservation account. Both splits must land exactly, or
+     * an institution's settlement account is left over- or under-drawn
+     * across the two legs.
+     */
+    public function testPayoutAndReservationLegsEachLandExactly(): void
+    {
+        $held = ['ZURUBANK' => 300.00, 'SACCUSSALIS' => 200.00];
+        $claimable = 498.00;   // 500 gross less 1.00 Fh per hold
+        $payout = 200.00;
+        $remainder = round($claimable - $payout, 2);
+
+        $payoutLegs = $this->split($held, $payout);
+        $remainderLegs = $this->split($held, $remainder);
+
+        $this->assertSame($payout, round(array_sum($payoutLegs), 2));
+        $this->assertSame($remainder, round(array_sum($remainderLegs), 2));
+        $this->assertSame(
+            $claimable,
+            round(array_sum($payoutLegs) + array_sum($remainderLegs), 2),
+            'payout plus remainder must equal the claimable pool'
+        );
+    }
 }

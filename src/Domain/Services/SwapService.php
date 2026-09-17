@@ -7878,8 +7878,11 @@ private function supportsIdentityConsolidation(string $institution): bool
  * destination_identifier, which is what a destination bank keys its
  * internal identity-swap sweep on.
  *
- * Partial claims are refused up front: parking a remainder needs a
- * beneficiary reservation account, which is a separate flow.
+ * Claiming only part of the balance parks the rest in the beneficiary's own
+ * reservation account at the destination bank, created on demand through
+ * ReservationAccountService. That account is the only place a remainder can
+ * sit in this model -- there is no institution-level holding account -- so
+ * if one can't be made the partial claim is refused before anything moves.
  */
 private function executeIdentityClaimDirect(
     array $holds,
@@ -7894,18 +7897,6 @@ private function executeIdentityClaimDirect(
     string $identityValue
 ): array {
     $currency = $holds[0]['currency'] ?? 'BWP';
-
-    // Compared against A (T - Fh), the same figure the callers validated
-    // $cashNowAmount against — comparing against gross T would reject a
-    // legitimate "claim everything" as if it were a partial.
-    $available = self::computeAvailableForPendingHolds($holds)['available'];
-    if ($cashNowAmount !== null && round($cashNowAmount, 2) < round($available, 2)) {
-        throw new RuntimeException(
-            "Claiming part of the balance isn't available at {$destinationInstitution} yet — the remainder " .
-            "would need a bank-side holding account this institution hasn't implemented. Claim the full " .
-            "{$available} {$currency} instead."
-        );
-    }
 
     // A cashout code is drawn on the paying institution's own settlement
     // account, so it can only cover money that institution is itself the
@@ -7966,12 +7957,57 @@ private function executeIdentityClaimDirect(
 
     $totalHeld = round(array_sum($heldByInstitution), 2);
 
-    // Fee applies only to money actually being delivered now. Fh is not
-    // taken off the payout -- it rides on the interbank obligation netting
-    // below.
+    // A = T - Fh. Fh was earned the moment the hold was placed and is never
+    // claimable (spec invariant #9: "the client is shown A, never T"), so
+    // the beneficiary's pool is A -- the same figure previewIdentityClaim-
+    // Available() shows them. The Fh difference is not delivered anywhere:
+    // it stays with the source institution and comes out of what that
+    // institution owes the destination, via the obligation netting below.
+    // Computed over the VERIFIED holds only, so one that dropped out at
+    // step 1 can't inflate what the rest pays for.
+    $claimable = round(self::computeAvailableForPendingHolds($verifiedHolds)['available'], 2);
+
+    // How much is handed over now, and how much stays the beneficiary's but
+    // parked. Every verified hold is debited in full either way -- the
+    // remainder doesn't stay at the source, it moves to an account the
+    // beneficiary owns at the destination.
+    $payoutAmount = $cashNowAmount === null ? $claimable : min(round($cashNowAmount, 2), $claimable);
+    $remainder = round($claimable - $payoutAmount, 2);
+
+    // Resolve the parking account BEFORE any money moves: creating it is not
+    // a transfer, and finding out it can't be created after the payout has
+    // gone out would leave the remainder with nowhere to land.
+    $reservation = null;
+    if ($remainder > 0) {
+        $ownerUserId = $this->resolveClaimOwnerUserId($confirmedByType, $confirmedById, $identityType, $identityValue);
+        if ($ownerUserId === null) {
+            throw new RuntimeException(
+                "Only part of this balance was requested, but the remainder needs a reservation account and " .
+                "this identity isn't registered to a VouchMorph account to open one against. Claim the full " .
+                "{$claimable} {$currency} instead."
+            );
+        }
+
+        $reservation = $this->reservationAccountService->resolveOrCreateReservationAccount(
+            $ownerUserId, $destinationInstitution, $currency
+        );
+
+        if (($reservation['status'] ?? null) !== 'active') {
+            throw new RuntimeException(
+                "Only part of this balance was requested, but no reservation account is available at " .
+                "{$destinationInstitution} to hold the remaining {$remainder} {$currency} (" .
+                ($reservation['supported'] ?? false ? "account status: " . ($reservation['status'] ?? 'unknown') : "not offered by this institution") .
+                "). Claim the full {$claimable} {$currency} instead."
+            );
+        }
+    }
+
+    // Fee applies only to money actually being delivered now, never to the
+    // parked remainder -- that money isn't leaving the beneficiary's control,
+    // it's just changing which account it sits in.
     $feeBreakdown = $this->calculateFeesWithDetails(
         $destinationType === 'CASHOUT' ? 'CASHOUT' : 'DEPOSIT',
-        $totalHeld,
+        $payoutAmount,
         array_merge($destinationDetails, [
             'currency' => $currency,
             'institution' => $destinationInstitution,
@@ -7979,7 +8015,7 @@ private function executeIdentityClaimDirect(
             'asset_type' => $destinationDetails['destination_asset_type'] ?? 'ACCOUNT',
         ])
     );
-    $netPayoutAmount = round($feeBreakdown['net_amount_source_currency'] ?? $totalHeld, 2);
+    $netPayoutAmount = round($feeBreakdown['net_amount_source_currency'] ?? $payoutAmount, 2);
 
     // ------------------------------------------------------------
     // STEP 2: pay the beneficiary at the destination, against the holds.
@@ -7996,6 +8032,47 @@ private function executeIdentityClaimDirect(
             "Claim payout to {$destinationInstitution} failed: " . ($delivery['error'] ?? 'unknown error') .
             ". Nothing was debited -- the money is still held and can be claimed again."
         );
+    }
+
+    // ------------------------------------------------------------
+    // STEP 2b: park the part that wasn't taken now into the beneficiary's
+    // reservation account -- still before any debit, and funded the same
+    // way as the payout, from the settlement accounts of the institutions
+    // whose legs delivered.
+    // ------------------------------------------------------------
+    $reservationAccountId = null;
+    $unparkedRemainder = 0.0;
+    if ($remainder > 0) {
+        $reservationAccountId = $reservation['id'] ?? null;
+        $delivered = array_intersect_key($heldByInstitution, $delivery['legs']);
+
+        foreach (self::splitNetPayoutByInstitution($delivered, $remainder) as $sourceInstitution => $share) {
+            try {
+                $this->settlePosToMerchant(
+                    $sourceInstitution,
+                    $destinationInstitution,
+                    $reservation['account_identifier'],
+                    $reservation['account_identifier_type'] ?? 'account_number',
+                    $currency,
+                    $share,
+                    $consolidationReference . '_RESACC_' . $sourceInstitution
+                );
+            } catch (\Throwable $e) {
+                // The beneficiary has already been paid the cash-now part,
+                // so the holds still have to be debited below. This portion
+                // is theirs but didn't reach the account -- a human has to
+                // place it rather than the customer silently losing it.
+                $unparkedRemainder = round($unparkedRemainder + $share, 2);
+                error_log("[SwapService] executeIdentityClaimDirect: reservation deposit leg {$sourceInstitution} failed for {$consolidationReference}: " . $e->getMessage());
+                $this->recordManualReconciliationRequired(
+                    $consolidationReference, null, $sourceInstitution,
+                    $destinationInstitution, $share, $currency,
+                    "Claim remainder could not be deposited into reservation account " .
+                    ($reservation['account_identifier'] ?? 'unknown') . ": " . $e->getMessage() .
+                    ". The cash-now portion was already paid, so the holds were debited in full."
+                );
+            }
+        }
     }
 
     // ------------------------------------------------------------
@@ -8104,6 +8181,9 @@ private function executeIdentityClaimDirect(
             'holds_failed' => array_column($failedHolds, 'hold_id'),
             'total_debited' => $totalHeld,
             'payout_amount_net' => $netPayoutAmount,
+            'remainder_reserved' => $remainder,
+            'reservation_account_id' => $reservationAccountId,
+            'remainder_unparked' => $unparkedRemainder,
         ]
     );
 
@@ -8116,13 +8196,14 @@ private function executeIdentityClaimDirect(
         'holds_landed' => count($landedHoldIds),
         'holds_failed' => $failedHolds,
         'total_consolidated' => $totalHeld,
-        'payout_amount_gross' => $totalHeld,
+        'payout_amount_gross' => $payoutAmount,
         'fee' => $feeBreakdown,
         'payout_amount_net' => $netPayoutAmount,
         'payout_result' => $payoutResult,
-        'remainder_held' => 0.0,
+        'remainder_held' => $remainder,
+        'remainder_unparked' => $unparkedRemainder,
         'holding_position_id' => null,
-        'reservation_account_id' => null,
+        'reservation_account_id' => $reservationAccountId,
     ];
 }
 
