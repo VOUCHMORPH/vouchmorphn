@@ -44,8 +44,13 @@ declare(strict_types=1);
  * institution and confirm reality. This script's only side effect is
  * writing rows to swap_integrity_findings for review.
  *
- * SCHEDULING: run every 15-30 minutes.
- *   */15 * * * * php /path/to/swap_integrity_reconciler.php >> /var/log/vouchmorph/reconciler.log 2>&1
+ * SCHEDULING: run every 15-30 minutes, e.g. at minute 0,15,30,45:
+ *   0,15,30,45 * * * * php /path/to/swap_integrity_reconciler.php >> /var/log/vouchmorph/reconciler.log 2>&1
+ *
+ * (Written out rather than as a step expression on purpose: a literal
+ * step slash here closes this comment block and makes the whole file a
+ * parse error, which is exactly what it did until 18 Sep 2026 -- this
+ * script could never run at all.)
  */
 
 require_once __DIR__ . '/../../vendor/autoload.php'; // adjust to your actual vendor path
@@ -186,6 +191,48 @@ foreach ($staleSettlements as $row) {
 
     logLine("FINDING [HIGH] SETTLEMENT_UNCONFIRMED_PAST_GRACE_PERIOD: swap_reference={$row['swap_uuid']} completed_at={$row['completed_at']}");
     $totalFindings++;
+}
+
+// ============================================================
+// Check 4: negative money anywhere in the swap ledger
+//
+// Nothing in this system is ever legitimately negative: a hold, an
+// identity hold and a reservation position are all amounts set aside, and
+// a fee is a deduction expressed as a positive number. A negative one
+// means an amount was written with the wrong sign, or a subtraction ran
+// twice -- which does not announce itself anywhere else, because every
+// other check here looks at STATUS rather than at the numbers.
+// ============================================================
+$negativeChecks = [
+    'hold_transactions'   => ['table' => 'hold_transactions',   'ref' => 'swap_reference', 'id' => 'hold_id'],
+    'identity_swap_holds' => ['table' => 'identity_swap_holds', 'ref' => 'swap_reference', 'id' => 'hold_id'],
+];
+
+foreach ($negativeChecks as $label => $spec) {
+    try {
+        $stmt = $db->query("
+            SELECT {$spec['id']} AS row_id, {$spec['ref']} AS swap_reference, amount, status
+            FROM {$spec['table']}
+            WHERE amount < 0
+            ORDER BY {$spec['id']} DESC
+            LIMIT 500
+        ");
+    } catch (Throwable $e) {
+        // A table this deployment doesn't have is not a finding.
+        logLine("Skipped negative-amount check on {$label}: " . $e->getMessage());
+        continue;
+    }
+
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        recordFinding($db, 'NEGATIVE_AMOUNT', 'HIGH', $row['swap_reference'], (int)$row['row_id'], [
+            'table' => $spec['table'],
+            'amount' => $row['amount'],
+            'status' => $row['status'],
+        ]);
+
+        logLine("FINDING [HIGH] NEGATIVE_AMOUNT: {$spec['table']}.{$spec['id']}={$row['row_id']} amount={$row['amount']} status={$row['status']}");
+        $totalFindings++;
+    }
 }
 
 logLine("Run complete: {$totalFindings} new/repeated finding(s) recorded. Query swap_integrity_findings WHERE resolved_at IS NULL for the current backlog.");

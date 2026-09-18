@@ -1,8 +1,9 @@
 <?php
 
-require_once dirname(__DIR__, 2) . '/src/bootstrap.php';
 
 namespace Security\Encryption;
+
+require_once dirname(__DIR__, 2) . '/src/bootstrap.php';
 
 use Security\Encryption\KeyVault;
 

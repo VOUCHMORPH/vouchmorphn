@@ -8005,6 +8005,22 @@ private function executeIdentityClaimDirect(
     // Fee applies only to money actually being delivered now, never to the
     // parked remainder -- that money isn't leaving the beneficiary's control,
     // it's just changing which account it sits in.
+    //
+    // A pooled claim really is a multi-source swap: each hold is its own
+    // funding source, exactly like the 50 + 150 + 100 bundle a multi-source
+    // send builds. FeeService only applies the multi_source schedule when it
+    // is told both of these (see its $context build: is_multi_source, and
+    // source_count from count($payload['sources'])), so without them a pool
+    // of N holds was silently charged as a single source.
+    $feeSources = array_map(
+        fn(array $hold) => [
+            'institution' => $hold['source_institution'],
+            'amount' => (float)$hold['amount'],
+            'hold_id' => (int)$hold['hold_id'],
+        ],
+        $verifiedHolds
+    );
+
     $feeBreakdown = $this->calculateFeesWithDetails(
         $destinationType === 'CASHOUT' ? 'CASHOUT' : 'DEPOSIT',
         $payoutAmount,
@@ -8013,6 +8029,8 @@ private function executeIdentityClaimDirect(
             'institution' => $destinationInstitution,
             'destination_institution' => $destinationInstitution,
             'asset_type' => $destinationDetails['destination_asset_type'] ?? 'ACCOUNT',
+            'sources' => $feeSources,
+            'is_multi_source' => count($feeSources) > 1,
         ])
     );
     $netPayoutAmount = round($feeBreakdown['net_amount_source_currency'] ?? $payoutAmount, 2);
