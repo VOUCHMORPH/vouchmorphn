@@ -1,0 +1,29 @@
+# ============================================
+# FOREX PROVIDERS - external FX rate gateways
+# ============================================
+#
+# Was channel.php until 18 Sep 2026: YAML content behind a <?php opening
+# tag, which made it a PHP parse error. It is config data, not code, and
+# it sits outside the web root, so the tag was not an access guard either
+# -- renamed to .yaml to match assets.yaml and flows.yaml alongside it.
+#
+# NOT WIRED UP YET. Nothing reads `forex_providers`, and the shape below
+# is not the shape ForexService consumes: it discovers FX partners from
+# participants carrying `fx_enabled` / `fx_endpoint` / `base_url` /
+# `api_key`, plus a `fx_partners` config key, falling back to
+# Core/Config/Rates/fx_rates.json. Connecting the two means deciding how
+# these fields map -- in particular `identifier` here is a ClientSdsId,
+# an identity for the ABSA gateway, and is NOT an api_key. Kept because
+# the gateway details are real and would otherwise be lost.
+forex_providers:
+  absa:
+    enabled: true
+    base_url: "https://gateway.bifrost.cib-absaaccess.prod.caas.absa.co.za/fxratesapi/1.0"
+    identifier: "${ABSA_FX_IDENTIFIER}"
+    identifier_type: "ClientSdsId"
+    country_codes:
+      ZAR: "ZA"
+      BWP: "BW"
+      USD: "US"
+    # Use for swaps where currency pair involves ZAR, BWP, USD
+    supported_pairs: ["USDZAR", "GBPZAR", "EURUSD", "EURZAR", "BWPUSD"]
