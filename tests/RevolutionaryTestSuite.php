@@ -714,7 +714,7 @@ class RevolutionaryTestSuite
                 'message' => $finalityValid ? '✅ Settlement finality achieved' : '⚠️ Settlement pending'
             ];
             
-            $this->log("  Settlement finality: {$settlement['status'] ?? 'PENDING'}", $finalityValid ? 'success' : 'warning');
+            $this->log("  Settlement finality: " . ($settlement['status'] ?? 'PENDING'), $finalityValid ? 'success' : 'warning');
             
         } catch (Exception $e) {
             $this->results['settlement_finality'] = ['status' => 'FAIL', 'error' => $e->getMessage()];
@@ -971,7 +971,7 @@ class RevolutionaryTestSuite
         // Validate SWIFT MT103 format
         $requiredFields = ['swap_reference', 'fx', 'source_amount', 'destination_amount'];
         foreach ($requiredFields as $field) {
-            if (!isset($result[$field]) && !isset($result['fx'][$field] ?? null)) {
+            if (!isset($result[$field]) && !isset($result['fx'][$field])) {
                 return false;
             }
         }
