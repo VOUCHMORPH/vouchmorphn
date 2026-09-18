@@ -134,11 +134,25 @@ class SmsNotificationService
                     status VARCHAR(20) DEFAULT 'PENDING',
                     message_id VARCHAR(100),
                     error_message TEXT,
+                    delivery_report JSON,
                     sent_at TIMESTAMP,
                     created_at TIMESTAMP DEFAULT NOW()
                 )
             ");
-            
+
+            // delivery_report was missing from the CREATE above while
+            // processDeliveryCallback() and both /api/callback/sms*delivery.php
+            // endpoints write to it. The canonical schema
+            // (Countries/Botswana/database/swap_system_bw.sql) has always had
+            // it, so an established database was fine -- but anywhere this
+            // CREATE actually ran, the column never existed and every delivery
+            // report failed, silently, because those writes sit in a catch that
+            // only logs. CREATE TABLE IF NOT EXISTS cannot repair an existing
+            // table, hence the ALTER.
+            $this->db->exec("
+                ALTER TABLE sms_logs ADD COLUMN IF NOT EXISTS delivery_report JSON
+            ");
+
             $this->db->exec("
                 CREATE INDEX IF NOT EXISTS idx_sms_logs_phone ON sms_logs(phone_number);
                 CREATE INDEX IF NOT EXISTS idx_sms_logs_status ON sms_logs(status);
