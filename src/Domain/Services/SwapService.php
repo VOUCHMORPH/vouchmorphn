@@ -4210,7 +4210,9 @@ public function cancelExpiredCashouts(int $bufferHours = 6): array
     if (!($verificationResult['verified'] ?? false)) {
         throw new RuntimeException("Asset verification failed: " . ($verificationResult['message'] ?? 'Unknown error'));
     }
-    
+
+    $this->assertSourceCanCoverAmount($verificationResult, (float)$payload['amount'], $sourceInstitution);
+
     $this->signedPayloads['verification'] = [
         'payload' => $verificationResult['original_payload'],
         'signature' => $verificationResult['signature'],
@@ -4218,7 +4220,7 @@ public function cancelExpiredCashouts(int $bufferHours = 6): array
         'timestamp' => $verificationResult['timestamp'],
         'is_hooked' => $isHooked
     ];
-    
+
     if (empty($destinationIdentifier['identifier'])) {
         throw new RuntimeException("Destination identifier is required for deposit");
     }
@@ -4451,6 +4453,8 @@ $this->recordSettlementPending(
             if (!($verificationResult['verified'] ?? false)) {
                 throw new RuntimeException("Asset verification failed: " . ($verificationResult['message'] ?? 'Unknown'));
             }
+
+            $this->assertSourceCanCoverAmount($verificationResult, (float)$payload['amount'], $sourceInstitution);
 
             $this->signedPayloads['verification'] = [
                 'payload' => $verificationResult['original_payload'],
@@ -7957,6 +7961,37 @@ private function executeIdentityClaimDirect(
 
     $totalHeld = round(array_sum($heldByInstitution), 2);
 
+    // Stage 2: record what was asked for, one leg per hold. Each hold is a
+    // source leg with its own reference, so a pooled claim is auditable leg
+    // by leg and not just as a total.
+    $this->recordActivityWithSubRequests(
+        $consolidationReference,
+        'IDENTITY_CLAIM',
+        'requested',
+        array_map(
+            fn(array $hold) => [
+                'sub_reference' => (string)$hold['swap_reference'],
+                'amount' => (float)$hold['amount'],
+                'source_institution' => $hold['source_institution'] ?? null,
+                'hold_id' => (int)$hold['hold_id'],
+                'hold_reference' => $hold['hold_reference'] ?? null,
+            ],
+            $verifiedHolds
+        ),
+        [
+            'actor_type' => $confirmedByType,
+            'actor_id' => $confirmedById,
+            'institution' => $destinationInstitution,
+            'currency' => $currency,
+            'parameters' => [
+                'identity_type' => $identityType,
+                'destination_type' => $destinationType,
+                'cash_now_amount' => $cashNowAmount,
+                'holds_failed_verification' => array_column($failedHolds, 'hold_id'),
+            ],
+        ]
+    );
+
     // A = T - Fh. Fh was earned the moment the hold was placed and is never
     // claimable (spec invariant #9: "the client is shown A, never T"), so
     // the beneficiary's pool is A -- the same figure previewIdentityClaim-
@@ -10002,7 +10037,11 @@ private function loadAtmNotesStrict(array $countryConfig, string $countryFallbac
             'asset_id' => $result['asset_id'] ?? null,
             'account_id' => $result['account_id'] ?? null,
             'account_name' => $result['account_name'] ?? null,
-            'balance' => $result['balance'] ?? 0,
+            // null, not 0, when the bank reported no balance at all -- 0
+            // would be indistinguishable from an empty account, and
+            // assertSourceCanCoverAmount() must not fail a swap over a
+            // figure the bank never sent.
+            'balance' => isset($result['balance']) ? (float)$result['balance'] : null,
             'currency' => $result['currency'] ?? $payload['currency'] ?? 'BWP',
             'original_payload' => $result['original_payload'] ?? $verifyPayload,
             'signature' => $result['signature'] ?? null,
@@ -10521,6 +10560,116 @@ private function generateCashoutToken(array $payload, string $institution, float
      * Verify destination account
      * STANDARD: Returns consistent verification structure
      */
+    /**
+     * Records what a client asked for (stage 2): one swap_activity row for
+     * the request, and one swap_sub_requests row per source leg, each
+     * carrying its own reference. A single-source request logs one leg; a
+     * multi-source bundle logs one per contributing source, so the bundle
+     * can be audited leg by leg rather than only in total.
+     *
+     * Never throws. This is a record of a money movement, not part of one --
+     * a logging failure must not take down a claim that is otherwise fine,
+     * the same discipline writeAuditLogEntry() follows.
+     *
+     * @param array<int, array{sub_reference: string, amount: float, source_institution?: ?string, hold_id?: ?int, hold_reference?: ?string, parameters?: array}> $subRequests
+     * @return int|null the swap_activity id, or null if nothing was recorded
+     */
+    private function recordActivityWithSubRequests(
+        string $reference,
+        string $activityType,
+        string $status,
+        array $subRequests,
+        array $context = []
+    ): ?int {
+        try {
+            $stmt = $this->swapDB->prepare("
+                INSERT INTO swap_activity (
+                    reference, activity_type, actor_type, actor_id, institution,
+                    currency, total_amount, source_count, status, parameters
+                ) VALUES (
+                    :reference, :activity_type, :actor_type, :actor_id, :institution,
+                    :currency, :total_amount, :source_count, :status, :parameters::jsonb
+                ) RETURNING id
+            ");
+            $stmt->execute([
+                ':reference' => $reference,
+                ':activity_type' => $activityType,
+                ':actor_type' => $context['actor_type'] ?? null,
+                ':actor_id' => $context['actor_id'] ?? null,
+                ':institution' => $context['institution'] ?? null,
+                ':currency' => $context['currency'] ?? null,
+                ':total_amount' => round(array_sum(array_column($subRequests, 'amount')), 2),
+                ':source_count' => count($subRequests),
+                ':status' => $status,
+                ':parameters' => json_encode($context['parameters'] ?? []),
+            ]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            $activityId = $row ? (int)$row['id'] : null;
+
+            if ($activityId === null) {
+                return null;
+            }
+
+            $legStmt = $this->swapDB->prepare("
+                INSERT INTO swap_sub_requests (
+                    activity_id, parent_reference, sub_reference, source_institution,
+                    hold_id, hold_reference, amount, currency, status, parameters
+                ) VALUES (
+                    :activity_id, :parent_reference, :sub_reference, :source_institution,
+                    :hold_id, :hold_reference, :amount, :currency, :status, :parameters::jsonb
+                )
+                ON CONFLICT (parent_reference, sub_reference) DO NOTHING
+            ");
+
+            foreach ($subRequests as $leg) {
+                $legStmt->execute([
+                    ':activity_id' => $activityId,
+                    ':parent_reference' => $reference,
+                    ':sub_reference' => $leg['sub_reference'],
+                    ':source_institution' => $leg['source_institution'] ?? null,
+                    ':hold_id' => $leg['hold_id'] ?? null,
+                    ':hold_reference' => $leg['hold_reference'] ?? null,
+                    ':amount' => $leg['amount'],
+                    ':currency' => $context['currency'] ?? null,
+                    ':status' => $status,
+                    ':parameters' => json_encode($leg['parameters'] ?? []),
+                ]);
+            }
+
+            return $activityId;
+
+        } catch (\Throwable $e) {
+            error_log("[SwapService] recordActivityWithSubRequests failed for {$reference}: " . $e->getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Point 3 of the three-point check: the source really can cover what is
+     * about to be held. Runs against the SOURCE's verify-asset result, since
+     * that is the side the money leaves.
+     *
+     * Only enforced when the bank actually reported a balance. A bank that
+     * sends none is not asserting the account is empty, and failing the swap
+     * on a figure nobody supplied would block perfectly good transfers --
+     * the hold itself is the real guard in that case, and it fails at the
+     * bank if the funds aren't there.
+     */
+    private function assertSourceCanCoverAmount(array $verificationResult, float $amount, string $institution): void
+    {
+        $balance = $verificationResult['balance'] ?? null;
+        if ($balance === null) {
+            return;
+        }
+
+        if ((float)$balance + 0.001 < $amount) {
+            $currency = $verificationResult['currency'] ?? 'BWP';
+            throw new RuntimeException(
+                "Insufficient funds at {$institution}: {$amount} {$currency} requested, {$balance} {$currency} available."
+            );
+        }
+    }
+
     private function verifyAccount(array $payload, string $institution, array $destinationIdentifier): array
     {
         $sourceInstitution = $this->extractSourceInstitution($payload);
@@ -10554,16 +10703,71 @@ private function generateCashoutToken(array $payload, string $institution, float
         $success = $result['success'] ?? $verified;
 
         // ============================================================
+        // Three-point check on the account being paid. The bank saying
+        // "verified" was previously the whole check: the account number it
+        // echoed back and the holder name it returned were both ignored, so
+        // a bank answering about a DIFFERENT account than the one asked
+        // about would have passed silently.
+        //
+        // Point 3 (sufficient funds) is deliberately not here -- this is the
+        // DESTINATION, which is receiving money, not providing it. Balance
+        // sufficiency belongs to the source and is checked against
+        // VERIFY_ASSET_SIGNED's balance before the hold goes on.
+        // ============================================================
+        $requestedIdentifier = (string)$destinationIdentifier['identifier'];
+        $returnedNumber = $result['account_number'] ?? null;
+
+        // Point 1 -- the account the bank answered about must be the account
+        // we asked about. Compared on digits/letters only, since banks format
+        // the same number with spaces and dashes inconsistently.
+        $numberMismatch = false;
+        if ($verified && $returnedNumber !== null && $returnedNumber !== '') {
+            $normalise = fn(string $v) => strtolower(preg_replace('/[^A-Za-z0-9]/', '', $v) ?? '');
+            $numberMismatch = $normalise((string)$returnedNumber) !== $normalise($requestedIdentifier);
+        }
+
+        // Point 2 -- the holder name, masked for preview (PLV). An expected
+        // name is only compared when the caller supplied one; otherwise the
+        // masked form goes back for the sender to confirm.
+        $holderName = $result['account_name'] ?? null;
+        $plv = PrivacyMasker::maskHolderName($holderName);
+        $expectedName = $payload['expected_account_name'] ?? null;
+        $nameMatches = $expectedName === null ? null : PrivacyMasker::namesMatch($holderName, (string)$expectedName);
+
+        if ($verified && $numberMismatch) {
+            $verified = false;
+            $success = false;
+        }
+        if ($nameMatches === false) {
+            $verified = false;
+            $success = false;
+        }
+
+        $message = $result['message'] ?? 'Account verification completed';
+        if ($numberMismatch) {
+            $message = "The destination bank returned a different account ({$returnedNumber}) than the one requested ({$requestedIdentifier}).";
+        } elseif ($nameMatches === false) {
+            $message = "The name on this account does not match the expected account holder.";
+        }
+
+        // ============================================================
         // STANDARDIZED RESPONSE STRUCTURE
         // ============================================================
         return [
             'success' => $success,
             'verified' => $verified,
-            'message' => $result['message'] ?? 'Account verification completed',
-            'account_name' => $result['account_name'] ?? null,
+            'message' => $message,
+            'account_name' => $holderName,
+            'account_name_masked' => $plv['masked'],
+            'account_name_valid' => $plv['valid'],
+            'account_name_error' => $plv['error'],
+            'account_name_matches' => $nameMatches,
+            'account_number' => $returnedNumber,
+            'account_number_matches' => !$numberMismatch,
             'account_type' => $result['account_type'] ?? null,
             'status' => $result['status'] ?? 'ACTIVE',
             'currency' => $result['currency'] ?? null,
+            'is_frozen' => $result['is_frozen'] ?? null,
             'account_identifier' => $destinationIdentifier['identifier'],
             'identifier_type' => $destinationIdentifier['type'],
             'status_code' => $result['status_code'] ?? 0,
