@@ -19,8 +19,9 @@ declare(strict_types=1);
  *   1. database/migrations/2026_09_15_reservation_accounts.sql
  *   2. database/migrations/2026_09_16_source_account_type.sql
  *   3. database/migrations/2026_09_17_reservation_account_consumed_status.sql
+ *   4. database/migrations/2026_09_18_activity_and_sub_requests.sql
  *
- * All three are idempotent (IF NOT EXISTS / DROP...IF EXISTS guards
+ * All four are idempotent (IF NOT EXISTS / DROP...IF EXISTS guards
  * throughout) — safe to click Apply more than once. Each file's own
  * BEGIN/COMMIT makes it atomic; a failure partway through one file rolls
  * that file back, and this page stops before running any file after it,
@@ -57,6 +58,11 @@ const MIGRATIONS = [
         'key' => 'reservation_account_consumed_status',
         'label' => '2026_09_17_reservation_account_consumed_status.sql',
         'path' => __DIR__ . '/../../database/migrations/2026_09_17_reservation_account_consumed_status.sql',
+    ],
+    [
+        'key' => 'activity_and_sub_requests',
+        'label' => '2026_09_18_activity_and_sub_requests.sql',
+        'path' => __DIR__ . '/../../database/migrations/2026_09_18_activity_and_sub_requests.sql',
     ],
 ];
 

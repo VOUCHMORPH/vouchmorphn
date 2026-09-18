@@ -775,10 +775,22 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
             return [
                 'verified' => $data['verified'] ?? $result['success'] ?? true,
                 'success' => true,
-                'account_name' => $data['account_name'] ?? null,
+                // FIX: banks return the holder under holder_name (confirmed
+                // against both participants' verify_account.php, ACCOUNT and
+                // WALLET branches alike); only account_name was read, so the
+                // name came back null every time and nothing could be checked
+                // against it. Both keys are accepted now.
+                'account_name' => $data['account_name'] ?? $data['holder_name'] ?? null,
                 'account_type' => $data['account_type'] ?? null,
                 'status' => $data['status'] ?? 'ACTIVE',
                 'currency' => $data['currency'] ?? null,
+                // Passed through rather than dropped: the caller needs these
+                // to check the account it was handed is the account it asked
+                // for, and that it can actually receive.
+                'account_number' => $data['account_number'] ?? $data['wallet_id'] ?? $data['phone'] ?? null,
+                'balance' => isset($data['balance']) ? (float)$data['balance'] : null,
+                'held_balance' => isset($data['held_balance']) ? (float)$data['held_balance'] : null,
+                'is_frozen' => isset($data['is_frozen']) ? (bool)$data['is_frozen'] : null,
                 'message' => $data['message'] ?? 'Account verified',
                 'account_identifier' => $payload['account_identifier'] ?? null,
                 'identifier_type' => $payload['identifier_type'] ?? 'account',

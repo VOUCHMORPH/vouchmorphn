@@ -116,4 +116,81 @@ class FeeServiceTest extends TestCase
 
         $this->assertSame($t, round($n + $fd + $r + $fh, 2));
     }
+
+    /**
+     * The multi_source schedule in fees.json ("extra P1 per additional source
+     * beyond the first, capped at P15") has to reach what the customer is
+     * actually charged. It used to be written to its own slot that nothing
+     * downstream reads, so an N-source swap was billed exactly like a
+     * single-source one.
+     */
+    public function testExtraSourceFeeIsChargedPerAdditionalSource(): void
+    {
+        $feeService = $this->makeFeeService();
+        $sources = fn(int $n) => array_fill(0, $n, ['institution' => 'ZURUBANK', 'amount' => 100.00]);
+
+        $single = $feeService->calculateFees('DEPOSIT', 500.00, [
+            'currency' => 'BWP',
+            'sources' => $sources(1),
+            'is_multi_source' => false,
+        ])['total_fee'];
+
+        foreach ([2 => 1.00, 3 => 2.00, 5 => 4.00] as $count => $expectedExtra) {
+            $result = $feeService->calculateFees('DEPOSIT', 500.00, [
+                'currency' => 'BWP',
+                'sources' => $sources($count),
+                'is_multi_source' => true,
+            ]);
+
+            $this->assertSame(
+                round($single + $expectedExtra, 2),
+                round($result['total_fee'], 2),
+                "{$count} sources must cost P{$expectedExtra} more than one"
+            );
+            $this->assertSame(
+                round(500.00 - $result['total_fee'], 2),
+                round($result['net_amount_source_currency'], 2),
+                'the extra must come out of the delivered amount, not vanish'
+            );
+        }
+    }
+
+    public function testExtraSourceFeeIsCappedAtTheConfiguredMaximum(): void
+    {
+        $feeService = $this->makeFeeService();
+
+        $base = $feeService->calculateFees('DEPOSIT', 500.00, ['currency' => 'BWP'])['total_fee'];
+
+        foreach ([16, 20, 200] as $count) {
+            $result = $feeService->calculateFees('DEPOSIT', 500.00, [
+                'currency' => 'BWP',
+                'sources' => array_fill(0, $count, ['institution' => 'ZURUBANK', 'amount' => 1.00]),
+                'is_multi_source' => true,
+            ]);
+
+            $this->assertSame(
+                round($base + 15.00, 2),
+                round($result['total_fee'], 2),
+                "the extra-source charge must stop at P15 however many sources ({$count}) there are"
+            );
+        }
+    }
+
+    /**
+     * A single-source swap must be completely unaffected by the multi-source
+     * branch, whether or not the caller passes the fields at all.
+     */
+    public function testSingleSourceFeeIsUnchanged(): void
+    {
+        $feeService = $this->makeFeeService();
+
+        $unaware = $feeService->calculateFees('DEPOSIT', 500.00, ['currency' => 'BWP'])['total_fee'];
+        $explicit = $feeService->calculateFees('DEPOSIT', 500.00, [
+            'currency' => 'BWP',
+            'sources' => [['institution' => 'ZURUBANK', 'amount' => 500.00]],
+            'is_multi_source' => false,
+        ])['total_fee'];
+
+        $this->assertSame($unaware, $explicit);
+    }
 }

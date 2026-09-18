@@ -372,7 +372,26 @@ class FeeService
                 $extraCount = ($this->context['source_count'] ?? 1) - 1;
                 $calculatedExtra = $extraCount * $extraFeeAmount;
                 $maxTotal = $multiSourceConfig['max_total_fee'] ?? 15.00;
-                $slotAmounts[$extraFeeSlot] = min($calculatedExtra, $maxTotal);
+                $extra = min($calculatedExtra, $maxTotal);
+
+                // FIX: the extra used to be written to its own slot and left
+                // there. Nothing downstream reads that slot -- total_fee is
+                // slots['F1'], the net deducts F1, and calculateDistribution()
+                // splits F1/F7 -- so the multi-source schedule was computed and
+                // then silently discarded, and an N-source swap was charged
+                // exactly like a single-source one.
+                //
+                // The slot is still written, because the breakdown and audit
+                // trail should show WHY the customer fee is higher. But the
+                // charge itself is added to F1, which is the fee the customer
+                // actually pays. Folding it in rather than adding a parallel
+                // total also keeps every distribution invariant intact: the
+                // split is derived from F1/F7, so the extra is shared out by
+                // the same rules as the rest of the fee instead of becoming
+                // undistributed revenue that breaks the config's own
+                // platform + source + destination = pool checks.
+                $slotAmounts[$extraFeeSlot] = $extra;
+                $slotAmounts['F1'] = round(($slotAmounts['F1'] ?? 0) + $extra, 2);
             }
         }
         

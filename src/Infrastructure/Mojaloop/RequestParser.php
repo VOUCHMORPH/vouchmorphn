@@ -1,10 +1,11 @@
 <?php
 
-require_once dirname(__DIR__, 2) . '/src/bootstrap.php';
 
 declare(strict_types=1);
 
 namespace DFSP_ADAPTER_LAYER;
+
+require_once dirname(__DIR__, 2) . '/src/bootstrap.php';
 
 class MojaloopRequestParser
 {

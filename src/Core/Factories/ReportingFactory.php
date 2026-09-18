@@ -1,10 +1,11 @@
 <?php
 
-require_once dirname(__DIR__, 2) . '/src/bootstrap.php';
 
 // 6. FACTORY_LAYER/ReportingFactory.php
 
 namespace FACTORY_LAYER;
+
+require_once dirname(__DIR__, 2) . '/src/bootstrap.php';
 
 require_once __DIR__ . '/../INTEGRATION_LAYER/interfaces/ReportingProviderInterface.php';
 require_once __DIR__ . '/../INTEGRATION_LAYER/clients/ReportingClients/FATFClient.php';

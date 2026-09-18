@@ -227,7 +227,11 @@ $logFile = __DIR__ . '/../../../storage/logs/weekly_reconciliations.log';
 if (!is_dir(dirname($logFile))) {
     mkdir(dirname($logFile), 0755, true);
 }
-file_put_contents($logFile, "[" . date('Y-m-d H:i:s') . "] Weekly reconciliations run for {$startDate} to {$endDate} by {$user['username'] ?? 'unknown'}\n", FILE_APPEND);
+// ?? cannot be used inside {$...} string interpolation -- it made this
+// whole file a parse error, so the weekly reconciliation report could
+// never load at all. Resolve the name first, then interpolate.
+$runBy = $user['username'] ?? 'unknown';
+file_put_contents($logFile, "[" . date('Y-m-d H:i:s') . "] Weekly reconciliations run for {$startDate} to {$endDate} by {$runBy}\n", FILE_APPEND);
 
 // --- CSV EXPORT ---
 if (isset($_GET['export']) && $_GET['export'] === 'csv') {

@@ -1,8 +1,9 @@
 <?php
 
-require_once dirname(__DIR__, 2) . '/src/bootstrap.php';
 
 namespace SCHEME_LAYER;
+
+require_once dirname(__DIR__, 2) . '/src/bootstrap.php';
 
 class FlowValidator
 {

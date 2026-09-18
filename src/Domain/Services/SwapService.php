@@ -4435,7 +4435,9 @@ public function cancelExpiredCashouts(int $bufferHours = 6): array
     if (!($verificationResult['verified'] ?? false)) {
         throw new RuntimeException("Asset verification failed: " . ($verificationResult['message'] ?? 'Unknown error'));
     }
-    
+
+    $this->assertSourceCanCoverAmount($verificationResult, (float)$payload['amount'], $sourceInstitution);
+
     $this->signedPayloads['verification'] = [
         'payload' => $verificationResult['original_payload'],
         'signature' => $verificationResult['signature'],
@@ -4443,7 +4445,7 @@ public function cancelExpiredCashouts(int $bufferHours = 6): array
         'timestamp' => $verificationResult['timestamp'],
         'is_hooked' => $isHooked
     ];
-    
+
     if (empty($destinationIdentifier['identifier'])) {
         throw new RuntimeException("Destination identifier is required for deposit");
     }
@@ -4679,6 +4681,8 @@ $this->recordSettlementPending(
             if (!($verificationResult['verified'] ?? false)) {
                 throw new RuntimeException("Asset verification failed: " . ($verificationResult['message'] ?? 'Unknown'));
             }
+
+            $this->assertSourceCanCoverAmount($verificationResult, (float)$payload['amount'], $sourceInstitution);
 
             $this->signedPayloads['verification'] = [
                 'payload' => $verificationResult['original_payload'],
@@ -5769,9 +5773,13 @@ private function finalizeHoldToReceiving(
         throw new RuntimeException("Source funds no longer available for hold {$identitySwap['hold_id']}. Claim cancelled for this hold.");
     }
 
+    // The 5th argument is the receiving ACCOUNT, not a status -- 'pending'
+    // was being written into receiving_identifier (the INSERT hardcodes
+    // status itself), so every row recorded the literal string 'pending'
+    // instead of the account the money was sent to.
     $recvId = $this->recordReceivingDepositAttempt(
         $consolidationReference, (int)$identitySwap['hold_id'], $destinationInstitution,
-        $currency, 'pending', $amount
+        $currency, $this->getIdentityHoldingAccounts($destinationInstitution, $currency)['receiving_identifier'], $amount
     );
 
     try {
@@ -5916,6 +5924,17 @@ private function retrySettlementOrCompensate(
         ]);
 
         if ($compensationResult['credited'] ?? false) {
+            // The money is back with the customer and the source bank's hold
+            // is spent, so this hold is finished -- leaving it 'pending'
+            // re-offers a balance that no longer exists, and the next claim
+            // attempt fails on the stale hold reference (the source bank no
+            // longer has it as HELD) rather than on anything real.
+            $this->updateIdentityHoldStatus((int)$identitySwap['hold_id'], 'cancelled', [
+                'compensated' => true,
+                'compensation_reference' => $reference . '_COMPENSATE',
+                'reason' => 'Settlement failed after debit; amount credited back to source',
+            ]);
+
             $this->logger->warning("Automatic compensation succeeded: debited amount credited back to source after settlement retries were exhausted", [
                 'swap_reference' => $identitySwap['swap_reference'],
                 'hold_reference' => $identitySwap['hold_reference'],
@@ -7705,6 +7724,21 @@ public function executeIdentityClaimWithSplit(
         throw new RuntimeException("destination_type must be 'DEPOSIT' or 'CASHOUT'");
     }
 
+    // The RECEIVING -> HOLDING -> payout model below needs the bank-side
+    // INTERNAL_SWEEP primitive that sweepReceivingToHolding()'s docblock
+    // flags as "NEW ADAPTER ACTION REQUIRED" -- no adapter implements
+    // internalSweep() yet, so this path throws at Step 3 for every
+    // institution. Rather than debiting real holds into a pipeline that
+    // cannot finish, fall back to paying the beneficiary directly out of
+    // each source institution's settlement account.
+    if (!$this->supportsIdentityConsolidation($destinationInstitution)) {
+        return $this->executeIdentityClaimDirect(
+            $holds, $destinationInstitution, $destinationType, $destinationDetails,
+            $cashNowAmount, $confirmedByType, $confirmedById, $beneficiaryPhone,
+            $identityType, $identityValue
+        );
+    }
+
     // Capability gate — fail loudly up front.
     $this->getIdentityHoldingAccounts($destinationInstitution, $currency);
 
@@ -8042,6 +8076,619 @@ public function executeIdentityClaimWithSplit(
         'remainder_held' => $remainder,
         'holding_position_id' => $holdingPositionId,
         'reservation_account_id' => $reservationAccountId,
+    ];
+}
+
+/**
+ * True when this institution can actually run the RECEIVING -> HOLDING ->
+ * payout consolidation, i.e. its adapter implements the INTERNAL_SWEEP
+ * primitive sweepReceivingToHolding() needs. Config alone can't answer
+ * this: capabilities.identity_holding only promises the bank has the two
+ * accounts, not that anything can move money between them.
+ */
+private function supportsIdentityConsolidation(string $institution): bool
+{
+    return method_exists($this->adapterFactory->getAdapter($institution), 'internalSweep');
+}
+
+/**
+ * Collapsed claim path, in VouchMorph's standard swap order: verify the
+ * asset, pay the beneficiary at the destination, and only then debit the
+ * held amount into the source institution's settlement account, so the
+ * source institution pays the destination one. Same sequence as the
+ * ordinary swap flow (VERIFY_ASSET_SIGNED -> PLACE_HOLD_SIGNED ->
+ * PROCESS_DEPOSIT_WITH_PROOF -> DEBIT_SOURCE); the hold here was placed
+ * when the swap was first sent to the identity, so this picks up from the
+ * verify.
+ *
+ * Delivering before debiting is what makes a failed claim harmless: until
+ * the destination confirms, the money is only HELD, so a failure leaves the
+ * hold exactly as it was and the beneficiary can simply claim again. There
+ * is nothing to credit back, because nothing was ever taken.
+ *
+ * The bank's own suspense accounts still record the flow: the payout sends
+ * destination_identifier, which is what a destination bank keys its
+ * internal identity-swap sweep on.
+ *
+ * Claiming only part of the balance parks the rest in the beneficiary's own
+ * reservation account at the destination bank, created on demand through
+ * ReservationAccountService. That account is the only place a remainder can
+ * sit in this model -- there is no institution-level holding account -- so
+ * if one can't be made the partial claim is refused before anything moves.
+ */
+private function executeIdentityClaimDirect(
+    array $holds,
+    string $destinationInstitution,
+    string $destinationType,
+    array $destinationDetails,
+    ?float $cashNowAmount,
+    string $confirmedByType,
+    ?int $confirmedById,
+    ?string $beneficiaryPhone,
+    string $identityType,
+    string $identityValue
+): array {
+    $currency = $holds[0]['currency'] ?? 'BWP';
+
+    // A cashout code is drawn on the paying institution's own settlement
+    // account, so it can only cover money that institution is itself the
+    // source of.
+    if ($destinationType === 'CASHOUT') {
+        $elsewhere = array_values(array_unique(array_filter(
+            array_column($holds, 'source_institution'),
+            fn($inst) => $inst !== $destinationInstitution
+        )));
+        if (!empty($elsewhere)) {
+            throw new RuntimeException(
+                "A cashout code can only be drawn on money already held at the paying institution, and this " .
+                "claim's funds are at " . implode(', ', $elsewhere) . ", not {$destinationInstitution}. Until " .
+                "{$destinationInstitution} supports identity-swap consolidation, either take this as a deposit, " .
+                "or cash out at {$elsewhere[0]}."
+            );
+        }
+    }
+
+    $consolidationReference = 'CONSOL_' . time() . '_' . bin2hex(random_bytes(4));
+
+    // ------------------------------------------------------------
+    // STEP 1: confirm each hold's asset is still good at the source. No
+    // money moves here -- a hold that no longer verifies simply drops out
+    // of this claim and stays claimable later.
+    // ------------------------------------------------------------
+    $verifiedHolds = [];
+    $failedHolds = [];
+    $heldByInstitution = [];
+
+    foreach ($holds as $hold) {
+        try {
+            $this->verifyHoldForClaim($hold);
+            $sourceInstitution = $hold['source_institution'];
+            $heldByInstitution[$sourceInstitution] =
+                round(($heldByInstitution[$sourceInstitution] ?? 0.0) + (float)$hold['amount'], 2);
+            $verifiedHolds[] = $hold;
+        } catch (\Throwable $e) {
+            error_log("[SwapService] executeIdentityClaimDirect: hold {$hold['hold_id']} failed verification: " . $e->getMessage());
+            $failedHolds[] = [
+                'hold_id' => $hold['hold_id'],
+                'swap_reference' => $hold['swap_reference'],
+                'source_institution' => $hold['source_institution'] ?? 'unknown',
+                'gross_amount' => (float)$hold['amount'],
+                'status' => 'failed',
+                'error' => $e->getMessage(),
+            ];
+        }
+    }
+
+    if (empty($verifiedHolds)) {
+        $summary = implode('; ', array_map(
+            fn($f) => "{$f['source_institution']} (hold {$f['hold_id']}): {$f['error']}",
+            $failedHolds
+        ));
+        throw new RuntimeException("Claim could not be completed: {$summary}");
+    }
+
+    $totalHeld = round(array_sum($heldByInstitution), 2);
+
+    // Stage 2: record what was asked for, one leg per hold. Each hold is a
+    // source leg with its own reference, so a pooled claim is auditable leg
+    // by leg and not just as a total.
+    $this->recordActivityWithSubRequests(
+        $consolidationReference,
+        'IDENTITY_CLAIM',
+        'requested',
+        array_map(
+            fn(array $hold) => [
+                'sub_reference' => (string)$hold['swap_reference'],
+                'amount' => (float)$hold['amount'],
+                'source_institution' => $hold['source_institution'] ?? null,
+                'hold_id' => (int)$hold['hold_id'],
+                'hold_reference' => $hold['hold_reference'] ?? null,
+            ],
+            $verifiedHolds
+        ),
+        [
+            'actor_type' => $confirmedByType,
+            'actor_id' => $confirmedById,
+            'institution' => $destinationInstitution,
+            'currency' => $currency,
+            'parameters' => [
+                'identity_type' => $identityType,
+                'destination_type' => $destinationType,
+                'cash_now_amount' => $cashNowAmount,
+                'holds_failed_verification' => array_column($failedHolds, 'hold_id'),
+            ],
+        ]
+    );
+
+    // A = T - Fh. Fh was earned the moment the hold was placed and is never
+    // claimable (spec invariant #9: "the client is shown A, never T"), so
+    // the beneficiary's pool is A -- the same figure previewIdentityClaim-
+    // Available() shows them. The Fh difference is not delivered anywhere:
+    // it stays with the source institution and comes out of what that
+    // institution owes the destination, via the obligation netting below.
+    // Computed over the VERIFIED holds only, so one that dropped out at
+    // step 1 can't inflate what the rest pays for.
+    $claimable = round(self::computeAvailableForPendingHolds($verifiedHolds)['available'], 2);
+
+    // How much is handed over now, and how much stays the beneficiary's but
+    // parked. Every verified hold is debited in full either way -- the
+    // remainder doesn't stay at the source, it moves to an account the
+    // beneficiary owns at the destination.
+    $payoutAmount = $cashNowAmount === null ? $claimable : min(round($cashNowAmount, 2), $claimable);
+    $remainder = round($claimable - $payoutAmount, 2);
+
+    // Resolve the parking account BEFORE any money moves: creating it is not
+    // a transfer, and finding out it can't be created after the payout has
+    // gone out would leave the remainder with nowhere to land.
+    $reservation = null;
+    if ($remainder > 0) {
+        $ownerUserId = $this->resolveClaimOwnerUserId($confirmedByType, $confirmedById, $identityType, $identityValue);
+        if ($ownerUserId === null) {
+            throw new RuntimeException(
+                "Only part of this balance was requested, but the remainder needs a reservation account and " .
+                "this identity isn't registered to a VouchMorph account to open one against. Claim the full " .
+                "{$claimable} {$currency} instead."
+            );
+        }
+
+        $reservation = $this->reservationAccountService->resolveOrCreateReservationAccount(
+            $ownerUserId, $destinationInstitution, $currency
+        );
+
+        if (($reservation['status'] ?? null) !== 'active') {
+            throw new RuntimeException(
+                "Only part of this balance was requested, but no reservation account is available at " .
+                "{$destinationInstitution} to hold the remaining {$remainder} {$currency} (" .
+                ($reservation['supported'] ?? false ? "account status: " . ($reservation['status'] ?? 'unknown') : "not offered by this institution") .
+                "). Claim the full {$claimable} {$currency} instead."
+            );
+        }
+    }
+
+    // Fee applies only to money actually being delivered now, never to the
+    // parked remainder -- that money isn't leaving the beneficiary's control,
+    // it's just changing which account it sits in.
+    //
+    // A pooled claim really is a multi-source swap: each hold is its own
+    // funding source, exactly like the 50 + 150 + 100 bundle a multi-source
+    // send builds. FeeService only applies the multi_source schedule when it
+    // is told both of these (see its $context build: is_multi_source, and
+    // source_count from count($payload['sources'])), so without them a pool
+    // of N holds was silently charged as a single source.
+    $feeSources = array_map(
+        fn(array $hold) => [
+            'institution' => $hold['source_institution'],
+            'amount' => (float)$hold['amount'],
+            'hold_id' => (int)$hold['hold_id'],
+        ],
+        $verifiedHolds
+    );
+
+    $feeBreakdown = $this->calculateFeesWithDetails(
+        $destinationType === 'CASHOUT' ? 'CASHOUT' : 'DEPOSIT',
+        $payoutAmount,
+        array_merge($destinationDetails, [
+            'currency' => $currency,
+            'institution' => $destinationInstitution,
+            'destination_institution' => $destinationInstitution,
+            'asset_type' => $destinationDetails['destination_asset_type'] ?? 'ACCOUNT',
+            'sources' => $feeSources,
+            'is_multi_source' => count($feeSources) > 1,
+        ])
+    );
+    $netPayoutAmount = round($feeBreakdown['net_amount_source_currency'] ?? $payoutAmount, 2);
+
+    // ------------------------------------------------------------
+    // STEP 2: pay the beneficiary at the destination, against the holds.
+    // Nothing has been debited yet, so if this delivers nothing the holds
+    // are untouched and the claim can simply be retried.
+    // ------------------------------------------------------------
+    $delivery = $this->deliverDirectClaim(
+        $heldByInstitution, $netPayoutAmount, $destinationInstitution, $destinationType,
+        $destinationDetails, $currency, $beneficiaryPhone, $consolidationReference
+    );
+
+    if (empty($delivery['legs'])) {
+        throw new RuntimeException(
+            "Claim payout to {$destinationInstitution} failed: " . ($delivery['error'] ?? 'unknown error') .
+            ". Nothing was debited -- the money is still held and can be claimed again."
+        );
+    }
+
+    // ------------------------------------------------------------
+    // STEP 2b: park the part that wasn't taken now into the beneficiary's
+    // reservation account -- still before any debit, and funded the same
+    // way as the payout, from the settlement accounts of the institutions
+    // whose legs delivered.
+    // ------------------------------------------------------------
+    $reservationAccountId = null;
+    $unparkedRemainder = 0.0;
+    if ($remainder > 0) {
+        $reservationAccountId = $reservation['id'] ?? null;
+        $delivered = array_intersect_key($heldByInstitution, $delivery['legs']);
+
+        foreach (self::splitNetPayoutByInstitution($delivered, $remainder) as $sourceInstitution => $share) {
+            try {
+                $this->settlePosToMerchant(
+                    $sourceInstitution,
+                    $destinationInstitution,
+                    $reservation['account_identifier'],
+                    $reservation['account_identifier_type'] ?? 'account_number',
+                    $currency,
+                    $share,
+                    $consolidationReference . '_RESACC_' . $sourceInstitution
+                );
+            } catch (\Throwable $e) {
+                // The beneficiary has already been paid the cash-now part,
+                // so the holds still have to be debited below. This portion
+                // is theirs but didn't reach the account -- a human has to
+                // place it rather than the customer silently losing it.
+                $unparkedRemainder = round($unparkedRemainder + $share, 2);
+                error_log("[SwapService] executeIdentityClaimDirect: reservation deposit leg {$sourceInstitution} failed for {$consolidationReference}: " . $e->getMessage());
+                $this->recordManualReconciliationRequired(
+                    $consolidationReference, null, $sourceInstitution,
+                    $destinationInstitution, $share, $currency,
+                    "Claim remainder could not be deposited into reservation account " .
+                    ($reservation['account_identifier'] ?? 'unknown') . ": " . $e->getMessage() .
+                    ". The cash-now portion was already paid, so the holds were debited in full."
+                );
+            }
+        }
+    }
+
+    // ------------------------------------------------------------
+    // STEP 3: the destination has the money, so now convert the holds
+    // behind it into real debits into their source settlement accounts.
+    // Only institutions that actually delivered are debited; a hold whose
+    // leg never went out stays held and claimable.
+    //
+    // A debit failing HERE is the one genuinely dangerous case in this
+    // flow -- value is already with the beneficiary -- so it is flagged
+    // for reconciliation and the hold is deliberately NOT released, the
+    // same rule the ordinary swap path applies via postDeliveryDebitFailure.
+    // ------------------------------------------------------------
+    $landedHoldIds = [];
+    foreach ($verifiedHolds as $hold) {
+        $sourceInstitution = $hold['source_institution'];
+        if (!isset($delivery['legs'][$sourceInstitution])) {
+            // Its leg never went out, so this hold is untouched and still
+            // claimable. Reported rather than dropped silently, so the
+            // claim comes back as partial rather than looking complete.
+            $failedHolds[] = [
+                'hold_id' => $hold['hold_id'],
+                'swap_reference' => $hold['swap_reference'],
+                'source_institution' => $sourceInstitution,
+                'gross_amount' => (float)$hold['amount'],
+                'status' => 'not_delivered',
+                'error' => $delivery['error'] ?? 'payout leg was not attempted',
+            ];
+            continue;
+        }
+
+        try {
+            $this->debitHoldToSourceSettlement($hold);
+            $this->updateIdentityHoldStatus((int)$hold['hold_id'], 'completed', [
+                'final_destination_type' => $destinationType === 'CASHOUT' ? 'DIRECT_CASHOUT' : 'DIRECT_DEPOSIT',
+                'consolidation_reference' => $consolidationReference,
+                'payout_confirmed' => true,
+            ]);
+            $landedHoldIds[] = (int)$hold['hold_id'];
+        } catch (\Throwable $e) {
+            error_log("[SwapService] executeIdentityClaimDirect: post-delivery debit failed for hold {$hold['hold_id']}: " . $e->getMessage());
+            $this->recordManualReconciliationRequired(
+                $hold['swap_reference'], $hold['hold_reference'], $sourceInstitution,
+                $destinationInstitution, (float)$hold['amount'], $currency,
+                "Beneficiary was paid for claim {$consolidationReference} but the source hold could not be debited: " .
+                $e->getMessage() . ". Hold NOT released -- the destination already has the money."
+            );
+            $failedHolds[] = [
+                'hold_id' => $hold['hold_id'],
+                'swap_reference' => $hold['swap_reference'],
+                'source_institution' => $sourceInstitution,
+                'gross_amount' => (float)$hold['amount'],
+                'status' => 'paid_but_not_debited',
+                'error' => $e->getMessage(),
+            ];
+        }
+    }
+
+    $payoutResult = $delivery['payout'];
+
+    // Point X obligation ledger — the source-to-destination leg is just as
+    // real here as under consolidation, so it is recorded identically
+    // (netted of each hold's Fh by computeNetObligationsByInstitution()).
+    if ($this->isClaimAlgorithmV2Enabled($destinationInstitution)) {
+        foreach (self::computeNetObligationsByInstitution($holds, $landedHoldIds) as $sourceInst => $nettedAmount) {
+            if ($nettedAmount <= 0 || $sourceInst === $destinationInstitution) {
+                continue; // an institution paying its own customer owes nobody
+            }
+            try {
+                $this->settlement->updateNetPosition(
+                    $consolidationReference, $sourceInst, $destinationInstitution,
+                    $nettedAmount, 'IDENTITY_CLAIM', $currency
+                );
+            } catch (\Throwable $e) {
+                error_log("[SwapService] Point X: updateNetPosition failed for {$sourceInst} -> {$destinationInstitution} on {$consolidationReference}: " . $e->getMessage());
+            }
+        }
+
+        $platformShare = (float)($feeBreakdown['components']['revenue_split']['platform']['amount'] ?? 0);
+        if ($platformShare > 0) {
+            try {
+                $this->settlement->invoiceFee(
+                    $consolidationReference, $destinationInstitution,
+                    $this->getParticipantId($destinationInstitution),
+                    'IDENTITY_CLAIM_PLATFORM_FEE', $platformShare, $currency
+                );
+            } catch (\Throwable $e) {
+                error_log("[SwapService] Point X: invoiceFee failed for {$destinationInstitution} on {$consolidationReference}: " . $e->getMessage());
+            }
+        }
+    }
+
+    $this->writeAuditLogEntry(
+        'identity_swap_holds',
+        $consolidationReference,
+        'IDENTITY_CLAIM_DIRECT',
+        'financial',
+        $confirmedById,
+        $confirmedByType,
+        $confirmedById ?? 0,
+        [
+            'identity_type' => $identityType,
+            'identity_value' => $identityValue,
+            'institution' => $destinationInstitution,
+            'holds_landed' => $landedHoldIds,
+            'holds_failed' => array_column($failedHolds, 'hold_id'),
+            'total_debited' => $totalHeld,
+            'payout_amount_net' => $netPayoutAmount,
+            'remainder_reserved' => $remainder,
+            'reservation_account_id' => $reservationAccountId,
+            'remainder_unparked' => $unparkedRemainder,
+        ]
+    );
+
+    return [
+        'status' => empty($failedHolds) ? 'success' : 'partial_success',
+        'identity_type' => $identityType,
+        'identity_value' => $identityValue,
+        'currency' => $currency,
+        'consolidation_reference' => $consolidationReference,
+        'holds_landed' => count($landedHoldIds),
+        'holds_failed' => $failedHolds,
+        'total_consolidated' => $totalHeld,
+        'payout_amount_gross' => $payoutAmount,
+        'fee' => $feeBreakdown,
+        'payout_amount_net' => $netPayoutAmount,
+        'payout_result' => $payoutResult,
+        'remainder_held' => $remainder,
+        'remainder_unparked' => $unparkedRemainder,
+        'holding_position_id' => null,
+        'reservation_account_id' => $reservationAccountId,
+    ];
+}
+
+/**
+ * Step 1 of the claim: confirm the source asset behind this hold is still
+ * good, before anything is paid out against it. Read-only -- the hold is
+ * only converted into a debit once the destination has confirmed delivery.
+ */
+private function verifyHoldForClaim(array $identitySwap): void
+{
+    $sourceInstitution = $identitySwap['source_institution'];
+
+    $sourcePayload = json_decode($identitySwap['source_payload'] ?? '{}', true) ?: [];
+    $sourcePayload['from_institution'] = $sourceInstitution;
+    $sourcePayload['source_institution'] = $sourceInstitution;
+    $sourcePayload['amount'] = (float)$identitySwap['amount'];
+    $sourcePayload['currency'] = $identitySwap['currency'] ?? 'BWP';
+    $sourcePayload['asset_type'] = $identitySwap['source_asset_type'] ?? 'ACCOUNT';
+
+    // verifyAssetSigned() reads these straight into the signed request's
+    // reference fields, so they have to be set before the call, not after.
+    $this->currentSwapRef = $identitySwap['swap_reference'];
+    $this->currentHoldReference = $identitySwap['hold_reference'];
+    $this->currentHoldId = (int)$identitySwap['hold_id'];
+
+    $verificationResult = $this->verifyAssetSigned($sourcePayload, $sourceInstitution);
+    if (!($verificationResult['verified'] ?? false)) {
+        throw new RuntimeException(
+            "Source funds no longer available for hold {$identitySwap['hold_id']}: " .
+            ($verificationResult['message'] ?? 'verification failed')
+        );
+    }
+}
+
+/**
+ * Pays the beneficiary against the verified holds, before any of them is
+ * debited. A deposit splits across the source institutions funding it
+ * (each covers its own share of the same beneficiary account); a cashout
+ * cannot, since one code can only be drawn on one institution's money.
+ *
+ * Returns the legs that actually delivered, keyed by source institution,
+ * rather than throwing on a failed leg: the caller debits exactly those
+ * institutions' holds and leaves the rest held. Delivery stops at the
+ * first failure so a broken destination can't drain leg after leg.
+ */
+private function deliverDirectClaim(
+    array $heldByInstitution,
+    float $netPayoutAmount,
+    string $destinationInstitution,
+    string $destinationType,
+    array $destinationDetails,
+    string $currency,
+    ?string $beneficiaryPhone,
+    string $consolidationReference
+): array {
+    if (array_sum($heldByInstitution) <= 0 || $netPayoutAmount <= 0) {
+        throw new RuntimeException("Nothing left to pay out after fees for {$consolidationReference}.");
+    }
+
+    if ($destinationType === 'CASHOUT') {
+        // executeIdentityClaimDirect() already rejects a cross-institution
+        // cashout before reaching here; this only splits the single leg.
+        $sourceInstitution = array_key_first($heldByInstitution);
+        try {
+            $payout = $this->generateCashoutFromSettlement(
+                $destinationInstitution, $currency, $netPayoutAmount,
+                $destinationDetails['delivery_method'] ?? 'ATM',
+                $beneficiaryPhone, $consolidationReference . '_PAYOUT'
+            );
+        } catch (\Throwable $e) {
+            error_log("[SwapService] deliverDirectClaim: cashout failed for {$consolidationReference}: " . $e->getMessage());
+            return ['legs' => [], 'payout' => null, 'error' => $e->getMessage()];
+        }
+        return ['legs' => [$sourceInstitution => $netPayoutAmount], 'payout' => $payout, 'error' => null];
+    }
+
+    $destIdentifier = $destinationDetails['destination_identifier'] ?? null;
+    if (empty($destIdentifier)) {
+        throw new RuntimeException("destination_identifier is required to deposit a claim.");
+    }
+
+    $legs = [];
+    $error = null;
+
+    foreach (self::splitNetPayoutByInstitution($heldByInstitution, $netPayoutAmount) as $sourceInstitution => $share) {
+        try {
+            $this->settlePosToMerchant(
+                $sourceInstitution,
+                $destinationInstitution,
+                $destIdentifier,
+                $destinationDetails['destination_identifier_type'] ?? 'account_number',
+                $currency,
+                $share,
+                $consolidationReference . '_PAYOUT_' . $sourceInstitution
+            );
+            $legs[$sourceInstitution] = $share;
+        } catch (\Throwable $e) {
+            error_log("[SwapService] deliverDirectClaim: leg {$sourceInstitution} failed for {$consolidationReference}: " . $e->getMessage());
+            $error = "{$sourceInstitution}: " . $e->getMessage();
+            break;
+        }
+    }
+
+    return [
+        'legs' => $legs,
+        'payout' => ['success' => !empty($legs), 'destination_identifier' => $destIdentifier, 'legs' => $legs],
+        'error' => $error,
+    ];
+}
+
+/**
+ * Divides one payout across the source institutions funding it, in
+ * proportion to what each is holding. The final leg takes the remainder
+ * rather than its own rounded share, so the legs always sum to exactly
+ * $netPayoutAmount -- splitting by rounded percentages alone loses or
+ * invents cents, and this is real money leaving real settlement accounts.
+ * Legs that round to nothing are dropped rather than sent as zero credits.
+ *
+ * Pure/stateless and static so the arithmetic is testable without the full
+ * SwapService dependency graph, same as
+ * computeNetObligationsByInstitution().
+ */
+private static function splitNetPayoutByInstitution(array $heldByInstitution, float $netPayoutAmount): array
+{
+    $totalGross = array_sum($heldByInstitution);
+    if ($totalGross <= 0) {
+        return [];
+    }
+
+    $shares = [];
+    $creditedSoFar = 0.0;
+    $remainingLegs = count($heldByInstitution);
+
+    foreach ($heldByInstitution as $sourceInstitution => $grossShare) {
+        $remainingLegs--;
+        $share = $remainingLegs === 0
+            ? round($netPayoutAmount - $creditedSoFar, 2)
+            : round($netPayoutAmount * ($grossShare / $totalGross), 2);
+
+        if ($share <= 0) {
+            continue;
+        }
+
+        $creditedSoFar = round($creditedSoFar + $share, 2);
+        $shares[$sourceInstitution] = $share;
+    }
+
+    return $shares;
+}
+
+/**
+ * Cashout counterpart of generateCashoutFromHolding() for institutions
+ * without a working identity HOLDING account — the code is drawn on the
+ * institution's own settlement account, where debitHoldToSourceSettlement()
+ * just put the money. Only valid when the paying institution IS the source,
+ * which deliverDirectClaim() enforces before calling this.
+ */
+private function generateCashoutFromSettlement(
+    string $institution,
+    string $currency,
+    float $amount,
+    string $deliveryMethod,
+    ?string $beneficiaryPhone,
+    string $reference
+): array {
+    $settlement = $this->getSourceSettlementAccount($institution, $currency);
+
+    $result = $this->adapterFactory->getAdapter($institution)->generateCashoutToken([
+        'reference' => $reference,
+        'amount' => $amount,
+        'currency' => $currency,
+        'delivery_method' => $deliveryMethod,
+        'beneficiary_phone' => $beneficiaryPhone,
+        'from_institution' => $institution,
+        'source_institution' => $institution,
+        'source_identifier' => $settlement['identifier'],
+        'source_type' => 'INSTITUTION_SETTLEMENT_ACCOUNT',
+        'to_institution' => $institution,
+        'destination_institution' => $institution,
+        'action' => 'GENERATE_TOKEN',
+    ], [
+        'source_institution' => $institution,
+        'destination_institution' => $institution,
+        'source_type' => 'INSTITUTION_SETTLEMENT_ACCOUNT',
+    ]);
+
+    if (!($result['success'] ?? false)) {
+        throw new RuntimeException("Cashout generation failed: " . ($result['message'] ?? 'Unknown error'));
+    }
+
+    if ($beneficiaryPhone && isset($result['atm_pin']) && $this->smsService) {
+        try {
+            $this->smsService->sendCashoutCode($beneficiaryPhone, $result['atm_pin'], $amount, $result['voucher_number'] ?? null);
+        } catch (Exception $e) {
+            error_log("[SwapService] SMS failed but continuing: " . $e->getMessage());
+        }
+    }
+
+    return [
+        'success' => true,
+        'transaction_reference' => $result['transaction_reference'] ?? null,
+        'swap_code' => $result['voucher_number'] ?? $result['swap_code'] ?? null,
+        'atm_code' => $result['atm_pin'] ?? null,
+        'expires_at' => $result['expires_at'] ?? date('Y-m-d H:i:s', strtotime('+24 hours')),
     ];
 }
 
@@ -9634,7 +10281,11 @@ private function loadAtmNotesStrict(array $countryConfig, string $countryFallbac
             'asset_id' => $result['asset_id'] ?? null,
             'account_id' => $result['account_id'] ?? null,
             'account_name' => $result['account_name'] ?? null,
-            'balance' => $result['balance'] ?? 0,
+            // null, not 0, when the bank reported no balance at all -- 0
+            // would be indistinguishable from an empty account, and
+            // assertSourceCanCoverAmount() must not fail a swap over a
+            // figure the bank never sent.
+            'balance' => isset($result['balance']) ? (float)$result['balance'] : null,
             'currency' => $result['currency'] ?? $payload['currency'] ?? 'BWP',
             'original_payload' => $result['original_payload'] ?? $verifyPayload,
             'signature' => $result['signature'] ?? null,
@@ -10187,6 +10838,116 @@ private function generateCashoutToken(array $payload, string $institution, float
      * Verify destination account
      * STANDARD: Returns consistent verification structure
      */
+    /**
+     * Records what a client asked for (stage 2): one swap_activity row for
+     * the request, and one swap_sub_requests row per source leg, each
+     * carrying its own reference. A single-source request logs one leg; a
+     * multi-source bundle logs one per contributing source, so the bundle
+     * can be audited leg by leg rather than only in total.
+     *
+     * Never throws. This is a record of a money movement, not part of one --
+     * a logging failure must not take down a claim that is otherwise fine,
+     * the same discipline writeAuditLogEntry() follows.
+     *
+     * @param array<int, array{sub_reference: string, amount: float, source_institution?: ?string, hold_id?: ?int, hold_reference?: ?string, parameters?: array}> $subRequests
+     * @return int|null the swap_activity id, or null if nothing was recorded
+     */
+    private function recordActivityWithSubRequests(
+        string $reference,
+        string $activityType,
+        string $status,
+        array $subRequests,
+        array $context = []
+    ): ?int {
+        try {
+            $stmt = $this->swapDB->prepare("
+                INSERT INTO swap_activity (
+                    reference, activity_type, actor_type, actor_id, institution,
+                    currency, total_amount, source_count, status, parameters
+                ) VALUES (
+                    :reference, :activity_type, :actor_type, :actor_id, :institution,
+                    :currency, :total_amount, :source_count, :status, :parameters::jsonb
+                ) RETURNING id
+            ");
+            $stmt->execute([
+                ':reference' => $reference,
+                ':activity_type' => $activityType,
+                ':actor_type' => $context['actor_type'] ?? null,
+                ':actor_id' => $context['actor_id'] ?? null,
+                ':institution' => $context['institution'] ?? null,
+                ':currency' => $context['currency'] ?? null,
+                ':total_amount' => round(array_sum(array_column($subRequests, 'amount')), 2),
+                ':source_count' => count($subRequests),
+                ':status' => $status,
+                ':parameters' => json_encode($context['parameters'] ?? []),
+            ]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            $activityId = $row ? (int)$row['id'] : null;
+
+            if ($activityId === null) {
+                return null;
+            }
+
+            $legStmt = $this->swapDB->prepare("
+                INSERT INTO swap_sub_requests (
+                    activity_id, parent_reference, sub_reference, source_institution,
+                    hold_id, hold_reference, amount, currency, status, parameters
+                ) VALUES (
+                    :activity_id, :parent_reference, :sub_reference, :source_institution,
+                    :hold_id, :hold_reference, :amount, :currency, :status, :parameters::jsonb
+                )
+                ON CONFLICT (parent_reference, sub_reference) DO NOTHING
+            ");
+
+            foreach ($subRequests as $leg) {
+                $legStmt->execute([
+                    ':activity_id' => $activityId,
+                    ':parent_reference' => $reference,
+                    ':sub_reference' => $leg['sub_reference'],
+                    ':source_institution' => $leg['source_institution'] ?? null,
+                    ':hold_id' => $leg['hold_id'] ?? null,
+                    ':hold_reference' => $leg['hold_reference'] ?? null,
+                    ':amount' => $leg['amount'],
+                    ':currency' => $context['currency'] ?? null,
+                    ':status' => $status,
+                    ':parameters' => json_encode($leg['parameters'] ?? []),
+                ]);
+            }
+
+            return $activityId;
+
+        } catch (\Throwable $e) {
+            error_log("[SwapService] recordActivityWithSubRequests failed for {$reference}: " . $e->getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Point 3 of the three-point check: the source really can cover what is
+     * about to be held. Runs against the SOURCE's verify-asset result, since
+     * that is the side the money leaves.
+     *
+     * Only enforced when the bank actually reported a balance. A bank that
+     * sends none is not asserting the account is empty, and failing the swap
+     * on a figure nobody supplied would block perfectly good transfers --
+     * the hold itself is the real guard in that case, and it fails at the
+     * bank if the funds aren't there.
+     */
+    private function assertSourceCanCoverAmount(array $verificationResult, float $amount, string $institution): void
+    {
+        $balance = $verificationResult['balance'] ?? null;
+        if ($balance === null) {
+            return;
+        }
+
+        if ((float)$balance + 0.001 < $amount) {
+            $currency = $verificationResult['currency'] ?? 'BWP';
+            throw new RuntimeException(
+                "Insufficient funds at {$institution}: {$amount} {$currency} requested, {$balance} {$currency} available."
+            );
+        }
+    }
+
     private function verifyAccount(array $payload, string $institution, array $destinationIdentifier): array
     {
         $sourceInstitution = $this->extractSourceInstitution($payload);
@@ -10220,16 +10981,71 @@ private function generateCashoutToken(array $payload, string $institution, float
         $success = $result['success'] ?? $verified;
 
         // ============================================================
+        // Three-point check on the account being paid. The bank saying
+        // "verified" was previously the whole check: the account number it
+        // echoed back and the holder name it returned were both ignored, so
+        // a bank answering about a DIFFERENT account than the one asked
+        // about would have passed silently.
+        //
+        // Point 3 (sufficient funds) is deliberately not here -- this is the
+        // DESTINATION, which is receiving money, not providing it. Balance
+        // sufficiency belongs to the source and is checked against
+        // VERIFY_ASSET_SIGNED's balance before the hold goes on.
+        // ============================================================
+        $requestedIdentifier = (string)$destinationIdentifier['identifier'];
+        $returnedNumber = $result['account_number'] ?? null;
+
+        // Point 1 -- the account the bank answered about must be the account
+        // we asked about. Compared on digits/letters only, since banks format
+        // the same number with spaces and dashes inconsistently.
+        $numberMismatch = false;
+        if ($verified && $returnedNumber !== null && $returnedNumber !== '') {
+            $normalise = fn(string $v) => strtolower(preg_replace('/[^A-Za-z0-9]/', '', $v) ?? '');
+            $numberMismatch = $normalise((string)$returnedNumber) !== $normalise($requestedIdentifier);
+        }
+
+        // Point 2 -- the holder name, masked for preview (PLV). An expected
+        // name is only compared when the caller supplied one; otherwise the
+        // masked form goes back for the sender to confirm.
+        $holderName = $result['account_name'] ?? null;
+        $plv = PrivacyMasker::maskHolderName($holderName);
+        $expectedName = $payload['expected_account_name'] ?? null;
+        $nameMatches = $expectedName === null ? null : PrivacyMasker::namesMatch($holderName, (string)$expectedName);
+
+        if ($verified && $numberMismatch) {
+            $verified = false;
+            $success = false;
+        }
+        if ($nameMatches === false) {
+            $verified = false;
+            $success = false;
+        }
+
+        $message = $result['message'] ?? 'Account verification completed';
+        if ($numberMismatch) {
+            $message = "The destination bank returned a different account ({$returnedNumber}) than the one requested ({$requestedIdentifier}).";
+        } elseif ($nameMatches === false) {
+            $message = "The name on this account does not match the expected account holder.";
+        }
+
+        // ============================================================
         // STANDARDIZED RESPONSE STRUCTURE
         // ============================================================
         return [
             'success' => $success,
             'verified' => $verified,
-            'message' => $result['message'] ?? 'Account verification completed',
-            'account_name' => $result['account_name'] ?? null,
+            'message' => $message,
+            'account_name' => $holderName,
+            'account_name_masked' => $plv['masked'],
+            'account_name_valid' => $plv['valid'],
+            'account_name_error' => $plv['error'],
+            'account_name_matches' => $nameMatches,
+            'account_number' => $returnedNumber,
+            'account_number_matches' => !$numberMismatch,
             'account_type' => $result['account_type'] ?? null,
             'status' => $result['status'] ?? 'ACTIVE',
             'currency' => $result['currency'] ?? null,
+            'is_frozen' => $result['is_frozen'] ?? null,
             'account_identifier' => $destinationIdentifier['identifier'],
             'identifier_type' => $destinationIdentifier['type'],
             'status_code' => $result['status_code'] ?? 0,
