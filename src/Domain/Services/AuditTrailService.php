@@ -16,7 +16,14 @@ use Core\Database\DBConnection;
  * audit_id, audit_uuid, entity_type, entity_id, action, category, severity,
  * old_value, new_value, changes, performed_by_type, performed_by_id,
  * ip_address, user_agent, geo_location, request_id, performed_at,
- * integrity_hash, timestamp, event_type, client_id, endpoint, duration_ms
+ * prev_hash, entry_hash, event_type, client_id, endpoint, duration_ms
+ *
+ * This list previously claimed `integrity_hash` and `timestamp` as well.
+ * Neither exists on any Botswana schema -- they are South-Africa-only --
+ * and naming `timestamp` in the INSERT made every single write fail with
+ * "column timestamp does not exist". entity_id is VARCHAR as of
+ * 2026_09_16_transaction_audit_integrity.sql, so a swap reference is a
+ * legal entity id here, not just a numeric row id.
  */
 class AuditTrailService
 {
@@ -26,13 +33,18 @@ class AuditTrailService
     private string $countryCode;
 
     // Valid severity levels that match the database constraint
-    private const VALID_SEVERITIES = ['INFO', 'WARNING', 'ERROR', 'DEBUG'];
+    // (audit_logs_severity_check). Postgres compares these case
+    // sensitively, so they must be lowercase: the previous uppercase list
+    // meant every insert this class attempted violated the constraint and
+    // was swallowed by the catch below. 'DEBUG' was never a legal value
+    // and 'critical' was missing.
+    private const VALID_SEVERITIES = ['info', 'warning', 'error', 'critical'];
 
     public function __construct(
         PDO $db,
         array $config,
         $logger = null,
-        string $countryCode = null
+        ?string $countryCode = null
     ) {
         $this->db = $db;
         $this->config = $config;
@@ -112,12 +124,17 @@ class AuditTrailService
      */
     private function normalizeSeverity(string $severity): string
     {
-        $upper = strtoupper($severity);
-        if (in_array($upper, self::VALID_SEVERITIES)) {
-            return $upper;
+        $lower = strtolower($severity);
+        // 'debug' was accepted by the old PHP-side list but has never been
+        // a legal database value; map it to the closest one that is.
+        if ($lower === 'debug') {
+            $lower = 'info';
         }
-        $this->logger->warning("Invalid severity '{$severity}' normalized to INFO");
-        return 'INFO';
+        if (in_array($lower, self::VALID_SEVERITIES, true)) {
+            return $lower;
+        }
+        $this->logger->warning("Invalid severity '{$severity}' normalized to info");
+        return 'info';
     }
 
     /**
@@ -142,7 +159,7 @@ class AuditTrailService
      */
     public function recordLog(
         string $entityType,
-        ?int $entityId,
+        int|string|null $entityId,
         string $action,
         string $category,
         string $severity = 'INFO',
@@ -161,10 +178,13 @@ class AuditTrailService
         // Normalize severity to valid value
         $severity = $this->normalizeSeverity($severity);
 
-        // Check table readiness
+        // Check table readiness. This returns FALSE, not true: no row was
+        // written, and telling the caller otherwise is how an unwritable
+        // audit table came to look like a healthy one. Callers that treat
+        // a false return as "escalate" now get the chance to.
         if (!$this->checkTableReady()) {
             error_log("[AUDIT_FALLBACK] {$action} on {$entityType} (ID: {$entityId}) - {$category} - {$severity} - Country: {$this->countryCode}");
-            return true;
+            return false;
         }
 
         try {
@@ -176,21 +196,23 @@ class AuditTrailService
             $changesData['_metadata']['country'] = $this->countryCode;
             $changesData['_metadata']['timestamp'] = date('Y-m-d H:i:s');
 
-            // SQL - NO country_code column (doesn't exist in table)
+            // SQL - NO country_code column (doesn't exist in table), and
+            // NO `timestamp` column either: that one is South-Africa-only,
+            // and naming it here made every insert on a Botswana database
+            // fail with "column timestamp does not exist". performed_at is
+            // this table's timestamp.
             $sql = "INSERT INTO audit_logs (
                         entity_type, entity_id, action, category, severity,
                         old_value, new_value, changes,
                         performed_by_type, performed_by_id,
                         ip_address, user_agent, geo_location,
-                        request_id, performed_at, event_type, endpoint, duration_ms,
-                        timestamp
+                        request_id, performed_at, event_type, endpoint, duration_ms
                     ) VALUES (
                         :entity_type, :entity_id, :action, :category, :severity,
                         :old_value, :new_value, :changes,
                         :performed_by_type, :performed_by_id,
                         :ip_address, :user_agent, :geo_location,
-                        :request_id, NOW(), :event_type, :endpoint, :duration_ms,
-                        NOW()
+                        :request_id, NOW(), :event_type, :endpoint, :duration_ms
                     )";
 
             $stmt = $this->db->prepare($sql);
@@ -295,6 +317,15 @@ class AuditTrailService
             $params[':entity_type'] = $filters['entity_type'];
         }
 
+        // entity_id is VARCHAR since 2026_09_16_transaction_audit_integrity.sql,
+        // so this matches a swap reference as readily as a numeric row id.
+        // Bound as a string deliberately -- binding it as an int here would
+        // reintroduce the very type mismatch this change exists to fix.
+        if (isset($filters['entity_id']) && $filters['entity_id'] !== '' && $filters['entity_id'] !== null) {
+            $sql .= " AND al.entity_id = :entity_id";
+            $params[':entity_id'] = (string)$filters['entity_id'];
+        }
+
         if (!empty($filters['action'])) {
             $sql .= " AND al.action = :action";
             $params[':action'] = $filters['action'];
@@ -349,12 +380,16 @@ class AuditTrailService
     }
 
     /**
-     * Get audit logs by entity type
+     * Get audit logs for one specific entity.
+     *
+     * This used to drop $entityId on the floor and filter by entity_type
+     * alone, so asking for one swap's history returned every swap's.
      */
-    public function getLogsForEntity(string $entityType, int $entityId, int $limit = 50): array
+    public function getLogsForEntity(string $entityType, int|string $entityId, int $limit = 50): array
     {
         return $this->getAuditLogs($limit, [
-            'entity_type' => $entityType
+            'entity_type' => $entityType,
+            'entity_id'   => $entityId
         ]);
     }
 
@@ -395,6 +430,15 @@ class AuditTrailService
         if (!empty($filters['entity_type'])) {
             $sql .= " AND al.entity_type = :entity_type";
             $params[':entity_type'] = $filters['entity_type'];
+        }
+
+        // entity_id is VARCHAR since 2026_09_16_transaction_audit_integrity.sql,
+        // so this matches a swap reference as readily as a numeric row id.
+        // Bound as a string deliberately -- binding it as an int here would
+        // reintroduce the very type mismatch this change exists to fix.
+        if (isset($filters['entity_id']) && $filters['entity_id'] !== '' && $filters['entity_id'] !== null) {
+            $sql .= " AND al.entity_id = :entity_id";
+            $params[':entity_id'] = (string)$filters['entity_id'];
         }
 
         if (!empty($filters['action'])) {

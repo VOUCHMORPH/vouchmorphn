@@ -94,6 +94,10 @@ class MultiSourceSwapExecutor
         $this->db->beginTransaction();
         $poolId = null;
         $heldContributions = [];
+        // Flipped the moment the destination has real value. Past that
+        // point the holds must NOT be released on failure -- see the catch.
+        $destinationDelivered = false;
+        $pool = null;
 
         try {
             $pool = $this->createPool($payload);
@@ -117,6 +121,7 @@ class MultiSourceSwapExecutor
             // ============================================================
             $destinationAssetType = strtoupper($pool['destination_asset_type'] ?? 'WALLET');
             $destinationResult = $this->executeDestination($pool, $masterSignature, $destinationAssetType);
+            $destinationDelivered = true;
             $this->logger->info('Destination executed', [
                 'success' => $destinationResult['success'] ?? false,
                 'asset_type' => $destinationAssetType
@@ -135,11 +140,53 @@ class MultiSourceSwapExecutor
 
             return $this->buildResponse($pool, $contributions, $destinationResult, $settlementResult);
 
-        } catch (Exception $e) {
-            $this->db->rollBack();
+        } catch (\Throwable $e) {
+            // Throwable, not Exception: a PHP Error raised after the
+            // destination credit (a TypeError, a call to a missing method)
+            // used to escape this handler entirely, leaving the transaction
+            // open and the holds untouched.
+            if ($this->db->inTransaction()) {
+                // Guarded: on an already-aborted connection an unguarded
+                // rollBack() throws a fresh PDOException that masks the
+                // real cause.
+                $this->db->rollBack();
+            }
             $this->logger->error('Multi-source pool execution failed', ['error' => $e->getMessage()]);
 
-            $this->rollbackHeldContributions($heldContributions);
+            if ($destinationDelivered) {
+                // POST-DELIVERY FAILURE. executeDestination() has already
+                // put real value at the destination, and debitAllSources()
+                // may have already debited some of the sources before it
+                // threw. Releasing the holds here would give those
+                // customers their money back on top of a destination that
+                // has already been paid -- and release holds on sources
+                // that were genuinely debited.
+                //
+                // Leave every hold alone and hand it to a human, the same
+                // way rollbackAtomicSwap() does for single-source swaps.
+                $this->logger->critical(
+                    'Skipping hold release - destination already delivered before debits completed',
+                    [
+                        'pool_id' => $poolId,
+                        'reference' => $pool['reference'] ?? null,
+                        'held_count' => count($heldContributions),
+                        'error' => $e->getMessage()
+                    ]
+                );
+                foreach ($heldContributions as $held) {
+                    $this->swapService->recordPostDeliveryDebitFailure(
+                        (string)($pool['reference'] ?? 'UNKNOWN'),
+                        $held['hold_reference'] ?? null,
+                        $held['institution'] ?? null,
+                        $pool['destination_institution'] ?? null,
+                        (float)($held['amount'] ?? 0),
+                        (string)($pool['currency'] ?? 'BWP'),
+                        'Multi-source debit failed after destination delivery: ' . $e->getMessage()
+                    );
+                }
+            } else {
+                $this->rollbackHeldContributions($heldContributions);
+            }
 
             if ($poolId) {
                 $this->poolRepository->updateStatus($poolId, 'FAILED', ['error' => $e->getMessage()]);
@@ -483,7 +530,11 @@ class MultiSourceSwapExecutor
             if ($contribution && isset($contribution['_contribution_id'])) {
                 $this->contributionRepository->updateDebitReference(
                     $contribution['_contribution_id'],
-                    $result['transaction_reference'] ?? ''
+                    // debitSource() guarantees a reference on a successful
+                    // debit, minting a local one if the institution
+                    // returned none, so this no longer records an empty
+                    // string as the receipt for money that really moved.
+                    $result['transaction_reference']
                 );
                 $this->contributionRepository->updateStatus(
                     $contribution['_contribution_id'],

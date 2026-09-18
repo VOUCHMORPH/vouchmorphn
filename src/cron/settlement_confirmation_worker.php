@@ -28,13 +28,14 @@ declare(strict_types=1);
  *
  * SCHEDULING:
  * Run this every 1-5 minutes via cron, a queue worker, or your
- * platform's scheduled-job mechanism, e.g. at minute 0,5,10,...:
- *   0,5,10,15,20,25,30,35,40,45,50,55 * * * * php /path/to/settlement_confirmation_worker.php >> /var/log/vouchmorph/settlement_worker.log 2>&1
+ * platform's scheduled-job mechanism:
+ * Written as an explicit minute list, not a step value: a literal "*"
+ * followed by "/" in this line closed the block comment, so everything
+ * after it parsed as PHP and this worker died with "syntax error,
+ * unexpected token *" before confirming a single settlement. The list
+ * below is equivalent to every 5 minutes.
  *
- * (Spelled out rather than written as a step expression: a literal step
- * slash closes this comment block and makes the whole file a parse
- * error, which is what it did until 18 Sep 2026 -- this worker could
- * never run.)
+ *   0,5,10,15,20,25,30,35,40,45,50,55 * * * * php /path/to/settlement_confirmation_worker.php >> /var/log/vouchmorph/settlement_worker.log 2>&1
  *
  * Safe to run concurrently with itself IF your job runner guarantees
  * only one instance at a time; this script does not implement its own
