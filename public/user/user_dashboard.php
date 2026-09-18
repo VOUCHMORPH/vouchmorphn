@@ -702,6 +702,7 @@ input[type=number] { -moz-appearance: textfield; }
 </style>
 <link rel="stylesheet" href="<?= asset('assets/vm-motion.css') ?>">
 <link rel="stylesheet" href="<?= asset('assets/vm-type.css') ?>">   
+<link rel="stylesheet" href="<?= asset('assets/vm-retro.css') ?>">
 </head>
 <body>
 
@@ -6330,5 +6331,6 @@ document.addEventListener('keydown', function(e) {
     } 
 });
 </script>
-<script src="<?= asset('assets/vm-motion.js') ?>"></script></body>
+<script src="<?= asset('assets/vm-motion.js') ?>"></script>
+<script src="<?= asset('assets/vm-retro.js') ?>"></script></body>
 </html>
