@@ -53,7 +53,7 @@ $stmt = $db->prepare("
         (SELECT COUNT(*) FROM import_rows WHERE batch_id = b.id AND validation_status = 'INVALID') as invalid_count,
         (SELECT COALESCE(SUM(amount), 0) FROM import_rows WHERE batch_id = b.id) as total_amount
     FROM import_batches b
-    LEFT JOIN users u ON b.uploaded_by = u.id
+    LEFT JOIN users u ON b.uploaded_by = u.user_id
     LEFT JOIN departments d ON b.department_id = d.id
     LEFT JOIN programs p ON b.program_id = p.id
     WHERE $whereClause
