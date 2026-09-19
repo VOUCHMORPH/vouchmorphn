@@ -6083,6 +6083,54 @@ private function finalizeHoldToReceiving(
 }
 
 /**
+ * The payload for crediting a debited amount back to its source.
+ *
+ * This used to be written inline, described as mirroring settlePosDirect()'s
+ * shape -- but it left out the two keys that shape exists for:
+ * destination_account and account_number. Neither
+ * GenericInstitutionAdapter::credit() nor
+ * GenericBankClient::processDepositWithProof() derives them from
+ * destination_identifier; they reach the bank only if the caller puts them
+ * in. settlePosDirect() and settleDirect() both do, which is why those work.
+ *
+ * So every automatic compensation was rejected by the bank with
+ * "destination_account and valid amount are required", the recovery path
+ * raised instead of recovering, and the hold landed in manual reconciliation
+ * with the customer's money still out. That is what the stuck holds carrying
+ * "Compensating credit did not confirm success" are.
+ *
+ * Built here, as one pure function, so the shape is testable without a bank
+ * and cannot silently drift from the settlement payloads again.
+ *
+ * @return array<string, mixed>
+ */
+private static function compensationCreditPayload(
+    string $reference,
+    float $amount,
+    string $currency,
+    string $destinationIdentifier,
+    string $destinationIdentifierType,
+    string $destinationAssetType,
+    string $sourceInstitution
+): array {
+    return [
+        'reference' => $reference,
+        'amount' => $amount,
+        'currency' => $currency,
+        'destination_identifier' => $destinationIdentifier,
+        'destination_identifier_type' => $destinationIdentifierType,
+        'destination_asset_type' => $destinationAssetType,
+        'to_institution' => $sourceInstitution,
+        'destination_institution' => $sourceInstitution,
+        'action' => 'PROCESS_DEPOSIT_WITH_PROOF',
+        // The two the banks actually read, and the two that were missing.
+        'account_number' => $destinationIdentifier,
+        'destination_account' => $destinationIdentifier,
+        'reason' => 'Automatic compensation: debit succeeded but settlement to destination repeatedly failed',
+    ];
+}
+
+/**
  * Automatic recovery for "debit succeeded, settlement onward failed"
  * (swap-to-identity algorithm v2, plan §3a). Before falling back to a
  * manual-reconciliation-only flag: retry settlement itself a bounded
@@ -6138,18 +6186,15 @@ private function retrySettlementOrCompensate(
         }
 
         $adapter = $this->adapterFactory->getAdapter($sourceInstitution);
-        $compensationResult = $adapter->credit([
-            'reference' => $reference . '_COMPENSATE',
-            'amount' => $amount,
-            'currency' => $currency,
-            'destination_identifier' => $destinationIdentifier,
-            'destination_identifier_type' => $sourceId['type'] ?? 'account_number',
-            'destination_asset_type' => $identitySwap['source_asset_type'] ?? 'ACCOUNT',
-            'to_institution' => $sourceInstitution,
-            'destination_institution' => $sourceInstitution,
-            'action' => 'PROCESS_DEPOSIT_WITH_PROOF',
-            'reason' => 'Automatic compensation: debit succeeded but settlement to destination repeatedly failed',
-        ], [
+        $compensationResult = $adapter->credit(self::compensationCreditPayload(
+            $reference . '_COMPENSATE',
+            $amount,
+            $currency,
+            (string)$destinationIdentifier,
+            (string)($sourceId['type'] ?? 'account_number'),
+            (string)($identitySwap['source_asset_type'] ?? 'ACCOUNT'),
+            $sourceInstitution
+        ), [
             'destination_institution' => $sourceInstitution,
             'destination_identifier' => $destinationIdentifier,
             'purpose' => 'debit_settlement_compensation',
