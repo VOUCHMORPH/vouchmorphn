@@ -56,6 +56,23 @@ class SwapService
     // ============================================================
     // IDENTITY TYPES - single source of truth.
     // ============================================================
+    /**
+     * How long a hold lives at the source bank.
+     */
+    private const HOLD_WINDOW_HOURS = 24;
+
+    /**
+     * How much sooner a cashout code must die than the hold funding it.
+     *
+     * The ordering is the point, not the number: if a code outlives its
+     * hold, the hold lapses, the money goes back to the customer, and the
+     * code is still presentable at an ATM against funds that are no longer
+     * reserved. Keeping the code strictly shorter means there is always a
+     * window where the code is dead but the money is still held, which is
+     * the safe way round.
+     */
+    private const CASHOUT_EXPIRY_SAFETY_MARGIN_HOURS = 2;
+
     private const IDENTITY_TYPES_SELF_SERVICE = ['phone', 'email'];
     private const IDENTITY_TYPES_AGENT_VERIFIABLE = ['national_id', 'birth_certificate', 'voter_id'];
     private const IDENTITY_PROFILE_GOVERNMENT_TYPES = ['national_id', 'voter_id', 'birth_certificate', 'drivers_license', 'passport'];
@@ -4756,7 +4773,7 @@ $this->recordSettlementPending(
 
         $this->updateHoldStatus($this->currentHoldId, 'PENDING_IDENTITY');
 
-        $expiresAt = date('Y-m-d H:i:s', strtotime('+24 hours'));
+        $expiresAt = $this->holdExpiry();
 
         // ✅ FIX: Commit the atomic swap if this call opened it
         if ($openedHere) {
@@ -6178,6 +6195,8 @@ private function generateCashoutFromHolding(
         'to_institution' => $institution,
         'destination_institution' => $institution,
         'action' => 'GENERATE_TOKEN',
+        'expiry' => $this->requestedCashoutExpiry(),
+        'expires_at' => $this->requestedCashoutExpiry(),
     ];
 
     $adapter = $this->adapterFactory->getAdapter($institution);
@@ -6204,7 +6223,7 @@ private function generateCashoutFromHolding(
         'transaction_reference' => $result['transaction_reference'] ?? null,
         'swap_code' => $result['voucher_number'] ?? $result['swap_code'] ?? null,
         'atm_code' => $result['atm_pin'] ?? null,
-        'expires_at' => $result['expires_at'] ?? date('Y-m-d H:i:s', strtotime('+24 hours')),
+        'expires_at' => $this->resolveCashoutExpiry($result['expires_at'] ?? null, $institution),
     ];
 }
 
@@ -8665,6 +8684,8 @@ private function generateCashoutFromSettlement(
         'to_institution' => $institution,
         'destination_institution' => $institution,
         'action' => 'GENERATE_TOKEN',
+        'expiry' => $this->requestedCashoutExpiry(),
+        'expires_at' => $this->requestedCashoutExpiry(),
     ], [
         'source_institution' => $institution,
         'destination_institution' => $institution,
@@ -8688,7 +8709,7 @@ private function generateCashoutFromSettlement(
         'transaction_reference' => $result['transaction_reference'] ?? null,
         'swap_code' => $result['voucher_number'] ?? $result['swap_code'] ?? null,
         'atm_code' => $result['atm_pin'] ?? null,
-        'expires_at' => $result['expires_at'] ?? date('Y-m-d H:i:s', strtotime('+24 hours')),
+        'expires_at' => $this->resolveCashoutExpiry($result['expires_at'] ?? null, $institution),
     ];
 }
 
@@ -10317,7 +10338,7 @@ private function loadAtmNotesStrict(array $countryConfig, string $countryFallbac
             'currency' => $payload['currency'] ?? $this->config['currency'] ?? 'BWP',
             'hold_reason' => $payload['hold_reason'] ?? 'PENDING_SWAP',
             'destination_institution' => $destInstitution,
-            'expiry' => date('Y-m-d H:i:s', strtotime('+24 hours')),
+            'expiry' => $this->holdExpiry(),
             'timestamp' => $timestamp,
             'from_institution' => $institution,
             'source_institution' => $institution,
@@ -10780,6 +10801,63 @@ private function recordSettlementPending(
  * Generate cashout token
  * STANDARD: Consistent with adapter and bank client
  */
+/**
+ * When a hold placed now will expire at the source bank.
+ */
+private function holdExpiry(): string
+{
+    return date('Y-m-d H:i:s', strtotime('+' . self::HOLD_WINDOW_HOURS . ' hours'));
+}
+
+/**
+ * The expiry we ASK a bank to put on a cashout code. Sent with every
+ * GENERATE_TOKEN request: clamping our own record after the fact does not
+ * stop the bank honouring a longer code at its own ATMs, so the request is
+ * where the invariant actually has to be stated.
+ */
+private function requestedCashoutExpiry(): string
+{
+    return date(
+        'Y-m-d H:i:s',
+        strtotime('+' . (self::HOLD_WINDOW_HOURS - self::CASHOUT_EXPIRY_SAFETY_MARGIN_HOURS) . ' hours')
+    );
+}
+
+/**
+ * The expiry we record for a cashout code, never later than the hold that
+ * funds it.
+ *
+ * A bank that returns a SHORTER window is honoured as-is -- it is entitled
+ * to be stricter than we asked. A bank that returns a longer one is
+ * clamped AND flagged: the code really will still work at its ATMs after
+ * our hold has gone, so that is an integrity problem between us and that
+ * institution, not something to quietly paper over in our own record.
+ */
+private function resolveCashoutExpiry(?string $bankExpiry, string $institution): string
+{
+    $ceilingTs = strtotime($this->requestedCashoutExpiry());
+    $bankTs = ($bankExpiry !== null && $bankExpiry !== '') ? strtotime($bankExpiry) : false;
+
+    if ($bankTs !== false && $bankTs <= $ceilingTs) {
+        return date('Y-m-d H:i:s', $bankTs);
+    }
+
+    if ($bankTs !== false) {
+        $this->logger->error(
+            "Cashout code expiry from {$institution} outlives the hold funding it -- the code stays " .
+            "redeemable at their ATMs after the hold lapses and the money returns to the customer",
+            [
+                'institution' => $institution,
+                'bank_expiry' => $bankExpiry,
+                'hold_expiry' => $this->holdExpiry(),
+                'clamped_to' => date('Y-m-d H:i:s', $ceilingTs),
+            ]
+        );
+    }
+
+    return date('Y-m-d H:i:s', $ceilingTs);
+}
+
 private function generateCashoutToken(array $payload, string $institution, float $amount): array
 {
     $beneficiaryPhone = $this->extractBeneficiaryPhone($payload);
@@ -10792,6 +10870,10 @@ private function generateCashoutToken(array $payload, string $institution, float
         'currency' => $payload['currency'] ?? 'BWP',
         'hold_reference' => $this->currentHoldReference,
         'action' => 'GENERATE_TOKEN',
+        // Stated on the request, not just checked on the reply -- see
+        // requestedCashoutExpiry().
+        'expiry' => $this->requestedCashoutExpiry(),
+        'expires_at' => $this->requestedCashoutExpiry(),
         'source_verification' => $this->signedPayloads['verification'] ?? null,
         'source_hold' => $this->signedPayloads['hold'] ?? null,
         'beneficiary_phone' => $beneficiaryPhone,
@@ -10825,7 +10907,7 @@ private function generateCashoutToken(array $payload, string $institution, float
         'atm_pin' => $result['atm_pin'] ?? null,
         'voucher_number' => $result['voucher_number'] ?? null,
         'swap_code' => $result['swap_code'] ?? null,
-        'expires_at' => $result['expires_at'] ?? date('Y-m-d H:i:s', strtotime('+24 hours')),
+        'expires_at' => $this->resolveCashoutExpiry($result['expires_at'] ?? null, $institution),
         'transaction_reference' => $result['transaction_reference'] ?? null,
         'message' => $result['message'] ?? ($success ? 'Token generated' : 'Token generation failed'),
         'status_code' => $result['status_code'] ?? 0,
@@ -11521,7 +11603,7 @@ private function generateCashoutToken(array $payload, string $institution, float
             ':identity_value' => $identityValue,
             ':hold_reference' => $holdResult['hold_reference'],
             ':hold_id' => $holdId,
-            ':expires_at' => date('Y-m-d H:i:s', strtotime('+24 hours')),
+            ':expires_at' => $this->holdExpiry(),
             ':source_payload' => json_encode($payload),
             ':metadata' => json_encode([
                 'signed_payloads' => $this->signedPayloads,
