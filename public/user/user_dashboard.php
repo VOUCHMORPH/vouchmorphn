@@ -1426,6 +1426,41 @@ function describeSwapForRepeat(payload) {
     return `To ${instName}`;
 }
 
+// A stored swap payload names its destination type directly, except for a
+// combined-sources swap, whose swap_type says where the money came from
+// rather than where it is going.
+function repeatDestinationType(payload) {
+    const type = payload.swap_type;
+    if (type === 'IDENTITY' || type === 'CASHOUT' || type === 'DEPOSIT') return type;
+    if (payload.identity_value) return 'IDENTITY';
+    if (payload.delivery_method) return 'CASHOUT';
+    return 'DEPOSIT';
+}
+
+// The "To" row of the repeat confirmation. describeSwapForRepeat() above is the
+// one-line version for the hub card and masks the identity; this one names the
+// account or identity in full, because this is the screen where the sender is
+// being asked to check it before the money moves.
+function describeRepeatDestination(payload, preview) {
+    const destType = repeatDestinationType(payload);
+
+    if (destType === 'IDENTITY') {
+        const label = String(payload.identity_type || 'identity').replace(/_/g, ' ');
+        return `${label}: ${payload.identity_value || '—'}`;
+    }
+
+    const instCode = preview?.destination_institution || payload.destination_institution || payload.to_institution;
+    const instName = PARTICIPANTS[instCode]?.name || instCode || 'destination';
+
+    if (destType === 'CASHOUT') {
+        const phone = payload.beneficiary_phone || payload.client_phone || payload.destination_identifier;
+        return `${payload.delivery_method || 'ATM'} cashout via ${instName}${phone ? ' — ' + phone : ''}`;
+    }
+
+    const identifier = payload.destination_identifier;
+    return identifier ? `${instName} — ${identifier}` : instName;
+}
+
 function computeProgressSteps() {
     return [
         { done: userSources.length > 0, label: 'Add a source' },
@@ -1491,11 +1526,93 @@ function renderRepeatCard() {
 async function repeatLastSwap() {
     const last = Journey.read().lastSwap;
     if (!last) return;
-    state.swapPayload = { ...last.payload, reference: 'SWAP_' + Date.now(), idempotency_key: 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8) };
+
+    // A fresh reference and idempotency key: this is a new swap that happens to
+    // have the same destination, not a replay of the old one.
+    const payload = { ...last.payload, reference: 'SWAP_' + Date.now(), idempotency_key: 'IDEMP_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8) };
+    state.swapPayload = payload;
+
     showMessage('Preparing your repeat swap…', 'info');
-    const result = await callApi(CONFIG.PREVIEW_ENDPOINT, state.swapPayload);
+    const result = await callApi(CONFIG.PREVIEW_ENDPOINT, payload);
     if (!result.ok) { showMessage('Could not repeat that swap: ' + friendlyApiError(result.error), 'error'); return; }
-    showPreviewModal(result.body);
+
+    // Priced now, not when the original swap ran — fees and rates move, so the
+    // figures on this screen come from the quote we just fetched.
+    const preview = result.body?.preview || {};
+    const sourceCurrency = preview.source_currency || payload.currency;
+    const destCurrency = preview.destination_currency || sourceCurrency;
+    const amount = preview.amount_requested ?? payload.amount;
+    const netAmount = preview.net_amount_destination_currency ?? preview.net_amount;
+
+    const sourceInst = preview.source_institution || payload.source_institution || payload.from_institution;
+    const sourceName = PARTICIPANTS[sourceInst]?.name || sourceInst;
+
+    const bodyHtml = `
+        <div class="review-hero">
+            <div class="review-hero-label">You're sending again</div>
+            <div class="review-hero-amount">${formatMoney(amount, sourceCurrency)}</div>
+            ${sourceName ? `<div class="review-hero-note">From ${escapeHtml(sourceName)}</div>` : ''}
+        </div>
+        <div class="preview-box">
+            <div class="preview-row">
+                <span>To</span>
+                <span class="value">${escapeHtml(describeRepeatDestination(payload, preview))}</span>
+            </div>
+            <div class="preview-row" style="border-bottom:none;padding-bottom:2px;">
+                <span>Recipient</span>
+                <span class="value" id="repeatRecipientName">—</span>
+            </div>
+            <div style="font-size:11px;color:var(--text-muted);text-align:right;padding:0 0 13px;border-bottom:1px solid var(--border);" id="repeatRecipientNote"></div>
+            <div class="preview-row">
+                <span>Fee</span>
+                <span class="value">${formatMoney(preview.total_fee, sourceCurrency)}</span>
+            </div>
+            <div class="preview-row">
+                <span>Destination gets</span>
+                <span class="value highlight">${formatMoney(netAmount, destCurrency)}</span>
+            </div>
+        </div>
+        <div class="preview-reassure">Same swap as last time, priced again just now — confirming moves the money.</div>`;
+
+    pendingExecution = {
+        type: 'repeat_swap',
+        payload: { swapPayload: payload, previewBody: result.body },
+        callback: () => executeRepeatSwap()
+    };
+    showPreviewModal('Repeat this swap', bodyHtml, null, 'Confirm & swap');
+
+    // After showPreviewModal(), which is what puts the row above into the DOM.
+    loadRecipientPreview(buildRepeatRecipientLookupPayload(payload), RECIPIENT_TARGETS_REPEAT);
+}
+
+async function executeRepeatSwap() {
+    // executePendingAction() clears pendingExecution the moment this returns its
+    // promise, so take everything off it before the first await.
+    const { swapPayload, previewBody } = pendingExecution.payload || {};
+    if (!swapPayload) return;
+
+    // The true start of the transaction, taken at the tap rather than on the
+    // server, exactly as wizardConfirm() does it.
+    swapPayload.client_initiated_at = new Date().toISOString();
+
+    showMessage('Repeating your swap…', 'info');
+
+    const result = await callApi(CONFIG.EXECUTE_ENDPOINT, swapPayload);
+    if (!result.ok) { showMessage('Swap failed: ' + friendlyApiError(result.error), 'error'); return; }
+
+    const journeyData = Journey.recordSwap(swapPayload, previewBody);
+    renderRepeatCard(); renderProgressCard();
+
+    // showWizardResultModal() reads the destination off wizardState, which a
+    // repeat swap never walks through. Seed the handful of fields it reads;
+    // every button on that modal calls resetWizard(), which clears them again.
+    wizardState.destType = repeatDestinationType(swapPayload);
+    wizardState.currency = previewBody?.preview?.source_currency || swapPayload.currency;
+    wizardState.amount = previewBody?.preview?.amount_requested ?? swapPayload.amount;
+    wizardState.identityType = swapPayload.identity_type || wizardState.identityType;
+    wizardState.identityValue = swapPayload.identity_value || '';
+
+    showWizardResultModal(result.body, journeyData);
 }
 
 // ============================================================
@@ -2720,7 +2837,7 @@ function enterReviewStep() {
     // Who is actually getting this money? Fired here rather than off the
     // "Preview swap" button so it also reaches the VMCARD path below, which
     // returns early and never asks for a fee quote at all.
-    loadRecipientPreview();
+    loadRecipientPreview(buildRecipientLookupPayload(), RECIPIENT_TARGETS_WIZARD);
 
     const previewRow = document.getElementById('wizardPreviewRow');
     const confirmRow = document.getElementById('wizardConfirmRow');
@@ -2749,6 +2866,12 @@ function enterReviewStep() {
 // Guards against a stale answer overwriting a fresh one: the sender can step
 // back, change the destination and return here faster than a bank replies.
 let recipientPreviewSeq = 0;
+
+// Two screens ask the same question and word the answer the same way: step 4 of
+// the wizard, and the repeat-swap confirmation modal. Each names its own pair of
+// elements to write into.
+const RECIPIENT_TARGETS_WIZARD = { name: 'reviewRecipientName', note: 'reviewRecipientNote' };
+const RECIPIENT_TARGETS_REPEAT = { name: 'repeatRecipientName', note: 'repeatRecipientNote' };
 
 function buildRecipientLookupPayload() {
     const destType = wizardState.destType || 'DEPOSIT';
@@ -2799,16 +2922,54 @@ function buildRecipientLookupPayload() {
     };
 }
 
-async function loadRecipientPreview() {
+// The same lookup for a repeat swap, where there is no wizardState to read —
+// only the payload the last swap was sent with. Kept beside
+// buildRecipientLookupPayload() because the two have to agree on field names.
+function buildRepeatRecipientLookupPayload(payload) {
+    const destType = repeatDestinationType(payload);
+
+    if (destType === 'IDENTITY') {
+        if (!payload.identity_value) return null;
+        return {
+            destination_type: 'IDENTITY',
+            identity_type: payload.identity_type || 'national_id',
+            identity_value: payload.identity_value,
+        };
+    }
+
+    if (destType === 'CASHOUT') {
+        // Same precedence buildDestinationPayload() used when the payload was
+        // built, so the name previewed belongs to the number actually texted.
+        const phone = payload.beneficiary_phone || payload.client_phone || payload.destination_identifier;
+        if (!phone) return null;
+        return { destination_type: 'CASHOUT', destination_identifier: phone };
+    }
+
+    const institution = payload.destination_institution || payload.to_institution;
+    const identifier = payload.destination_identifier;
+    if (!institution || !identifier) return null;
+
+    return {
+        destination_type: 'DEPOSIT',
+        destination_institution: institution,
+        destination_identifier: identifier,
+        // The swap payload says 'phone' or 'account_number'; this endpoint
+        // speaks 'phone' or 'account'.
+        destination_identifier_type: payload.destination_identifier_type === 'phone' ? 'phone' : 'account',
+        destination_asset_type: payload.destination_asset_type || 'ACCOUNT',
+        source_institution: payload.source_institution || payload.from_institution || null,
+    };
+}
+
+async function loadRecipientPreview(payload, targets) {
     const seq = ++recipientPreviewSeq;
-    const payload = buildRecipientLookupPayload();
 
     if (!payload) {
-        renderRecipientPreview(null);
+        renderRecipientPreview(null, targets);
         return;
     }
 
-    renderRecipientPreview({ status: 'CHECKING' });
+    renderRecipientPreview({ status: 'CHECKING' }, targets);
 
     const result = await callApi(CONFIG.RECIPIENT_PREVIEW_ENDPOINT, payload);
 
@@ -2818,16 +2979,17 @@ async function loadRecipientPreview() {
         renderRecipientPreview({
             status: 'UNVERIFIABLE',
             message: "We couldn't confirm the recipient's name. Check the details yourself before confirming.",
-        });
+        }, targets);
         return;
     }
 
-    renderRecipientPreview(result.body?.recipient || null);
+    renderRecipientPreview(result.body?.recipient || null, targets);
 }
 
-function renderRecipientPreview(recipient) {
-    const nameEl = document.getElementById('reviewRecipientName');
-    const noteEl = document.getElementById('reviewRecipientNote');
+function renderRecipientPreview(recipient, targets) {
+    // The modal this writes into can be closed while the lookup is still out.
+    const nameEl = document.getElementById(targets.name);
+    const noteEl = document.getElementById(targets.note);
     if (!nameEl || !noteEl) return;
 
     if (!recipient) {
@@ -3657,7 +3819,7 @@ function resetWizard() {
     // Also invalidates any recipient lookup still in flight, so a name for
     // the abandoned destination can't land on the next swap's review screen.
     recipientPreviewSeq++;
-    renderRecipientPreview(null);
+    renderRecipientPreview(null, RECIPIENT_TARGETS_WIZARD);
 
     document.getElementById('wizardAmount').value = '';
     document.querySelectorAll('.source-option').forEach(el => el.classList.remove('active'));
