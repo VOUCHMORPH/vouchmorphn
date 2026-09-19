@@ -104,7 +104,15 @@ class SwapService
     // whitespace/dashes for ID documents (the identity-value field's
     // own placeholder hints a dashed format: "0000 - 0000 - 0000").
     // ============================================================
-    private static function normalizeIdentityValue(string $identityType, string $identityValue): string
+    /**
+     * Public because the recipient-name preview (RecipientPreviewService)
+     * has to match a sender's typed-in identifier against the recipient's
+     * registered identity using EXACTLY the rules the swap itself will use
+     * later. A second, slightly different copy of these rules would show a
+     * name at preview time for an identity the swap then fails to resolve,
+     * or the reverse -- which is worse than showing nothing.
+     */
+    public static function normalizeIdentityValue(string $identityType, string $identityValue): string
     {
         $identityType = strtolower(trim($identityType));
         $value = trim($identityValue);
