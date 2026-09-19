@@ -886,10 +886,15 @@ input[type=number] { -moz-appearance: textfield; }
                         <span style="font-size:12px;color:var(--text-dim);">From</span>
                         <span style="font-weight:700;" id="reviewSource">—</span>
                     </div>
-                    <div style="display:flex;justify-content:space-between;padding:8px 0;">
+                    <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);">
                         <span style="font-size:12px;color:var(--text-dim);">To</span>
                         <span style="font-weight:700;" id="reviewDest">—</span>
                     </div>
+                    <div style="display:flex;justify-content:space-between;gap:12px;padding:8px 0;" id="reviewRecipientRow">
+                        <span style="font-size:12px;color:var(--text-dim);white-space:nowrap;">Recipient</span>
+                        <span style="font-weight:700;text-align:right;" id="reviewRecipientName">—</span>
+                    </div>
+                    <div style="font-size:11px;color:var(--text-muted);padding:0 0 4px;text-align:right;" id="reviewRecipientNote"></div>
                 </div>
                 <div id="reviewPreviewResult" style="display:none;background:var(--surface);border:1px solid var(--accent);padding:14px 16px;margin-bottom:16px;"></div>
                 <div class="preview-security" style="margin:0 0 16px;">
@@ -1143,6 +1148,7 @@ const CONFIG = {
     API_BASE: '<?php echo htmlspecialchars($apiBase); ?>',
     IS_TEST_MODE: <?php echo $isTestMode ? 'true' : 'false'; ?>,
     PREVIEW_ENDPOINT: '<?php echo $apiBase; ?>/api/v1/swap/preview.php',
+    RECIPIENT_PREVIEW_ENDPOINT: '<?php echo $apiBase; ?>/api/v1/swap/recipient_preview.php',
     EXECUTE_ENDPOINT: '<?php echo $apiBase; ?>/api/v1/swap/execute.php',
     USER_ID: <?php echo json_encode($userId); ?>,
 };
@@ -2711,6 +2717,11 @@ function enterReviewStep() {
     wizardState.lastPreview = null;
     wizardState.swapPayload = null;
 
+    // Who is actually getting this money? Fired here rather than off the
+    // "Preview swap" button so it also reaches the VMCARD path below, which
+    // returns early and never asks for a fee quote at all.
+    loadRecipientPreview();
+
     const previewRow = document.getElementById('wizardPreviewRow');
     const confirmRow = document.getElementById('wizardConfirmRow');
 
@@ -2726,6 +2737,132 @@ function enterReviewStep() {
     if (previewRow) previewRow.style.display = 'flex';
     if (confirmRow) confirmRow.style.display = 'none';
     if (document.getElementById('wizardConfirmBtn')) document.getElementById('wizardConfirmBtn').textContent = 'Confirm & swap';
+}
+
+// ---- RECIPIENT NAME PREVIEW ----
+// The sender types an account number or an ID number by hand, and one wrong
+// digit sends the money to a stranger. Before anything moves we ask who owns
+// the destination and show the name back, masked ("J*** M****** D**") -- enough
+// for the sender to recognise the person they meant to pay, not enough to put
+// a full name to an account number they guessed.
+
+// Guards against a stale answer overwriting a fresh one: the sender can step
+// back, change the destination and return here faster than a bank replies.
+let recipientPreviewSeq = 0;
+
+function buildRecipientLookupPayload() {
+    const destType = wizardState.destType || 'DEPOSIT';
+
+    if (destType === 'IDENTITY') {
+        if (!wizardState.identityValue) return null;
+        return {
+            destination_type: 'IDENTITY',
+            identity_type: wizardState.identityType || 'national_id',
+            identity_value: wizardState.identityValue,
+        };
+    }
+
+    if (!wizardState.toInst) return null;
+
+    let identifier = null;
+    let identifierType = 'account';
+
+    if (destType === 'CASHOUT') {
+        // Cashout pays whoever is standing at the ATM holding the code, so
+        // the recipient is the owner of the phone it is texted to. Same
+        // precedence buildDestinationPayload() uses for the cashout leg, so
+        // the name previewed belongs to the number actually texted.
+        identifier = wizardState.beneficiaryPhone || wizardState.toFields?.phone || null;
+        identifierType = 'phone';
+    } else {
+        const destConfig = getAssetConfig(wizardState.toAsset);
+        const destIdField = (destConfig?.fields || []).find(f => f.vault_field !== 'pin' && f.name !== 'amount');
+        if (destIdField) {
+            identifier = wizardState.toFields?.[destIdField.name] ?? null;
+            identifierType = (destIdField.name === 'phone' || destIdField.name === 'phone_number') ? 'phone' : 'account';
+        }
+        if (!identifier && wizardState.toFields) {
+            identifier = wizardState.toFields.account_number || wizardState.toFields.phone
+                || wizardState.toFields.wallet_phone || wizardState.toFields.card_number || null;
+        }
+    }
+
+    if (!identifier) return null;
+
+    return {
+        destination_type: destType,
+        destination_institution: wizardState.toInst,
+        destination_identifier: identifier,
+        destination_identifier_type: identifierType,
+        destination_asset_type: normalizeAssetType(wizardState.toAsset) || (destType === 'CASHOUT' ? 'WALLET' : 'ACCOUNT'),
+        source_institution: wizardState.fromInst || null,
+    };
+}
+
+async function loadRecipientPreview() {
+    const seq = ++recipientPreviewSeq;
+    const payload = buildRecipientLookupPayload();
+
+    if (!payload) {
+        renderRecipientPreview(null);
+        return;
+    }
+
+    renderRecipientPreview({ status: 'CHECKING' });
+
+    const result = await callApi(CONFIG.RECIPIENT_PREVIEW_ENDPOINT, payload);
+
+    if (seq !== recipientPreviewSeq) return; // a newer lookup already answered
+
+    if (!result.ok) {
+        renderRecipientPreview({
+            status: 'UNVERIFIABLE',
+            message: "We couldn't confirm the recipient's name. Check the details yourself before confirming.",
+        });
+        return;
+    }
+
+    renderRecipientPreview(result.body?.recipient || null);
+}
+
+function renderRecipientPreview(recipient) {
+    const nameEl = document.getElementById('reviewRecipientName');
+    const noteEl = document.getElementById('reviewRecipientNote');
+    if (!nameEl || !noteEl) return;
+
+    if (!recipient) {
+        nameEl.textContent = '—';
+        nameEl.style.color = 'var(--text-dim)';
+        noteEl.textContent = '';
+        return;
+    }
+
+    if (recipient.status === 'CHECKING') {
+        nameEl.innerHTML = '<span class="spinner"></span>Checking…';
+        nameEl.style.color = 'var(--text-dim)';
+        noteEl.textContent = '';
+        return;
+    }
+
+    const warn = recipient.status === 'MISMATCH' ? 'var(--danger)' : 'var(--warning)';
+
+    if (recipient.resolved && recipient.name_masked) {
+        nameEl.textContent = recipient.name_masked;
+        nameEl.style.color = 'var(--accent)';
+        noteEl.textContent = 'Shortened for privacy — check it looks like the person you meant to pay.';
+        return;
+    }
+
+    // Cashout has no account holder to name — the code goes to a phone. Saying
+    // "not registered yet" there would read as something having gone wrong.
+    let label = 'Name unavailable';
+    if (recipient.status === 'NOT_REGISTERED') {
+        label = recipient.destination_type === 'CASHOUT' ? 'No name to check' : 'Not registered yet';
+    }
+
+    nameEl.textContent = label;
+    nameEl.style.color = warn;
+    noteEl.textContent = recipient.message || '';
 }
 
 async function wizardPreview() {
@@ -3516,6 +3653,11 @@ function resetWizard() {
     wizardState.combineEditingRowId = null;
     wizardState.lastPreview = null;
     wizardState.swapPayload = null;
+
+    // Also invalidates any recipient lookup still in flight, so a name for
+    // the abandoned destination can't land on the next swap's review screen.
+    recipientPreviewSeq++;
+    renderRecipientPreview(null);
 
     document.getElementById('wizardAmount').value = '';
     document.querySelectorAll('.source-option').forEach(el => el.classList.remove('active'));
