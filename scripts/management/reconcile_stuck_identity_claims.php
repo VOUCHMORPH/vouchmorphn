@@ -18,6 +18,11 @@
  * failed claim leaves the hold untouched and nothing to clean up. This
  * exists for holds stranded by the old debit-first order.
  *
+ * The logic lives in Domain\Services\StuckIdentityClaimReconciler, shared
+ * with admin/reconcile_stuck_identity_claims.php (the browser front end for
+ * environments without a shell). Two copies of the SQL that decides which
+ * holds to close would drift; this way there is one.
+ *
  * WHAT IT WILL AND WON'T TOUCH
  * ----------------------------
  * Only holds where ALL of the following are true:
@@ -48,6 +53,7 @@ require_once __DIR__ . '/../../vendor/autoload.php';
 require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
 
 use Core\Database\DBConnection;
+use Domain\Services\StuckIdentityClaimReconciler;
 
 $options = getopt('', ['apply', 'min-age-minutes::', 'hold-id::', 'help']);
 
@@ -71,56 +77,22 @@ if (!$db) {
     exit(1);
 }
 
-$sql = "
-    SELECT ish.hold_id,
-           ish.swap_reference,
-           ish.hold_reference,
-           ish.source_institution,
-           ish.amount,
-           ish.currency,
-           ish.identity_type,
-           ish.identity_value,
-           ish.created_at,
-           ht.status       AS bank_hold_status,
-           ht.debited_at,
-           recon.id        AS reconciliation_id,
-           recon.reason    AS reconciliation_reason
-    FROM identity_swap_holds ish
-    JOIN hold_transactions ht ON ht.hold_id = ish.hold_id
-    LEFT JOIN swap_manual_reconciliation_required recon
-           ON recon.swap_reference = ish.swap_reference
-          AND recon.resolved_at IS NULL
-    WHERE ish.status = 'pending'
-      AND ht.status = 'DEBITED'
-      AND ht.debited_at IS NOT NULL
-      AND ht.debited_at < NOW() - (:min_age || ' minutes')::interval
-";
+$reconciler = new StuckIdentityClaimReconciler($db);
 
-$params = [':min_age' => (string)$minAgeMinutes];
-if ($onlyHoldId !== null) {
-    $sql .= " AND ish.hold_id = :hold_id";
-    $params[':hold_id'] = $onlyHoldId;
+try {
+    $found = $reconciler->find($minAgeMinutes, $onlyHoldId);
+} catch (Throwable $e) {
+    fwrite(STDERR, $e->getMessage() . "\n");
+    exit(1);
 }
-$sql .= " ORDER BY ht.debited_at ASC";
 
-$stmt = $db->prepare($sql);
-$stmt->execute($params);
-$rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+$cancellable = $found['cancellable'];
+$needsHuman  = $found['needs_human'];
 
-if (empty($rows)) {
+if (!$cancellable && !$needsHuman) {
     echo "No stuck identity claims found";
     echo $onlyHoldId !== null ? " for hold {$onlyHoldId}.\n" : ".\n";
     exit(0);
-}
-
-$cancellable = [];
-$needsHuman = [];
-foreach ($rows as $row) {
-    if ($row['reconciliation_id'] !== null) {
-        $needsHuman[] = $row;
-    } else {
-        $cancellable[] = $row;
-    }
 }
 
 echo $apply ? "APPLYING changes.\n\n" : "DRY RUN -- nothing will be changed. Re-run with --apply to commit.\n\n";
@@ -148,15 +120,17 @@ if (empty($cancellable)) {
 
 echo ($apply ? "CANCELLING" : "WOULD CANCEL") . " -- debited at the bank, credited back to the customer, never closed out:\n";
 foreach ($cancellable as $row) {
+    // identity_type but not identity_value: the value is the national ID /
+    // phone / email itself, and an ops console does not need it to decide
+    // whether a hold is stuck.
     printf(
-        "  hold %-8s %s  %s %s  %s -> %s=%s  debited %s\n",
+        "  hold %-8s %s  %s %s  %s -> %s  debited %s\n",
         $row['hold_id'],
         $row['swap_reference'],
         $row['currency'],
         $row['amount'],
         $row['source_institution'],
         $row['identity_type'],
-        $row['identity_value'],
         $row['debited_at']
     );
 }
@@ -167,35 +141,19 @@ if (!$apply) {
     exit(0);
 }
 
-$update = $db->prepare("
-    UPDATE identity_swap_holds
-    SET status = 'cancelled',
-        metadata = COALESCE(metadata, '{}'::jsonb) || :meta::jsonb
-    WHERE hold_id = :hold_id
-      AND status = 'pending'
-");
+$result = $reconciler->cancel($cancellable);
 
-$cancelled = 0;
-$skipped = 0;
-foreach ($cancellable as $row) {
-    $meta = json_encode([
-        'compensated' => true,
-        'reason' => 'Payout failed after debit; amount credited back to source. Closed out by reconcile_stuck_identity_claims.php',
-        'reconciled_at' => date('c'),
-    ]);
-
-    $update->execute([':meta' => $meta, ':hold_id' => (int)$row['hold_id']]);
-
-    // The status guard in the UPDATE means a hold claimed between the SELECT
-    // and now is left untouched rather than cancelled out from under a
-    // successful claim.
-    if ($update->rowCount() === 1) {
-        $cancelled++;
-        echo "  cancelled hold {$row['hold_id']}\n";
-    } else {
-        $skipped++;
-        echo "  SKIPPED hold {$row['hold_id']} -- no longer 'pending' (claimed or changed since this script started)\n";
-    }
+foreach ($result['cancelled'] as $holdId) {
+    echo "  cancelled hold {$holdId}\n";
 }
+// The service re-checks status = 'pending' in its UPDATE, so a hold claimed
+// between the preview above and now is left alone rather than cancelled out
+// from under a claim that succeeded.
+foreach ($result['skipped'] as $holdId) {
+    echo "  SKIPPED hold {$holdId} -- no longer 'pending' (claimed or changed since this script started)\n";
+}
+
+$cancelled = count($result['cancelled']);
+$skipped   = count($result['skipped']);
 
 printf("\nDone. %d cancelled, %d skipped, %d left for a human.\n", $cancelled, $skipped, count($needsHuman));
