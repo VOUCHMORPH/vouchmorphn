@@ -210,10 +210,29 @@ participants:
       reservation_accounts: true
       # Gates swap-to-identity algorithm v2 behavior added after the
       # reservation-account primitive above (Phase D's park-vs-release
-      # expiry branch, Point X's obligation-ledger wiring). False until
-      # this participant is deliberately verified and flipped on -- see
-      # the approved plan's staged-rollout section.
-      claim_algorithm_v2: false
+      # expiry branch, Point X's obligation-ledger wiring).
+      #
+      # Flipped true (19 Sep 2026), second participant after ZURUBANK.
+      # Left false, expireIdentitySwap() takes the release-to-sender
+      # branch for GOVERNMENT and BUSINESS_OR_TRUST holds at this
+      # institution -- money Phase D says is owed to the identity and
+      # cannot be un-sent. That was a live breach from the moment claims
+      # here started working, so this is a correctness fix, not just the
+      # next step of a rollout.
+      #
+      # What it turns on here:
+      #   as SOURCE, on expiry -- GOVERNMENT/BUSINESS_OR_TRUST value parks
+      #     in the beneficiary's reservation account at SACCUSSALIS instead
+      #     of returning to the sender. Depends on reservation_accounts
+      #     above, which SACCUSSALIS serves at
+      #     backend/api/v1/accounts/reservation.
+      #   as DESTINATION, on claim -- the Point X obligation ledger runs:
+      #     net_positions rows and fee invoices this institution has not
+      #     seen before.
+      # Two further effects (settlement retry/compensate, the
+      # settled_pending_payout status) sit in the consolidation path, which
+      # no adapter reaches today because none implements internalSweep().
+      claim_algorithm_v2: true
 
     hold_model: NATIVE
 
