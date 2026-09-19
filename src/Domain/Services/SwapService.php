@@ -7156,6 +7156,93 @@ public function confirmCashout(array $payload): array
             ];
         }
 
+        // ============================================================
+        // FIX: 'COMPLETED' was the ONLY state this method refused, and
+        // nothing here ever looked at code_expiry -- so an authorization
+        // whose hold had already been released was still debited.
+        //
+        // The correct lookup already exists in this class:
+        // getCashoutAuthorization() filters
+        //   status IN ('PENDING','VERIFIED') AND code_expiry > NOW()
+        // but findAuthorization(), the one on the path that actually
+        // moves money, has neither predicate. The guards go here rather
+        // than in findAuthorization() because the row still has to be
+        // FOUND to answer 'already_completed' above, and because only
+        // here do we know whether cash has already left the ATM.
+        //
+        // confirmPoolCashout() already refuses anything that is no
+        // longer PENDING_CASHOUT; this brings the single-swap path in
+        // line with that.
+        //
+        // Reachability note: releaseCashoutHold() is what writes
+        // 'EXPIRED', and it only runs from the expiry sweeper. While
+        // that sweeper is unscheduled this state never occurs -- which
+        // is exactly why scheduling it without this guard would open a
+        // live race: the sweeper releases at code_expiry + 6h, and any
+        // ATM callback after that point lands on a released hold.
+        // ============================================================
+        if (self::cashoutHoldAlreadyReleased($authorization)) {
+            error_log("[SwapService] auth_id={$authId} hold already released (status={$authorization['status']}) - refusing to debit");
+
+            if ($isCallback) {
+                // Cash is already out of the ATM and the money backing it
+                // has gone back to the customer. Debiting now would take
+                // funds that are no longer reserved, so this is a
+                // settlement matter between VouchMorph and the
+                // destination, not a fresh debit on the sender. Same
+                // situation, and the same mechanism, as a destination
+                // that was paid while the source debit failed.
+                $this->recordManualReconciliationRequired(
+                    $swapRef,
+                    $holdReference,
+                    $sourceInstitution,
+                    $destinationInstitution,
+                    (float)$amountToSend,
+                    $currency,
+                    "ATM dispensed cash against cashout auth_id={$authId} whose hold had already been released "
+                    . "(status={$authorization['status']}). Source NOT debited - settle with the destination directly."
+                );
+
+                if ($openedHere) {
+                    $this->swapDB->commit();
+                }
+
+                return [
+                    'status' => 'hold_already_released',
+                    'swap_reference' => $swapRef,
+                    'auth_id' => $authId,
+                    'message' => 'Hold was already released before this confirmation arrived - flagged for manual reconciliation.',
+                    'amount' => $amountToSend,
+                    'manual_reconciliation_required' => true,
+                ];
+            }
+
+            throw new RuntimeException(
+                "This cashout's hold was already released (auth_id={$authId}) - the code can no longer be redeemed."
+            );
+        }
+
+        // Pre-dispense only. Between code_expiry and the sweeper's
+        // release buffer the code is dead by our records but the hold is
+        // still live, so a callback in that window is a bank that
+        // honoured a stale code -- the money IS still reserved for it and
+        // debiting is the correct settlement. Refusing there would strand
+        // cash that has already been handed over. Refusing HERE, before
+        // anything is dispensed, is free.
+        if (self::cashoutCodeHasExpired($authorization)) {
+            if (!$isCallback) {
+                throw new RuntimeException(
+                    "This cashout code expired at {$authorization['code_expiry']} and cannot be redeemed."
+                );
+            }
+
+            $this->logger->warning("Cashout confirmed after code expiry - hold still live, debiting", [
+                'auth_id' => $authId,
+                'swap_reference' => $swapRef,
+                'code_expiry' => $authorization['code_expiry'],
+            ]);
+        }
+
         if (!$isCallback) {
             if (!$destinationInstitution) {
                 throw new RuntimeException("Destination institution required for manual confirmation");
@@ -12550,6 +12637,50 @@ private function updateCashoutAuthorizationStatus(int $authId, string $status, ?
     // ============================================================================
     // SUPPORTING METHODS FOR CONFIRM CASHOUT
     // ============================================================================
+
+    /**
+     * Has this cashout's hold already gone back to the customer?
+     *
+     * releaseCashoutHold() writes status='EXPIRED' and stamps released_at;
+     * either alone is enough to answer yes, because released_at is the
+     * newer of the two columns and a deployment that predates it still
+     * gets the right answer from the status.
+     *
+     * Pure and static so the rule is testable without building the full
+     * SwapService dependency graph, same as extractHoldFeeFromMetadata()
+     * and isSourceMoneyOwedToIdentity().
+     */
+    private static function cashoutHoldAlreadyReleased(array $authorization): bool
+    {
+        return ($authorization['status'] ?? null) === 'EXPIRED'
+            || !empty($authorization['released_at']);
+    }
+
+    /**
+     * Is the code past the expiry the destination institution gave us?
+     *
+     * An authorization with no recorded expiry is NOT treated as expired:
+     * code_expiry is nullable and is populated from the destination's own
+     * response, so a missing value means "we were never told", not "it has
+     * lapsed". Refusing on absent data would reject perfectly good cashouts
+     * at any institution that omits the field.
+     */
+    private static function cashoutCodeHasExpired(array $authorization, ?int $now = null): bool
+    {
+        $expiry = $authorization['code_expiry'] ?? null;
+
+        if ($expiry === null || $expiry === '') {
+            return false;
+        }
+
+        $expiresAt = strtotime((string)$expiry);
+
+        if ($expiresAt === false) {
+            return false;
+        }
+
+        return $expiresAt < ($now ?? time());
+    }
 
     private function findAuthorization(string $swapReference = null, int $authId = null, string $voucherNumber = null): ?array
 {

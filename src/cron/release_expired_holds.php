@@ -1,5 +1,5 @@
 <?php
-// cron/release_expired_holds.php
+// src/cron/release_expired_holds.php
 // Run every 15-30 minutes via system cron / scheduled task.
 // Releases holds for:
 //   1. Cashout codes unredeemed 6h past their code_expiry
@@ -17,10 +17,20 @@
 
 declare(strict_types=1);
 
-require_once __DIR__ . '/../src/Core/Database/DBConnection.php';
-require_once __DIR__ . '/../vendor/autoload.php';
-require_once __DIR__ . '/../src/Domain/Services/SwapService.php';
-require_once __DIR__ . '/../src/Core/Config/LoadCountry.php';
+// FIX: every one of these was one directory level short. The paths are
+// written from the repository root ('/../src/...', '/../vendor/...'),
+// which only resolves if this file sits at <root>/cron/ -- and the header
+// comment above still says exactly that. It actually lives at
+// <root>/src/cron/, so __DIR__ . '/../src/...' resolved to
+// <root>/src/src/... and __DIR__ . '/../vendor/...' to <root>/src/vendor/,
+// none of which exist. Nothing caught it because nothing ever ran this
+// script: it is not scheduled in railway.json, the Dockerfile installs no
+// cron daemon, and there is no pg_cron. The first scheduled run would have
+// fatalled on the first require.
+require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
+require_once __DIR__ . '/../../vendor/autoload.php';
+require_once __DIR__ . '/../../src/Domain/Services/SwapService.php';
+require_once __DIR__ . '/../../src/Core/Config/LoadCountry.php';
 
 use Core\Database\DBConnection;
 use Domain\Services\SwapService;

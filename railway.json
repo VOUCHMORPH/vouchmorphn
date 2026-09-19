@@ -14,6 +14,11 @@
       "schedule": "*/3 * * * *",
       "command": "php scripts/cron/card-pool-queue-watchdog.php",
       "name": "card-pool-watchdog"
+    },
+    {
+      "schedule": "*/20 * * * *",
+      "command": "php src/cron/release_expired_holds.php",
+      "name": "release-expired-holds"
     }
   ]
 }
