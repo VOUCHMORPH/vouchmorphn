@@ -186,6 +186,7 @@ SACCUSSALIS:
 
   callbacks:
     settlement_confirmed: "https://vouchmorphn-production.up.railway.app/api/v1/callbacks/settlement_confirmed.php"
+    hold_released: "https://vouchmorphn-production.up.railway.app/api/v1/callbacks/hold_released.php"
     reservation_account_confirmed: "https://vouchmorphn-production.up.railway.app/api/v1/callbacks/reservation_account_confirmed.php"
 
   message_profile:
@@ -288,6 +289,7 @@ MTN:
 
   callbacks:
     settlement_confirmed: "https://vouchmorphn-production.up.railway.app/api/v1/callbacks/settlement_confirmed.php"
+    hold_released: "https://vouchmorphn-production.up.railway.app/api/v1/callbacks/hold_released.php"
     reservation_account_confirmed: "https://vouchmorphn-production.up.railway.app/api/v1/callbacks/reservation_account_confirmed.php"
 
   message_profile:
