@@ -56,9 +56,13 @@ class IdentitySendSourceReadinessTest extends TestCase
 
     public function testAConfiguredSourceIsAllowedToSend(): void
     {
+        // Both in-scope institutions carry real settlement accounts now --
+        // SACCUSSALIS's are its own settlement_accounts rows, which is what
+        // unblocked the claim that prompted all of this.
         $this->assertSource('ZURUBANK');
+        $this->assertSource('SACCUSSALIS');
         // No exception is the assertion; make that explicit for the reader.
-        $this->addToAssertionCount(1);
+        $this->addToAssertionCount(2);
     }
 
     public function testASourceStillOnPlaceholdersIsRefusedAtSendTime(): void
@@ -68,14 +72,14 @@ class IdentitySendSourceReadinessTest extends TestCase
         // settlement-account phrasing written for claimants would confuse.
         $this->expectExceptionMessageMatches('/cannot yet be used to send to an identity/');
 
-        $this->assertSource('SACCUSSALIS');
+        $this->assertSource('ABSA');
     }
 
     public function testTheRefusalNamesTheUnderlyingConfigProblem(): void
     {
         try {
-            $this->assertSource('SACCUSSALIS');
-            $this->fail('expected SACCUSSALIS to be refused');
+            $this->assertSource('ABSA');
+            $this->fail('expected ABSA to be refused');
         } catch (RuntimeException $e) {
             // Whoever reads this in a log needs to know what to fix, not
             // just that something is wrong.
@@ -90,8 +94,8 @@ class IdentitySendSourceReadinessTest extends TestCase
         // The send-time one has to do the same, or it reads like a debit
         // that half-happened.
         try {
-            $this->assertSource('SACCUSSALIS');
-            $this->fail('expected SACCUSSALIS to be refused');
+            $this->assertSource('ABSA');
+            $this->fail('expected ABSA to be refused');
         } catch (RuntimeException $e) {
             $this->assertMatchesRegularExpression('/[Nn]othing has been held/', $e->getMessage());
         }

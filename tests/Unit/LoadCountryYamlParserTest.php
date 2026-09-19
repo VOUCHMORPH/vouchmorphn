@@ -77,13 +77,37 @@ class LoadCountryYamlParserTest extends TestCase
     public function testOnboardingPlaceholdersArePreservedVerbatim(): void
     {
         // The placeholder guard matches on the literal text, so the parser
-        // must not trim or transform it.
-        $saccus = $this->parse(self::BOTSWANA)['participants']['SACCUSSALIS'];
+        // must not trim or transform it. ABSA is still unonboarded; the
+        // in-scope institutions are configured.
+        $absa = $this->parse(self::BOTSWANA)['participants']['ABSA'];
 
         $this->assertSame(
             'REPLACE_WITH_REAL_SETTLEMENT_ACCOUNT_NUMBER',
-            $saccus['settlement_account']['BWP']['identifier']
+            $absa['settlement_account']['BWP']['identifier']
         );
+    }
+
+    /**
+     * SACCUSSALIS's identifiers are its settlement_accounts.account_number
+     * values, which are all digits. Quoted in the YAML precisely so they
+     * stay strings -- an identifier silently becoming int 10000001 is the
+     * kind of thing that survives every test until it reaches a bank.
+     */
+    public function testSaccussalisIdentifiersParseAsStringsNotIntegers(): void
+    {
+        $saccus = $this->parse(self::BOTSWANA)['participants']['SACCUSSALIS'];
+
+        $settlement = $saccus['settlement_account']['BWP']['identifier'];
+        $receiving = $saccus['identity_accounts']['BWP']['receiving_identifier'];
+        $holding = $saccus['identity_accounts']['BWP']['holding_identifier'];
+
+        $this->assertSame('10000001', $settlement);
+        $this->assertSame('10000002', $receiving);
+        $this->assertSame('10000003', $holding);
+
+        foreach ([$settlement, $receiving, $holding] as $identifier) {
+            $this->assertIsString($identifier);
+        }
     }
 
     public function testBlockListsAndInlineListsBothParse(): void
