@@ -4363,6 +4363,160 @@ private function getHoldReferenceForSwap(string $swapRef): ?string
  * never acts on the bare code_expiry alone.
  * ================================================================= */
 
+/**
+ * A source institution telling us it has released a hold on its own side
+ * (workflow stage 4): the bank expired the hold, the money is back with
+ * its customer, and our records have to catch up immediately rather than
+ * whenever a cron next looks.
+ *
+ * Idempotent on hold_reference -- a bank's retry logic may well call more
+ * than once, and the second call must not re-decide anything.
+ *
+ * Two cases here are NOT routine bookkeeping and are flagged rather than
+ * recorded quietly:
+ *
+ *   - The hold was already DEBITED. The money left for the beneficiary, so
+ *     a release alert contradicts what we did with it. Someone has to look
+ *     at which is true.
+ *   - The hold funded a GOVERNMENT or BUSINESS_OR_TRUST swap. Phase D is
+ *     explicit that this money is owed to the identity and cannot be
+ *     un-sent -- on expiry it parks in a reservation account rather than
+ *     going back. A bank that released it has returned money the
+ *     beneficiary was owed, which is a policy breach on their side, not a
+ *     state for us to absorb silently.
+ *
+ * @return array{status: string, message: string, hold_id: ?int, identity_hold_id: ?int, flagged: bool}
+ */
+public function recordBankHoldRelease(
+    string $holdReference,
+    string $institution,
+    ?string $reason = null,
+    ?string $releasedAt = null
+): array {
+    $stmt = $this->swapDB->prepare("
+        SELECT hold_id, status, swap_reference, amount, currency, source_institution
+        FROM hold_transactions
+        WHERE hold_reference = :ref
+        LIMIT 1
+    ");
+    $stmt->execute([':ref' => $holdReference]);
+    $hold = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$hold) {
+        return [
+            'status' => 'unknown_reference',
+            'message' => 'No hold found for that reference.',
+            'hold_id' => null,
+            'identity_hold_id' => null,
+            'flagged' => false,
+        ];
+    }
+
+    $holdId = (int)$hold['hold_id'];
+
+    if ($hold['status'] === 'RELEASED') {
+        return [
+            'status' => 'already_released',
+            'message' => 'Already recorded as released.',
+            'hold_id' => $holdId,
+            'identity_hold_id' => null,
+            'flagged' => false,
+        ];
+    }
+
+    $flagged = false;
+
+    if ($hold['status'] === 'DEBITED') {
+        // Do not flip a debited hold to released on a bank's say-so: that
+        // would erase our record of money we believe was delivered.
+        $this->recordManualReconciliationRequired(
+            $hold['swap_reference'],
+            $holdReference,
+            $hold['source_institution'] ?? $institution,
+            $institution,
+            (float)$hold['amount'],
+            $hold['currency'] ?? 'BWP',
+            "{$institution} reported releasing a hold we had already debited" .
+            ($reason !== null ? " (their reason: {$reason})" : '') .
+            ". Either the debit did not really take at their end, or the release is mistaken -- the hold was left DEBITED."
+        );
+
+        return [
+            'status' => 'conflict_already_debited',
+            'message' => 'That hold was already debited. Flagged for reconciliation; nothing was changed.',
+            'hold_id' => $holdId,
+            'identity_hold_id' => null,
+            'flagged' => true,
+        ];
+    }
+
+    $this->updateHoldStatus($holdId, 'RELEASED');
+
+    // An identity swap sitting behind this hold is now over: the money has
+    // gone back to the sender, which is what 'expired' means here.
+    $stmt = $this->swapDB->prepare("
+        SELECT hold_id, status, swap_reference, amount, currency, source_account_type, source_institution
+        FROM identity_swap_holds
+        WHERE hold_reference = :ref
+        LIMIT 1
+    ");
+    $stmt->execute([':ref' => $holdReference]);
+    $identityHold = $stmt->fetch(PDO::FETCH_ASSOC);
+    $identityHoldId = $identityHold ? (int)$identityHold['hold_id'] : null;
+
+    if ($identityHold && $identityHold['status'] === 'pending') {
+        if (self::isSourceMoneyOwedToIdentity($identityHold['source_account_type'] ?? null)) {
+            $flagged = true;
+            $this->recordManualReconciliationRequired(
+                $identityHold['swap_reference'],
+                $holdReference,
+                $identityHold['source_institution'] ?? $institution,
+                $institution,
+                (float)$identityHold['amount'],
+                $identityHold['currency'] ?? 'BWP',
+                "{$institution} released a hold funding a " . ($identityHold['source_account_type'] ?? 'GOVERNMENT') .
+                " swap-to-identity. That balance is owed to the identity and should have parked in a reservation " .
+                "account at the source on expiry, not returned to the sender. The beneficiary is owed it."
+            );
+        }
+
+        $this->updateIdentityHoldStatus($identityHoldId, 'expired', [
+            'released_by_bank' => true,
+            'released_by' => $institution,
+            'release_reason' => $reason,
+            'released_at' => $releasedAt,
+        ]);
+    }
+
+    $this->writeAuditLogEntry(
+        'hold_transactions',
+        $holdReference,
+        'BANK_RELEASED_HOLD',
+        'financial',
+        null,
+        'institution',
+        0,
+        [
+            'institution' => $institution,
+            'reason' => $reason,
+            'released_at' => $releasedAt,
+            'previous_status' => $hold['status'],
+            'identity_hold_id' => $identityHoldId,
+            'flagged_for_reconciliation' => $flagged,
+        ]
+    );
+
+    return [
+        'status' => 'released',
+        'message' => $flagged
+            ? 'Hold marked released, and flagged for reconciliation — see response detail.'
+            : 'Hold marked released.',
+        'hold_id' => $holdId,
+        'identity_hold_id' => $identityHoldId,
+        'flagged' => $flagged,
+    ];
+}
+
 public function cancelExpiredCashouts(int $bufferHours = 6): array
 {
     error_log("[SwapService] ===== cancelExpiredCashouts (buffer={$bufferHours}h) =====");
