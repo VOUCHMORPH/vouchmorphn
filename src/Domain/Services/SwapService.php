@@ -4831,6 +4831,29 @@ $this->recordSettlementPending(
     }
     $payload['identity_value'] = self::normalizeIdentityValue($identityType, (string)$payload['identity_value']);
 
+    // Refuse the send if this source could never deliver the claim.
+    //
+    // Every delivery path out of a hold -- settlePosDirect(),
+    // settlePosViaSwitch(), settleDirect(), settleViaSwitch() and
+    // generateCashoutFromSettlement() -- calls getSourceSettlementAccount()
+    // on the SOURCE institution, because the credit instruction we send the
+    // destination names that account as the funding counterparty. An
+    // institution whose settlement_account is still an onboarding
+    // placeholder therefore fails EVERY claim, and it used to fail at STEP 2
+    // of the claim -- after the sender's money was already held.
+    //
+    // That is a money trap: funds locked in a hold nobody can ever claim
+    // out, sitting there until expiry releases them. The destination
+    // dropdown is already filtered for the mirror-image problem (see
+    // claimReadyInstitutions() in user_dashboard.php), but a claimant does
+    // not choose the source -- the sender does, here. So the check belongs
+    // here, before VERIFY_ASSET_SIGNED, before any hold, before the money
+    // stops being freely the sender's.
+    $this->assertSourceCanDeliverClaims(
+        $sourceInstitution,
+        $payload['currency'] ?? $this->config['currency'] ?? 'BWP'
+    );
+
     $skipHold = isset($payload['_skip_hold']) && $payload['_skip_hold'] === true;
     $swapRef = $payload['reference'] ?? $this->currentSwapRef ?? $this->generateReference();
 
@@ -5526,6 +5549,36 @@ private function getIdentityHoldingAccounts(string $institution, string $currenc
 // ============================================================================
 // CONFIG: source-side settlement account
 // ============================================================================
+
+/**
+ * Send-time counterpart to getSourceSettlementAccount().
+ *
+ * Asks the same question the claim will ask later -- can this institution
+ * fund a delivery? -- but asks it before the hold exists, so an
+ * unconfigured source is refused instead of swallowing money it can never
+ * release through a claim. Re-thrown with send-time framing because the
+ * settlement-account wording is written for whoever is claiming, and at
+ * this point nobody is claiming anything yet.
+ */
+private function assertSourceCanDeliverClaims(string $institution, string $currency): void
+{
+    try {
+        $this->getSourceSettlementAccount($institution, $currency);
+    } catch (RuntimeException $e) {
+        $this->logger->error('Identity send refused: source cannot deliver claims', [
+            'institution' => $institution,
+            'currency' => $currency,
+            'reason' => $e->getMessage(),
+        ]);
+
+        throw new RuntimeException(
+            "{$institution} cannot yet be used to send to an identity: it has no usable " .
+            "settlement account for {$currency}, so no claim against the hold could ever be " .
+            "paid out. Nothing has been held and no money has moved. " .
+            "Underlying reason: " . $e->getMessage()
+        );
+    }
+}
 
 private function getSourceSettlementAccount(string $institution, string $currency): array
 {
