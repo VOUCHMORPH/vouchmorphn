@@ -151,39 +151,264 @@ final class LoadCountry
     }
     
     /**
-     * Manual YAML parser for participants.yaml structure
+     * Fallback YAML parser, used only when neither ext-yaml nor Symfony's
+     * YAML component is available.
+     *
+     * The previous version of this matched a single pattern --
+     * /^    ([a-z_]+): (.+)$/ -- which is to say: four-space-indented keys
+     * whose value sits on the same line. Every nested block and every list
+     * in participants.yaml therefore vanished silently. capabilities,
+     * identity_accounts, settlement_account, limits, card_config,
+     * switch_participant_ids and asset_types all disappeared, leaving nine
+     * scalar fields per institution and no indication anything was lost.
+     *
+     * That is worse than not parsing at all: getSourceSettlementAccount()
+     * and getIdentityHoldingAccounts() would report an institution as "not
+     * onboarded" when its accounts are sitting right there in the file, and
+     * getCommonSwitch() would see no shared rails anywhere. Production is
+     * insulated today only because railway.json pins the DOCKERFILE builder
+     * and the Dockerfile both installs ext-yaml and fails the build if it is
+     * missing -- but nixpacks.toml, still in the repo, installs no such
+     * thing.
+     *
+     * So this now parses the constructs participants.yaml actually uses:
+     * nested maps to arbitrary depth, block lists of scalars, inline lists
+     * and inline maps, quoted strings, booleans, numbers and comments.
      */
     private static function parseYamlManually(string $path): array
     {
-        $content = file_get_contents($path);
-        $participants = [];
-        $lines = explode("\n", $content);
-        $inParticipants = false;
-        $currentKey = null;
-        
-        foreach ($lines as $line) {
-            $line = rtrim($line);
-            if (empty($line) || $line[0] === '#') continue;
-            
-            if (preg_match('/^participants:$/', $line)) {
-                $inParticipants = true;
-                continue;
-            }
-            
-            if ($inParticipants && preg_match('/^  ([A-Z_]+):$/', $line, $matches)) {
-                $currentKey = $matches[1];
-                $participants[$currentKey] = [];
-                continue;
-            }
-            
-            if ($currentKey && preg_match('/^    ([a-z_]+): (.+)$/', $line, $matches)) {
-                $value = trim($matches[2], '"\'');
-                $participants[$currentKey][$matches[1]] = $value;
-                continue;
+        error_log(
+            '[LoadCountry] Neither ext-yaml nor Symfony YAML is available; ' .
+            'falling back to the built-in parser for ' . $path
+        );
+
+        $raw = file_get_contents($path);
+        if ($raw === false) {
+            return [];
+        }
+
+        // Comments and blank lines are dropped up front so the parser below
+        // only ever sees structural lines; indentation is preserved.
+        $lines = [];
+        foreach (preg_split('/\R/', $raw) as $line) {
+            $line = rtrim(self::stripYamlComment($line));
+            if (trim($line) !== '') {
+                $lines[] = $line;
             }
         }
-        
-        return ['participants' => $participants];
+
+        $index = 0;
+        $parsed = self::parseYamlBlock($lines, $index, -1);
+
+        return is_array($parsed) ? $parsed : [];
+    }
+
+    /**
+     * Removes a trailing comment, leaving `#` alone inside quotes and in the
+     * middle of a bare word so URLs and fragments survive.
+     */
+    private static function stripYamlComment(string $line): string
+    {
+        $out = '';
+        $inSingle = false;
+        $inDouble = false;
+        $length = strlen($line);
+
+        for ($i = 0; $i < $length; $i++) {
+            $char = $line[$i];
+
+            if ($char === "'" && !$inDouble) {
+                $inSingle = !$inSingle;
+            } elseif ($char === '"' && !$inSingle) {
+                $inDouble = !$inDouble;
+            } elseif ($char === '#' && !$inSingle && !$inDouble) {
+                // A comment only starts at the beginning of the line or
+                // after whitespace -- otherwise it is part of a value.
+                if ($i === 0 || $line[$i - 1] === ' ' || $line[$i - 1] === "\t") {
+                    break;
+                }
+            }
+
+            $out .= $char;
+        }
+
+        return $out;
+    }
+
+    /**
+     * Consumes every line indented deeper than $parentIndent and returns it
+     * as a map or a list. $index is advanced past what was consumed.
+     *
+     * @return array<mixed>
+     */
+    private static function parseYamlBlock(array $lines, int &$index, int $parentIndent): array
+    {
+        $map = [];
+        $list = [];
+        $isList = false;
+        $count = count($lines);
+
+        while ($index < $count) {
+            $line = $lines[$index];
+            $indent = self::yamlIndent($line);
+
+            if ($indent <= $parentIndent) {
+                break;
+            }
+
+            $content = trim($line);
+
+            // ---- block list item ----
+            if ($content === '-' || str_starts_with($content, '- ')) {
+                $isList = true;
+                $item = trim(substr($content, 1));
+                $index++;
+
+                if ($item === '') {
+                    $list[] = self::parseYamlBlock($lines, $index, $indent);
+                } else {
+                    $list[] = self::parseYamlScalar($item);
+                }
+                continue;
+            }
+
+            // ---- key: value ----
+            if (preg_match('/^([^:]+):\s*(.*)$/', $content, $matches)) {
+                $key = trim($matches[1], " \"'");
+                $rest = trim($matches[2]);
+                $index++;
+
+                if ($rest !== '') {
+                    $map[$key] = self::parseYamlScalar($rest);
+                    continue;
+                }
+
+                // Empty value: either a nested block on the following lines,
+                // or a genuinely null key.
+                $nextIndent = $index < $count ? self::yamlIndent($lines[$index]) : null;
+                $map[$key] = ($nextIndent !== null && $nextIndent > $indent)
+                    ? self::parseYamlBlock($lines, $index, $indent)
+                    : null;
+                continue;
+            }
+
+            // Not something this parser understands. Skip it rather than
+            // spin -- $index must always advance.
+            error_log('[LoadCountry] Skipping unparseable YAML line: ' . $content);
+            $index++;
+        }
+
+        return $isList ? $list : $map;
+    }
+
+    private static function yamlIndent(string $line): int
+    {
+        return strlen($line) - strlen(ltrim($line, ' '));
+    }
+
+    /**
+     * A single YAML value: inline list, inline map, quoted string, boolean,
+     * null, number, or bare string.
+     *
+     * @return mixed
+     */
+    private static function parseYamlScalar(string $value)
+    {
+        $value = trim($value);
+
+        if ($value === '') {
+            return null;
+        }
+
+        // Inline list: [DEBIT, CREDIT]
+        if ($value[0] === '[' && str_ends_with($value, ']')) {
+            $inner = trim(substr($value, 1, -1));
+            if ($inner === '') {
+                return [];
+            }
+            return array_map(
+                static fn(string $part) => self::parseYamlScalar($part),
+                self::splitInlineYaml($inner)
+            );
+        }
+
+        // Inline map: { BWP: "T+0", ZAR: "T+1" }
+        if ($value[0] === '{' && str_ends_with($value, '}')) {
+            $inner = trim(substr($value, 1, -1));
+            $map = [];
+            if ($inner === '') {
+                return $map;
+            }
+            foreach (self::splitInlineYaml($inner) as $pair) {
+                if (preg_match('/^([^:]+):\s*(.*)$/', trim($pair), $matches)) {
+                    $map[trim($matches[1], " \"'")] = self::parseYamlScalar($matches[2]);
+                }
+            }
+            return $map;
+        }
+
+        // Quoted string -- returned verbatim, never type-juggled, so a
+        // zero-padded account number keeps its leading zeros.
+        $last = substr($value, -1);
+        if (strlen($value) >= 2 && (($value[0] === '"' && $last === '"') || ($value[0] === "'" && $last === "'"))) {
+            return substr($value, 1, -1);
+        }
+
+        $lower = strtolower($value);
+        if ($lower === 'true')  return true;
+        if ($lower === 'false') return false;
+        if ($lower === 'null' || $value === '~') return null;
+
+        if (preg_match('/^-?\d+$/', $value))        return (int)$value;
+        if (preg_match('/^-?\d*\.\d+$/', $value))   return (float)$value;
+
+        return $value;
+    }
+
+    /**
+     * Splits an inline collection on commas that are not inside nested
+     * brackets or quotes.
+     *
+     * @return string[]
+     */
+    private static function splitInlineYaml(string $inner): array
+    {
+        $parts = [];
+        $buffer = '';
+        $depth = 0;
+        $inSingle = false;
+        $inDouble = false;
+        $length = strlen($inner);
+
+        for ($i = 0; $i < $length; $i++) {
+            $char = $inner[$i];
+
+            if ($char === "'" && !$inDouble) {
+                $inSingle = !$inSingle;
+            } elseif ($char === '"' && !$inSingle) {
+                $inDouble = !$inDouble;
+            } elseif (!$inSingle && !$inDouble) {
+                if ($char === '[' || $char === '{') {
+                    $depth++;
+                } elseif ($char === ']' || $char === '}') {
+                    $depth--;
+                } elseif ($char === ',' && $depth === 0) {
+                    if (trim($buffer) !== '') {
+                        $parts[] = trim($buffer);
+                    }
+                    $buffer = '';
+                    continue;
+                }
+            }
+
+            $buffer .= $char;
+        }
+
+        if (trim($buffer) !== '') {
+            $parts[] = trim($buffer);
+        }
+
+        return $parts;
     }
 }
 
