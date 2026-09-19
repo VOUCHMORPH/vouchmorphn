@@ -115,6 +115,16 @@ function checkMigrationStatus(PDO $db): array {
     $constraintDef = $stmt->fetchColumn();
     $status['reservation_account_consumed_status'] = $constraintDef !== false && str_contains((string)$constraintDef, 'consumed');
 
+    // Both tables, not just one: the migration creates swap_sub_requests
+    // with a foreign key onto swap_activity, so a run that somehow made
+    // only the first is not "applied" and must not report as such.
+    $stmt = $db->query("
+        SELECT COUNT(*) FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name IN ('swap_activity', 'swap_sub_requests')
+    ");
+    $status['activity_and_sub_requests'] = (int)$stmt->fetchColumn() === 2;
+
     return $status;
 }
 
