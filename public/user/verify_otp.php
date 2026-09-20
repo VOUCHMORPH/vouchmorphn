@@ -17,9 +17,11 @@ require_once PROJECT_ROOT . '/src/Application/Utils/SessionManager.php';
 require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
 require_once PROJECT_ROOT . '/src/Core/Database/CredentialsDBConnection.php';
 require_once PROJECT_ROOT . '/src/Infrastructure/Credentials/CredentialsRepository.php';
+require_once PROJECT_ROOT . '/src/Domain/Identity/IdentifierNormalizer.php';
 
 use Application\Utils\SessionManager;
 use Core\Database\DBConnection;
+use Domain\Identity\IdentifierNormalizer;
 
 // Start session
 SessionManager::start();
@@ -49,18 +51,21 @@ $systemCountry = $config['country'] ?? getenv('VM_COUNTRY') ?? 'BW';
 $countryConfig = $config['country_settings'][$systemCountry] ?? [];
 $countryName = $countryConfig['name'] ?? $systemCountry;
 $countryDialCode = $countryConfig['dial_code'] ?? '+267';
+$localLength = (int)($countryConfig['local_phone_length'] ?? 8);
+if (!defined('LOCAL_PHONE_LENGTH')) {
+    define('LOCAL_PHONE_LENGTH', $localLength);
+}
 
 // ============================================================
 // Helper: Normalize phone number (matches register.php)
 // ============================================================
 function normalizePhone(string $phoneInput, string $dialCode): string
 {
-    $phoneInput = preg_replace('/[^\d+]/', '', trim($phoneInput));
-    if ($phoneInput === '') return '';
-    if (str_starts_with($phoneInput, '+')) {
-        return '+' . preg_replace('/[^0-9]/', '', substr($phoneInput, 1));
-    }
-    return $dialCode . ltrim($phoneInput, '0');
+    return IdentifierNormalizer::canonicalPhone(
+        $phoneInput,
+        $dialCode,
+        defined('LOCAL_PHONE_LENGTH') ? LOCAL_PHONE_LENGTH : null
+    );
 }
 
 // ============================================================
@@ -90,12 +95,8 @@ error_log("VERIFY OTP: Input - Type: {$inputType}, Raw Identifier: {$rawIdentifi
 // ============================================================
 // FIX: Normalize the identifier to match what's stored in session
 // ============================================================
-if ($inputType === 'phone') {
-    $identifier = normalizePhone($rawIdentifier, $countryDialCode);
-    error_log("VERIFY OTP: Normalized phone: {$identifier}");
-} else {
-    $identifier = $rawIdentifier;
-}
+$identifier = IdentifierNormalizer::canonicalize($inputType, $rawIdentifier, $countryDialCode, $localLength);
+error_log("VERIFY OTP: Normalized identifier ({$inputType}): {$identifier}");
 
 if (empty($identifier)) {
     error_log("VERIFY OTP: Empty identifier after normalization");

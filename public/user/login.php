@@ -26,12 +26,16 @@ require_once __DIR__ . '/../../src/Infrastructure/Email/Contracts/EmailProviderI
 require_once __DIR__ . '/../../src/Infrastructure/Email/EmailGatewayClient.php';
 require_once __DIR__ . '/../../src/Core/Database/CredentialsDBConnection.php';
 require_once __DIR__ . '/../../src/Infrastructure/Credentials/CredentialsRepository.php';
+require_once __DIR__ . '/../../src/Domain/Identity/IdentifierNormalizer.php';
+require_once __DIR__ . '/../../src/Domain/Identity/UserIdentifierLookup.php';
 use Application\Utils\SessionManager;
 use Core\Database\DBConnection;
 use Core\Config\LoadCountry;
 use Core\Factories\CommunicationFactory;
 use Infrastructure\Email\EmailGatewayClient;
 use Infrastructure\Credentials\CredentialsRepository;
+use Domain\Identity\IdentifierNormalizer;
+use Domain\Identity\UserIdentifierLookup;
 // ============================================================
 // SUPER TEST MODE: NO PIN REQUIRED
 // ============================================================
@@ -83,6 +87,9 @@ $systemCountry = SYSTEM_COUNTRY;
 $countryConfig = $config['country_settings'][$systemCountry] ?? [];
 $countryDialCode  = $countryConfig['dial_code'] ?? '+267';
 $localLength      = (int)($countryConfig['local_phone_length'] ?? 8);
+if (!defined('LOCAL_PHONE_LENGTH')) {
+    define('LOCAL_PHONE_LENGTH', $localLength);
+}
 $phonePlaceholder = $countryConfig['phone_placeholder'] ?? str_repeat('0', $localLength);
 $countryName      = $countryConfig['name'] ?? $systemCountry;
 $phonePattern     = '[0-9]{' . $localLength . '}';
@@ -107,10 +114,13 @@ try {
 // --------------------------------------------------
 function normalizePhone(string $phoneInput, string $dialCode): string
 {
-    $phoneInput = preg_replace('/[^\d+]/', '', trim($phoneInput));
-    if ($phoneInput === '') return '';
-    if (str_starts_with($phoneInput, '+')) return $phoneInput;
-    return $dialCode . ltrim($phoneInput, '0');
+    // Same canonical shape as registration writes — see
+    // Domain\Identity\IdentifierNormalizer.
+    return IdentifierNormalizer::canonicalPhone(
+        $phoneInput,
+        $dialCode,
+        defined('LOCAL_PHONE_LENGTH') ? LOCAL_PHONE_LENGTH : null
+    );
 }
 function getLocalPhonePart(string $fullPhone, string $dialCode): string
 {
@@ -149,7 +159,9 @@ $inputValueRaw = trim($_POST['identifier'] ?? '');
 // LOGIN: SUPER TEST MODE - NO PIN REQUIRED
 // ================================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // Normalize based on identifier type
+    // Normalize based on identifier type. This is only for display and
+    // logging now — the lookup itself no longer depends on the typed
+    // shape matching the stored shape (see below).
     if ($identifierType === 'phone') {
         $formattedValue = normalizePhone($inputValueRaw, $countryDialCode);
         $inputValue = getLocalPhonePart($formattedValue, $countryDialCode);
@@ -159,28 +171,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     error_log("[USER LOGIN SUPER TEST] Input: {$inputValueRaw}, Formatted: {$formattedValue}, Type: {$identifierType}");
     $pin = trim($_POST['pin'] ?? '');
-    if ($formattedValue === '') {
+    if ($inputValueRaw === '') {
         $error = "Please enter your identifier.";
     } else {
         try {
-            $stmt = $db->prepare("
-                SELECT user_id, phone, phone2, phone3, email,
-                       national_id, drivers_license, passport,
-                       username, full_name, verified,
-                       created_at, has_transaction_pin as pin_enabled,
-                       role_id
-                FROM users
-                WHERE phone = :identifier
-                   OR phone2 = :identifier
-                   OR phone3 = :identifier
-                   OR email = :identifier
-                   OR national_id = :identifier
-                   OR drivers_license = :identifier
-                   OR passport = :identifier
-                LIMIT 1
-            ");
-            $stmt->execute([':identifier' => $formattedValue]);
-            $user = $stmt->fetch(\PDO::FETCH_ASSOC);
+            // ========================================================
+            // IDENTIFIER LOOKUP
+            //
+            // This used to be a single `= :identifier` match against
+            // every column, which meant a real account holder was told
+            // "User not found" whenever the shape they typed today was
+            // not byte-for-byte the shape stored at sign-up:
+            //
+            //   registered typing "26771234567" -> stored +26726771234567
+            //   signing in typing "71234567"    -> looked up +26771234567
+            //
+            // (both forms come out of the same normalizePhone(), which
+            // never removed a country code the person typed themselves)
+            // and, for email, registration lowercases while the lookup
+            // did not — so "Jane@Example.com", which is what a phone
+            // keyboard autocapitalises, never matched the stored
+            // "jane@example.com" under a case-sensitive Postgres `=`.
+            //
+            // UserIdentifierLookup matches every shape the number could
+            // have been stored in, email case-insensitively, and ID
+            // numbers ignoring case and punctuation. Nothing in the
+            // table is rewritten — the read is what widened.
+            // ========================================================
+            $user = UserIdentifierLookup::find(
+                $db,
+                $inputValueRaw,
+                $countryDialCode,
+                $localLength,
+                'user_id, phone, phone2, phone3, email,
+                 national_id, drivers_license, passport,
+                 username, full_name, verified,
+                 created_at, has_transaction_pin,
+                 role_id'
+            );
             // Login secrets (password_hash) live in the separate
             // credentials database, not on this `users` row — fetched
             // only once we know which user_id we're checking.
@@ -195,7 +223,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             error_log("[USER LOGIN SUPER TEST] User found: " . ($user ? 'YES' : 'NO'));
             if (!$user) {
                 $error = "User not found. Please check your identifier.";
-                error_log("[USER LOGIN SUPER TEST] User not found: {$formattedValue}");
+                error_log("[USER LOGIN SUPER TEST] User not found: {$formattedValue} (raw: {$inputValueRaw})");
             } elseif ((int)$user['verified'] !== 1) {
                 $error = "Account not verified. Please contact support.";
                 error_log("[USER LOGIN SUPER TEST] User not verified: {$formattedValue}");
@@ -253,7 +281,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             'role_id'         => $user['role_id'] ?? null,
                             'country'         => $systemCountry,
                             'created_at'      => $user['created_at'] ?? null,
-                            'pin_enabled'     => (int)($user['has_transaction_pin'] ?? 0) === 1,
+                            'pin_enabled'     => !empty($user['has_transaction_pin']) && $user['has_transaction_pin'] !== 'f',
                         ]);
                         error_log("[USER LOGIN SUPER TEST] ✅ LOGIN COMPLETE: user_id={$user['user_id']}");
 
@@ -763,9 +791,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           <label id="identifier-label">Mobile number</label>
           <div class="field-input has-prefix" id="identifier-wrap">
             <span class="phone-prefix show" id="phone-prefix"><?= htmlspecialchars($countryDialCode) ?></span>
+            <!-- autocapitalize/autocorrect off: a phone keyboard
+                 capitalising the first letter of an email address is
+                 exactly how "jane@example.com" gets typed back as
+                 "Jane@example.com". The lookup folds case now, but
+                 there is no reason to mangle the input in the first
+                 place. -->
             <input type="tel" name="identifier" id="identifier-input" required
                    value="<?= htmlspecialchars($inputValueRaw) ?>"
-                   placeholder="<?= htmlspecialchars($phonePlaceholder) ?>" autocomplete="off" autofocus>
+                   placeholder="<?= htmlspecialchars($phonePlaceholder) ?>" autocomplete="off"
+                   autocapitalize="none" autocorrect="off" spellcheck="false" inputmode="tel" autofocus>
           </div>
         </div>
 
@@ -826,11 +861,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 <script>
 const IDENTIFIER_META = {
-    phone:           { label: 'Mobile number', placeholder: '<?= htmlspecialchars($phonePlaceholder) ?>', type: 'tel', prefix: true },
-    email:           { label: 'Email address', placeholder: 'you@example.com', type: 'text', prefix: false },
-    national_id:     { label: 'National ID number', placeholder: 'Enter National ID', type: 'text', prefix: false },
-    drivers_license: { label: "Driver's licence number", placeholder: "Enter driver's licence", type: 'text', prefix: false },
-    passport:        { label: 'Passport number', placeholder: 'Enter passport number', type: 'text', prefix: false },
+    phone:           { label: 'Mobile number', placeholder: '<?= htmlspecialchars($phonePlaceholder) ?>', type: 'tel', inputmode: 'tel', prefix: true },
+    email:           { label: 'Email address', placeholder: 'you@example.com', type: 'text', inputmode: 'email', prefix: false },
+    national_id:     { label: 'National ID number', placeholder: 'Enter National ID', type: 'text', inputmode: 'text', prefix: false },
+    drivers_license: { label: "Driver's licence number", placeholder: "Enter driver's licence", type: 'text', inputmode: 'text', prefix: false },
+    passport:        { label: 'Passport number', placeholder: 'Enter passport number', type: 'text', inputmode: 'text', prefix: false },
 };
 
 function setIdentifierType(type) {
@@ -845,6 +880,7 @@ function setIdentifierType(type) {
 
     label.textContent = meta.label;
     input.type = meta.type;
+    input.inputMode = meta.inputmode;
     input.placeholder = meta.placeholder;
     input.value = '';
     wrap.classList.toggle('has-prefix', meta.prefix);

@@ -53,6 +53,8 @@ $requiredFiles = [
     'CommunicationFactory' => PROJECT_ROOT . '/src/Core/Factories/CommunicationFactory.php',
     'EmailProviderInterface' => PROJECT_ROOT . '/src/Infrastructure/Email/Contracts/EmailProviderInterface.php',
     'EmailGatewayClient'     => PROJECT_ROOT . '/src/Infrastructure/Email/EmailGatewayClient.php',
+    'IdentifierNormalizer'   => PROJECT_ROOT . '/src/Domain/Identity/IdentifierNormalizer.php',
+    'UserIdentifierLookup'   => PROJECT_ROOT . '/src/Domain/Identity/UserIdentifierLookup.php',
 ];
 
 foreach ($requiredFiles as $name => $path) {
@@ -66,6 +68,8 @@ use Application\Utils\SessionManager;
 use Core\Database\DBConnection;
 use Core\Factories\CommunicationFactory;
 use Infrastructure\Email\EmailGatewayClient;
+use Domain\Identity\IdentifierNormalizer;
+use Domain\Identity\UserIdentifierLookup;
 
 SessionManager::start();
 
@@ -80,6 +84,12 @@ if (SessionManager::isLoggedIn()) {
 $countryConfig    = $config['country_settings'][$systemCountry] ?? [];
 $countryDialCode  = $countryConfig['dial_code'] ?? '+267';
 $localLength      = (int)($countryConfig['local_phone_length'] ?? 8);
+if (!defined('LOCAL_PHONE_LENGTH')) {
+    // Read by normalizePhone() below, so a number that is already a
+    // plain local number is never mistaken for one carrying a country
+    // code (26712345 is a valid 8-digit Botswana number, not 267 + 12345).
+    define('LOCAL_PHONE_LENGTH', $localLength);
+}
 $phonePlaceholder = $countryConfig['phone_placeholder'] ?? str_repeat('0', $localLength);
 $countryName      = $countryConfig['name'] ?? $systemCountry;
 $countryCurrency  = $countryConfig['currency'] ?? 'BWP';
@@ -188,12 +198,17 @@ try {
 // ----------------------------------------
 function normalizePhone(string $phoneInput, string $dialCode): string
 {
-    $phoneInput = preg_replace('/[^\d+]/', '', trim($phoneInput));
-    if ($phoneInput === '') return '';
-    if (str_starts_with($phoneInput, '+')) {
-        return '+' . preg_replace('/[^0-9]/', '', substr($phoneInput, 1));
-    }
-    return $dialCode . ltrim($phoneInput, '0');
+    // Was: `$dialCode . ltrim($phoneInput, '0')`, which stacked the dial
+    // code on top of a country code the person had typed themselves —
+    // "26771234567" was stored as "+26726771234567". Since the sign-in
+    // page normalised the same number to "+26771234567", those accounts
+    // could not be found again at login. Now one canonical E.164 shape,
+    // produced by the same code at both ends.
+    return IdentifierNormalizer::canonicalPhone(
+        $phoneInput,
+        $dialCode,
+        defined('LOCAL_PHONE_LENGTH') ? LOCAL_PHONE_LENGTH : null
+    );
 }
 
 function generateOTP(): string
@@ -236,52 +251,42 @@ function sendEmailOTP(EmailGatewayClient $emailClient, string $to, string $otp, 
 // ============================================================
 // Check if user already exists in YOUR database
 // Checks ALL identifiers: phone, email, national_id, etc.
+//
+// Matching goes through UserIdentifierLookup so this sees an existing
+// account the same way the sign-in page now does: any stored shape of a
+// phone number, email regardless of case, ID numbers regardless of
+// punctuation. Before, a returning user whose number had been stored in
+// a different shape looked brand new here, and got a SECOND account —
+// which is how one person ends up with two rows and a UNIQUE constraint
+// they keep tripping over.
 // ============================================================
-function userExistsInDatabase($pdo, $identifierType, $identifierValue, $phoneNumber, $emailAddress, $phone2, $phone3) {
+function userExistsInDatabase($pdo, array $identifiers, string $dialCode, ?int $localLength = null) {
     $conditions = [];
     $params = [];
-    
-    // Map identifier types to database columns
-    $columnMap = [
-        'phone' => 'phone',
-        'email' => 'email',
-        'national_id' => 'national_id',
-        'drivers_license' => 'drivers_license',
-        'passport' => 'passport'
-    ];
-    
-    // Check the primary identifier
-    if (isset($columnMap[$identifierType]) && !empty($identifierValue)) {
-        $column = $columnMap[$identifierType];
-        $conditions[] = "{$column} = :primary";
-        $params[':primary'] = $identifierValue;
+    $slot = 0;
+
+    foreach ($identifiers as $value) {
+        $value = trim((string)$value);
+        if ($value === '') {
+            continue;
+        }
+
+        [$clauses, $bound] = UserIdentifierLookup::buildMatch($value, $dialCode, $localLength, 'c' . $slot++);
+        if ($clauses === []) {
+            continue;
+        }
+
+        $conditions[] = '(' . implode(' OR ', $clauses) . ')';
+        $params += $bound;
     }
-    
-    // Check phone numbers (if we have them and it's not the primary)
-    if (!empty($phoneNumber) && $identifierType !== 'phone') {
-        $conditions[] = "phone = :phone";
-        $params[':phone'] = $phoneNumber;
-    }
-    if (!empty($phone2)) {
-        $conditions[] = "phone2 = :phone2";
-        $params[':phone2'] = $phone2;
-    }
-    if (!empty($phone3)) {
-        $conditions[] = "phone3 = :phone3";
-        $params[':phone3'] = $phone3;
-    }
-    
-    // Check email (if we have it and it's not the primary)
-    if (!empty($emailAddress) && $identifierType !== 'email') {
-        $conditions[] = "email = :email";
-        $params[':email'] = $emailAddress;
-    }
-    
+
     if (empty($conditions)) {
         return false;
     }
-    
-    $query = "SELECT user_id, full_name, phone, email, national_id FROM users WHERE " . implode(" OR ", $conditions) . " LIMIT 1";
+
+    $query = "SELECT user_id, full_name, phone, email, national_id FROM users WHERE "
+           . implode(" OR ", $conditions)
+           . " ORDER BY user_id ASC LIMIT 1";
     $stmt = $pdo->prepare($query);
     $stmt->execute($params);
     return $stmt->fetch(PDO::FETCH_ASSOC);
@@ -369,7 +374,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $phoneNumber = normalizePhone($inputValue, $countryDialCode);
             $identifierValue = $phoneNumber;
         } elseif ($inputType === 'email') {
-            $emailAddress = strtolower(trim($inputValue));
+            $emailAddress = IdentifierNormalizer::canonicalEmail($inputValue);
             $identifierValue = $emailAddress;
         } else {
             $identifierValue = $inputValue;
@@ -388,13 +393,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // This prevents duplicate registrations
         // ============================================================
         $existingUser = userExistsInDatabase(
-            $swapDb, 
-            $inputType, 
-            $identifierValue, 
-            $phoneNumber, 
-            $emailAddress, 
-            $phone2, 
-            $phone3
+            $swapDb,
+            [$identifierValue, $phoneNumber, $emailAddress, $phone2, $phone3, $contactValue],
+            $countryDialCode,
+            $localLength
         );
         
         if ($existingUser) {
@@ -446,13 +448,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($contactChannel === 'phone') {
                 $otpChannel = 'sms';
                 $otpDestination = normalizePhone($contactValue, $countryDialCode);
+                // Keep the contact we are about to verify by OTP on the
+                // account itself. It used to be used for delivery and
+                // then thrown away, so someone who registered with their
+                // national ID had no phone on their row at all and got
+                // "User not found" the moment they tried to sign in with
+                // the number they had just proved they control. The
+                // agent registration flow has always stored it; this
+                // brings self-registration in line.
+                $phoneNumber = $otpDestination;
             } elseif ($contactChannel === 'email') {
                 if (!filter_var($contactValue, FILTER_VALIDATE_EMAIL)) {
                     echo json_encode(['success' => false, 'message' => 'Please enter a valid email address.']);
                     exit;
                 }
                 $otpChannel = 'email';
-                $otpDestination = strtolower(trim($contactValue));
+                $otpDestination = IdentifierNormalizer::canonicalEmail($contactValue);
+                $emailAddress = $otpDestination;
             } else {
                 echo json_encode(['success' => false, 'message' => 'Please choose phone or email to receive your code.']);
                 exit;
@@ -809,7 +821,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <label id="identifier-label">MOBILE NUMBER</label>
                 <div class="input-container" id="input-container">
                     <span class="input-prefix" id="input-prefix"><?= htmlspecialchars($countryDialCode) ?></span>
-                    <input type="tel" id="identifier" class="form-control" placeholder="<?= htmlspecialchars($phonePlaceholder) ?>" autocomplete="off">
+                    <input type="tel" id="identifier" class="form-control" placeholder="<?= htmlspecialchars($phonePlaceholder) ?>" autocomplete="off"
+                           autocapitalize="none" autocorrect="off" spellcheck="false">
                 </div>
                 <div class="help-text" id="help-text">Enter your phone number (e.g., 71 234 567)</div>
 
@@ -819,7 +832,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         <label><input type="radio" name="contact_channel" value="phone" checked> 📱 Phone</label>
                         <label><input type="radio" name="contact_channel" value="email"> ✉️ Email</label>
                     </div>
-                    <input type="text" id="contact_value" class="form-control" placeholder="Enter phone or email" style="border:1px solid rgba(255,255,255,0.15); background:rgba(0,0,0,0.4);">
+                    <input type="text" id="contact_value" class="form-control" placeholder="Enter phone or email" autocapitalize="none" autocorrect="off" spellcheck="false" style="border:1px solid rgba(255,255,255,0.15); background:rgba(0,0,0,0.4);">
                 </div>
             </div>
 

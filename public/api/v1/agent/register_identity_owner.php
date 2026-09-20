@@ -35,12 +35,16 @@ require_once PROJECT_ROOT . '/src/Core/Factories/CommunicationFactory.php';
 require_once PROJECT_ROOT . '/src/Infrastructure/Email/Contracts/EmailProviderInterface.php';
 require_once PROJECT_ROOT . '/src/Infrastructure/Email/EmailGatewayClient.php';
 require_once PROJECT_ROOT . '/src/Domain/Models/Permission.php';
+require_once PROJECT_ROOT . '/src/Domain/Identity/IdentifierNormalizer.php';
+require_once PROJECT_ROOT . '/src/Domain/Identity/UserIdentifierLookup.php';
 
 use Application\Utils\SessionManager;
 use Core\Database\DBConnection;
 use Core\Factories\CommunicationFactory;
 use Infrastructure\Email\EmailGatewayClient;
 use Infrastructure\Credentials\CredentialsRepository;
+use Domain\Identity\IdentifierNormalizer;
+use Domain\Identity\UserIdentifierLookup;
 
 header('Content-Type: application/json; charset=utf-8');
 header('Access-Control-Allow-Origin: *');
@@ -78,6 +82,10 @@ $systemCountry   = $config['country'] ?? getenv('VM_COUNTRY') ?? 'BW';
 $countryConfig   = $config['country_settings'][$systemCountry] ?? [];
 $countryName     = $countryConfig['name'] ?? $systemCountry;
 $countryDialCode = $countryConfig['dial_code'] ?? '+267';
+$localLength     = (int)($countryConfig['local_phone_length'] ?? 8);
+if (!defined('LOCAL_PHONE_LENGTH')) {
+    define('LOCAL_PHONE_LENGTH', $localLength);
+}
 
 try {
     $db = DBConnection::getConnection();
@@ -134,12 +142,11 @@ if (!callerCanRegisterOthers($db, $actingUserId)) {
 // ============================================================
 function normalizePhone(string $phoneInput, string $dialCode): string
 {
-    $phoneInput = preg_replace('/[^\d+]/', '', trim($phoneInput));
-    if ($phoneInput === '') return '';
-    if (str_starts_with($phoneInput, '+')) {
-        return '+' . preg_replace('/[^0-9]/', '', substr($phoneInput, 1));
-    }
-    return $dialCode . ltrim($phoneInput, '0');
+    return IdentifierNormalizer::canonicalPhone(
+        $phoneInput,
+        $dialCode,
+        defined('LOCAL_PHONE_LENGTH') ? LOCAL_PHONE_LENGTH : null
+    );
 }
 
 function generateOTP(): string
@@ -172,37 +179,42 @@ function sendEmail(EmailGatewayClient $emailClient, string $to, string $subject,
     return $result['success'] ?? false;
 }
 
-function userExistsByIdentity(PDO $db, string $identityType, string $identityValue, ?string $contactPhone, ?string $contactEmail): ?array
+function userExistsByIdentity(PDO $db, array $identifiers, string $dialCode, ?int $localLength = null): ?array
 {
-    $columnMap = [
-        'phone' => 'phone',
-        'email' => 'email',
-        'national_id' => 'national_id',
-        'drivers_license' => 'drivers_license',
-        'passport' => 'passport',
-    ];
-
+    // Matching goes through UserIdentifierLookup so an existing account
+    // is recognised whatever shape its identifiers were stored in —
+    // otherwise an agent registers a second account for someone whose
+    // number is already on file in an older shape. (The previous body
+    // also reused the :cphone placeholder three times, which this
+    // connection, with prepare emulation off, does not allow.)
     $conditions = [];
     $params = [];
+    $slot = 0;
 
-    if (isset($columnMap[$identityType])) {
-        $conditions[] = "{$columnMap[$identityType]} = :primary";
-        $params[':primary'] = $identityValue;
-    }
-    if (!empty($contactPhone)) {
-        $conditions[] = "(phone = :cphone OR phone2 = :cphone OR phone3 = :cphone)";
-        $params[':cphone'] = $contactPhone;
-    }
-    if (!empty($contactEmail)) {
-        $conditions[] = "email = :cemail";
-        $params[':cemail'] = $contactEmail;
+    foreach ($identifiers as $value) {
+        $value = trim((string)$value);
+        if ($value === '') {
+            continue;
+        }
+
+        [$clauses, $bound] = UserIdentifierLookup::buildMatch($value, $dialCode, $localLength, 'c' . $slot++);
+        if ($clauses === []) {
+            continue;
+        }
+
+        $conditions[] = '(' . implode(' OR ', $clauses) . ')';
+        $params += $bound;
     }
 
     if (empty($conditions)) {
         return null;
     }
 
-    $stmt = $db->prepare("SELECT user_id, full_name, phone, email FROM users WHERE " . implode(' OR ', $conditions) . " LIMIT 1");
+    $stmt = $db->prepare(
+        "SELECT user_id, full_name, phone, email FROM users WHERE "
+        . implode(' OR ', $conditions)
+        . " ORDER BY user_id ASC LIMIT 1"
+    );
     $stmt->execute($params);
     return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
 }
@@ -249,7 +261,7 @@ try {
                 echo json_encode(['success' => false, 'message' => 'Invalid email address format.']);
                 exit();
             }
-            $normalizedIdentityValue = strtolower($identityValue);
+            $normalizedIdentityValue = IdentifierNormalizer::canonicalEmail($identityValue);
             $emailAddress = $normalizedIdentityValue;
             $otpChannel = 'email';
             $otpDestination = $emailAddress;
@@ -270,7 +282,7 @@ try {
                     exit();
                 }
                 $otpChannel = 'email';
-                $otpDestination = strtolower(trim($contactValue));
+                $otpDestination = IdentifierNormalizer::canonicalEmail($contactValue);
                 $emailAddress = $otpDestination;
             } else {
                 echo json_encode(['success' => false, 'message' => 'contact_channel must be "phone" or "email".']);
@@ -279,7 +291,12 @@ try {
         }
 
         // Duplicate check - identity value AND contact channel
-        $existing = userExistsByIdentity($db, $identityType, $normalizedIdentityValue, $phoneNumber, $emailAddress);
+        $existing = userExistsByIdentity(
+            $db,
+            [$normalizedIdentityValue, $phoneNumber, $emailAddress],
+            $countryDialCode,
+            $localLength
+        );
         if ($existing) {
             echo json_encode([
                 'success' => false,
@@ -419,10 +436,9 @@ try {
             // Re-check for a race-condition duplicate right before insert
             $existing = userExistsByIdentity(
                 $db,
-                $tempData['identity_type'],
-                $tempData['identity_value'],
-                $tempData['phone_number'],
-                $tempData['email']
+                [$tempData['identity_value'], $tempData['phone_number'], $tempData['email']],
+                $countryDialCode,
+                $localLength
             );
             if ($existing) {
                 $db->rollBack();
