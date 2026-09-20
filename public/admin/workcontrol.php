@@ -4,13 +4,37 @@
  * Version: 3.0 - Code Integrity Scanner Integrated
  */
 
-session_start();
-if (!isset($_SESSION['admin_logged_in']) || $_SESSION['admin_logged_in'] !== true) {
+define('PROJECT_ROOT', dirname(__DIR__, 2));
+
+require_once PROJECT_ROOT . '/src/Application/Utils/SessionManager.php';
+require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
+require_once PROJECT_ROOT . '/src/Application/Admin/AdminAudit.php';
+
+use Application\Utils\SessionManager;
+use Application\Admin\AdminAudit;
+use Core\Database\DBConnection;
+
+// WorkControl runs code scans and shows configuration, so it is limited
+// to Super Admin (role 999), not every admin role as before.
+SessionManager::start();
+if (!SessionManager::isAdminLoggedIn()) {
     header('Location: admin_login.php');
     exit;
 }
+if ((int)SessionManager::getAdminRoleId() !== 999) {
+    http_response_code(403);
+    try {
+        AdminAudit::recordOrLog(DBConnection::getConnection(), SessionManager::getAdminId(), 'ACCESS_DENIED', 'admin_view', 'workcontrol',
+            ['role_id' => SessionManager::getAdminRoleId()], AdminAudit::CATEGORY_SECURITY, 'warning');
+    } catch (Throwable $e) { error_log('[WorkControl] denial not audited: ' . $e->getMessage()); }
+    die('WorkControl is restricted to Super Admin.');
+}
 
-define('PROJECT_ROOT', dirname(__DIR__, 2));
+function wcAudit(string $action, array $detail = []): void {
+    try {
+        AdminAudit::recordOrLog(DBConnection::getConnection(), SessionManager::getAdminId(), $action, 'workcontrol', $action, $detail, AdminAudit::CATEGORY_SECURITY);
+    } catch (Throwable $e) { error_log('[WorkControl] ' . $action . ' not audited: ' . $e->getMessage()); }
+}
 define('MAX_SCAN_FILES', 500);
 
 // ============================================================
@@ -304,6 +328,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
     
     // Run full code audit
     if ($action === 'run_audit') {
+        wcAudit('WORKCONTROL_CODE_AUDIT_RUN');
         $syntaxResults = scanPhpSyntax($allFiles);
         $includeIssues = scanMissingIncludes($allFiles);
         $jsonIssues = scanJsonConfigs($allFiles);
@@ -371,7 +396,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
             $ch = curl_init($url);
             curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
             curl_setopt($ch, CURLOPT_TIMEOUT, 10);
-            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
             curl_setopt($ch, CURLOPT_NOBODY, true);
             
             $start = microtime(true);
@@ -407,14 +433,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
     
     // Get environment variables
     if ($action === 'get_env') {
+        // Values are never sent to the browser. The old version masked only
+        // names containing PASSWORD or SECRET, so PG_PASS, APP_ENCRYPTION_KEY
+        // and every API_KEY_* were shown in clear to any admin. Showing
+        // whether each variable is set is enough to diagnose configuration.
         $safeEnv = [];
         foreach ($allEnvVars as $key => $value) {
-            if (strpos($key, 'PASSWORD') !== false || strpos($key, 'SECRET') !== false) {
-                $safeEnv[$key] = '********';
-            } else {
-                $safeEnv[$key] = substr($value, 0, 50) . (strlen($value) > 50 ? '...' : '');
-            }
+            $safeEnv[$key] = trim((string)$value) === '' ? 'EMPTY' : 'set';
         }
+        wcAudit('WORKCONTROL_ENV_VIEWED', ['variables' => count($safeEnv)]);
         echo json_encode(['status' => 'success', 'env' => $safeEnv]);
         exit;
     }
