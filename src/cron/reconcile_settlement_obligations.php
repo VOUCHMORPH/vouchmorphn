@@ -2,7 +2,7 @@
 declare(strict_types=1);
 // cron/reconcile_settlement_obligations.php — run every 1-2 minutes.
 
-require_once __DIR__ . '/../src/Core/Database/DBConnection.php';
+require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
 
 $db = \Core\Database\DBConnection::getConnection();
 
