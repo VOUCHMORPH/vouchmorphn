@@ -114,3 +114,4 @@
     });
 })();
 </script>
+<?php require __DIR__ . '/cinema.php'; // sign-in and sign-out sequences ?>
