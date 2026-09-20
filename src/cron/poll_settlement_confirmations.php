@@ -2,9 +2,9 @@
 declare(strict_types=1);
 // cron/poll_settlement_confirmations.php — run every 1-2 minutes.
 
-require_once __DIR__ . '/../src/Core/Database/DBConnection.php';
-require_once __DIR__ . '/../src/Core/Config/LoadCountry.php';
-require_once __DIR__ . '/../src/Infrastructure/Adapters/InstitutionAdapterFactory.php';
+require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
+require_once __DIR__ . '/../../src/Core/Config/LoadCountry.php';
+require_once __DIR__ . '/../../src/Infrastructure/Adapters/InstitutionAdapterFactory.php';
 
 use Core\Config\LoadCountry;
 use Infrastructure\Adapters\InstitutionAdapterFactory;
