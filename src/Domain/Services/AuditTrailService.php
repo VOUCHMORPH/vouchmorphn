@@ -580,30 +580,18 @@ class AuditTrailService
     }
 
     /**
-     * Clean up old audit logs (retention policy)
+     * Audit logs are never deleted by the application.
+     *
+     * This used to DELETE rows older than 90 days. AML record-keeping
+     * requires at least 5 years, PCI DSS at least 12 months, and deleting
+     * any row breaks the audit hash chain. The database now refuses
+     * DELETE on audit_logs (2026_09_19_audit_chain_enforced.sql), so this
+     * method only records that something asked for it.
      */
     public function cleanOldLogs(int $daysToKeep = 90): int
     {
-        if (!$this->checkTableReady()) {
-            return 0;
-        }
-
-        $sql = "
-            DELETE FROM audit_logs
-            WHERE performed_at < NOW() - INTERVAL :days DAY
-        ";
-
-        try {
-            $stmt = $this->db->prepare($sql);
-            $stmt->bindValue(':days', $daysToKeep, PDO::PARAM_INT);
-            $stmt->execute();
-            $deleted = $stmt->rowCount();
-            $this->logger->info("Cleaned {$deleted} audit logs older than {$daysToKeep} days for country: {$this->countryCode}");
-            return $deleted;
-        } catch (Throwable $e) {
-            $this->logger->error('Clean old logs error: ' . $e->getMessage());
-            return 0;
-        }
+        $this->logger->warning("Refused request to delete audit logs older than {$daysToKeep} days: audit logs are append-only and retained for at least 5 years");
+        return 0;
     }
 
     /**
