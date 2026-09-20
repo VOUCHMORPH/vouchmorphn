@@ -113,6 +113,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     session_regenerate_id(true);
 
+                    // Sign-in sequence (partials/cinema.php): play it once on the
+                    // first page after this redirect, and remember when the session
+                    // began so the sign-out report can show real times.
+                    $_SESSION['vm_signed_in_at'] = time();
+                    $_SESSION['vm_play_intro'] = true;
+                    unset($_SESSION['vmc_logout_token']);
+
                     try {
                         $updateStmt = $pdo->prepare("UPDATE users SET updated_at = NOW() WHERE user_id = :user_id");
                         $updateStmt->execute([':user_id' => $user['user_id']]);
