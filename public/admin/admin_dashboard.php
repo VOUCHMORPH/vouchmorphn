@@ -45,11 +45,11 @@ $adminCountry = SessionManager::getAdminCountry();
 
 $roleDefinitions = [
     999 => ['name' => 'Super Admin', 'label' => 'SUPER ADMIN', 'view' => ['dashboard', 'live_transactions', 'audit', 'invoices', 'regulatory', 'all_tables', 'recent_swaps', 'multi_destination', 'alerts', 'institution_health', 'client_lookup', 'agent_approvals', 'reports', 'participants']],
-    3 => ['name' => 'Central Bank Regulator', 'label' => 'REGULATOR', 'view' => ['dashboard', 'regulatory', 'audit', 'ledger', 'recent_swaps', 'multi_destination', 'alerts', 'institution_health', 'reports', 'participants']],
+    3 => ['name' => 'Central Bank Regulator', 'label' => 'REGULATOR', 'view' => ['dashboard', 'regulatory', 'audit', 'ledger', 'recent_swaps', 'multi_destination', 'alerts', 'institution_health', 'reports', 'participants', 'invoices']],
     4 => ['name' => 'Compliance Officer', 'label' => 'COMPLIANCE', 'view' => ['dashboard', 'audit', 'ledger', 'recent_swaps', 'alerts', 'client_lookup', 'agent_approvals', 'reports']],
     5 => ['name' => 'Auditor', 'label' => 'AUDITOR', 'view' => ['dashboard', 'audit', 'ledger', 'recent_swaps', 'institution_health', 'reports', 'participants']],
     10 => ['name' => 'Finance Manager', 'label' => 'FINANCE', 'view' => ['dashboard', 'invoices', 'recent_swaps', 'alerts', 'institution_health', 'reports']],
-    11 => ['name' => 'Settlement Officer', 'label' => 'SETTLEMENT', 'view' => ['dashboard', 'recent_swaps', 'alerts', 'institution_health', 'participants']],
+    11 => ['name' => 'Settlement Officer', 'label' => 'SETTLEMENT', 'view' => ['dashboard', 'recent_swaps', 'alerts', 'institution_health', 'participants', 'invoices']],
     20 => ['name' => 'Customer Support', 'label' => 'SUPPORT', 'view' => ['dashboard', 'client_lookup', 'agent_approvals']]
 ];
 
@@ -768,9 +768,77 @@ if ($view === 'regulatory' && canView('regulatory')) {
     try { $pendingSettlements = $db->query("SELECT * FROM settlement_queue WHERE status = 'PENDING' ORDER BY created_at DESC LIMIT 100")->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) { dashError('settlement_queue', $e); }
 }
 
+// ============================================================
+// INVOICES AND DESTINATION SETTLEMENT
+// Each fee invoice is paired with the settlement confirmation for the
+// same swap, so one row answers both questions: has the fee been paid
+// to VouchMorph, and has the destination received its money from the
+// source? Labels:
+//   Invoiced | Fee paid                               (settlement_outbox.status)
+//   Destination not settled | ... overdue | Destination settled | Settlement failed | Not tracked
+// "Overdue" comes from settlement_confirmations.overdue_at, set by
+// poll_settlement_confirmations.php after the next business day at noon.
+// ============================================================
 $invoiceMessages = [];
+$invoiceSummary = ['count' => 0, 'fees_total' => 0.0, 'fees_paid' => 0.0, 'not_settled' => 0, 'overdue' => 0, 'settled' => 0, 'failed' => 0, 'untracked' => 0];
+$settleFilter = $_GET['settle'] ?? 'all';
+function settlementLabel(array $r): array {
+    $st = strtoupper((string)($r['settle_status'] ?? ''));
+    if ($st === '') return ['Not tracked', 'info', 'untracked'];
+    if ($st === 'CONFIRMED') return ['Destination settled', 'success', 'settled'];
+    if ($st === 'FAILED') return ['Settlement failed', 'failed', 'failed'];
+    if (!empty($r['overdue_at'])) return ['Destination not settled · overdue', 'failed', 'overdue'];
+    return ['Destination not settled', 'pending', 'not_settled'];
+}
+function invoiceLabel(array $r): array {
+    return strtoupper((string)($r['invoice_status'] ?? '')) === 'ACKNOWLEDGED' ? ['Fee paid', 'success'] : ['Invoiced', 'pending'];
+}
 if ($view === 'invoices' && canView('invoices')) {
-    try { $invoiceMessages = $db->query("SELECT * FROM settlement_outbox WHERE message_type = 'FEE_INVOICE' ORDER BY created_at DESC LIMIT 200")->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) { dashError('settlement_outbox', $e); }
+    try {
+        $invoiceMessages = $db->query("
+            SELECT so.message_uuid, so.swap_reference, so.source_institution AS invoiced_institution,
+                   so.amount, so.currency, so.status AS invoice_status, so.created_at, so.acknowledged_at,
+                   (so.message_payload->>'fee_type') AS fee_type,
+                   sc.destination_institution, sc.status AS settle_status, sc.overdue_at, sc.confirmed_at,
+                   sc.confirmation_mode, sc.last_attempt_at, sc.last_error
+            FROM settlement_outbox so
+            LEFT JOIN settlement_confirmations sc ON sc.swap_reference = so.swap_reference
+            WHERE so.message_type = 'FEE_INVOICE'
+            ORDER BY so.created_at DESC
+            LIMIT 500
+        ")->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {
+        dashError('invoices with settlement status', $e);
+        try {
+            $invoiceMessages = $db->query("
+                SELECT message_uuid, swap_reference, source_institution AS invoiced_institution, amount, currency,
+                       status AS invoice_status, created_at, acknowledged_at, (message_payload->>'fee_type') AS fee_type
+                FROM settlement_outbox WHERE message_type = 'FEE_INVOICE' ORDER BY created_at DESC LIMIT 500
+            ")->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Throwable $e2) { dashError('settlement_outbox', $e2); }
+    }
+    foreach ($invoiceMessages as $r) {
+        $invoiceSummary['count']++;
+        $invoiceSummary['fees_total'] += (float)$r['amount'];
+        if (invoiceLabel($r)[0] === 'Fee paid') $invoiceSummary['fees_paid'] += (float)$r['amount'];
+        $invoiceSummary[settlementLabel($r)[2]]++;
+    }
+    if ($settleFilter !== 'all') {
+        $invoiceMessages = array_values(array_filter($invoiceMessages, fn($r) => settlementLabel($r)[2] === $settleFilter));
+    }
+    if (($_GET['format'] ?? '') === 'csv') {
+        AdminAudit::recordOrLog($db, $adminId, 'REPORT_EXPORTED', 'report', 'invoices_settlement', ['format' => 'csv', 'filter' => $settleFilter]);
+        header('Content-Type: text/csv; charset=utf-8');
+        header('Content-Disposition: attachment; filename="vouchmorph_invoices_settlement_' . date('Ymd_His') . '.csv"');
+        $out = fopen('php://output', 'w');
+        fputcsv($out, ['Invoice', 'Swap reference', 'Invoiced institution', 'Fee type', 'Amount', 'Currency', 'Fee status', 'Destination', 'Destination settlement', 'Invoiced at', 'Fee paid at', 'Settled at', 'Overdue since']);
+        foreach ($invoiceMessages as $r) {
+            fputcsv($out, [$r['message_uuid'], $r['swap_reference'], $r['invoiced_institution'], $r['fee_type'] ?? '', $r['amount'], $r['currency'],
+                invoiceLabel($r)[0], $r['destination_institution'] ?? '', settlementLabel($r)[0], $r['created_at'], $r['acknowledged_at'] ?? '', $r['confirmed_at'] ?? '', $r['overdue_at'] ?? '']);
+        }
+        fclose($out);
+        exit;
+    }
 }
 
 // ============================================================
@@ -1869,7 +1937,7 @@ $viewMeta = [
     'regulatory' => ['side' => 'left', 'eyebrow' => 'Regulatory Oversight', 'blurb' => "Net positions between institutions and pending settlements — the numbers a regulator needs, not the raw transaction feed."],
     'audit' => ['side' => 'right', 'eyebrow' => 'Audit Trail', 'blurb' => "Every recorded action, most recent first. This is the trail — who did what, and when."],
     'ledger' => ['side' => 'left', 'eyebrow' => 'Ledger Reconciliation', 'blurb' => "Variances between debits, credits, and fees across the general ledger — the standing cross-check that shows whether every swap balances perfectly."],
-    'invoices' => ['side' => 'right', 'eyebrow' => 'Invoicing', 'blurb' => "Fee invoices generated automatically through settlement — the paper trail for what's owed to whom."],
+    'invoices' => ['side' => 'right', 'eyebrow' => 'Invoices & Settlement', 'blurb' => "Every fee invoice beside its destination settlement: invoiced or paid, and whether the destination has been paid by the source."],
     'agent_approvals' => ['side' => 'left', 'eyebrow' => 'Agent Onboarding', 'blurb' => "Agents can't touch a client's money until an admin has approved them. Review, approve, or reject every applicant here."],
     'reports' => ['side' => 'right', 'eyebrow' => 'Reporting Suite', 'blurb' => "Executive, regulatory, finance, and audit reports — built for the people who never see the raw tables."],
 ];
@@ -2575,7 +2643,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         <?php if (canView('reports')): ?><a href="?view=reports" class="nav-item <?php echo $view === 'reports' ? 'active' : ''; ?>">Reports</a><?php endif; ?>
         <?php if (canView('audit')): ?><a href="?view=audit" class="nav-item <?php echo $view === 'audit' ? 'active' : ''; ?>">Audit</a><?php endif; ?>
         <?php if (canView('ledger')): ?><a href="?view=ledger" class="nav-item <?php echo $view === 'ledger' ? 'active' : ''; ?>">Ledger</a><?php endif; ?>
-        <?php if (canView('invoices')): ?><a href="?view=invoices" class="nav-item <?php echo $view === 'invoices' ? 'active' : ''; ?>">Invoices</a><?php endif; ?>
+        <?php if (canView('invoices')): ?><a href="?view=invoices" class="nav-item <?php echo $view === 'invoices' ? 'active' : ''; ?>">Invoices &amp; Settlement</a><?php endif; ?>
         <?php if (canView('all_tables') && $isSuperAdmin): ?><a href="?view=all_tables" class="nav-item <?php echo $view === 'all_tables' ? 'active' : ''; ?>">Tables</a><?php endif; ?>
         </div>
     </nav>
@@ -3803,25 +3871,41 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             </div>
             <?php endif; ?>
 
-            <!-- INVOICES -->
+            <!-- INVOICES AND DESTINATION SETTLEMENT -->
             <?php if ($view === 'invoices' && canView('invoices')): ?>
             <div class="content-header">
-                <h1>Invoices</h1>
-                <span class="timestamp">Fee invoices from settlement</span>
+                <h1>Invoices &amp; Settlement</h1>
+                <span class="timestamp">Fee invoices and whether each destination has been paid</span>
                 <a href="?view=dashboard" class="back-link">← Back</a>
             </div>
+            <div class="metrics-grid" style="grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));">
+                <div class="metric-card"><span class="metric-label">Fees invoiced</span><span class="metric-value"><?php echo number_format($invoiceSummary['fees_total'], 2); ?></span><span class="metric-sub"><?php echo number_format($invoiceSummary['count']); ?> invoices</span></div>
+                <div class="metric-card"><span class="metric-label">Fees paid</span><span class="metric-value"><?php echo number_format($invoiceSummary['fees_paid'], 2); ?></span><span class="metric-sub">outstanding <?php echo number_format($invoiceSummary['fees_total'] - $invoiceSummary['fees_paid'], 2); ?></span></div>
+                <div class="metric-card"><span class="metric-label">Destination not settled</span><span class="metric-value"><?php echo number_format($invoiceSummary['not_settled']); ?></span><span class="metric-sub">within deadline</span></div>
+                <div class="metric-card" style="<?php echo $invoiceSummary['overdue'] > 0 ? 'border-top-color:var(--bad);' : ''; ?>"><span class="metric-label">Overdue</span><span class="metric-value" style="<?php echo $invoiceSummary['overdue'] > 0 ? 'color:var(--bad);' : ''; ?>"><?php echo number_format($invoiceSummary['overdue']); ?></span><span class="metric-sub">past next business day noon</span></div>
+                <div class="metric-card"><span class="metric-label">Destination settled</span><span class="metric-value" style="color:var(--good);"><?php echo number_format($invoiceSummary['settled']); ?></span></div>
+                <div class="metric-card"><span class="metric-label">Settlement failed</span><span class="metric-value"><?php echo number_format($invoiceSummary['failed']); ?></span><span class="metric-sub">institution said not paid</span></div>
+            </div>
+            <div style="display:flex; justify-content:center; gap:var(--sp-2); flex-wrap:wrap; margin-bottom:var(--sp-5);">
+                <?php foreach (['all' => 'All', 'not_settled' => 'Not settled', 'overdue' => 'Overdue', 'settled' => 'Settled', 'failed' => 'Failed', 'untracked' => 'Not tracked'] as $k => $lbl): ?>
+                <a href="?view=invoices&settle=<?php echo $k; ?>" class="btn btn-sm <?php echo $settleFilter === $k ? 'btn-primary' : ''; ?>"><?php echo $lbl; ?></a>
+                <?php endforeach; ?>
+                <a href="?view=invoices&settle=<?php echo safeHtml($settleFilter); ?>&format=csv" class="btn btn-sm">Download CSV</a>
+            </div>
             <div class="card">
-                <div class="card-header"><span class="card-title">Fee Invoices</span><span class="card-badge"><?php echo count($invoiceMessages); ?></span></div>
-                <?php if (empty($invoiceMessages)): ?><div class="empty-state"><span class="icon">📭</span><p>No invoices</p></div>
+                <div class="card-header"><span class="card-title">Invoices</span><span class="card-badge"><?php echo count($invoiceMessages); ?></span></div>
+                <?php if (empty($invoiceMessages)): ?><div class="empty-state"><span class="icon">📭</span><p>No invoices<?php echo $settleFilter !== 'all' ? ' with this status' : ''; ?>.</p></div>
                 <?php else: ?>
-                <div class="table-responsive"><table><thead><tr><th>Message ID</th><th>Swap Ref</th><th>Source</th><th>Destination</th><th>Created</th></tr></thead><tbody>
-                <?php foreach ($invoiceMessages as $inv): ?>
+                <div class="table-responsive"><table><thead><tr><th>Swap</th><th>Invoiced to</th><th>Fee</th><th>Status</th><th>Destination</th><th>Invoiced</th><th>Settled / last check</th></tr></thead><tbody>
+                <?php foreach ($invoiceMessages as $inv): [$feeLbl, $feeCls] = invoiceLabel($inv); [$setLbl, $setCls] = settlementLabel($inv); ?>
                 <tr>
-                    <td><?php echo safeHtml(substr($inv['message_id'] ?? '', 0, 16)); ?></td>
-                    <td><?php echo safeHtml(substr($inv['swap_reference'] ?? 'N/A', 0, 16)); ?></td>
-                    <td><?php echo safeHtml($inv['source_institution'] ?? 'N/A'); ?></td>
-                    <td><?php echo safeHtml($inv['destination_institution'] ?? 'N/A'); ?></td>
-                    <td><?php echo safeHtml(date('Y-m-d H:i', strtotime($inv['created_at'] ?? 'now'))); ?></td>
+                    <td><a href="?view=reports&report=transaction_certificate&ref=<?php echo urlencode($inv['swap_reference'] ?? ''); ?>"><?php echo safeHtml(substr($inv['swap_reference'] ?? 'N/A', 0, 22)); ?></a></td>
+                    <td><?php echo safeHtml($inv['invoiced_institution'] ?? 'N/A'); ?></td>
+                    <td><strong><?php echo number_format((float)$inv['amount'], 2); ?></strong> <?php echo safeHtml($inv['currency'] ?? ''); ?><?php if (!empty($inv['fee_type'])): ?><div style="font-size:12px;color:var(--ink-300);"><?php echo safeHtml($inv['fee_type']); ?></div><?php endif; ?></td>
+                    <td><span class="status status-<?php echo $feeCls; ?>"><?php echo $feeLbl; ?></span> <span class="status status-<?php echo $setCls; ?>"><?php echo safeHtml($setLbl); ?></span></td>
+                    <td><?php echo safeHtml($inv['destination_institution'] ?? '—'); ?><?php if (!empty($inv['confirmation_mode'])): ?><div style="font-size:12px;color:var(--ink-300);"><?php echo safeHtml(strtolower($inv['confirmation_mode'])); ?></div><?php endif; ?></td>
+                    <td><?php echo tsHtml($inv['created_at'] ?? ''); ?></td>
+                    <td><?php echo !empty($inv['confirmed_at']) ? tsHtml($inv['confirmed_at']) : tsHtml($inv['last_attempt_at'] ?? '', 'not checked yet'); ?><?php if (!empty($inv['last_error']) && empty($inv['confirmed_at'])): ?><div style="font-size:12px;color:var(--bad);"><?php echo safeHtml(mb_substr($inv['last_error'], 0, 90)); ?></div><?php endif; ?></td>
                 </tr>
                 <?php endforeach; ?>
                 </tbody></table></div>
