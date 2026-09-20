@@ -27,9 +27,15 @@
             <exclude>tests/Unit/LicenceEnforcementTest.php</exclude>
         </testsuite>
 
-        <!-- Needs DATABASE_URL and a reachable database. -->
+        <!--
+          Needs a database. LicenceEnforcementTest reads DATABASE_URL;
+          tests/Integration needs IDENTIFIER_LOOKUP_TEST_DATABASE_URL
+          pointed at a throwaway server (it creates and drops a schema)
+          and skips itself when that is unset.
+        -->
         <testsuite name="Integration">
             <file>tests/Unit/LicenceEnforcementTest.php</file>
+            <directory>tests/Integration</directory>
         </testsuite>
     </testsuites>
 </phpunit>
