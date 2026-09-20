@@ -18,11 +18,13 @@ require_once PROJECT_ROOT . '/src/Application/Utils/SessionManager.php';
 require_once PROJECT_ROOT . '/src/Application/Admin/Auth/AdminAuth.php';
 require_once PROJECT_ROOT . '/vendor/autoload.php';
 require_once PROJECT_ROOT . '/src/Core/Config/LoadCountry.php';
+require_once PROJECT_ROOT . '/src/Application/Admin/AdminAudit.php';
 
 use Core\Database\DBConnection;
 use Application\Utils\SessionManager;
 use Application\Admin\Auth\AdminAuth;
 use Core\Config\LoadCountry;
+use Application\Admin\AdminAudit;
 use Dompdf\Dompdf;
 use Dompdf\Options;
 
@@ -63,6 +65,17 @@ function canView($view) {
 
 function safeHtml($value) {
     return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
+}
+
+// Every data query on this page used to swallow its own errors, so a
+// broken query rendered as "no data" and nobody could tell the
+// difference. Failures are now collected here, logged, and shown to the
+// roles that can act on them (see the banner under the page header).
+$dashboardErrors = [];
+function dashError(string $where, Throwable $e): void {
+    global $dashboardErrors;
+    $dashboardErrors[] = ['where' => $where, 'message' => $e->getMessage()];
+    error_log("[ADMIN DASHBOARD] {$where}: " . $e->getMessage());
 }
 
 // Splits a raw DB timestamp (which may carry fractional seconds and a UTC
@@ -353,7 +366,9 @@ try {
     if (!$db) throw new Exception("Database connection failed");
     $db->query("SELECT 1");
 } catch (Throwable $e) {
-    die("Database connection failed: " . $e->getMessage());
+    error_log('[ADMIN DASHBOARD] database connection failed: ' . $e->getMessage());
+    http_response_code(503);
+    die('The admin dashboard cannot reach its database right now. This has been logged.');
 }
 
 $view = $_GET['view'] ?? 'dashboard';
@@ -362,35 +377,103 @@ $lookup = trim($_GET['lookup'] ?? '');
 $reportKey = $_GET['report'] ?? '';
 $reportFormat = $_GET['format'] ?? '';
 
+// One-shot message carried across the POST/Redirect/GET below.
+$flash = $_SESSION['admin_flash'] ?? null;
+unset($_SESSION['admin_flash']);
+
+// Views this page knows about. A known view the role may not open is
+// refused and recorded; see the ACCESS DENIED block at the bottom.
+$knownViews = ['dashboard', 'client_lookup', 'alerts', 'live_transactions', 'multi_destination', 'recent_swaps', 'institution_health', 'regulatory', 'audit', 'ledger', 'invoices', 'all_tables', 'agent_approvals', 'reports', 'participants'];
+$accessDenied = !in_array($view, $knownViews, true) || !canView($view) || ($view === 'all_tables' && !$isSuperAdmin);
+if ($accessDenied && in_array($view, $knownViews, true)) {
+    AdminAudit::recordOrLog($db, $adminId, 'ACCESS_DENIED', 'admin_view', $view,
+        ['role_id' => $adminRoleId], AdminAudit::CATEGORY_SECURITY, 'warning');
+}
+
 // ============================================================
-// AGENT APPROVAL ACTIONS — POST only, CSRF-checked. Approving
-// or rejecting an agent redirects back to the list (POST/Redirect/GET)
-// so a page refresh never re-submits the action.
+// AGENT DESTINATION APPROVALS - POST only, CSRF-checked.
+//
+// Agents are users with the 'agent' role; what needs an admin decision
+// is an agent's destination account that the institution could not
+// verify automatically (agent_destination_accounts, status
+// 'pending_confirmation'). The old code updated an `agents` table that
+// no migration creates, and wrote its audit row to columns audit_logs
+// does not have (admin_id, target_type...) inside an empty catch, so
+// every decision went unrecorded.
+//
+// Now: the status change and its audit row are one transaction. If the
+// audit row cannot be written, the decision is rolled back - an
+// unrecorded approval never happens. Rejections need a written reason.
+// POST/Redirect/GET so a refresh never re-submits.
 // ============================================================
 if ($view === 'agent_approvals' && canView('agent_approvals') && $_SERVER['REQUEST_METHOD'] === 'POST') {
-    $action = $_POST['action'] ?? '';
-    $agentId = $_POST['agent_id'] ?? '';
+    $action = (string)($_POST['action'] ?? '');
+    $destinationId = (int)($_POST['agent_id'] ?? 0);
+    $reason = trim((string)($_POST['reason'] ?? ''));
     $csrfOk = isset($_POST['csrf_token']) && hash_equals($_SESSION['csrf_token'], (string)$_POST['csrf_token']);
-    if ($csrfOk && $agentId !== '' && in_array($action, ['approve', 'reject'], true)) {
+
+    if (!$csrfOk) {
+        AdminAudit::recordOrLog($db, $adminId, 'CSRF_REJECTED', 'agent_destination', (string)$destinationId,
+            ['attempted_action' => $action], AdminAudit::CATEGORY_SECURITY, 'warning');
+        $_SESSION['admin_flash'] = ['type' => 'bad', 'text' => 'Your session form expired. Nothing was changed; please try again.'];
+    } elseif ($destinationId <= 0 || !in_array($action, ['approve', 'reject'], true)) {
+        $_SESSION['admin_flash'] = ['type' => 'bad', 'text' => 'Invalid request. Nothing was changed.'];
+    } elseif ($action === 'reject' && mb_strlen($reason) < 5) {
+        $_SESSION['admin_flash'] = ['type' => 'bad', 'text' => 'A rejection needs a reason of at least 5 characters. Nothing was changed.'];
+    } else {
+        $newStatus = $action === 'approve' ? 'active' : 'rejected';
         try {
-            $newStatus = $action === 'approve' ? 'approved' : 'rejected';
+            $db->beginTransaction();
             $stmt = $db->prepare("
-                UPDATE agents
-                SET status = :status, approved_by = :adminId, approved_at = NOW()
-                WHERE id = :id
+                SELECT id, user_id, institution, asset_type, identifier, status
+                FROM agent_destination_accounts
+                WHERE id = :id AND deleted_at IS NULL
+                FOR UPDATE
             ");
-            $stmt->execute([':status' => $newStatus, ':adminId' => $adminId, ':id' => $agentId]);
-            try {
-                $logStmt = $db->prepare("
-                    INSERT INTO audit_logs (admin_id, action, target_type, target_id, created_at)
-                    VALUES (:aid, :action, 'agent', :tid, NOW())
-                ");
-                $logStmt->execute([':aid' => $adminId, ':action' => 'agent_' . $newStatus, ':tid' => $agentId]);
-            } catch (Throwable $e) {
-                // audit_logs schema may differ — approval still succeeds even if the log write fails
+            $stmt->execute([':id' => $destinationId]);
+            $dest = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$dest) {
+                throw new RuntimeException('That application no longer exists.');
             }
+            if ($dest['status'] !== 'pending_confirmation') {
+                throw new RuntimeException("That application was already decided (status: {$dest['status']}).");
+            }
+            $upd = $db->prepare("
+                UPDATE agent_destination_accounts
+                SET status = :status,
+                    confirmed_at = CASE WHEN :status2 = 'active' THEN NOW() ELSE confirmed_at END,
+                    updated_at = NOW()
+                WHERE id = :id AND status = 'pending_confirmation'
+            ");
+            $upd->execute([':status' => $newStatus, ':status2' => $newStatus, ':id' => $destinationId]);
+            if ($upd->rowCount() !== 1) {
+                throw new RuntimeException('The application changed while you were deciding. Nothing was changed.');
+            }
+            AdminAudit::record(
+                $db, $adminId,
+                $newStatus === 'active' ? 'AGENT_DESTINATION_APPROVED' : 'AGENT_DESTINATION_REJECTED',
+                'agent_destination', (string)$destinationId,
+                ['status' => $dest['status']],
+                [
+                    'status' => $newStatus,
+                    'reason' => $reason !== '' ? $reason : null,
+                    'agent_user_id' => (int)$dest['user_id'],
+                    'institution' => $dest['institution'],
+                    'asset_type' => $dest['asset_type'],
+                    'identifier' => AdminAudit::mask((string)$dest['identifier']),
+                ],
+                $newStatus === 'rejected' ? 'warning' : 'info'
+            );
+            $db->commit();
+            $_SESSION['admin_flash'] = ['type' => 'good', 'text' => $newStatus === 'active'
+                ? 'Approved and recorded in the audit log.'
+                : 'Rejected and recorded in the audit log.'];
         } catch (Throwable $e) {
-            error_log("[ADMIN DASHBOARD] agent approval error: " . $e->getMessage());
+            if ($db->inTransaction()) {
+                $db->rollBack();
+            }
+            error_log('[ADMIN DASHBOARD] agent decision failed: ' . $e->getMessage());
+            $_SESSION['admin_flash'] = ['type' => 'bad', 'text' => 'Nothing was changed: ' . ($e instanceof RuntimeException ? $e->getMessage() : 'the decision or its audit record could not be saved.')];
         }
     }
     header('Location: ?view=agent_approvals');
@@ -490,7 +573,7 @@ try {
         $liveStats['failed'] = (int)($liveStats['failed'] ?? 0);
         $liveStats['total_amount'] = (float)($liveStats['total_amount'] ?? 0);
     }
-} catch (Throwable $e) {}
+} catch (Throwable $e) { dashError('vw_all_swaps', $e); }
 
 $recentSwaps = [];
 try {
@@ -513,7 +596,7 @@ try {
         ]);
         $recentSwaps = dedupeSwapRows($stmt->fetchAll(PDO::FETCH_ASSOC));
     }
-} catch (Throwable $e) {}
+} catch (Throwable $e) { dashError('vw_all_swaps', $e); }
 
 $multiDestinationSwaps = [];
 try {
@@ -524,7 +607,7 @@ try {
         FROM multi_destination_swaps ORDER BY created_at DESC
     ");
     $multiDestinationSwaps = $stmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (Throwable $e) {}
+} catch (Throwable $e) { dashError('multi_destination_swaps', $e); }
 
 $alerts = ['stuck_holds' => [], 'expired_identity_swaps' => [], 'stuck_cashouts' => []];
 $totalAlerts = 0;
@@ -534,12 +617,12 @@ try {
                amount, currency, status, created_at
         FROM hold_transactions
         WHERE status IN ('ACTIVE','HELD','PENDING_CASHOUT','PENDING_IDENTITY')
-          AND created_at < NOW() - INTERVAL '24 hours'
+          AND created_at < NOW() - INTERVAL '20 hours'
         ORDER BY created_at ASC LIMIT 300
     ");
     $alerts['stuck_holds'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
     $totalAlerts += count($alerts['stuck_holds']);
-} catch (Throwable $e) {}
+} catch (Throwable $e) { dashError('hold_transactions', $e); }
 try {
     $stmt = $db->query("
         SELECT swap_reference, source_institution, identity_type, identity_value,
@@ -550,7 +633,7 @@ try {
     ");
     $alerts['expired_identity_swaps'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
     $totalAlerts += count($alerts['expired_identity_swaps']);
-} catch (Throwable $e) {}
+} catch (Throwable $e) { dashError('identity_swap_holds', $e); }
 try {
     $stmt = $db->query("
         SELECT swap_reference, client_phone, source_institution, cashout_provider,
@@ -561,7 +644,7 @@ try {
     ");
     $alerts['stuck_cashouts'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
     $totalAlerts += count($alerts['stuck_cashouts']);
-} catch (Throwable $e) {}
+} catch (Throwable $e) { dashError('cashout_authorizations', $e); }
 
 $institutionHealth = [];
 try {
@@ -583,7 +666,7 @@ try {
         $row['success_rate'] = $row['total'] > 0 ? round(($row['successful'] / $row['total']) * 100, 1) : 0.0;
     }
     unset($row);
-} catch (Throwable $e) {}
+} catch (Throwable $e) { dashError('vw_all_swaps', $e); }
 
 $metrics = [];
 try {
@@ -623,7 +706,7 @@ if ($view === 'client_lookup' && $lookup !== '') {
                 'identity' => ($row['identity_type'] ?? '') . ': ' . ($row['identity_value'] ?? ''),
             ];
         }
-    } catch (Throwable $e) {}
+    } catch (Throwable $e) { dashError('client lookup: identity_swap_holds', $e); }
     try {
         $stmt = $db->prepare("
             SELECT swap_reference, client_phone, source_institution, cashout_provider,
@@ -647,56 +730,47 @@ if ($view === 'client_lookup' && $lookup !== '') {
                 'identity' => 'Phone: ' . ($row['client_phone'] ?? 'N/A'),
             ];
         }
-    } catch (Throwable $e) {}
+    } catch (Throwable $e) { dashError('client lookup: cashout_authorizations', $e); }
+}
+
+if ($view === 'client_lookup' && $lookup !== '' && canView('client_lookup')) {
+    AdminAudit::recordOrLog($db, $adminId, 'CLIENT_LOOKUP', 'client', AdminAudit::mask($lookup),
+        ['results' => count($lookupResults)]);
 }
 
 $auditRows = [];
 if ($view === 'audit' && canView('audit')) {
-    try { $auditRows = $db->query("SELECT * FROM audit_logs ORDER BY audit_id DESC LIMIT 200")->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) {}
+    try { $auditRows = $db->query("SELECT * FROM audit_logs ORDER BY audit_id DESC LIMIT 200")->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) { dashError('audit_logs', $e); }
 }
 
 // --- AUDIT CHAIN INTEGRITY CHECK ---
-// $chainState is one of 'intact' | 'broken' | 'unknown'.
-//
-// It used to be a plain boolean defaulting to false, with the query
-// wrapped in an empty catch. prev_hash and entry_hash did not exist on
-// any schema in this repo until
-// 2026_09_16_transaction_audit_integrity.sql added them, so the query
-// threw every time, was swallowed, left the flag false, and the panel
-// below rendered a confident "INTACT" for a tamper-evidence check that
-// had not run at all. A verification that could not be performed is not
-// a pass, so it now reports 'unknown' and says why.
-$chainBroken = false;
+// $chainState is 'intact' | 'broken' | 'unknown'. The chain is built and
+// checked by the database itself (2026_09_19_audit_chain_enforced.sql),
+// covering every column of every row, so every writer is included and
+// the result does not depend on PHP time zones. 'unknown' means the check
+// could not run, which is never shown as a pass.
 $chainState = 'unknown';
 $chainError = null;
+$chainInfo = null;
 if ($view === 'audit' && canView('audit')) {
-    try {
-        $rows = $db->query("SELECT audit_id, entity_type, entity_id, action, performed_at, performed_by_id, prev_hash, entry_hash FROM audit_logs ORDER BY audit_id ASC")->fetchAll(PDO::FETCH_ASSOC);
-        $expectedPrev = null;
-        $chainState = 'intact';
-        foreach ($rows as $r) {
-            if ($r['prev_hash'] !== $expectedPrev) { $chainBroken = true; $chainState = 'broken'; break; }
-            $canonical = json_encode(['entity_type'=>$r['entity_type'],'entity_id'=>$r['entity_id'],'action'=>$r['action'],'performed_at'=>$r['performed_at'],'performed_by_id'=>$r['performed_by_id']]);
-            $expectedPrev = hash('sha256', ($r['prev_hash'] ?? '') . $canonical);
-            if ($expectedPrev !== $r['entry_hash']) { $chainBroken = true; $chainState = 'broken'; break; }
-        }
-    } catch (Throwable $e) {
-        $chainState = 'unknown';
-        $chainError = $e->getMessage();
-        error_log('[admin_dashboard] audit chain verification could not run: ' . $e->getMessage());
-    }
+    $chainInfo = AdminAudit::verifyChain($db);
+    $chainState = $chainInfo['state'];
+    $chainError = $chainInfo['error'];
+    AdminAudit::recordOrLog($db, $adminId, 'AUDIT_CHAIN_VERIFIED', 'audit_chain', 'audit_logs',
+        ['result' => $chainState, 'rows' => $chainInfo['total'], 'head_seq' => $chainInfo['head_seq'], 'head_hash' => $chainInfo['head_hash']],
+        AdminAudit::CATEGORY_SECURITY);
 }
 
 $netPositions = [];
 $pendingSettlements = [];
 if ($view === 'regulatory' && canView('regulatory')) {
-    try { $netPositions = $db->query("SELECT * FROM net_positions ORDER BY id DESC LIMIT 100")->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) {}
-    try { $pendingSettlements = $db->query("SELECT * FROM settlement_queue WHERE status = 'PENDING' ORDER BY created_at DESC LIMIT 100")->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) {}
+    try { $netPositions = $db->query("SELECT * FROM net_positions ORDER BY id DESC LIMIT 100")->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) { dashError('net_positions', $e); }
+    try { $pendingSettlements = $db->query("SELECT * FROM settlement_queue WHERE status = 'PENDING' ORDER BY created_at DESC LIMIT 100")->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) { dashError('settlement_queue', $e); }
 }
 
 $invoiceMessages = [];
 if ($view === 'invoices' && canView('invoices')) {
-    try { $invoiceMessages = $db->query("SELECT * FROM settlement_outbox WHERE message_type = 'FEE_INVOICE' ORDER BY created_at DESC LIMIT 200")->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) {}
+    try { $invoiceMessages = $db->query("SELECT * FROM settlement_outbox WHERE message_type = 'FEE_INVOICE' ORDER BY created_at DESC LIMIT 200")->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) { dashError('settlement_outbox', $e); }
 }
 
 // ============================================================
@@ -717,40 +791,40 @@ if ($view === 'ledger' && canView('ledger')) {
                 <> COALESCE(SUM(amount) FILTER (WHERE leg = 'DEST_CREDIT'), 0) + COALESCE(SUM(amount) FILTER (WHERE leg = 'FEE_RECEIVABLE'), 0)
             ORDER BY last_posted DESC LIMIT 200
         ")->fetchAll(PDO::FETCH_ASSOC);
-    } catch (Throwable $e) {}
+    } catch (Throwable $e) { dashError('ledger_entries', $e); }
 }
 
 // ============================================================
-// AGENT APPROVALS DATA
-// Assumes an `agents` table: id, full_name, phone, email,
-// institution, id_number, status ('pending'|'approved'|'rejected'),
-// created_at, approved_by, approved_at.
-// Adjust column names below if your schema differs.
+// AGENT DESTINATION APPROVALS DATA - agent_destination_accounts joined to
+// the agent's user record. Shapes rows the way the view below expects.
 // ============================================================
 $pendingAgents = [];
 $allAgents = [];
 $agentCounts = ['pending' => 0, 'approved' => 0, 'rejected' => 0];
 if (canView('agent_approvals')) {
+    $agentSelect = "
+        SELECT a.id, a.user_id, a.institution, a.asset_type, a.identifier, a.account_name,
+               a.account_type, a.status, a.proposed_at AS created_at, a.confirmed_at AS approved_at,
+               u.username AS full_name, u.phone, u.email
+        FROM agent_destination_accounts a
+        LEFT JOIN users u ON u.user_id = a.user_id
+        WHERE a.deleted_at IS NULL
+    ";
     try {
-        $pendingAgents = $db->query("
-            SELECT id, full_name, phone, email, institution, id_number, status, created_at
-            FROM agents WHERE status = 'pending' ORDER BY created_at ASC
-        ")->fetchAll(PDO::FETCH_ASSOC);
-    } catch (Throwable $e) {}
+        $pendingAgents = $db->query($agentSelect . " AND a.status = 'pending_confirmation' ORDER BY a.proposed_at ASC")->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) { dashError('agent approvals: pending list', $e); }
     if ($view === 'agent_approvals') {
         try {
-            $allAgents = $db->query("
-                SELECT id, full_name, phone, email, institution, status, created_at, approved_at
-                FROM agents ORDER BY created_at DESC LIMIT 200
-            ")->fetchAll(PDO::FETCH_ASSOC);
-        } catch (Throwable $e) {}
+            $allAgents = $db->query($agentSelect . " ORDER BY a.proposed_at DESC LIMIT 200")->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Throwable $e) { dashError('agent approvals: registry', $e); }
         try {
-            $countRows = $db->query("SELECT status, COUNT(*) AS c FROM agents GROUP BY status")->fetchAll(PDO::FETCH_ASSOC);
+            $statusMap = ['pending_confirmation' => 'pending', 'active' => 'approved', 'rejected' => 'rejected'];
+            $countRows = $db->query("SELECT status, COUNT(*) AS c FROM agent_destination_accounts WHERE deleted_at IS NULL GROUP BY status")->fetchAll(PDO::FETCH_ASSOC);
             foreach ($countRows as $cr) {
-                $key = strtolower($cr['status'] ?? '');
-                if (isset($agentCounts[$key])) $agentCounts[$key] = (int)$cr['c'];
+                $key = $statusMap[strtolower($cr['status'] ?? '')] ?? null;
+                if ($key !== null) $agentCounts[$key] = (int)$cr['c'];
             }
-        } catch (Throwable $e) {}
+        } catch (Throwable $e) { dashError('agent approvals: counts', $e); }
     }
 }
 $agentApprovalCount = count($pendingAgents);
@@ -871,6 +945,7 @@ $settlementPeriod = $_GET['period'] ?? 'daily'; // daily | weekly | monthly
 $certData = null;
 $certRef = trim($_GET['ref'] ?? '');
 $integrityIssues = [];
+$integrityFailed = [];
 $integrityTotalIssues = 0;
 $bankStatement = null;
 $bankInstitution = trim($_GET['institution'] ?? '');
@@ -891,7 +966,18 @@ $settlementPeriodConfig = [
     'monthly' => ['unit' => 'month', 'window' => '12 months', 'label' => 'Month'],
 ];
 
-if ($view === 'reports' && canView('reports') && $reportKey !== '') {
+if ($view === 'reports' && canView('reports') && $reportKey !== '' && isset($reportCatalog[$reportKey])) {
+    // Who opened or exported which report, with what filters. Recorded
+    // before any export branch below streams a file and exits.
+    AdminAudit::recordOrLog($db, $adminId,
+        in_array($reportFormat, ['csv', 'pdf'], true) ? 'REPORT_EXPORTED' : 'REPORT_VIEWED',
+        'report', $reportKey,
+        array_filter([
+            'format' => $reportFormat ?: 'html',
+            'reference' => $certRef ?: null,
+            'institution' => $bankInstitution ?: null,
+            'period' => $reportKey === 'institution_settlement_summary' ? $settlementPeriod : null,
+        ], fn($v) => $v !== null));
 
     // ============================================================
     // TRANSACTION CERTIFICATE — the full signed chain for one swap.
@@ -906,17 +992,17 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
             $stmt = $db->prepare("SELECT * FROM swap_requests WHERE swap_uuid = :ref");
             $stmt->execute([':ref' => $certRef]);
             $certData['swap_request'] = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
-        } catch (Throwable $e) { $certData['swap_request'] = null; }
+        } catch (Throwable $e) { dashError('swap_requests', $e); $certData['swap_request'] = null; }
         try {
             $stmt = $db->prepare("SELECT * FROM hold_transactions WHERE swap_reference = :ref ORDER BY placed_at ASC");
             $stmt->execute([':ref' => $certRef]);
             $certData['holds'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        } catch (Throwable $e) { $certData['holds'] = []; }
+        } catch (Throwable $e) { dashError('hold_transactions', $e); $certData['holds'] = []; }
         try {
             $stmt = $db->prepare("SELECT * FROM cashout_authorizations WHERE swap_reference = :ref");
             $stmt->execute([':ref' => $certRef]);
             $certData['cashout'] = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
-        } catch (Throwable $e) { $certData['cashout'] = null; }
+        } catch (Throwable $e) { dashError('cashout_authorizations', $e); $certData['cashout'] = null; }
         try {
             $stmt = $db->prepare("
                 SELECT st.* FROM swap_transactions st
@@ -925,7 +1011,7 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
             ");
             $stmt->execute([':ref' => $certRef]);
             $certData['swap_transactions'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        } catch (Throwable $e) { $certData['swap_transactions'] = []; }
+        } catch (Throwable $e) { dashError('swap_transactions', $e); $certData['swap_transactions'] = []; }
         // audit_logs.entity_id holds the swap reference. It was declared
         // bigint until 2026_09_16_transaction_audit_integrity.sql widened
         // it, so this comparison used to raise 22P02, get swallowed here,
@@ -953,12 +1039,12 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
             $stmt = $db->prepare("SELECT * FROM message_outbox WHERE payload->>'swap_reference' = :ref ORDER BY created_at ASC");
             $stmt->execute([':ref' => $certRef]);
             $certData['messages'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        } catch (Throwable $e) { $certData['messages'] = []; }
+        } catch (Throwable $e) { dashError('message_outbox', $e); $certData['messages'] = []; }
         try {
             $stmt = $db->prepare("SELECT * FROM settlement_outbox WHERE swap_reference = :ref ORDER BY created_at ASC");
             $stmt->execute([':ref' => $certRef]);
             $certData['settlement'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        } catch (Throwable $e) { $certData['settlement'] = []; }
+        } catch (Throwable $e) { dashError('settlement_outbox', $e); $certData['settlement'] = []; }
 
         // Transaction Certificate spec: created_at is the moment the
         // account clicked "Swap" (captured client-side and sent with the
@@ -1030,7 +1116,7 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
                 $stmt = $db->prepare("SELECT * FROM multi_destination_swaps WHERE reference = :ref");
                 $stmt->execute([':ref' => $batchRef]);
                 $batch = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
-            } catch (Throwable $e) { $batch = null; }
+            } catch (Throwable $e) { dashError('multi_destination_swaps', $e); $batch = null; }
 
             if ($batch) {
                 $destinations = json_decode($batch['destinations_payload'] ?? '[]', true) ?: [];
@@ -1107,7 +1193,7 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
                 LIMIT 500
             ");
             $integrityIssues['duplicate_debited_holds'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        } catch (Throwable $e) { $integrityIssues['duplicate_debited_holds'] = []; }
+        } catch (Throwable $e) { dashError('hold_transactions', $e); $integrityIssues['duplicate_debited_holds'] = []; $integrityFailed['duplicate_debited_holds'] = $e->getMessage(); }
 
         try {
             $stmt = $db->query("
@@ -1119,7 +1205,7 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
                 LIMIT 500
             ");
             $integrityIssues['duplicate_completed_cashouts'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        } catch (Throwable $e) { $integrityIssues['duplicate_completed_cashouts'] = []; }
+        } catch (Throwable $e) { dashError('cashout_authorizations', $e); $integrityIssues['duplicate_completed_cashouts'] = []; $integrityFailed['duplicate_completed_cashouts'] = $e->getMessage(); }
 
         try {
             $stmt = $db->query("
@@ -1130,7 +1216,7 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
                 LIMIT 200
             ");
             $integrityIssues['idempotency_key_conflicts'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        } catch (Throwable $e) { $integrityIssues['idempotency_key_conflicts'] = []; }
+        } catch (Throwable $e) { dashError('idempotency_keys', $e); $integrityIssues['idempotency_key_conflicts'] = []; $integrityFailed['idempotency_key_conflicts'] = $e->getMessage(); }
 
         try {
             $stmt = $db->query("
@@ -1141,7 +1227,7 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
                 ORDER BY ht.placed_at DESC LIMIT 500
             ");
             $integrityIssues['debited_holds_missing_swap_request'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        } catch (Throwable $e) { $integrityIssues['debited_holds_missing_swap_request'] = []; }
+        } catch (Throwable $e) { dashError('hold_transactions', $e); $integrityIssues['debited_holds_missing_swap_request'] = []; $integrityFailed['debited_holds_missing_swap_request'] = $e->getMessage(); }
 
         // Completed transactions with no audit record. Every check above
         // keys off hold_transactions.status = 'DEBITED' -- a write that is
@@ -1158,7 +1244,7 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
                 ORDER BY sr.created_at DESC LIMIT 500
             ");
             $integrityIssues['completed_swaps_missing_audit'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        } catch (Throwable $e) { $integrityIssues['completed_swaps_missing_audit'] = []; }
+        } catch (Throwable $e) { dashError('swap_requests', $e); $integrityIssues['completed_swaps_missing_audit'] = []; $integrityFailed['completed_swaps_missing_audit'] = $e->getMessage(); }
 
         // The audit dead letter itself. SwapService::writeAuditFallback()
         // has always written here when a normal audit write could not
@@ -1171,7 +1257,7 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
                 ORDER BY created_at DESC LIMIT 500
             ");
             $integrityIssues['audit_write_failures'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        } catch (Throwable $e) { $integrityIssues['audit_write_failures'] = []; }
+        } catch (Throwable $e) { dashError('audit_log_failures', $e); $integrityIssues['audit_write_failures'] = []; $integrityFailed['audit_write_failures'] = $e->getMessage(); }
 
         $integrityTotalIssues = array_sum(array_map('count', $integrityIssues));
 
@@ -1181,7 +1267,9 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
             $out = fopen('php://output', 'w');
             fputcsv($out, ['Check', 'Result']);
             foreach ($integrityIssues as $checkName => $rows) {
-                if (empty($rows)) {
+                if (isset($integrityFailed[$checkName])) {
+                    fputcsv($out, [$checkName, 'COULD NOT RUN - result unknown']);
+                } elseif (empty($rows)) {
                     fputcsv($out, [$checkName, 'CLEAN - no issues found']);
                 } else {
                     foreach ($rows as $row) {
@@ -1216,7 +1304,7 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
                 $stmt->execute([':inst' => $bankInstitution]);
                 $bankStatement['transactions'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
             }
-        } catch (Throwable $e) {}
+        } catch (Throwable $e) { dashError('vw_all_swaps', $e); }
         try {
             $stmt = $db->prepare("
                 SELECT COALESCE(SUM((message_payload->>'fee_amount')::numeric), 0) AS fees, COUNT(*) AS invoice_count
@@ -1225,12 +1313,12 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
             ");
             $stmt->execute([':inst' => $bankInstitution]);
             $bankStatement['fees_charged_to_them'] = $stmt->fetch(PDO::FETCH_ASSOC) ?: ['fees' => 0, 'invoice_count' => 0];
-        } catch (Throwable $e) {}
+        } catch (Throwable $e) { dashError('settlement_outbox', $e); }
         try {
             $stmt = $db->prepare("SELECT * FROM net_positions WHERE institution_a = :inst OR institution_b = :inst ORDER BY id DESC LIMIT 50");
             $stmt->execute([':inst' => $bankInstitution]);
             $bankStatement['net_positions'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        } catch (Throwable $e) {}
+        } catch (Throwable $e) { dashError('net_positions', $e); }
 
         if ($reportFormat === 'csv') {
             header('Content-Type: text/csv; charset=utf-8');
@@ -1248,7 +1336,7 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
     }
 
     if ($reportKey === 'net_settlement') {
-        try { $reportNetPositions = $db->query("SELECT * FROM net_positions ORDER BY id DESC LIMIT 200")->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) {}
+        try { $reportNetPositions = $db->query("SELECT * FROM net_positions ORDER BY id DESC LIMIT 200")->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) { dashError('net_positions', $e); }
     }
     if ($reportKey === 'fee_revenue') {
         try {
@@ -1261,10 +1349,10 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
                 GROUP BY source_institution, destination_institution
                 ORDER BY fees DESC
             ")->fetchAll(PDO::FETCH_ASSOC);
-        } catch (Throwable $e) {}
+        } catch (Throwable $e) { dashError('settlement_outbox', $e); }
     }
     if ($reportKey === 'audit_export') {
-        try { $reportAuditRows = $db->query("SELECT * FROM audit_logs ORDER BY audit_id DESC LIMIT 1000")->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) {}
+        try { $reportAuditRows = $db->query("SELECT * FROM audit_logs ORDER BY audit_id DESC LIMIT 1000")->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) { dashError('audit_logs', $e); }
 
         if ($reportFormat === 'csv') {
             header('Content-Type: text/csv; charset=utf-8');
@@ -1309,7 +1397,7 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
             ");
             $stmt->execute([':threshold' => 100000, ':baseCurrency' => 'BWP']);
             $suspiciousData = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        } catch (Throwable $e) { $suspiciousData = []; }
+        } catch (Throwable $e) { dashError('swap_requests', $e); $suspiciousData = []; }
 
         try {
             $stmt = $db->query("
@@ -1321,7 +1409,7 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
                 ORDER BY placed_at ASC LIMIT 100
             ");
             $suspiciousStaleHolds = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        } catch (Throwable $e) { $suspiciousStaleHolds = []; }
+        } catch (Throwable $e) { dashError('hold_transactions', $e); $suspiciousStaleHolds = []; }
 
         foreach ($suspiciousData as $s) {
             $suspiciousSummary['total']++;
@@ -1600,7 +1688,10 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
         }
 
         if ($reportKey === 'double_spend_check') {
-            $body .= pdf_metrics_section('Result', ['Total Issues Found' => $integrityTotalIssues]);
+            $body .= pdf_metrics_section('Result', ['Total Issues Found' => $integrityTotalIssues, 'Checks That Could Not Run' => count($integrityFailed)]);
+            if (!empty($integrityFailed)) {
+                $body .= '<p style="color:#D32F2F;font-weight:bold;">Incomplete: these checks could not run and prove nothing: ' . safeHtml(implode(', ', array_keys($integrityFailed))) . '</p>';
+            }
             $body .= pdf_table_section('Holds Debited More Than Once', ['Swap Reference', 'Debited Count', 'Hold IDs', 'Amounts'],
                 array_map(fn($r) => [$r['swap_reference'], $r['debited_hold_count'], trim($r['hold_ids'], '{}'), trim($r['amounts'], '{}')], $integrityIssues['duplicate_debited_holds'] ?? []));
             $body .= pdf_table_section('Cashouts Completed More Than Once', ['Swap Reference', 'Completed Count'],
@@ -1739,6 +1830,30 @@ if ($view === 'reports' && canView('reports') && $reportKey !== '') {
         // nothing to render (e.g. no ref/institution supplied yet) -
         // fall through to the normal HTML page rather than a blank PDF.
     }
+}
+
+// ============================================================
+// SCHEMA HEALTH - tables/views this page reads. Several (vw_all_swaps,
+// multi_destination_swaps, identity_swap_holds, agent_destination_accounts)
+// are not created by any migration in the repo; if production has them,
+// they were made by hand and a rebuild from the repo would lose them.
+// Missing ones are listed so an empty panel is never mistaken for "no data".
+// ============================================================
+$missingRelations = [];
+if ($isSuperAdmin || canView('audit')) {
+    $requiredRelations = ['vw_all_swaps', 'swap_requests', 'hold_transactions', 'cashout_authorizations',
+        'identity_swap_holds', 'multi_destination_swaps', 'settlement_outbox', 'settlement_queue', 'net_positions',
+        'ledger_entries', 'message_outbox', 'idempotency_keys', 'audit_logs', 'audit_log_failures',
+        'agent_destination_accounts', 'users'];
+    try {
+        $chk = $db->prepare("SELECT to_regclass(:r) IS NOT NULL");
+        foreach ($requiredRelations as $rel) {
+            $chk->execute([':r' => $rel]);
+            if (!$chk->fetchColumn()) $missingRelations[] = $rel;
+        }
+        $fn = $db->query("SELECT to_regprocedure('audit_chain_verify()') IS NOT NULL")->fetchColumn();
+        if (!$fn) $missingRelations[] = 'audit_chain_verify() - apply 2026_09_19_audit_chain_enforced.sql';
+    } catch (Throwable $e) { dashError('schema health check', $e); }
 }
 
 // View meta for description panel
@@ -2476,6 +2591,20 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
 
     <main class="admin-content"><div class="admin-content-inner">
 
+            <?php if (!empty($flash)): ?>
+            <div class="card" role="status" style="border-left:3px solid <?php echo $flash['type'] === 'good' ? 'var(--good)' : 'var(--bad)'; ?>;">
+                <div style="text-align:center;font-size:15px;font-weight:600;color:<?php echo $flash['type'] === 'good' ? 'var(--good)' : 'var(--bad)'; ?>;"><?php echo safeHtml($flash['text']); ?></div>
+            </div>
+            <?php endif; ?>
+
+            <?php if (!empty($missingRelations)): ?>
+            <div class="card" style="border-left:3px solid var(--bad);">
+                <div class="card-header"><span class="card-title" style="color:var(--bad);">Database objects missing</span><span class="card-badge"><?php echo count($missingRelations); ?></span></div>
+                <p style="font-size:14px;text-align:center;">Panels that read these will be empty because the data cannot be read, not because there is none:
+                    <code><?php echo safeHtml(implode(', ', $missingRelations)); ?></code></p>
+            </div>
+            <?php endif; ?>
+
             <!-- DASHBOARD -->
             <?php if ($view === 'dashboard'): ?>
             <div class="content-header">
@@ -2532,7 +2661,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             <?php if ($view === 'agent_approvals' && canView('agent_approvals')): ?>
             <div class="content-header">
                 <h1>Agent Approvals</h1>
-                <span class="timestamp">Agents can't operate until approved</span>
+                <span class="timestamp">Agent destination accounts awaiting manual verification</span>
                 <a href="?view=dashboard" class="back-link">← Back</a>
             </div>
             <div class="metrics-grid" style="grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));">
@@ -2543,32 +2672,39 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
 
             <div class="card">
                 <div class="card-header"><span class="card-title">Pending Approval</span><span class="card-badge brass"><?php echo count($pendingAgents); ?></span></div>
+                <p style="font-size:13px;color:var(--ink-500);text-align:center;margin-bottom:var(--sp-4);">
+                    These institutions could not confirm account ownership automatically. Confirm with the institution that
+                    the account belongs to this agent before approving. Every decision is written to the audit log with your name;
+                    if that record cannot be written, the decision is not made.
+                </p>
                 <?php if (empty($pendingAgents)): ?>
-                <div class="empty-state"><span class="icon">✅</span><p>No agents waiting on approval.</p></div>
+                <div class="empty-state"><span class="icon">✅</span><p>No agent accounts waiting on approval.</p></div>
                 <?php else: foreach ($pendingAgents as $agent): ?>
                 <div class="card agent-row">
                     <div class="card-header">
-                        <span class="card-title"><?php echo safeHtml($agent['full_name'] ?? 'Unnamed Agent'); ?></span>
+                        <span class="card-title"><?php echo safeHtml($agent['full_name'] ?? ('User #' . $agent['user_id'])); ?></span>
                         <span class="status status-pending">PENDING</span>
                     </div>
                     <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(160px,1fr)); gap:var(--sp-2); font-size:14px;">
                         <div><strong>Phone:</strong> <?php echo safeHtml($agent['phone'] ?? 'N/A'); ?></div>
                         <div><strong>Email:</strong> <?php echo safeHtml($agent['email'] ?? 'N/A'); ?></div>
                         <div><strong>Institution:</strong> <?php echo safeHtml($agent['institution'] ?? 'N/A'); ?></div>
-                        <div><strong>ID Number:</strong> <?php echo safeHtml($agent['id_number'] ?? 'N/A'); ?></div>
-                        <div><strong>Applied:</strong> <?php echo safeHtml(date('Y-m-d H:i', strtotime($agent['created_at'] ?? 'now'))); ?></div>
+                        <div><strong>Account:</strong> <?php echo safeHtml(($agent['asset_type'] ?? '') . ' ' . ($agent['identifier'] ?? '')); ?></div>
+                        <div><strong>Account name:</strong> <?php echo safeHtml($agent['account_name'] ?? '—'); ?></div>
+                        <div><strong>Applied:</strong> <?php echo tsHtml($agent['created_at'] ?? ''); ?></div>
                     </div>
-                    <div class="agent-actions">
-                        <form class="inline-form" method="post" action="?view=agent_approvals">
+                    <div class="agent-actions" style="flex-wrap:wrap;align-items:flex-start;">
+                        <form class="inline-form" method="post" action="?view=agent_approvals" onsubmit="return confirm('Approve this agent account? This is recorded in the audit log.');">
                             <input type="hidden" name="csrf_token" value="<?php echo safeHtml($_SESSION['csrf_token']); ?>">
                             <input type="hidden" name="agent_id" value="<?php echo safeHtml($agent['id']); ?>">
                             <input type="hidden" name="action" value="approve">
                             <button type="submit" class="btn btn-good btn-sm">Approve</button>
                         </form>
-                        <form class="inline-form" method="post" action="?view=agent_approvals" onsubmit="return confirm('Reject this agent application?');">
+                        <form class="inline-form search-box" style="margin:0;" method="post" action="?view=agent_approvals">
                             <input type="hidden" name="csrf_token" value="<?php echo safeHtml($_SESSION['csrf_token']); ?>">
                             <input type="hidden" name="agent_id" value="<?php echo safeHtml($agent['id']); ?>">
                             <input type="hidden" name="action" value="reject">
+                            <input type="text" name="reason" required minlength="5" maxlength="500" placeholder="Reason for rejecting (required)" style="min-width:220px;height:var(--btn-h-sm);">
                             <button type="submit" class="btn btn-bad btn-sm">Reject</button>
                         </form>
                     </div>
@@ -2577,20 +2713,20 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             </div>
 
             <div class="card">
-                <div class="card-header"><span class="card-title">Full Agent Registry</span><span class="card-badge"><?php echo count($allAgents); ?></span></div>
+                <div class="card-header"><span class="card-title">Agent Account Registry</span><span class="card-badge"><?php echo count($allAgents); ?></span></div>
                 <?php if (empty($allAgents)): ?>
-                <div class="empty-state"><span class="icon">📭</span><p>No agent records found. (Expects an <code>agents</code> table — adjust the query near the top of this file if your schema uses a different name.)</p></div>
+                <div class="empty-state"><span class="icon">📭</span><p>No agent destination accounts registered yet.</p></div>
                 <?php else: ?>
-                <div class="table-responsive"><table><thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Institution</th><th>Status</th><th>Applied</th><th>Decided</th></tr></thead><tbody>
-                <?php foreach ($allAgents as $agent): $st = strtolower($agent['status'] ?? ''); $cls = match($st) { 'approved' => 'success', 'pending' => 'pending', 'rejected' => 'failed', default => 'info' }; ?>
+                <div class="table-responsive"><table><thead><tr><th>Agent</th><th>Phone</th><th>Institution</th><th>Account</th><th>Status</th><th>Applied</th><th>Confirmed</th></tr></thead><tbody>
+                <?php foreach ($allAgents as $agent): $st = strtolower($agent['status'] ?? ''); $cls = match($st) { 'active' => 'success', 'pending_confirmation' => 'pending', 'rejected', 'cancelled' => 'failed', default => 'info' }; ?>
                 <tr>
-                    <td><?php echo safeHtml($agent['full_name'] ?? 'N/A'); ?></td>
+                    <td><?php echo safeHtml($agent['full_name'] ?? ('User #' . $agent['user_id'])); ?></td>
                     <td><?php echo safeHtml($agent['phone'] ?? 'N/A'); ?></td>
-                    <td><?php echo safeHtml($agent['email'] ?? 'N/A'); ?></td>
                     <td><?php echo safeHtml($agent['institution'] ?? 'N/A'); ?></td>
-                    <td><span class="status status-<?php echo $cls; ?>"><?php echo safeHtml(strtoupper($agent['status'] ?? '')); ?></span></td>
-                    <td><?php echo safeHtml(date('Y-m-d', strtotime($agent['created_at'] ?? 'now'))); ?></td>
-                    <td><?php echo $agent['approved_at'] ? safeHtml(date('Y-m-d', strtotime($agent['approved_at']))) : '—'; ?></td>
+                    <td><?php echo safeHtml(($agent['asset_type'] ?? '') . ' ' . ($agent['identifier'] ?? '')); ?></td>
+                    <td><span class="status status-<?php echo $cls; ?>"><?php echo safeHtml(strtoupper(str_replace('_', ' ', $agent['status'] ?? ''))); ?></span></td>
+                    <td><?php echo tsHtml($agent['created_at'] ?? ''); ?></td>
+                    <td><?php echo tsHtml($agent['approved_at'] ?? '', '—'); ?></td>
                 </tr>
                 <?php endforeach; ?>
                 </tbody></table></div>
@@ -2643,7 +2779,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                 <a href="?view=dashboard" class="back-link">← Back</a>
             </div>
             <div class="metrics-grid" style="grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));">
-                <div class="metric-card"><span class="metric-label">Stuck Holds</span><span class="metric-value"><?php echo number_format(count($alerts['stuck_holds'])); ?></span><span class="metric-sub">&gt;24h</span></div>
+                <div class="metric-card"><span class="metric-label">Stuck Holds</span><span class="metric-value"><?php echo number_format(count($alerts['stuck_holds'])); ?></span><span class="metric-sub">&ge;20h (24h limit)</span></div>
                 <div class="metric-card"><span class="metric-label">Expired Identity</span><span class="metric-value"><?php echo number_format(count($alerts['expired_identity_swaps'])); ?></span><span class="metric-sub">Unconfirmed</span></div>
                 <div class="metric-card"><span class="metric-label">Stuck Cashouts</span><span class="metric-value"><?php echo number_format(count($alerts['stuck_cashouts'])); ?></span><span class="metric-sub">Expired</span></div>
             </div>
@@ -2655,7 +2791,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                 <div class="card-header"><span class="card-title">🔒 Stuck Holds</span><span class="card-badge"><?php echo count($alerts['stuck_holds']); ?></span></div>
                 <div class="table-responsive"><table><thead><tr><th>Hold Ref</th><th>Swap Ref</th><th>Institution</th><th>Amount</th><th>Status</th><th>Age</th></tr></thead><tbody>
                 <?php foreach ($alerts['stuck_holds'] as $h): ?>
-                <tr><td><?php echo safeHtml(substr($h['hold_reference'] ?? '', 0, 16)); ?></td><td><?php echo safeHtml(substr($h['swap_reference'] ?? '', 0, 16)); ?></td><td><?php echo safeHtml($h['institution'] ?? 'N/A'); ?></td><td><?php echo number_format((float)($h['amount'] ?? 0), 2); ?></td><td><span class="status status-pending"><?php echo safeHtml($h['status'] ?? ''); ?></span></td><td><?php echo round((time() - strtotime($h['created_at'] ?? 'now')) / 3600, 1); ?>h</td></tr>
+                <tr><td><?php echo safeHtml(substr($h['hold_reference'] ?? '', 0, 16)); ?></td><td><?php echo safeHtml(substr($h['swap_reference'] ?? '', 0, 16)); ?></td><td><?php echo safeHtml($h['institution'] ?? 'N/A'); ?></td><td><?php echo number_format((float)($h['amount'] ?? 0), 2); ?></td><td><span class="status status-pending"><?php echo safeHtml($h['status'] ?? ''); ?></span></td><?php $ageH = round((time() - strtotime($h['created_at'] ?? 'now')) / 3600, 1); ?><td style="font-weight:700;color:<?php echo $ageH >= 24 ? 'var(--bad)' : '#B8830A'; ?>;"><?php echo $ageH; ?>h<?php echo $ageH >= 24 ? ' &middot; OVER LIMIT' : ''; ?></td></tr>
                 <?php endforeach; ?>
                 </tbody></table></div>
             </div>
@@ -3106,7 +3242,11 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                         <div class="report-meta"><?php echo date('Y-m-d H:i:s'); ?></div>
                     </div>
 
-                    <?php if ($integrityTotalIssues === 0): ?>
+                    <?php if (!empty($integrityFailed)): ?>
+                    <div class="card" style="border-left:3px solid var(--bad);">
+                        <div class="empty-state"><span class="icon">⚠️</span><p style="color:var(--bad); font-weight:600;"><?php echo count($integrityFailed); ?> of 6 checks could not run. This report is incomplete and must not be treated as clean.</p></div>
+                    </div>
+                    <?php elseif ($integrityTotalIssues === 0): ?>
                     <div class="card" style="border-left:3px solid var(--good);">
                         <div class="empty-state"><span class="icon">✅</span><p style="color:var(--good); font-weight:600;">No double-spend, duplicate-debit, or tracking-gap issues found.</p></div>
                     </div>
@@ -3117,7 +3257,8 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <?php endif; ?>
 
                     <div class="report-section-title">Holds Debited More Than Once</div>
-                    <?php if (empty($integrityIssues['duplicate_debited_holds'])): ?><p style="font-size:14px;color:var(--good);">✓ Clean — every hold was debited at most once.</p>
+                    <?php if (isset($integrityFailed['duplicate_debited_holds'])): ?><p style="font-size:14px;color:var(--bad);font-weight:600;">✗ This check could not run, so it proves nothing: <?php echo $isSuperAdmin ? safeHtml(mb_substr($integrityFailed['duplicate_debited_holds'], 0, 200)) : 'see the server error log'; ?></p>
+                    <?php elseif (empty($integrityIssues['duplicate_debited_holds'])): ?><p style="font-size:14px;color:var(--good);">✓ Clean — every hold was debited at most once.</p>
                     <?php else: ?>
                     <div class="table-responsive"><table><thead><tr><th>Swap Reference</th><th>Debited Count</th><th>Hold IDs</th><th>Amounts</th></tr></thead><tbody>
                     <?php foreach ($integrityIssues['duplicate_debited_holds'] as $row): ?>
@@ -3127,7 +3268,8 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <?php endif; ?>
 
                     <div class="report-section-title">Cashouts Completed More Than Once</div>
-                    <?php if (empty($integrityIssues['duplicate_completed_cashouts'])): ?><p style="font-size:14px;color:var(--good);">✓ Clean — no cashout was marked COMPLETED more than once.</p>
+                    <?php if (isset($integrityFailed['duplicate_completed_cashouts'])): ?><p style="font-size:14px;color:var(--bad);font-weight:600;">✗ This check could not run, so it proves nothing: <?php echo $isSuperAdmin ? safeHtml(mb_substr($integrityFailed['duplicate_completed_cashouts'], 0, 200)) : 'see the server error log'; ?></p>
+                    <?php elseif (empty($integrityIssues['duplicate_completed_cashouts'])): ?><p style="font-size:14px;color:var(--good);">✓ Clean — no cashout was marked COMPLETED more than once.</p>
                     <?php else: ?>
                     <div class="table-responsive"><table><thead><tr><th>Swap Reference</th><th>Completed Count</th></tr></thead><tbody>
                     <?php foreach ($integrityIssues['duplicate_completed_cashouts'] as $row): ?>
@@ -3137,7 +3279,8 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <?php endif; ?>
 
                     <div class="report-section-title">Idempotency Key Conflicts</div>
-                    <?php if (empty($integrityIssues['idempotency_key_conflicts'])): ?><p style="font-size:14px;color:var(--good);">✓ Clean — no idempotency key ever resolved to more than one transaction reference.</p>
+                    <?php if (isset($integrityFailed['idempotency_key_conflicts'])): ?><p style="font-size:14px;color:var(--bad);font-weight:600;">✗ This check could not run, so it proves nothing: <?php echo $isSuperAdmin ? safeHtml(mb_substr($integrityFailed['idempotency_key_conflicts'], 0, 200)) : 'see the server error log'; ?></p>
+                    <?php elseif (empty($integrityIssues['idempotency_key_conflicts'])): ?><p style="font-size:14px;color:var(--good);">✓ Clean — no idempotency key ever resolved to more than one transaction reference.</p>
                     <?php else: ?>
                     <div class="table-responsive"><table><thead><tr><th>Idempotency Key</th><th>Distinct References Returned</th></tr></thead><tbody>
                     <?php foreach ($integrityIssues['idempotency_key_conflicts'] as $row): ?>
@@ -3147,7 +3290,8 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <?php endif; ?>
 
                     <div class="report-section-title">Debited Holds With No Matching Swap Record</div>
-                    <?php if (empty($integrityIssues['debited_holds_missing_swap_request'])): ?><p style="font-size:14px;color:var(--good);">✓ Clean — every debited hold has a matching swap_requests row.</p>
+                    <?php if (isset($integrityFailed['debited_holds_missing_swap_request'])): ?><p style="font-size:14px;color:var(--bad);font-weight:600;">✗ This check could not run, so it proves nothing: <?php echo $isSuperAdmin ? safeHtml(mb_substr($integrityFailed['debited_holds_missing_swap_request'], 0, 200)) : 'see the server error log'; ?></p>
+                    <?php elseif (empty($integrityIssues['debited_holds_missing_swap_request'])): ?><p style="font-size:14px;color:var(--good);">✓ Clean — every debited hold has a matching swap_requests row.</p>
                     <?php else: ?>
                     <div class="table-responsive"><table><thead><tr><th>Hold ID</th><th>Swap Reference</th><th>Amount</th><th>Institution</th><th>Placed At</th></tr></thead><tbody>
                     <?php foreach ($integrityIssues['debited_holds_missing_swap_request'] as $row): ?>
@@ -3157,7 +3301,8 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <?php endif; ?>
 
                     <div class="report-section-title">Completed Transactions With No Audit Record</div>
-                    <?php if (empty($integrityIssues['completed_swaps_missing_audit'])): ?><p style="font-size:14px;color:var(--good);">✓ Clean — every completed transaction has an audit entry naming who moved the money, when, and where it went.</p>
+                    <?php if (isset($integrityFailed['completed_swaps_missing_audit'])): ?><p style="font-size:14px;color:var(--bad);font-weight:600;">✗ This check could not run, so it proves nothing: <?php echo $isSuperAdmin ? safeHtml(mb_substr($integrityFailed['completed_swaps_missing_audit'], 0, 200)) : 'see the server error log'; ?></p>
+                    <?php elseif (empty($integrityIssues['completed_swaps_missing_audit'])): ?><p style="font-size:14px;color:var(--good);">✓ Clean — every completed transaction has an audit entry naming who moved the money, when, and where it went.</p>
                     <?php else: ?>
                     <div class="table-responsive"><table><thead><tr><th>Reference</th><th>Amount</th><th>Currency</th><th>Status</th><th>Created</th><th></th></tr></thead><tbody>
                     <?php foreach ($integrityIssues['completed_swaps_missing_audit'] as $row): ?>
@@ -3167,7 +3312,8 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     <?php endif; ?>
 
                     <div class="report-section-title">Audit Write Failures (Unresolved)</div>
-                    <?php if (empty($integrityIssues['audit_write_failures'])): ?><p style="font-size:14px;color:var(--good);">✓ Clean — no transaction has failed to record its audit trail.</p>
+                    <?php if (isset($integrityFailed['audit_write_failures'])): ?><p style="font-size:14px;color:var(--bad);font-weight:600;">✗ This check could not run, so it proves nothing: <?php echo $isSuperAdmin ? safeHtml(mb_substr($integrityFailed['audit_write_failures'], 0, 200)) : 'see the server error log'; ?></p>
+                    <?php elseif (empty($integrityIssues['audit_write_failures'])): ?><p style="font-size:14px;color:var(--good);">✓ Clean — no transaction has failed to record its audit trail.</p>
                     <?php else: ?>
                     <p style="font-size:13px;color:var(--ink-500);margin-bottom:var(--sp-3);">
                         Each row is a transaction whose audit entry could not be written. The money movement itself
@@ -3608,41 +3754,40 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
 
             <!-- Chain Integrity Status -->
             <?php
-            // Three states, not two. 'unknown' means the verification could
-            // not be performed at all -- which this panel used to render as
-            // a green "INTACT", the most misleading thing a tamper-evidence
-            // control can say.
+            // Three states, never two: 'unknown' means the check itself did
+            // not run and is never shown as a pass.
             $chainColor = ['intact' => 'var(--good)', 'broken' => 'var(--bad)', 'unknown' => 'var(--brass)'][$chainState] ?? 'var(--brass)';
             $chainBadge = ['intact' => '✅ INTACT', 'broken' => '⚠️ BROKEN', 'unknown' => '❔ NOT VERIFIED'][$chainState] ?? '❔ NOT VERIFIED';
             ?>
             <div class="card" style="border-left: 3px solid <?php echo $chainColor; ?>;">
                 <div class="card-header">
                     <span class="card-title">🔗 Chain Integrity</span>
-                    <span class="card-badge <?php echo $chainState === 'intact' ? 'brass' : ''; ?>">
-                        <?php echo $chainBadge; ?>
-                    </span>
+                    <span class="card-badge <?php echo $chainState === 'intact' ? 'brass' : ''; ?>"><?php echo $chainBadge; ?></span>
                 </div>
                 <div style="text-align:center; font-size:14px; color:<?php echo $chainColor; ?>;">
                     <?php if ($chainState === 'broken'): ?>
-                        <strong>One or more audit entries failed hash validation.</strong> The chain has been tampered with or a record is missing.
-                        <div style="margin-top:var(--sp-3); font-size:12px; color:var(--ink-300);">
-                            Check the full audit_export report for detailed inspection.
-                            <a href="?view=reports&report=audit_export" class="btn btn-sm" style="margin-left:var(--sp-3);">View Audit Export</a>
+                        <strong>The audit trail fails verification at position <?php echo safeHtml((string)($chainInfo['first_bad_seq'] ?? '?')); ?>:</strong>
+                        <?php echo safeHtml($chainInfo['reason'] ?? 'unknown reason'); ?>.
+                        <div style="margin-top:var(--sp-2); font-size:13px; color:var(--ink-500);">
+                            Treat this as a security incident: notify the Compliance Officer, do not modify the database, and compare against the last anchored head hash.
                         </div>
                     <?php elseif ($chainState === 'unknown'): ?>
-                        <strong>The chain could not be verified.</strong> This is not a pass &mdash; the check itself
-                        did not complete, so nothing here says whether the audit trail is intact.
+                        <strong>The chain could not be verified.</strong> This is not a pass.
                         <div style="margin-top:var(--sp-3); font-size:12px; color:var(--ink-300);">
-                            Most likely the <code>prev_hash</code> / <code>entry_hash</code> columns are missing:
-                            apply <code>2026_09_16_transaction_audit_integrity.sql</code>.
-                            <?php if ($chainError !== null): ?>
-                            <div style="margin-top:var(--sp-2);"><code><?php echo safeHtml($chainError); ?></code></div>
-                            <?php endif; ?>
+                            Most likely <code>2026_09_19_audit_chain_enforced.sql</code> has not been applied.
+                            <?php if ($chainError !== null && $isSuperAdmin): ?><div style="margin-top:var(--sp-2);"><code><?php echo safeHtml($chainError); ?></code></div><?php endif; ?>
                         </div>
                     <?php else: ?>
-                        All audit entries passed hash validation. The chain is intact.
+                        All <?php echo number_format((int)$chainInfo['total']); ?> audit entries verified: every row matches its hash and links to the one before it, with no gaps.
                     <?php endif; ?>
                 </div>
+                <?php if (!empty($chainInfo['head_hash'])): ?>
+                <div style="margin-top:var(--sp-4); padding-top:var(--sp-3); border-top:1px solid var(--line); font-size:12px; text-align:center; color:var(--ink-500);">
+                    <strong>Anchor for today:</strong> position <?php echo safeHtml((string)$chainInfo['head_seq']); ?> &middot;
+                    <code style="word-break:break-all;"><?php echo safeHtml($chainInfo['head_hash']); ?></code>
+                    <div style="margin-top:var(--sp-1);">Copy this line into the daily anchor record outside this system (for example, the Compliance Officer's daily email). If the database were ever rewritten, the chain would no longer lead to this hash.</div>
+                </div>
+                <?php endif; ?>
             </div>
 
             <div class="card">
@@ -3743,11 +3888,22 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             <div class="card"><div class="empty-state"><span class="icon">🛠️</span><p>Raw table browsing isn't built yet — the nav link existed before the view did. Let me know which tables you want exposed here and I'll wire it up (with appropriate read-only guards).</p></div></div>
             <?php endif; ?>
 
+            <?php if (!empty($dashboardErrors) && ($isSuperAdmin || canView('audit'))): ?>
+            <div class="card" style="border-left:3px solid var(--bad);">
+                <div class="card-header"><span class="card-title" style="color:var(--bad);">Some data on this page failed to load</span><span class="card-badge"><?php echo count($dashboardErrors); ?></span></div>
+                <p style="font-size:14px;text-align:center;margin-bottom:var(--sp-3);">Empty or zero figures above may be wrong. Each failure is also in the server error log.</p>
+                <?php if ($isSuperAdmin): ?>
+                <div class="table-responsive"><table><thead><tr><th>Source</th><th>Error</th></tr></thead><tbody>
+                <?php foreach ($dashboardErrors as $de): ?>
+                <tr><td><?php echo safeHtml($de['where']); ?></td><td style="font-size:12px;"><?php echo safeHtml(mb_substr($de['message'], 0, 300)); ?></td></tr>
+                <?php endforeach; ?>
+                </tbody></table></div>
+                <?php endif; ?>
+            </div>
+            <?php endif; ?>
+
             <!-- ACCESS DENIED -->
-            <?php
-            $knownViews = ['dashboard', 'client_lookup', 'alerts', 'live_transactions', 'multi_destination', 'recent_swaps', 'institution_health', 'regulatory', 'audit', 'ledger', 'invoices', 'all_tables', 'agent_approvals', 'reports', 'participants'];
-            if (!canView($view) && !in_array($view, $knownViews)):
-            ?>
+            <?php if ($accessDenied): ?>
             <div class="card"><div class="empty-state"><span class="icon">🚫</span><h2 style="font-family:var(--f-cond);text-transform:uppercase;font-size:20px;margin-bottom:var(--sp-2);">Access Denied</h2><p>You do not have permission to view this page.</p><a href="?view=dashboard" class="btn btn-primary" style="margin-top:var(--sp-4);">Return to Dashboard</a></div></div>
             <?php endif; ?>
 
