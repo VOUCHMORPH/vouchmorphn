@@ -15,7 +15,7 @@ declare(strict_types=1);
  * Suggested schedule: every 1-2 minutes.
  */
 
-define('ROOT_PATH', dirname(__DIR__2));
+define('ROOT_PATH', dirname(__DIR__, 2));
 
 $container = require_once ROOT_PATH . '/src/bootstrap.php';
 require_once ROOT_PATH . '/src/Domain/Services/CardContributionSessionService.php';
