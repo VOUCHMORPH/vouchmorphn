@@ -6636,5 +6636,6 @@ document.addEventListener('keydown', function(e) {
 });
 </script>
 <script src="<?= asset('assets/vm-motion.js') ?>"></script>
-<script src="<?= asset('assets/vm-retro.js') ?>"></script></body>
+<script src="<?= asset('assets/vm-retro.js') ?>"></script>
+<script src="<?= asset('assets/vm-service-status.js') ?>"></script></body>
 </html>
