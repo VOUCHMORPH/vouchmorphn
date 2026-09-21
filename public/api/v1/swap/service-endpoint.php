@@ -69,6 +69,24 @@ if (empty($data['source']['institution']) || empty($data['source']['asset_type']
     exit;
 }
 
+// Incident Command gate: sandbox cap and freezes, before any money moves.
+require_once dirname(__DIR__, 4) . '/src/Core/Database/DBConnection.php';
+require_once dirname(__DIR__, 4) . '/src/Application/Incident/IncidentDesk.php';
+require_once dirname(__DIR__, 4) . '/src/Application/Incident/Playbooks.php';
+require_once dirname(__DIR__, 4) . '/src/Application/Incident/ServiceControls.php';
+$gateDb = \Core\Database\DBConnection::getConnection();
+if ($gateDb) {
+    $gate = \Application\Incident\ServiceControls::check($gateDb, [
+        'amount' => (float)$data['source']['amount'], 'flow' => strtoupper($data['swap_type'] ?? 'STANDARD'),
+        'source' => $data['source']['institution'], 'destination' => $data['destination']['institution'] ?? '',
+    ]);
+    if ($gate !== null) {
+        http_response_code($gate['http']);
+        echo json_encode(['status' => 'error', 'code' => $gate['code'], 'message' => $gate['message'], 'funds_moved' => false]);
+        exit;
+    }
+}
+
 // Validate destination has institution
 if (empty($data['destination']['institution'])) {
     http_response_code(400);
