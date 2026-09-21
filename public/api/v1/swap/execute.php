@@ -456,6 +456,29 @@ try {
         throw new Exception("Database connection failed: " . $e->getMessage());
     }
 
+    // ============================================================
+    // INCIDENT COMMAND GATE - before anything is held or debited.
+    // Sandbox cap (P7,000, fees.json) and any freeze in force: the
+    // whole service, this swap flow, either institution, the customer,
+    // or the acting agent. A refused attempt raises an alarm.
+    // ============================================================
+    require_once dirname(__DIR__, 4) . '/src/Application/Incident/IncidentDesk.php';
+require_once dirname(__DIR__, 4) . '/src/Application/Incident/Playbooks.php';
+require_once dirname(__DIR__, 4) . '/src/Application/Incident/ServiceControls.php';
+$gate = \Application\Incident\ServiceControls::check($db, [
+        'amount' => (float)($input['amount'] ?? 0),
+        'flow' => strtoupper($input['swap_type'] ?? 'STANDARD'),
+        'source' => $input['from_institution'] ?? $input['source_institution'] ?? '',
+        'destination' => $input['to_institution'] ?? $input['destination_institution'] ?? '',
+        'user_id' => $sessionUserId,
+        'agent_id' => $input['agent_id'] ?? '',
+    ]);
+    if ($gate !== null) {
+        http_response_code($gate['http']);
+        echo json_encode(['success' => false, 'error' => $gate['message'], 'code' => $gate['code'], 'funds_moved' => false]);
+        exit();
+    }
+
     // TRACER: start tracing now. Uses the idempotency key as a
     // temporary identifier since the real swap_reference doesn't
     // exist yet — rekeyed once executeWithRouting() returns one.
