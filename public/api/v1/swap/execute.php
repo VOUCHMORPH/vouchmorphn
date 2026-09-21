@@ -89,6 +89,50 @@ error_log("[EXECUTE] Checking psr/log: " . (interface_exists('Psr\Log\LoggerInte
  * JWT signing keys, etc. were all silently accepted as valid API
  * keys. That is not acceptable in a regulated environment.
  */
+/**
+ * FIX (2026-09-21): cash-out PINs, ATM codes and wallet PINs belong to the
+ * recipient. They are returned to the caller only when the recipient is the
+ * logged-in customer (someone cashing out for themselves still sees their
+ * code). For anyone else they are removed here and reach the recipient by SMS
+ * only. Voucher numbers stay (they are references, useless without the PIN).
+ */
+function vmRedactRecipientSecrets(array $result, array $input, array $sessionUser): array
+{
+    $digits = fn($v) => substr(preg_replace('/\D/', '', (string)$v) ?? '', -8);
+    $self = array_filter(array_map($digits, [$sessionUser['phone'] ?? '', $sessionUser['phone2'] ?? '', $sessionUser['phone3'] ?? '']));
+    $isSelf = fn($phone) => $phone === null || $phone === '' || in_array($digits($phone), $self, true);
+    $topPhone = $input['beneficiary_phone'] ?? $input['client_phone'] ?? (
+        in_array(strtolower((string)($input['destination_identifier_type'] ?? '')), ['phone', 'msisdn', 'wallet'], true) ? ($input['destination_identifier'] ?? null) : null
+    );
+    $secretKeys = ['atm_pin', 'atm_code', 'pin', 'pin_code', 'wallet_pin', 'cashout_pin', 'otp'];
+    $scrub = function ($node) use (&$scrub, $secretKeys) {
+        if (is_array($node)) {
+            foreach ($node as $k => $v) {
+                if (is_string($k) && in_array(strtolower($k), $secretKeys, true) && $v !== null && $v !== '') {
+                    $node[$k] = 'sent to the recipient by SMS';
+                } else {
+                    $node[$k] = $scrub($v);
+                }
+            }
+            return $node;
+        }
+        return is_string($node) ? preg_replace('/\bPIN:?\s*\d{4,8}\b/i', 'PIN: sent to the recipient by SMS', $node) : $node;
+    };
+    if (!empty($result['destinations']) && is_array($result['destinations'])) {
+        foreach ($result['destinations'] as $i => $leg) {
+            $inLeg = $input['destinations'][$leg['index'] ?? $i] ?? [];
+            $legPhone = $leg['beneficiary_phone'] ?? $inLeg['beneficiary_phone'] ?? $inLeg['client_phone'] ?? $topPhone;
+            if (!$isSelf($legPhone)) $result['destinations'][$i] = $scrub($leg);
+        }
+    }
+    if (!$isSelf($topPhone)) {
+        $legs = $result['destinations'] ?? null;
+        $result = $scrub($result);
+        if ($legs !== null) $result['destinations'] = $legs;   // legs already decided one by one
+    }
+    return $result;
+}
+
 function isValidApiKey(?string $providedKey): bool {
     $validKey = getenv('VOUCHMORPH_API_KEY') ?: '';
 
@@ -598,6 +642,8 @@ $gate = \Application\Incident\ServiceControls::check($db, [
     }
     $tracer->setSummary(['routing_mode' => $result['_routing']['mode'] ?? null]);
     $tracer->finish(true);
+
+    $result = vmRedactRecipientSecrets($result, $input, \Application\Utils\SessionManager::getUser() ?? []);
 
     echo json_encode([
         'success' => true,
