@@ -2,6 +2,7 @@
 declare(strict_types=1);
  
 namespace Domain\Services;  
+require_once __DIR__ . '/Fees/FeeLedger.php';
 
 use PDO;
 use Exception;
@@ -3097,6 +3098,10 @@ public function executeMultiDestinationSwap(array $payload): array
                 );
                 $this->updateHoldExpiry($destHoldId, date('Y-m-d H:i:s', strtotime($codeExpiry . ' +6 hours')));
                 $this->updateHoldStatus($destHoldId, 'PENDING_CASHOUT');
+                $legFee = ['swap_reference' => $multiDestRef, 'leg_reference' => $subRef, 'product' => 'CASHOUT',
+                           'source_institution' => $sourceInstitution, 'destination_institution' => $destInstitution, 'currency' => $dest['currency'] ?? $currency];
+                $this->feeLedger()->record('HOLD_PLACED', $legFee);
+                $this->feeLedger()->record('CODE_GENERATED', $legFee);
 
                 $this->populateTrackingTables(
                     [
@@ -3185,6 +3190,10 @@ public function executeMultiDestinationSwap(array $payload): array
                 $deliverableAmount,
                 $dest['currency'] ?? $currency
             );
+            $legFee = ['swap_reference' => $multiDestRef, 'leg_reference' => $subRef, 'product' => 'DEPOSIT',
+                       'source_institution' => $sourceInstitution, 'destination_institution' => $destInstitution, 'currency' => $dest['currency'] ?? $currency];
+            $this->feeLedger()->record('HOLD_PLACED', $legFee);
+            $this->feeLedger()->record('DELIVERED', $legFee);
 
             // Persist swap_requests row
             $childSwapType = in_array($deliveryMethod, ['CASHOUT', 'AGENT', 'ATM'], true) ? 'CASHOUT' : 'DEPOSIT';
@@ -4179,6 +4188,12 @@ $this->updateHoldExpiry($this->currentHoldId, $holdExpiresAt);
  
 $this->updateHoldStatus($this->currentHoldId, 'PENDING_CASHOUT');
 
+// Fee ledger: hold placed (source 13% + levy) and code issued (destination 10% of its 50%).
+$feeCtx = ['swap_reference' => $this->currentSwapRef, 'leg_reference' => $this->currentSwapRef, 'product' => 'CASHOUT',
+           'source_institution' => $sourceInstitution, 'destination_institution' => $destinationInstitution, 'currency' => $payload['currency'] ?? 'BWP'];
+$this->feeLedger()->record('HOLD_PLACED', $feeCtx);
+$this->feeLedger()->record('CODE_GENERATED', $feeCtx);
+
         
         $this->populateTrackingTables(
             [
@@ -4624,6 +4639,9 @@ public function cancelExpiredCashouts(int $bufferHours = 6): array
                     (int)$auth['auth_id'],
                     "Unredeemed {$bufferHours}h past code expiry ({$auth['code_expiry']})"
                 );
+                // Fee ledger: hold and code-generation shares were earned, but the whole
+                // hold went back to the customer, so they were not collected.
+                $this->feeLedger()->markUncollected((string)$swapRef, "Code unredeemed; hold released in full at expiry ({$auth['code_expiry']})");
                 $results['released']++;
                 $results['details'][] = [
                     'auth_id' => $auth['auth_id'],
@@ -4814,6 +4832,12 @@ $this->recordSettlementPending(
     $payload['currency'] ?? 'BWP'
 );
 
+// Fee ledger: the source placed the hold (13% + levy), the destination delivered (50% + VouchMorph 35%).
+$feeCtx = ['swap_reference' => $this->currentSwapRef, 'leg_reference' => $this->currentSwapRef, 'product' => 'DEPOSIT',
+           'source_institution' => $sourceInstitution, 'destination_institution' => $destinationInstitution, 'currency' => $payload['currency'] ?? 'BWP'];
+$this->feeLedger()->record('HOLD_PLACED', $feeCtx);
+$this->feeLedger()->record('DELIVERED', $feeCtx);
+
     
     // Post ledger legs
     $sourceIdentifier = $this->extractSourceIdentifier($payload);
@@ -4886,6 +4910,14 @@ $this->recordSettlementPending(
  // ============================================================================
     // IDENTITY SWAP FLOW
     // ============================================================================
+
+    private ?\Domain\Services\Fees\FeeLedger $feeLedgerInstance = null;
+
+    /** Section 23 Rev. 2: records which institution performed each service and the fee it earns. */
+    private function feeLedger(): \Domain\Services\Fees\FeeLedger
+    {
+        return $this->feeLedgerInstance ??= new \Domain\Services\Fees\FeeLedger($this->swapDB, $this->feesConfig ?? []);
+    }
 
     public function initiateSwapToIdentity(array $payload): array
 {
@@ -6853,6 +6885,7 @@ public function cancelExpiredIdentitySwaps(): array
         foreach ($expiredSwaps as $swap) {
             try {
                 $results['details'][] = $this->expireIdentitySwap($swap);
+                $this->feeLedger()->markUncollected((string)$swap['swap_reference'], 'Identity swap unclaimed; hold released in full at expiry');
                 $results['cancelled']++;
             } catch (Exception $e) {
                 error_log("[SwapService] Failed to cancel swap {$swap['swap_reference']}: " . $e->getMessage());
@@ -7442,6 +7475,10 @@ public function confirmCashout(array $payload): array
             $amountToSend,
             $currency
         );
+
+        // Fee ledger: cash dispensed (destination 90% of its 50% + VouchMorph 35%).
+        $this->feeLedger()->record('CASH_DISPENSED', ['swap_reference' => $swapRef, 'leg_reference' => $swapRef, 'product' => 'CASHOUT',
+            'source_institution' => $sourceInstitution, 'destination_institution' => $destinationInstitution, 'currency' => $currency]);
 
         // Post ledger legs for cashout
         $this->postLedgerLegs(
@@ -13011,6 +13048,10 @@ private function recordManualReconciliationRequired(
  
   private function rollbackAtomicSwap(string $reason): array
 {
+    // Section 23.3: a transaction that fails on the platform is never charged.
+    if ($this->currentSwapRef) {
+        $this->feeLedger()->reverse((string)$this->currentSwapRef, 'Platform failure: ' . $reason);
+    }
     $holdReference = $this->currentHoldReference;
     $holdInstitution = $this->currentHoldInstitution;
     $swapRef = $this->currentSwapRef;
