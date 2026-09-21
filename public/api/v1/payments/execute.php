@@ -67,6 +67,17 @@ $requestId = (int)$input['request_id'];
 
 $db = $container->get(PDO::class);
 
+// Incident Command gate: sandbox cap and freezes, before any money moves.
+require_once dirname(__DIR__, 4) . '/src/Application/Incident/IncidentDesk.php';
+require_once dirname(__DIR__, 4) . '/src/Application/Incident/Playbooks.php';
+require_once dirname(__DIR__, 4) . '/src/Application/Incident/ServiceControls.php';
+$preGate = \Application\Incident\ServiceControls::check($db, ['amount' => 0, 'flow' => 'PAYMENT_REQUEST', 'user_id' => $payerUserId]);
+if ($preGate !== null) {
+    http_response_code($preGate['http']);
+    echo json_encode(['success' => false, 'error' => $preGate['message'], 'code' => $preGate['code'], 'funds_moved' => false]);
+    exit();
+}
+
 try {
     $db->beginTransaction();
 
