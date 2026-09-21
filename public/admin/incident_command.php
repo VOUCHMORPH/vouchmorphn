@@ -22,6 +22,8 @@ require_once PROJECT_ROOT . '/src/Application/Incident/Playbooks.php';
 require_once PROJECT_ROOT . '/src/Application/Incident/ReportBuilder.php';
 require_once PROJECT_ROOT . '/src/Application/Incident/IncidentDesk.php';
 require_once PROJECT_ROOT . '/src/Application/Incident/ServiceControls.php';
+require_once PROJECT_ROOT . '/src/Application/Incident/InFlightDesk.php';
+require_once PROJECT_ROOT . '/src/Domain/Services/Fees/FeeLedger.php';
 
 use Application\Utils\SessionManager;
 use Application\Incident\IncidentDesk;
@@ -72,6 +74,15 @@ if (isset($_GET['download'])) {
     echo $pdf->output(); exit;
 }
 
+if (isset($_GET['return_letter'])) {
+    $html = (new \Application\Incident\InFlightDesk($db))->letter((int)$_GET['return_letter']);
+    \Application\Admin\AdminAudit::recordOrLog($db, $adminId, 'REPORT_DOWNLOADED', 'return_request', (string)(int)$_GET['return_letter'], [], 'INCIDENT');
+    if (($_GET['format'] ?? 'pdf') === 'html' || !class_exists('\\Dompdf\\Dompdf')) { header('Content-Type: text/html; charset=utf-8'); echo $html; exit; }
+    $pdf = new \Dompdf\Dompdf(['isRemoteEnabled' => false]); $pdf->loadHtml($html); $pdf->setPaper('A4'); $pdf->render();
+    header('Content-Type: application/pdf'); header('Content-Disposition: attachment; filename="Return_request_RTN-' . (int)$_GET['return_letter'] . '.pdf"');
+    echo $pdf->output(); exit;
+}
+
 // ------------------------------------------------------------------ actions (POST/redirect/GET)
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $back = $_POST['back'] ?? 'incident_command.php';
@@ -111,6 +122,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $msg = $r['published'] ? 'Notice published to customers' . (($r['sms_sent'] ?? 0) ? " and SMS sent to {$r['sms_sent']}." : '.') : 'Notice rejected.'; break;
             case 'withdraw_notice': $desk->withdrawBroadcast((int)$_POST['broadcast_id'], $adminId, $role); $msg = 'Notice withdrawn.'; break;
             case 'contact': $desk->updateContact((string)$_POST['role_code'], $_POST, $adminId, $role); $msg = 'Contact saved.'; break;
+            case 'inflight_release':
+                $services = function () {
+                    $container = require PROJECT_ROOT . '/src/bootstrap.php';
+                    require_once PROJECT_ROOT . '/src/Domain/Services/CardService.php';
+                    $swap = $container->get('Domain\\Services\\SwapService');
+                    $card = new \Domain\Services\CardService($container->get(PDO::class), $container->get('countryCode'), $container->get('countryConfig'));
+                    return [$swap, $card];
+                };
+                $r = (new \Application\Incident\InFlightDesk($db))->releaseNow((string)$_POST['kind'], (string)$_POST['reference'], (string)$_POST['reason'], ($_POST['incident_id'] ?? '') ?: null, $adminId, $role, $services);
+                $ok = ($r['success'] ?? true) !== false && ($r['status'] ?? '') !== 'UNHOOK_PARTIAL';
+                $msg = $ok ? "Released {$_POST['reference']}: the institution returns the hold to the customer; fees reversed." : "Partly released {$_POST['reference']}: " . json_encode($r['failed'] ?? $r['error'] ?? $r) . ' - confirm the rest with the institution.';
+                break;
+            case 'return_request':
+                $rid = (new \Application\Incident\InFlightDesk($db))->requestReturn((string)$_POST['swap_reference'], (string)$_POST['reason_code'], (string)$_POST['reason'], ($_POST['incident_id'] ?? '') ?: null, $adminId, $role);
+                $msg = "Return request RTN-{$rid} raised. Download the letter, send it to the institution, then record SENT and their answer."; break;
+            case 'return_outcome':
+                (new \Application\Incident\InFlightDesk($db))->recordReturnOutcome((int)$_POST['request_id'], (string)$_POST['status'], ($_POST['returned'] ?? '') === '' ? null : (float)$_POST['returned'], (string)($_POST['bank_reference'] ?? ''), (string)($_POST['response'] ?? ''), $adminId, $role);
+                $msg = 'Return request updated.'; break;
             default: throw new RuntimeException('Unknown action.');
         }
         $_SESSION['ic_flash'] = ['good', $msg];
@@ -165,7 +194,7 @@ form.inline{display:inline}.row{display:grid;grid-template-columns:repeat(auto-f
 <header><div><b>Incident Command</b> <span class="muted" style="color:#c9d3de">· VouchMorph sandbox · VM-GOV-001</span></div>
 <div><?= h($ROLE_NAMES[$role] ?? 'Admin') ?><a href="admin_dashboard.php">Admin dashboard</a><a href="accounts.php">Accounts</a></div></header>
 <nav>
-<?php foreach (['board' => 'Alarm board', 'incidents' => 'Incidents', 'controls' => 'Controls', 'notices' => 'Customer notices', 'reports' => 'Reports', 'contacts' => 'Contacts', 'messages' => 'Messages sent'] as $k => $v): ?>
+<?php foreach (['board' => 'Alarm board', 'incidents' => 'Incidents', 'inflight' => 'In-flight', 'controls' => 'Controls', 'notices' => 'Customer notices', 'reports' => 'Reports', 'contacts' => 'Contacts', 'messages' => 'Messages sent'] as $k => $v): ?>
   <a href="<?= $self ?>?tab=<?= $k ?>" class="<?= $tab === $k ? 'on' : '' ?>"><?= $v ?></a>
 <?php endforeach; ?>
 </nav>
@@ -259,6 +288,42 @@ if ($svc): ?><div class="frozen">THE WHOLE SERVICE IS FROZEN since <?= ts($svc[0
 <?php if ($ctrls): ?><div class="card"><h2>Freezes linked to this incident</h2><table><?php foreach ($ctrls as $c): ?><tr><td><?= h($c['scope'] . ' ' . $c['target']) ?></td><td><?= h($c['reason']) ?></td><td><?= $c['resumed_at'] ? 'Lifted ' . ts($c['resumed_at']) : '<b>In force</b>' ?></td></tr><?php endforeach; ?></table></div><?php endif; ?>
 
 <div class="card"><h2>Timeline</h2><table><?php foreach ($log as $l): ?><tr><td style="width:120px"><?= ts($l['at']) ?></td><td><?= h($l['entry']) ?></td></tr><?php endforeach; ?></table></div>
+
+<?php elseif ($tab === 'inflight'):
+    $ifd = new \Application\Incident\InFlightDesk($db);
+    try { $held = $ifd->held(); $pools = $ifd->hookedPools(); $recall = $ifd->recallable(); $rets = $ifd->returnRequests(); $ifErr = null; }
+    catch (Throwable $e) { $held = $pools = $recall = $rets = []; $ifErr = $e->getMessage(); }
+    $openIncs = $db->query("SELECT incident_id, title FROM ic_incidents WHERE status <> 'CLOSED' ORDER BY opened_at DESC")->fetchAll(PDO::FETCH_ASSOC);
+    $incSel = '<select name="incident_id"><option value="">(no incident)</option>' . implode('', array_map(fn($i) => '<option value="' . h($i['incident_id']) . '">' . h($i['incident_id']) . '</option>', $openIncs)) . '</select>';
+    $canAct = !$readOnly && in_array($role, \Application\Incident\InFlightDesk::ACT_ROLES, true);
+    $heldTotal = array_sum(array_map(fn($x) => (float)$x['amount'], $held)); $poolTotal = array_sum(array_map(fn($x) => (float)$x['total_held_amount'], $pools)); ?>
+<?php if ($ifErr): ?><div class="flash bad">In-flight view unavailable: <?= h($ifErr) ?> (run database/migrations/2026_09_22_return_requests.sql)</div><?php endif; ?>
+<div class="grid">
+  <div class="metric"><div class="n"><?= count($held) ?></div><div class="l">Holds in flight · P<?= number_format($heldTotal, 2) ?></div></div>
+  <div class="metric"><div class="n"><?= count($pools) ?></div><div class="l">Card hooks held · P<?= number_format($poolTotal, 2) ?></div></div>
+  <div class="metric"><div class="n"><?= count($recall) ?></div><div class="l">Completed in the last 48 h (recallable)</div></div>
+  <div class="metric"><div class="n"><?= count(array_filter($rets, fn($r) => in_array($r['status'], ['REQUESTED', 'SENT'], true))) ?></div><div class="l">Return requests open</div></div>
+</div>
+<div class="card"><h2>Held, not yet completed · release now</h2>
+<p class="muted">The money is still held at the source institution. Releasing asks the institution to return it to the customer now instead of at expiry; the leg's fees are reversed because the customer did not cause it. Holds with no release button are released automatically at expiry.</p>
+<table><tr><th>Swap</th><th>Institution</th><th>Amount</th><th>State</th><th>Placed</th><th>Expires</th><th></th></tr>
+<?php foreach ($held as $x): $kind = $x['cashout_pending'] ? 'CASHOUT' : ($x['identity_pending'] ? 'IDENTITY' : null); ?>
+<tr><td><?= h($x['swap_reference']) ?></td><td><?= h($x['institution']) ?></td><td>P<?= number_format((float)$x['amount'], 2) ?></td><td><?= h($x['status']) ?></td><td><?= ts($x['created_at']) ?></td><td><?= $x['hold_expiry'] ? ts($x['hold_expiry']) . '<br>' . due($x['hold_expiry']) : '<span class="muted">by its code / claim window</span>' ?></td>
+<td style="width:300px"><?php if ($canAct && $kind) echo $form('inflight_release', '<input type="hidden" name="kind" value="' . $kind . '"><input type="hidden" name="reference" value="' . h($x['swap_reference']) . '"><input name="reason" placeholder="Reason (required)" required minlength="10">' . $incSel . '<button class="danger">Release to customer</button>', $self . '?tab=inflight'); ?></td></tr>
+<?php endforeach; ?></table></div>
+<div class="card"><h2>Card hooks holding money</h2><p class="muted">Expired hooks are released automatically every 5 minutes. Release one now if the customer needs the money back sooner.</p>
+<table><tr><th>Hook</th><th>Card</th><th>Held</th><th>Sources</th><th>Expires</th><th></th></tr>
+<?php foreach ($pools as $x): ?><tr><td><?= h($x['hook_reference']) ?></td><td>…<?= h($x['card_suffix']) ?></td><td>P<?= number_format((float)$x['total_held_amount'], 2) ?></td><td class="muted"><?= h($x['sources']) ?></td><td><?= ts($x['expires_at']) ?><?= $x['expired'] ? ' <span class="late">expired</span>' : '' ?></td>
+<td style="width:300px"><?php if ($canAct) echo $form('inflight_release', '<input type="hidden" name="kind" value="CARD_HOOK"><input type="hidden" name="reference" value="' . h($x['hook_reference']) . '"><input name="reason" placeholder="Reason (required)" required minlength="10">' . $incSel . '<button class="danger">Release hook</button>', $self . '?tab=inflight'); ?></td></tr><?php endforeach; ?></table></div>
+<div class="card"><h2>Completed in the last 48 hours · request a return</h2>
+<p class="muted">The money is already with the destination institution; only that institution can return it. VouchMorph raises a formal return request, you send the letter, and record their answer. Customer error: attempted recovery; system error, duplicate or fraud: full refund when returned (Section 23.4).</p>
+<table><tr><th>Swap</th><th>Type</th><th>Amount</th><th>From → to</th><th>Completed</th><th></th></tr>
+<?php foreach ($recall as $x): ?><tr><td><?= h($x['swap_reference']) ?></td><td><?= h($x['swap_type']) ?></td><td>P<?= number_format((float)$x['amount'], 2) ?></td><td><?= h($x['source_institution'] . ' → ' . ($x['destination_institution'] ?: '?')) ?></td><td><?= ts($x['created_at']) ?></td>
+<td style="width:340px"><?php if ($x['return_status']): ?>Return <?= h($x['return_status']) ?><?php elseif ($canAct): echo $form('return_request', '<input type="hidden" name="swap_reference" value="' . h($x['swap_reference']) . '"><select name="reason_code"><option value="SYSTEM_ERROR">System error</option><option value="DUPLICATE">Duplicate</option><option value="FRAUD">Fraud (verified)</option><option value="CUSTOMER_ERROR">Customer error (48 h)</option><option value="SANCTIONS">Sanctions</option></select><input name="reason" placeholder="What happened (required)" required minlength="10">' . $incSel . '<button>Request return</button>', $self . '?tab=inflight'); endif; ?></td></tr><?php endforeach; ?></table></div>
+<div class="card"><h2>Return requests</h2><table><tr><th>Request</th><th>Swap</th><th>From</th><th>Amount</th><th>Status</th><th>Answer due</th><th></th></tr>
+<?php foreach ($rets as $r): $open = in_array($r['status'], ['REQUESTED', 'SENT'], true); ?><tr><td>RTN-<?= (int)$r['request_id'] ?><br><span class="muted"><?= h($r['reason_code']) ?></span></td><td><?= h($r['swap_reference']) ?></td><td><?= h($r['destination_institution']) ?></td><td>P<?= number_format((float)$r['amount'], 2) ?><?= $r['returned_amount'] !== null ? '<br><span class="muted">returned P' . number_format((float)$r['returned_amount'], 2) . '</span>' : '' ?></td>
+<td><?= h($r['status']) ?><br><span class="muted"><?= h($r['bank_response'] ?? '') ?></span></td><td><?= $open ? ts($r['respond_by']) . '<br>' . due($r['respond_by']) : ts($r['closed_at']) ?></td>
+<td style="width:330px"><a href="<?= $self ?>?return_letter=<?= (int)$r['request_id'] ?>">Letter (PDF)</a><?php if ($canAct && $open) echo '<br>' . $form('return_outcome', '<input type="hidden" name="request_id" value="' . (int)$r['request_id'] . '"><select name="status"><option value="SENT">Sent to the institution</option><option value="RETURNED">Returned in full</option><option value="PARTIAL">Partly returned</option><option value="REFUSED">Refused</option><option value="WITHDRAWN">Withdrawn</option></select><input name="returned" placeholder="Amount returned"><input name="bank_reference" placeholder="Their reference"><input name="response" placeholder="Their answer"><button>Record</button>', $self . '?tab=inflight'); ?></td></tr><?php endforeach; ?></table></div>
 
 <?php elseif ($tab === 'controls'):
     $recent = $db->query("SELECT * FROM ic_controls WHERE resumed_at IS NOT NULL ORDER BY resumed_at DESC LIMIT 20")->fetchAll(PDO::FETCH_ASSOC);
