@@ -65,6 +65,7 @@ ZURUBANK:
       reverse: "/api/v1/hold.php"
       status: "/api/v1/status"
       check_settlement: "/api/v1/settlement/check.php"
+      settlement_advice: /api/v1/settlement/advice.php
       health: "/health.php"
 
   callbacks:
@@ -115,6 +116,7 @@ ABSA:
       transferWithProof: "/api/absa_participant.php?action=process_deposit"
       status: "/api/absa_participant.php?action=check_status"
       check_settlement: "/api/absa_participant.php?action=check_settlement"
+      settlement_advice: /api/absa_participant.php?action=settlement_advice
       health: "/health.php"
 
   callbacks:
@@ -182,6 +184,7 @@ SACCUSSALIS:
       reverse: "/api/v1/hold.php"
       status: "/api/v1/status"
       check_settlement: "/api/v1/settlement/check.php"
+      settlement_advice: /api/v1/settlement/advice.php
       health: "/health.php"
 
   callbacks:
