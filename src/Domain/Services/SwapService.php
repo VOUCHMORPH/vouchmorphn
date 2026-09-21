@@ -6864,6 +6864,25 @@ private function consumeEarmarkedBalance(string $institution, string $identifier
 
 
      
+/**
+ * Incident Command: release one pending identity swap now, before its expiry
+ * (an operator decision during an incident, VM-GOV-001 S7/S8). Same release
+ * path as expiry; the leg's fee shares are reversed because the customer did
+ * not cause the cancellation.
+ */
+public function cancelIdentitySwapNow(string $swapReference, string $reason): array
+{
+    $stmt = $this->swapDB->prepare("SELECT * FROM identity_swap_holds WHERE swap_reference = ? AND status = 'pending'");
+    $stmt->execute([$swapReference]);
+    $swap = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$swap) {
+        throw new RuntimeException("No pending identity swap {$swapReference}.");
+    }
+    $result = $this->expireIdentitySwap($swap);
+    $this->feeLedger()->reverse($swapReference, 'Released by Incident Command: ' . $reason);
+    return $result;
+}
+
 public function cancelExpiredIdentitySwaps(): array
 {
     error_log("[SwapService] ===== cancelExpiredIdentitySwaps =====");
