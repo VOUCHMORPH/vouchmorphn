@@ -177,6 +177,31 @@ rule('ACTION_OVERDUE', function () use ($db, $desk) {
     return count($rows) . ' overdue, ' . $desk->autoResolve('ACTION_OVERDUE', $keys) . ' cleared';
 }, $stats);
 
+rule('RETURN_OVERDUE', function () use ($db, $desk) {
+    $rows = $db->query("SELECT request_id, swap_reference, destination_institution, amount FROM ic_return_requests WHERE status IN ('REQUESTED','SENT') AND respond_by < NOW()")->fetchAll(PDO::FETCH_ASSOC);
+    $keys = [];
+    foreach ($rows as $r) {
+        $keys[] = $k = 'RETURN_OVERDUE:' . $r['request_id'];
+        $desk->raiseAlert('RETURN_OVERDUE', $k, "Return request RTN-{$r['request_id']} ({$r['swap_reference']}, P{$r['amount']}) unanswered by {$r['destination_institution']}", $r);
+    }
+    return count($rows) . ' overdue, ' . $desk->autoResolve('RETURN_OVERDUE', $keys) . ' cleared';
+}, $stats);
+
+rule('HOOK_RELEASE_PARTIAL', function () use ($db, $desk) {
+    $rows = $db->query("
+        SELECT h.hook_reference, h.card_suffix, COUNT(s.id) AS sources, COALESCE(SUM(s.held_amount),0) AS still_held,
+               string_agg(DISTINCT s.institution, ', ') AS institutions
+        FROM card_pool_hooks h JOIN card_pool_hook_sources s ON s.hook_id = h.id AND s.status = 'HELD'
+        WHERE h.status = 'UNHOOK_PARTIAL' GROUP BY 1, 2
+    ")->fetchAll(PDO::FETCH_ASSOC);
+    $keys = [];
+    foreach ($rows as $r) {
+        $keys[] = $k = 'HOOK_RELEASE_PARTIAL:' . $r['hook_reference'];
+        $desk->raiseAlert('HOOK_RELEASE_PARTIAL', $k, "Card hook {$r['hook_reference']} (card ...{$r['card_suffix']}): P{$r['still_held']} not confirmed released at {$r['institutions']}", $r);
+    }
+    return count($rows) . ' partial, ' . $desk->autoResolve('HOOK_RELEASE_PARTIAL', $keys) . ' cleared';
+}, $stats);
+
 rule('SELF_BILLED_INVOICE', function () use ($db, $desk) {
     $r = $db->query("
         SELECT COUNT(*) AS n, COALESCE(SUM(amount), 0) AS amount FROM settlement_outbox
