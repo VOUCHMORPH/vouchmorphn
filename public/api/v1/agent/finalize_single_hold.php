@@ -73,6 +73,17 @@ try {
         exit;
     }
 
+    // Incident Command gate: service, claim flow and this agent.
+    require_once dirname(__DIR__, 4) . '/src/Application/Incident/IncidentDesk.php';
+require_once dirname(__DIR__, 4) . '/src/Application/Incident/Playbooks.php';
+require_once dirname(__DIR__, 4) . '/src/Application/Incident/ServiceControls.php';
+$gate = \Application\Incident\ServiceControls::check($db, ['amount' => 0, 'flow' => 'IDENTITY_CLAIM', 'agent_id' => (string)$userId]);
+    if ($gate !== null) {
+        http_response_code($gate['http']);
+        echo json_encode(['success' => false, 'error' => $gate['message'], 'code' => $gate['code'], 'funds_moved' => false]);
+        exit;
+    }
+
     // Get the specific hold
     $hold = $swapService->getIdentitySwapByHoldId($holdId);
     if (!$hold || $hold['status'] !== 'pending') {
