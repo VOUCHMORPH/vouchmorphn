@@ -30,6 +30,7 @@ require_once __DIR__ . '/../../vendor/autoload.php';
 require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
 require_once __DIR__ . '/../../src/Core/Config/LoadCountry.php';
 require_once __DIR__ . '/../../src/Infrastructure/Adapters/InstitutionAdapterFactory.php';
+require_once __DIR__ . '/../../src/Domain/Services/Fees/FeeLedger.php';
 
 use Core\Config\LoadCountry;
 use Infrastructure\Adapters\InstitutionAdapterFactory;
@@ -82,7 +83,16 @@ try {
     $cycles = $cfg['cycles'] ?? DEFAULT_CYCLES;
     $cycleStart = latestCycle($now, $cycles);
 
-    $stats = ['open_swaps' => 0, 'lines_checked' => 0, 'lines_paid' => 0, 'swaps_settled' => 0, 'fee_lines_paid' => 0,
+    $ledger = \Domain\Services\Fees\FeeLedger::fromCountryConfig($db);
+    $hasLedger = (bool)$db->query("SELECT to_regclass('fee_ledger') IS NOT NULL")->fetchColumn();
+    // Fee shares on a line become PAID when the receiving bank confirms the line.
+    $markSharesPaid = function (string $lineRef) use ($db, $hasLedger): int {
+        if (!$hasLedger) return 0;
+        $st = $db->prepare("UPDATE fee_ledger SET status = 'PAID', paid_at = NOW() WHERE advice_line_ref = ? AND status = 'ADVISED'");
+        $st->execute([$lineRef]);
+        return $st->rowCount();
+    };
+    $stats = ['fee_shares_paid' => 0, 'settlement_fees_earned' => 0, 'open_swaps' => 0, 'lines_checked' => 0, 'lines_paid' => 0, 'swaps_settled' => 0, 'fee_lines_paid' => 0,
               'invoices_paid' => 0, 'failed' => 0, 'newly_overdue' => 0, 'errors' => 0, 'not_due' => 0];
 
     // Ask the receiving bank whether a line reference was paid.
@@ -108,13 +118,15 @@ try {
     }
 
     // ---------- 2. principal lines: one question per open line ----------
+    // Every open principal line - including lines that carry only a destination's
+    // fee shares (e.g. a code fee earned before its cash-out is collected).
     $lines = $db->query("
-        SELECT l.line_ref, l.creditor_bank, MAX(sc.last_attempt_at) AS last_attempt_at,
-               array_to_json(array_agg(sc.swap_reference ORDER BY sc.swap_reference)) AS swaps
+        SELECT l.line_ref, l.creditor_bank, l.debtor_bank, MAX(sc.last_attempt_at) AS last_attempt_at,
+               COALESCE(array_to_json(array_agg(sc.swap_reference ORDER BY sc.swap_reference) FILTER (WHERE sc.swap_reference IS NOT NULL)), '[]') AS swaps
         FROM settlement_advice_lines l
-        JOIN settlement_confirmations sc ON sc.advice_line_ref = l.line_ref AND sc.status = 'PENDING'
+        LEFT JOIN settlement_confirmations sc ON sc.advice_line_ref = l.line_ref AND sc.status = 'PENDING'
         WHERE l.kind = 'PRINCIPAL' AND l.status = 'OPEN'
-        GROUP BY l.line_ref, l.creditor_bank
+        GROUP BY l.line_ref, l.creditor_bank, l.debtor_bank
     ")->fetchAll(PDO::FETCH_ASSOC);
     foreach ($lines as $l) {
         $swapRefs = json_decode($l['swaps'], true) ?: [];
@@ -136,9 +148,14 @@ try {
                     $in = implode(',', array_fill(0, count($settled), '?'));
                     $db->prepare("UPDATE swap_requests SET settlement_status = 'CONFIRMED', settlement_confirmed_at = NOW() WHERE swap_uuid IN ($in)")->execute($settled);
                 }
+                $stats['fee_shares_paid'] += $markSharesPaid($l['line_ref']);
                 $db->commit();
                 $stats['lines_paid']++;
                 $stats['swaps_settled'] += count($settled);
+                // The paying bank performed this settlement: it earns the 2% settlement fee on each leg.
+                foreach ($settled as $legRef) {
+                    $stats['settlement_fees_earned'] += $ledger->settleLeg((string)$legRef, (string)$l['debtor_bank']) > 0 ? 1 : 0;
+                }
             } elseif ($explicitFail) {
                 $reason = mb_substr((string)($result['message'] ?? 'receiving bank reports the payment as not received'), 0, 500);
                 $upd = $db->prepare("UPDATE settlement_confirmations SET status = 'FAILED', last_error = ? WHERE advice_line_ref = ? AND status = 'PENDING' RETURNING swap_reference");
@@ -178,6 +195,7 @@ try {
                     $upd->execute($invoiceIds);
                     $stats['invoices_paid'] += $upd->rowCount();
                 }
+                $stats['fee_shares_paid'] += $markSharesPaid($l['line_ref']);
                 $db->commit();
                 $stats['fee_lines_paid']++;
             }
