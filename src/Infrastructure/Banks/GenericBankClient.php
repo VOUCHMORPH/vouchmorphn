@@ -427,6 +427,12 @@ if ($currentSection === 'auth' && preg_match('/^    ([a-z_]+): (.+)$/', $line, $
             'createReservationAccountSigned' => ['reservation_accounts', 'create_account'],
             'get_reservation_account_status' => ['reservation_accounts', 'get_account_status'],
             'getReservationAccountStatus' => ['reservation_accounts', 'get_account_status'],
+            // Settlement. checkSettlementStatus was missing from this map, so every
+            // settlement check returned "Endpoint not configured" for every bank.
+            'checkSettlementStatus' => ['common', 'check_settlement'],
+            'check_settlement' => ['common', 'check_settlement'],
+            'sendSettlementAdvice' => ['common', 'settlement_advice'],
+            'settlement_advice' => ['common', 'settlement_advice'],
         ];
         
         if ($this->yamlEndpoints && isset($yamlPathMap[$action])) {
@@ -1862,10 +1868,47 @@ public function placeHold(array $payload): array
         return $this->send('check_status', ['reference' => $reference]);
     }
     
+    /**
+     * Adds VouchMorph's certificate and signature to a settlement message,
+     * the same way placeHold() signs, so the bank can verify it came from
+     * VouchMorph (banks check it with CertificateManager::verifySignedRequest).
+     */
+    private function signSettlementPayload(array $payload, string $label): array
+    {
+        if (!empty($payload['certificate']) && !empty($payload['signature'])) {
+            return $payload;
+        }
+        if (!$this->certManager || !$this->certManager->isConfigured()) {
+            error_log("[GenericBankClient] {$label}: CertificateManager not configured; sending unsigned");
+            return $payload;
+        }
+        if (!$this->certManager->getMyCertificate()) {
+            error_log("[GenericBankClient] {$label}: no certificate available; sending unsigned");
+            return $payload;
+        }
+        // Sign WITHOUT the certificate in the payload: createSignedRequest()
+        // attaches it (and requester) after signing, and the banks strip both
+        // before verifying. placeHold() puts the certificate in first, so it
+        // signs different bytes from what the bank checks - that is why ABSA's
+        // log shows VouchMorph signatures as INVALID.
+        unset($payload['certificate'], $payload['signature'], $payload['requester']);
+        return $this->certManager->createSignedRequest($payload, 'VOUCHMORPH');
+    }
+
+    /**
+     * Sends a cycle's settlement advice to the paying bank: what it owes to
+     * each receiving bank and to VouchMorph, with the swaps behind each line.
+     */
+    public function sendSettlementAdvice(array $payload): array
+    {
+        error_log("=== GENERIC BANK CLIENT: sendSettlementAdvice ===");
+        return $this->send('sendSettlementAdvice', $this->signSettlementPayload($payload, 'sendSettlementAdvice'));
+    }
+
     public function checkSettlementStatus(array $payload): array
 {
     error_log("=== GENERIC BANK CLIENT: checkSettlementStatus ===");
-    $result = $this->send('checkSettlementStatus', $payload);
+    $result = $this->send('checkSettlementStatus', $this->signSettlementPayload($payload, 'checkSettlementStatus'));
 
     $data = $result['data'] ?? [];
 
