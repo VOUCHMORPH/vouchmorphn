@@ -374,25 +374,44 @@ class HybridSettlementStrategy
         float $vatRate = 0.14
     ): string {
         $invoiceUuid = $this->generateUuid();
-        $vatAmount = $feeAmount * $vatRate;
-        $totalAmount = $feeAmount + $vatAmount;
-        
+        // FIX (2026-09-21): the fee the customer is shown and pays is VAT-inclusive
+        // (consumer prices in Botswana include VAT), so the VAT is carved out of it,
+        // not added on top. Before, a P6.00 fee was invoiced as P6.84.
+        // Set FEES_EXCLUDE_VAT=1 only if the accountant confirms fees are quoted
+        // excluding VAT.
+        $feesExcludeVat = in_array(strtolower((string)getenv('FEES_EXCLUDE_VAT')), ['1', 'true', 'yes'], true);
+        if ($feesExcludeVat) {
+            $netAmount = $feeAmount;
+            $vatAmount = round($feeAmount * $vatRate, 2);
+            $totalAmount = round($feeAmount + $vatAmount, 2);
+        } else {
+            $totalAmount = round($feeAmount, 2);
+            $vatAmount = round($feeAmount * $vatRate / (1 + $vatRate), 2);
+            $netAmount = round($totalAmount - $vatAmount, 2);
+        }
+
+        // Real payment details from the environment (the placeholders VM-FEE-001 / VM001 are gone).
+        $feeBank = getenv('VOUCHMORPH_FEE_BANK') ?: 'ZURUBANK';
+        $feeAccount = getenv('VOUCHMORPH_FEE_ACCOUNT') ?: 'VOUCHMORPH-FEES';
+
         $invoice = [
             'invoice_uuid' => $invoiceUuid,
             'swap_reference' => $swapReference,
             'fee_type' => $feeType,
-            'fee_amount' => $feeAmount,
+            'fee_amount' => $netAmount,
+            'fee_amount_excl_vat' => $netAmount,
             'vat_rate' => $vatRate,
             'vat_amount' => $vatAmount,
             'total_amount' => $totalAmount,
+            'vat_basis' => $feesExcludeVat ? 'EXCLUSIVE' : 'INCLUSIVE',
             'currency' => $currency,
             'payee' => self::VOUCHMORPH_FEE_ACCOUNT,
-            'payee_account' => self::VOUCHMORPH_FEE_ACCOUNT_NUMBER,
+            'payee_account' => $feeAccount,
             'payment_instructions' => [
-                'bank' => 'VouchMorph Operations Account',
-                'account_name' => 'VouchMorph Pty Ltd',
-                'account_number' => 'VM-FEE-001',
-                'bank_code' => 'VM001',
+                'bank' => $feeBank,
+                'account_name' => 'VouchMorph (Pty) Ltd',
+                'account_number' => $feeAccount,
+                'bank_code' => $feeBank,
                 'reference' => $invoiceUuid,
                 'notes' => 'Fee for swap transaction ' . $swapReference
             ],
