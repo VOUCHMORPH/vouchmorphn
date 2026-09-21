@@ -1,0 +1,16 @@
+{
+  "_comment": "Who settles for whom at the central bank, and where VouchMorph's fees are paid. Mobile-money issuers are not central bank members: their sponsor bank settles for them.",
+  "settling_bank": {
+    "CAZACOM": "SACCUSSALIS",
+    "MTN": "ABSA"
+  },
+  "central_bank_members": ["ZURUBANK", "SACCUSSALIS", "ABSA"],
+  "clearing_account_prefix": "VMCLR-",
+  "fee_account": {
+    "bank_env": "VOUCHMORPH_FEE_BANK",
+    "account_env": "VOUCHMORPH_FEE_ACCOUNT",
+    "default_bank": "ZURUBANK",
+    "default_account": "VOUCHMORPH-FEES"
+  },
+  "cycles": ["08:00", "10:30", "13:00", "15:30", "17:30", "20:00"]
+}
