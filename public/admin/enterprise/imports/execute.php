@@ -269,6 +269,25 @@ if (count($destinations) >= 2) {
     $payload['swap_type'] = in_array($only['delivery_method'], ['CASHOUT', 'VOUCHER', 'AGENT', 'ATM']) ? 'CASHOUT' : 'DEPOSIT';
 }
 
+// Incident Command gate: service and ENTERPRISE_BATCH flow freezes, the
+// source institution, and the P7,000 cap on each individual payment.
+require_once dirname(__DIR__, 4) . '/src/Application/Incident/IncidentDesk.php';
+require_once dirname(__DIR__, 4) . '/src/Application/Incident/Playbooks.php';
+require_once dirname(__DIR__, 4) . '/src/Application/Incident/ServiceControls.php';
+$gateFailure = null;
+foreach ($destinations as $d) {
+    $g = \Application\Incident\ServiceControls::check($db, [
+        'amount' => (float)($d['amount'] ?? 0), 'flow' => 'ENTERPRISE_BATCH',
+        'source' => $payload['source_institution'] ?? $payload['from_institution'] ?? '',
+        'destination' => $d['institution'] ?? $d['destination_institution'] ?? '',
+    ]);
+    if ($g !== null) { $gateFailure = $g; break; }
+}
+if ($gateFailure !== null) {
+    $executionError = 'Stopped by Incident Command: ' . $gateFailure['message'];
+    $destinations = [];
+}
+
 if (!empty($destinations)) {
     try {
         $fullCountryConfig = LoadCountry::getConfig();
