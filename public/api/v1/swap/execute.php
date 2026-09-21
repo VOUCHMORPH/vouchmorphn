@@ -217,6 +217,18 @@ function generateDeterministicIdempotencyKey(array $input): string {
         $input['identity_value'] ?? '',
         $input['destination_identifier'] ?? '',
         $input['to_institution'] ?? $input['destination_institution'] ?? '',
+        // FIX (2026-09-21): who receives it and how are part of WHAT is being
+        // requested. Without them, two cash-outs of the same amount to
+        // different people within a minute collapsed into one - the second
+        // customer got the first swap back and nothing was sent to them.
+        (string)($input['user_id'] ?? ''),
+        preg_replace('/\D/', '', (string)($input['beneficiary_phone'] ?? $input['beneficiary_identifier'] ?? $input['client_phone'] ?? '')),
+        strtoupper((string)($input['delivery_method'] ?? '')),
+        strtoupper((string)($input['destination_asset_type'] ?? '')),
+        isset($input['destinations']) && is_array($input['destinations']) ? hash('sha256', json_encode(array_map(fn($d) => [
+            $d['amount'] ?? '', $d['to_institution'] ?? $d['destination_institution'] ?? '', $d['destination_identifier'] ?? '',
+            $d['identity_value'] ?? '', preg_replace('/\D/', '', (string)($d['beneficiary_phone'] ?? '')), strtoupper((string)($d['delivery_method'] ?? '')),
+        ], $input['destinations']))) : '',
         // 60-second bucket
         (string)floor(time() / 60),
     ];
