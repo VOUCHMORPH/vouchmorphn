@@ -33,6 +33,7 @@ require_once __DIR__ . '/../../vendor/autoload.php';
 require_once __DIR__ . '/../../src/Core/Database/DBConnection.php';
 require_once __DIR__ . '/../../src/Core/Config/LoadCountry.php';
 require_once __DIR__ . '/../../src/Infrastructure/Adapters/InstitutionAdapterFactory.php';
+require_once __DIR__ . '/../../src/Domain/Services/Fees/FeeLedger.php';
 
 use Core\Config\LoadCountry;
 use Infrastructure\Adapters\InstitutionAdapterFactory;
@@ -46,6 +47,7 @@ $clearingPrefix = $cfg['clearing_account_prefix'] ?? 'VMCLR-';
 $feeBank = getenv($cfg['fee_account']['bank_env'] ?? 'VOUCHMORPH_FEE_BANK') ?: ($cfg['fee_account']['default_bank'] ?? 'ZURUBANK');
 $feeAccount = getenv($cfg['fee_account']['account_env'] ?? 'VOUCHMORPH_FEE_ACCOUNT') ?: ($cfg['fee_account']['default_account'] ?? 'VOUCHMORPH-FEES');
 $settling = fn(string $inst): string => $sponsor[strtoupper($inst)] ?? strtoupper($inst);
+$feeSource = strtoupper($cfg['fee_source'] ?? 'INVOICE');   // LEDGER: shares from fee_ledger (Section 23 Rev. 2)
 
 function latest_cycle(DateTimeImmutable $now, array $cycles): DateTimeImmutable {
     sort($cycles);
@@ -76,7 +78,7 @@ try {
     if (!$db->query("SELECT pg_try_advisory_lock(7743003)")->fetchColumn()) { error_log('[ADVICE] another run in progress'); exit(3); }
     $hasStatusCol = (bool)$db->query("SELECT 1 FROM information_schema.columns WHERE table_name = 'swap_requests' AND column_name = 'settlement_status'")->fetchColumn();
 
-    $stats = ['cycle' => $cycleAt->format(DATE_ATOM), 'swaps_advised' => 0, 'invoices_advised' => 0, 'on_us_closed' => 0,
+    $stats = ['cycle' => $cycleAt->format(DATE_ATOM), 'fee_source' => $feeSource, 'swaps_advised' => 0, 'invoices_advised' => 0, 'fee_shares_advised' => 0, 'fee_shares_on_us' => 0, 'on_us_closed' => 0,
               'skipped_no_instruction' => 0, 'skipped_not_member' => 0, 'advices_created' => 0, 'delivered' => 0, 'delivery_failed' => 0];
 
     // ---------- 1. collect what is owed and not yet advised ----------
@@ -108,7 +110,24 @@ try {
           AND NOT EXISTS (SELECT 1 FROM settlement_advice_items i WHERE i.item_type = 'FEE_INVOICE' AND i.item_reference = so.message_uuid::text)
     ");
     $fees->execute([$cycleUtc]);
-    $feeRows = $fees->fetchAll(PDO::FETCH_ASSOC);
+    // With the fee ledger live, the old whole-fee invoices are not advised (they overcharge the source).
+    $feeRows = $feeSource === 'LEDGER' ? [] : $fees->fetchAll(PDO::FETCH_ASSOC);
+
+    // Fee-ledger shares owed by the institution holding the customer's fee to the
+    // institution that earned them. The payer's own shares are RETAINED_BY_PAYER
+    // and never appear here.
+    $shareRows = [];
+    if ($feeSource === 'LEDGER') {
+        $sh = $db->prepare("
+            SELECT f.entry_id, f.leg_reference, f.fee_role, f.institution, f.payer_institution, f.amount, f.currency
+            FROM fee_ledger f
+            WHERE f.status = 'EARNED' AND f.earned_at <= ?
+              AND NOT EXISTS (SELECT 1 FROM settlement_advice_items i WHERE i.item_type = 'FEE_LEDGER' AND i.item_reference = f.entry_id::text)
+            ORDER BY f.entry_id
+        ");
+        $sh->execute([$cycleUtc]);
+        $shareRows = $sh->fetchAll(PDO::FETCH_ASSOC);
+    }
 
     // ---------- 2. group into lines per paying bank ----------
     $lines = [];   // [debtor][key] => line
@@ -134,6 +153,33 @@ try {
         $lines[$debtor][$key]['items'][] = ['type' => 'FEE_INVOICE', 'reference' => $r['message_uuid'], 'amount' => (float)$r['amount']];
     }
 
+    // Fee-ledger shares: VouchMorph's (levy + 35%) on the fee line to its fee account;
+    // a destination's shares travel on its principal line (paid with its settlement).
+    $onUsShares = [];
+    foreach ($shareRows as $r) {
+        $debtor = $settling($r['payer_institution']);
+        if (!in_array($debtor, $members, true)) { $stats['skipped_not_member']++; continue; }
+        if ($r['institution'] === 'VOUCHMORPH') {
+            $key = "F|{$feeBank}";
+            $lines[$debtor][$key] ??= ['kind' => 'FEE', 'creditor_bank' => $feeBank, 'creditor_account' => $feeAccount,
+                                       'amount' => 0.0, 'currency' => $r['currency'] ?: 'BWP', 'items' => []];
+        } else {
+            $creditor = $settling($r['institution']);
+            if ($creditor === $debtor) { $onUsShares[] = (int)$r['entry_id']; continue; }   // same settling bank: settled internally
+            if (!in_array($creditor, $members, true)) { $stats['skipped_not_member']++; continue; }
+            $key = "P|{$creditor}";
+            $lines[$debtor][$key] ??= ['kind' => 'PRINCIPAL', 'creditor_bank' => $creditor, 'creditor_account' => $clearingPrefix . $creditor,
+                                       'amount' => 0.0, 'currency' => $r['currency'] ?: 'BWP', 'items' => []];
+        }
+        $lines[$debtor][$key]['amount'] += (float)$r['amount'];
+        $lines[$debtor][$key]['items'][] = ['type' => 'FEE_LEDGER', 'reference' => (string)$r['entry_id'], 'amount' => (float)$r['amount'], 'entry_id' => (int)$r['entry_id']];
+    }
+    if ($onUsShares) {
+        $in = implode(',', array_fill(0, count($onUsShares), '?'));
+        $db->prepare("UPDATE fee_ledger SET status = 'PAID', paid_at = NOW(), note = COALESCE(note, '') || 'On-us: payer and earner settle at the same bank' WHERE entry_id IN ($in) AND status = 'EARNED'")->execute($onUsShares);
+        $stats['fee_shares_on_us'] = count($onUsShares);
+    }
+
     // ---------- 3. on-us swaps: settled inside one bank, no interbank payment ----------
     foreach ($onUs as $r) {
         $db->prepare("UPDATE settlement_confirmations SET status = 'CONFIRMED', confirmed_at = NOW(), last_error = ? WHERE confirmation_id = ? AND status = 'PENDING'")
@@ -142,6 +188,10 @@ try {
             $db->prepare("UPDATE swap_requests SET settlement_status = 'CONFIRMED', settlement_confirmed_at = NOW() WHERE swap_uuid = ?")->execute([$r['swap_reference']]);
         }
         $stats['on_us_closed']++;
+        // The bank settled it internally, so it earns the settlement fee.
+        if ($feeSource === 'LEDGER') {
+            \Domain\Services\Fees\FeeLedger::fromCountryConfig($db)->settleLeg((string)$r['swap_reference'], (string)$r['bank']);
+        }
     }
 
     // ---------- 4. write one advice per paying bank ----------
@@ -166,6 +216,9 @@ try {
                 if ($it['type'] === 'SWAP') {
                     $db->prepare("UPDATE settlement_confirmations SET advice_line_ref = ? WHERE confirmation_id = ?")->execute([$ref, $it['confirmation_id']]);
                     $stats['swaps_advised']++;
+                } elseif ($it['type'] === 'FEE_LEDGER') {
+                    $db->prepare("UPDATE fee_ledger SET status = 'ADVISED', advice_line_ref = ? WHERE entry_id = ? AND status = 'EARNED'")->execute([$ref, $it['entry_id']]);
+                    $stats['fee_shares_advised']++;
                 } else {
                     $stats['invoices_advised']++;
                 }
