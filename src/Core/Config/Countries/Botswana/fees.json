@@ -1,7 +1,7 @@
 {
   "base_currency": "BWP",
   "limits": {
-    "max_single_transaction": 7000.00,
+    "max_single_transaction": 7000.0,
     "currency": "BWP",
     "description": "Hard cap applied uniformly to every VouchMorph-initiated money movement in this country — swaps, cashouts, card hooks, activations. Not an institution-specific limit (those live in participants.yaml); this is VouchMorph's own risk ceiling."
   },
@@ -9,16 +9,18 @@
     "description": "Fh -- hold-time fee (swap levy), earned the instant a real hold exists at the source institution for a swap-to-identity. Always applied: charged whether the client claims in full, claims part, claims nothing, or the hold expires untouched. Purpose-independent by design -- computed at hold placement, before the client has chosen CASHOUT vs DEPOSIT, so it cannot vary by a purpose that isn't known yet. Client decision (2026-09-15): Fh = the swap levy only, identical for CASHOUT and DEPOSIT -- no separate 'hold fee' line item. F1 equals F7 here (the entire hold-time charge IS the levy); the source/destination institutions' own share of a swap's economics is earned later, at delivery, via CASHOUT/DEPOSIT's own F1/F7 (see those blocks) -- this block does not double-charge on top of that.",
     "fee_components": {
       "F1": {
-        "amount": 1.00,
+        "amount": 1.0,
         "description": "Total hold-time fee (Fh) -- equals the swap levy below. Read as calculateFees()'s 'total_fee' and stored in identity_swap_holds.metadata.hold_fee.total_fee by storeIdentityHold(); consumed later by cancelExpiredIdentitySwaps() on expiry."
       },
       "F7": {
-        "amount": 1.00,
+        "amount": 1.0,
         "description": "VouchMorph swap levy (internal fee, owned and retained by VouchMorph -- NOT a government-mandated levy, despite the name). Identical amount to F1 above by design for this product."
       }
     },
     "distribution": {
-      "apply_after_fees": ["F7"],
+      "apply_after_fees": [
+        "F7"
+      ],
       "base_distribution_amount": "F1 - F7",
       "description": "F1 - F7 = 0 for this product -- Fh is 100% VouchMorph's levy at hold time, nothing split to source/destination here. Source and destination institutions earn their share later, at delivery, from CASHOUT/DEPOSIT's own distribution.",
       "split": {
@@ -32,48 +34,51 @@
     },
     "example_calculation": {
       "T_held": "any amount -- Fh is flat, not a percentage of T",
-      "Fh_total_fee": 1.00,
-      "Fh_swap_levy": 1.00,
-      "distributable_pool": 0.00
+      "Fh_total_fee": 1.0,
+      "Fh_swap_levy": 1.0,
+      "distributable_pool": 0.0
     }
   },
-
   "CASHOUT": {
-    "description": "Cashout swap fee - client pays P10 upfront",
+    "description": "Cash-out fee P10, every channel (ATM, voucher, agent). Hold stage: levy + source 13%; code issued: destination 10% of its 50%; cash dispensed: destination 90% of its 50% + VouchMorph 35%; settlement: 2%.",
     "fee_components": {
       "F1": {
-        "amount": 10.00,
+        "amount": 10.0,
         "description": "Total customer upfront fee"
       },
       "F7": {
-        "amount": 1.00,
+        "amount": 1.0,
         "description": "VouchMorph swap levy (internal fee, owned and retained by VouchMorph -- NOT a government-mandated levy, despite the name)"
       }
     },
     "multi_source": {
       "fee_type": "F8",
-      "extra_source_fee": 1.00,
-      "max_total_fee": 15.00,
+      "extra_source_fee": 1.0,
+      "max_total_fee": 15.0,
       "description": "Extra P1 fee per additional source beyond the first, capped at P15 total"
     },
     "distribution": {
-      "apply_after_fees": ["F7"],
+      "apply_after_fees": [
+        "F7"
+      ],
       "base_distribution_amount": "F1 - F7",
-      "description": "Distribution percentages applied after deducting F7 (swap levy)",
+      "description": "Section 23 Rev. 2: Swap Levy (F7) first, then the distributable amount F1 - F7 splits 13% source (hold placement and verification), 2% settlement fee (whoever performs settlement; carved from the source's 15%), 35% VouchMorph, 50% destination. Every fee event is recorded per institution in fee_ledger.",
       "split": {
         "platform_percent": 35,
         "platform_owner": "VOUCHMORPH",
-        "source_institution_percent": 15,
+        "source_institution_percent": 13,
         "source_owner": "SOURCE_INSTITUTION",
+        "settlement_percent": 2,
+        "settlement_owner": "SETTLEMENT_AGENT",
         "destination_institution_percent": 50,
         "destination_owner": "DESTINATION_INSTITUTION"
       }
     },
     "destination_split": {
       "apply_to": "destination_institution_share",
-      "description": "Changed 2026-09-15 to match the swap-to-identity algorithm v2 spec: 'No source is debited at generation time, and no Fd is earned at generation time.' Destination's entire share is now earned only at redemption -- code generation moves real funds into the destination's HOLDING account but is not delivery, so it earns nothing. Previously split 10%/90% generate/redeem; the 10% generation-time payout is retired.",
-      "generate_code_fee_percent": 0,
-      "cashout_fee_percent": 100,
+      "description": "Section 23 Rev. 2 (2026-09-21): the destination's 50% is earned in two portions - 10% when the redemption code is issued, 90% when cash is dispensed. (Replaces the 2026-09-15 0/100 setting.)",
+      "generate_code_fee_percent": 10,
+      "cashout_fee_percent": 90,
       "generate_code_earned_at": "code_generation",
       "cashout_earned_at": "cashout_completion"
     },
@@ -95,126 +100,136 @@
       "description": "First retry: VouchMorph pays the generate code fee from platform share"
     },
     "example_calculation": {
-      "client_pays": 10.00,
-      "F7_levy": 1.00,
-      "distributable_pool": 9.00,
+      "client_pays": 10.0,
+      "F7_levy": 1.0,
+      "distributable_pool": 9.0,
       "platform_share_35%": 3.15,
       "source_share_15%": 1.35,
-      "destination_share_50%": 4.50,
-      "generate_code_fee_0%": 0.00,
-      "cashout_completion_fee_100%": 4.50,
+      "destination_share_50%": 4.5,
+      "generate_code_fee_0%": 0.0,
+      "cashout_completion_fee_100%": 4.5,
       "note": "F7 levy above is CASHOUT's own distributable-pool levy, separate from IDENTITY_HOLD's Fh (also 1.00) charged earlier at hold placement -- see the IDENTITY_HOLD block."
     }
   },
   "DEPOSIT": {
-    "description": "Deposit swap fee - client pays P6 upfront",
+    "description": "Deposit fee P6. Hold stage: levy + source 13%; delivery: destination 50% + VouchMorph 35%; settlement: 2%.",
     "fee_components": {
       "F1": {
-        "amount": 6.00,
+        "amount": 6.0,
         "description": "Total customer upfront fee"
       },
       "F7": {
-        "amount": 1.00,
+        "amount": 1.0,
         "description": "VouchMorph swap levy (internal fee, owned and retained by VouchMorph -- NOT a government-mandated levy, despite the name)"
       }
     },
     "multi_source": {
       "fee_type": "F8",
-      "extra_source_fee": 1.00,
-      "max_total_fee": 15.00,
+      "extra_source_fee": 1.0,
+      "max_total_fee": 15.0,
       "description": "Extra P1 fee per additional source beyond the first, capped at P15 total"
     },
     "distribution": {
-      "apply_after_fees": ["F7"],
+      "apply_after_fees": [
+        "F7"
+      ],
       "base_distribution_amount": "F1 - F7",
-      "description": "Distribution percentages applied after deducting F7 (swap levy)",
+      "description": "Section 23 Rev. 2: Swap Levy (F7) first, then the distributable amount F1 - F7 splits 13% source (hold placement and verification), 2% settlement fee (whoever performs settlement; carved from the source's 15%), 35% VouchMorph, 50% destination. Every fee event is recorded per institution in fee_ledger.",
       "split": {
         "platform_percent": 35,
         "platform_owner": "VOUCHMORPH",
-        "source_institution_percent": 15,
+        "source_institution_percent": 13,
         "source_owner": "SOURCE_INSTITUTION",
+        "settlement_percent": 2,
+        "settlement_owner": "SETTLEMENT_AGENT",
         "destination_institution_percent": 50,
         "destination_owner": "DESTINATION_INSTITUTION"
       }
     },
     "example_calculation": {
-      "client_pays": 6.00,
-      "F7_levy": 1.00,
-      "distributable_pool": 5.00,
+      "client_pays": 6.0,
+      "F7_levy": 1.0,
+      "distributable_pool": 5.0,
       "platform_share_35%": 1.75,
       "source_share_15%": 0.75,
-      "destination_share_50%": 2.50
+      "destination_share_50%": 2.5
     }
   },
   "CARD_LOAD": {
     "description": "Card load fee - follows deposit structure",
     "fee_components": {
       "F1": {
-        "amount": 6.00,
+        "amount": 6.0,
         "description": "Total customer upfront fee"
       },
       "F7": {
-        "amount": 1.00,
+        "amount": 1.0,
         "description": "VouchMorph swap levy (internal fee, owned and retained by VouchMorph -- NOT a government-mandated levy, despite the name)"
       }
     },
     "distribution": {
-      "apply_after_fees": ["F7"],
+      "apply_after_fees": [
+        "F7"
+      ],
       "base_distribution_amount": "F1 - F7",
       "split": {
         "platform_percent": 35,
-        "source_institution_percent": 15,
-        "destination_institution_percent": 50
-      }
+        "platform_owner": "VOUCHMORPH",
+        "source_institution_percent": 13,
+        "source_owner": "SOURCE_INSTITUTION",
+        "settlement_percent": 2,
+        "settlement_owner": "SETTLEMENT_AGENT",
+        "destination_institution_percent": 50,
+        "destination_owner": "DESTINATION_INSTITUTION"
+      },
+      "description": "Section 23 Rev. 2: Swap Levy (F7) first, then the distributable amount F1 - F7 splits 13% source (hold placement and verification), 2% settlement fee (whoever performs settlement; carved from the source's 15%), 35% VouchMorph, 50% destination. Every fee event is recorded per institution in fee_ledger."
     }
   },
   "CARD_ACTIVATION": {
     "description": "One-time VouchMorph Card activation fee",
     "fee_components": {
-        "F1": {
-            "amount": 5.00,
-            "description": "One-time card activation fee, paid in full to VouchMorph"
-        }
+      "F1": {
+        "amount": 5.0,
+        "description": "One-time card activation fee, paid in full to VouchMorph"
+      }
     },
     "distribution": {
-        "split": {
-            "platform_percent": 100,
-            "platform_owner": "VOUCHMORPH"
-        }
+      "split": {
+        "platform_percent": 100,
+        "platform_owner": "VOUCHMORPH"
+      }
     },
     "settlement_institution": "ZURUBANK",
     "settlement_identifier": "10101011"
-},
-
+  },
   "switch_routing": {
     "fee_code": "F23",
     "fee_name": "National Switch Fee",
     "owner": "SWITCH",
     "applies_when": "_routing.mode == \"SWITCH\"",
     "description": "Charged only when a swap could not settle DIRECT and had to route through the national switch. Not charged on DIRECT-mode swaps.",
-
     "amount_type": "flat",
-    "amount": 0.50,
+    "amount": 0.5,
     "currency": "BWP",
-    "amount_note": "PLACEHOLDER \u2014 replace with the actual per-transaction tariff from your switch operator agreement. Change amount_type to 'percentage' + 'rate' if the switch charges a % of Amount_1 instead of a flat fee.",
-
-    "deducted_from": ["source_institution_share", "destination_institution_share"],
+    "amount_note": "PLACEHOLDER — replace with the actual per-transaction tariff from your switch operator agreement. Change amount_type to 'percentage' + 'rate' if the switch charges a % of Amount_1 instead of a flat fee.",
+    "deducted_from": [
+      "source_institution_share",
+      "destination_institution_share"
+    ],
     "deduction_method": "proportional_to_existing_split_percent",
-    "deduction_note": "F23 is NOT split 50/50 flat. It is allocated between source and destination in proportion to their normal revenue_split percentages for this swap type (e.g. DEPOSIT: source=15%, destination=50% of the pool \u2192 source absorbs 15/65 of F23, destination absorbs 50/65 of F23). Platform's share is never reduced by F23.",
-
+    "deduction_note": "F23 is NOT split 50/50 flat. It is allocated between source and destination in proportion to their normal revenue_split percentages for this swap type (e.g. DEPOSIT: source=15%, destination=50% of the pool → source absorbs 15/65 of F23, destination absorbs 50/65 of F23). Platform's share is never reduced by F23.",
     "settlement_model": "MONTHLY_BATCH",
     "billing_cycle": "calendar_month_end",
-    "settlement_description": "F23 is computed and recorded on every switch-routed transaction at swap time (so each institution's true net share is visible immediately in fee_calculation_details), but no separate cash movement happens per swap. VouchMorph accrues the F23 liability per institution, then nets and settles/invoices the switch operator in a single batch at each calendar month end \u2014 consistent with standard EFT/RTC-style clearing (gross recording, netted deferred settlement) rather than per-transaction gross settlement.",
-
+    "settlement_description": "F23 is computed and recorded on every switch-routed transaction at swap time (so each institution's true net share is visible immediately in fee_calculation_details), but no separate cash movement happens per swap. VouchMorph accrues the F23 liability per institution, then nets and settles/invoices the switch operator in a single batch at each calendar month end — consistent with standard EFT/RTC-style clearing (gross recording, netted deferred settlement) rather than per-transaction gross settlement.",
     "switch_fee_share": {
       "example_calculation_deposit_via_switch": {
-        "client_pays": 6.00,
-        "F7_levy": 1.00,
-        "distributable_pool": 5.00,
+        "client_pays": 6.0,
+        "F7_levy": 1.0,
+        "distributable_pool": 5.0,
         "platform_share_35%_unaffected": 1.75,
         "source_gross_share_15%": 0.75,
-        "destination_gross_share_50%": 2.50,
-        "switch_fee_F23_total": 0.50,
+        "destination_gross_share_50%": 2.5,
+        "switch_fee_F23_total": 0.5,
         "source_switch_fee_allocation_15/65_of_F23": 0.1154,
         "destination_switch_fee_allocation_50/65_of_F23": 0.3846,
         "source_net_share": 0.6346,
@@ -223,7 +238,6 @@
       }
     }
   },
-
   "regulatory": {
     "F7": {
       "name": "Swap Levy",
@@ -253,7 +267,9 @@
       "name": "VAT",
       "owner": "TAX",
       "rate": 14,
-      "applies_to_fees": ["F1"],
+      "applies_to_fees": [
+        "F1"
+      ],
       "description": "Value Added Tax on fees"
     }
   }
