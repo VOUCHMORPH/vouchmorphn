@@ -3061,6 +3061,92 @@ public function executeMultiDestinationSwap(array $payload): array
             
             // NEW: Delivery succeeded - mark flag BEFORE debit attempt
             $deliverySucceededForThisDest = true;
+
+            // FIX (2026-09-21): a cash-out leg (ATM / agent) waits for the cash to
+            // be collected, exactly like a single cash-out. The code's redemption
+            // authorisation is stored so the redemption can find it; the source
+            // hold stays PENDING_CASHOUT and outlives the code by 6 hours. The
+            // redemption (confirmCashout) debits the hold, records settlement and
+            // invoices the fee - the destination earns its share only then.
+            // Before, the source was debited here, the leg marked completed and
+            // settled at once, and no authorisation existed, so the code could
+            // not be redeemed through VouchMorph at all.
+            if (in_array($deliveryMethod, ['CASHOUT', 'AGENT', 'ATM'], true)) {
+                $codeExpiry = $destResult['code_expiry'] ?? date('Y-m-d H:i:s', strtotime('+24 hours'));
+                $cashoutCfg = $this->feesConfig['CASHOUT'] ?? [];
+                $destPercent = (float)($cashoutCfg['distribution']['split']['destination_institution_percent'] ?? 50);
+                $genPercent = (float)($this->feeCalculationDetails['destination_split']['generate_code_fee_percent'] ?? 10);
+                $generateCodeFee = round($feeAmount * $destPercent / 100 * $genPercent / 100, 2);
+                $levyAmount = (float)($cashoutCfg['fee_components']['F7']['amount'] ?? 0);
+                $legPhone = $dest['beneficiary_phone'] ?? $dest['client_phone'] ?? null;
+
+                $authId = $this->storeCashoutAuthorization(
+                    $subRef,
+                    $legPhone,
+                    $sourceInstitution,
+                    $sourceIdentifier['identifier'] ?? null,
+                    $sourceIdentifier['type'] ?? null,
+                    $destInstitution,
+                    $deliverableAmount,
+                    $feeAmount,
+                    $generateCodeFee,
+                    $levyAmount,
+                    $destResult['voucher_code'] ?? null,
+                    (string)($destResult['atm_pin'] ?? ''),
+                    $codeExpiry
+                );
+                $this->updateHoldExpiry($destHoldId, date('Y-m-d H:i:s', strtotime($codeExpiry . ' +6 hours')));
+                $this->updateHoldStatus($destHoldId, 'PENDING_CASHOUT');
+
+                $this->populateTrackingTables(
+                    [
+                        'swap_type' => 'CASHOUT',
+                        'reference' => $subRef,
+                        'amount' => $deliverableAmount,
+                        'currency' => $dest['currency'] ?? $currency,
+                        'status' => 'pending',
+                        'from_institution' => $sourceInstitution,
+                        'to_institution' => $destInstitution,
+                        'user_id' => $payload['user_id'] ?? null,
+                    ],
+                    array_merge($payload, $dest, [
+                        'source_institution' => $sourceInstitution,
+                        'destination_institution' => $destInstitution,
+                        'fee_amount' => $feeAmount,
+                        'status' => 'pending',
+                    ]),
+                    $destResult
+                );
+
+                $pendingResult = [
+                    'index' => $idx,
+                    'sub_reference' => $subRef,
+                    'destination_institution' => $destInstitution,
+                    'destination_identifier' => $destIdentifier['identifier'],
+                    'destination_identifier_type' => $destIdentifier['type'],
+                    'delivery_method' => $deliveryMethod,
+                    'requested_amount' => $destAmount,
+                    'fee' => $feeAmount,
+                    'net_amount' => $netAmount,
+                    'deliverable_amount' => $deliverableAmount,
+                    'remainder_at_source' => $remainderAtSource,
+                    'hold_reference' => $destHoldRef,
+                    'hold_id' => $destHoldId,
+                    'auth_id' => $authId,
+                    'code_expiry' => $codeExpiry,
+                    'fee_breakdown' => $feeBreakdown,
+                    'adjustment' => $adjustment,
+                    'voucher_code' => $destResult['voucher_code'] ?? null,
+                    'status' => 'pending_cashout',
+                    'message' => 'Cash-out code issued. The source is debited when the cash is collected.',
+                    'result' => $destResult,
+                    'type' => 'bank'
+                ];
+                $destinationResults[] = $pendingResult;
+                $successfulDestinations[] = $pendingResult;
+                $totalFees += $feeAmount;
+                continue;
+            }
             
             error_log("[SwapService] Debiting hold for destination " . ($idx + 1) . ": {$destHoldRef}");
             
@@ -3088,6 +3174,17 @@ public function executeMultiDestinationSwap(array $payload): array
             }
             
             $this->updateHoldStatus($destHoldId, 'DEBITED');
+
+            // FIX (2026-09-21): track this leg's settlement like a single deposit,
+            // under its own leg reference, so it appears on settlement advices and
+            // "Destination settled" can be confirmed per transaction.
+            $this->recordSettlementPending(
+                $subRef,
+                $destInstitution,
+                $debitResult['transaction_reference'] ?? $subRef,
+                $deliverableAmount,
+                $dest['currency'] ?? $currency
+            );
 
             // Persist swap_requests row
             $childSwapType = in_array($deliveryMethod, ['CASHOUT', 'AGENT', 'ATM'], true) ? 'CASHOUT' : 'DEPOSIT';
@@ -3368,51 +3465,15 @@ public function executeMultiDestinationSwap(array $payload): array
                 throw new RuntimeException("Identity processing failed: " . ($identityResult['message'] ?? 'Unknown error'));
             }
             
-            // NEW: Delivery succeeded - mark flag BEFORE debit attempt
+            // FIX (2026-09-21): the identity leg must NOT take the money yet.
+            // Like a single identity swap, the source hold stays in place
+            // (PENDING_IDENTITY) until the recipient claims it: the claim
+            // debits it, and an unclaimed hold is released at expiry.
+            // Before, it was debited here at once - an unclaimed leg then had
+            // no hold left to release, and a claim tried to debit money that
+            // was already gone. Ledger legs are posted by the claim.
             $deliverySucceededForThisDest = true;
-            
-            error_log("[SwapService] Debiting hold for identity " . ($idx + 1) . ": {$destHoldRef}");
-            
-            $this->currentHoldReference = $destHoldRef;
-            $this->currentHoldId = $destHoldId;
-            
-            $debitPayload = [
-                'reference' => $subRef,
-                'hold_reference' => $destHoldRef,
-                'amount' => $amount,
-                'reason' => 'Multi-destination identity - ' . ($idx + 1),
-                'from_institution' => $sourceInstitution,
-                'source_institution' => $sourceInstitution
-            ];
-            
-            $debitResult = $this->executeStep('DEBIT_IDENTITY_' . $idx, function() use ($debitPayload, $sourceInstitution) {
-                return $this->debitSource($debitPayload, $sourceInstitution);
-            });
-            
-            $this->currentHoldReference = $originalHoldRef;
-            $this->currentHoldId = $originalHoldId;
-            
-            if (!($debitResult['debited'] ?? false)) {
-                throw new RuntimeException("Debit failed for identity " . ($idx + 1) . ": " . ($debitResult['message'] ?? 'Unknown error'));
-            }
-            
-            $this->updateHoldStatus($destHoldId, 'DEBITED');
-
-            // Post ledger legs for this identity child swap
-            $this->postLedgerLegs(
-                $subRef,
-                $sourceInstitution,
-                $payload['asset_type'] ?? 'ACCOUNT',
-                $sourceIdentifier['identifier'] ?? null,
-                $amount,
-                null,
-                null,
-                null,
-                0,
-                $feeAmount,
-                $identityDest['currency'] ?? $currency,
-                $destHoldRef
-            );
+            $this->updateHoldStatus($destHoldId, 'PENDING_IDENTITY');
 
             $this->populateTrackingTables(
                 [
@@ -3588,9 +3649,14 @@ public function executeMultiDestinationSwap(array $payload): array
     
     $settlementResults = [];
     foreach ($successfulDestinations as $destResult) {
+        // Only legs whose money actually moved settle now. Cash-out legs settle
+        // when the cash is collected; identity legs when they are claimed.
+        if (($destResult['status'] ?? '') !== 'success') {
+            continue;
+        }
         if (isset($destResult['type']) && $destResult['type'] === 'bank' && isset($destResult['destination_institution'])) {
             $settlement = $this->settlement->updateNetPosition(
-                $multiDestRef,
+                $destResult['sub_reference'] ?? $multiDestRef,
                 $sourceInstitution,
                 $destResult['destination_institution'],
                 $destResult['deliverable_amount'],
@@ -3600,7 +3666,7 @@ public function executeMultiDestinationSwap(array $payload): array
             
             if ($destResult['fee'] > 0) {
                 $this->settlement->invoiceFee(
-                    $multiDestRef,
+                    $destResult['sub_reference'] ?? $multiDestRef,
                     $sourceInstitution,
                     $this->getParticipantId($sourceInstitution),
                     'MULTI_DESTINATION_FEE',
@@ -3780,6 +3846,7 @@ private function storeMultiDestinationRecord(
             'transaction_reference' => $result['transaction_reference'] ?? null,
             'voucher_code' => $result['voucher_number'] ?? $result['swap_code'] ?? null,
             'atm_pin' => $result['atm_pin'] ?? null,
+            'code_expiry' => $result['expires_at'] ?? $result['code_expiry'] ?? null,
             'message' => $result['message'] ?? 'Cashout code generated'
         ];
     }
@@ -10865,11 +10932,23 @@ private function recordSettlementPending(
             'signed_payloads' => $this->signedPayloads
         ]);
 
+        $released = $result['released'] ?? $result['success'] ?? false;
+
         if ($holdId) {
             $this->updateHoldStatus((int)$holdId, 'RELEASED');
+        } elseif ($released && $holdRef) {
+            // FIX (2026-09-21): callers such as the card unhook know only the
+            // hold reference. Before, the institution released the money but
+            // VouchMorph's own record stayed ACTIVE.
+            try {
+                $this->swapDB->prepare("
+                    UPDATE hold_transactions SET status = 'RELEASED', released_at = NOW(), updated_at = NOW()
+                    WHERE hold_reference = ? AND UPPER(status) NOT IN ('DEBITED', 'RELEASED', 'EXPIRED')
+                ")->execute([$holdRef]);
+            } catch (\Throwable $e) {
+                error_log('[SwapService] could not mark hold ' . $holdRef . ' released locally: ' . $e->getMessage());
+            }
         }
-
-        $released = $result['released'] ?? $result['success'] ?? false;
 
         $this->logger->info("Hold released successfully", [
             'institution' => $institution,
@@ -11296,7 +11375,23 @@ private function generateCashoutToken(array $payload, string $institution, float
         // we asked about. Compared on digits/letters only, since banks format
         // the same number with spaces and dashes inconsistently.
         $numberMismatch = false;
-        if ($verified && $returnedNumber !== null && $returnedNumber !== '') {
+        // FIX (2026-09-21): a wallet addressed by phone number is answered with the
+        // bank's internal account number (SaccusSalis returns e.g. "4"), so comparing
+        // that number with the phone refused every phone-wallet deposit. For phone
+        // identifiers, compare the phone the bank returns (when it returns one);
+        // for account numbers, compare the account number as before.
+        $identifierType = strtolower((string)($destinationIdentifier['type'] ?? ''));
+        $isPhoneIdentifier = in_array($identifierType, ['phone', 'msisdn', 'mobile', 'wallet', 'phone_number'], true)
+            || strtoupper((string)$destinationAssetType) === 'WALLET';
+        $digits = fn(string $v) => preg_replace('/\D/', '', $v) ?? '';
+        if ($verified && $isPhoneIdentifier) {
+            $returnedPhone = (string)($result['recipient_phone'] ?? $result['phone'] ?? $result['msisdn'] ?? $result['phone_number'] ?? $result['wallet_phone'] ?? ($result['wallet']['phone'] ?? ''));
+            if ($returnedPhone !== '') {
+                // Compare the last 8 digits, so +267 71234567 and 71234567 match.
+                $numberMismatch = substr($digits($returnedPhone), -8) !== substr($digits($requestedIdentifier), -8);
+                $returnedNumber = $returnedPhone;
+            }
+        } elseif ($verified && $returnedNumber !== null && $returnedNumber !== '') {
             $normalise = fn(string $v) => strtolower(preg_replace('/[^A-Za-z0-9]/', '', $v) ?? '');
             $numberMismatch = $normalise((string)$returnedNumber) !== $normalise($requestedIdentifier);
         }
