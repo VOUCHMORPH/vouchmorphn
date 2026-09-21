@@ -25,5 +25,7 @@
     "20:00"
   ],
   "fee_source": "LEDGER",
-  "_fee_source": "LEDGER: fee shares are paid from fee_ledger (Section 23 Rev. 2) - VouchMorph's levy and 35% on the fee line, the destination's shares on its principal line; legacy FEE_INVOICE rows are no longer advised. INVOICE: the old whole-fee invoices."
+  "_fee_source": "LEDGER: fee shares are paid from fee_ledger (Section 23 Rev. 2) - VouchMorph's levy and 35% on the fee line, the destination's shares on its principal line; legacy FEE_INVOICE rows are no longer advised. INVOICE: the old whole-fee invoices.",
+  "advise_from": "2026-09-21T00:00:00+02:00",
+  "_advise_from": "Only swaps, invoices and fee shares created on or after this moment go on settlement advices. The backlog before it (488 open settlements from 5 Aug - 20 Sep, including the oversized test swaps) waits for the accountant's clean-up; move this date back to release it."
 }
