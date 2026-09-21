@@ -494,9 +494,15 @@ class FeeService
         $sourcePercent = $splitConfig['source_institution_percent'] ?? 0;
         $destinationPercent = $splitConfig['destination_institution_percent'] ?? 0;
         
+        $settlementPercent = $splitConfig['settlement_percent'] ?? 0;
+
         $platformShare = round($netPool * ($platformPercent / 100), 2);
         $sourceShare = round($netPool * ($sourcePercent / 100), 2);
         $destinationShare = round($netPool * ($destinationPercent / 100), 2);
+        // Section 23 Rev. 2: 2% settlement fee, carved from the source's 15%.
+        // It takes the rounding remainder so the four shares always add up
+        // to the distributable amount exactly.
+        $settlementShare = $settlementPercent > 0 ? round($netPool - $platformShare - $sourceShare - $destinationShare, 2) : 0.0;
         
         $destinationSplitConfig = $productConfig['destination_split'] ?? null;
         $generateCodeFee = 0;
@@ -527,6 +533,11 @@ class FeeService
                 'percent' => $destinationPercent,
                 'amount' => $destinationShare,
                 'owner' => $splitConfig['destination_owner'] ?? 'DESTINATION_INSTITUTION'
+            ],
+            'settlement' => [
+                'percent' => $settlementPercent,
+                'amount' => $settlementShare,
+                'owner' => $splitConfig['settlement_owner'] ?? 'SETTLEMENT_AGENT'
             ],
             'destination_split' => $destinationSplitConfig ? [
                 'base_share' => $destinationShare,
