@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 namespace Domain\Services;
+require_once __DIR__ . '/../../Application/Incident/ServiceControls.php';
 
 require_once __DIR__ . '/../../Infrastructure/Cards/CardNumberGenerator.php';
 require_once __DIR__ . '/../Helpers/CardHelper.php';
@@ -2137,6 +2138,24 @@ public function releaseHookSource(
         $minExpirySeconds = PHP_INT_MAX;
         $currency = $sources[0]['currency'] ?? 'BWP';
 
+        // FIX (2026-09-21): the cap applies to what the card can spend in total.
+        // A second hook adds to the card's existing HOOKED pool, so the pool
+        // total (existing + requested) must stay within the limit - before,
+        // P80 + P8,000 = P8,080 was accepted.
+        $poolCap = $this->feeService !== null
+            ? (float)$this->feeService->getMaxTransactionLimit()['amount']
+            : \Application\Incident\ServiceControls::capLimit();
+        $poolStmt = $this->db->prepare("SELECT COALESCE(SUM(total_held_amount), 0) FROM card_pool_hooks WHERE card_suffix = ? AND status = 'HOOKED'");
+        $poolStmt->execute([$cardSuffix]);
+        $existingPool = (float)$poolStmt->fetchColumn();
+        $requestedTotal = array_sum(array_map(fn($src) => (float)($src['authorized_amount'] ?? 0), $sources));
+        if ($existingPool + $requestedTotal > $poolCap + 0.01) {
+            throw new RuntimeException(sprintf(
+                'This card would hold P%s in total (P%s already hooked + P%s now), above the P%s limit during the pilot. Unhook or hook a smaller amount.',
+                number_format($existingPool + $requestedTotal, 2), number_format($existingPool, 2), number_format($requestedTotal, 2), number_format($poolCap, 0)
+            ));
+        }
+
         foreach ($sources as $source) {
             $balanceInfo = $swapService->getSourceAvailableBalanceDetailed($source);
 $balance = $balanceInfo['balance'];
@@ -2161,9 +2180,12 @@ if ($balance <= 0) {
                 ? (float)$source['authorized_amount']
                 : null;
 
+            // FIX (2026-09-21): the sandbox cap applies whether or not a FeeService
+            // was injected. Before, hook.php built CardService without one, the
+            // fallback was the balance, and a P8,000 hook was accepted.
             $maxLimit = $this->feeService !== null
                 ? $this->feeService->getMaxTransactionLimit()['amount']
-                : $balance; // no FeeService available — fall back to balance-only cap
+                : \Application\Incident\ServiceControls::capLimit();
 
             $hardCap = min($balance, $maxLimit);
 
