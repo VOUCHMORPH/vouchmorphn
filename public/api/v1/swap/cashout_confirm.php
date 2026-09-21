@@ -92,6 +92,17 @@ if (!isset($data['voucher_number'])) {
 
 error_log("[CashoutConfirmWebhook] Received: " . json_encode($data));
 
+// Incident Command gate: a cash-out confirmation is a claim, so it stops
+// under a service, CASHOUT flow or agent freeze. Hold releases are not
+// affected: money already held is always returned by its institution.
+require_once dirname(__DIR__, 4) . '/src/Application/Incident/IncidentDesk.php';
+require_once dirname(__DIR__, 4) . '/src/Application/Incident/Playbooks.php';
+require_once dirname(__DIR__, 4) . '/src/Application/Incident/ServiceControls.php';
+$gate = \Application\Incident\ServiceControls::check($db, ['amount' => 0, 'flow' => 'CASHOUT', 'agent_id' => (string)($data['agent_id'] ?? ''), 'destination' => $data['institution'] ?? '']);
+if ($gate !== null) {
+    respond($gate['http'], ['status' => 'ERROR', 'code' => $gate['code'], 'message' => $gate['message']]);
+}
+
 // ============================================================
 // BUILD PAYLOAD - IDENTIFIERS ONLY
 // ============================================================
