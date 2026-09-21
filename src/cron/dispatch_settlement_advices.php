@@ -47,7 +47,9 @@ $clearingPrefix = $cfg['clearing_account_prefix'] ?? 'VMCLR-';
 $feeBank = getenv($cfg['fee_account']['bank_env'] ?? 'VOUCHMORPH_FEE_BANK') ?: ($cfg['fee_account']['default_bank'] ?? 'ZURUBANK');
 $feeAccount = getenv($cfg['fee_account']['account_env'] ?? 'VOUCHMORPH_FEE_ACCOUNT') ?: ($cfg['fee_account']['default_account'] ?? 'VOUCHMORPH-FEES');
 $settling = fn(string $inst): string => $sponsor[strtoupper($inst)] ?? strtoupper($inst);
-$feeSource = strtoupper($cfg['fee_source'] ?? 'INVOICE');   // LEDGER: shares from fee_ledger (Section 23 Rev. 2)
+$feeSource = strtoupper($cfg['fee_source'] ?? 'INVOICE');
+// Nothing created before this moment is advised (backlog held for clean-up).
+$adviseFromUtc = (new DateTimeImmutable($cfg['advise_from'] ?? '1970-01-01T00:00:00Z'))->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');   // LEDGER: shares from fee_ledger (Section 23 Rev. 2)
 
 function latest_cycle(DateTimeImmutable $now, array $cycles): DateTimeImmutable {
     sort($cycles);
@@ -78,7 +80,7 @@ try {
     if (!$db->query("SELECT pg_try_advisory_lock(7743003)")->fetchColumn()) { error_log('[ADVICE] another run in progress'); exit(3); }
     $hasStatusCol = (bool)$db->query("SELECT 1 FROM information_schema.columns WHERE table_name = 'swap_requests' AND column_name = 'settlement_status'")->fetchColumn();
 
-    $stats = ['cycle' => $cycleAt->format(DATE_ATOM), 'fee_source' => $feeSource, 'swaps_advised' => 0, 'invoices_advised' => 0, 'fee_shares_advised' => 0, 'fee_shares_on_us' => 0, 'on_us_closed' => 0,
+    $stats = ['cycle' => $cycleAt->format(DATE_ATOM), 'advise_from' => $adviseFromUtc . ' UTC', 'fee_source' => $feeSource, 'swaps_advised' => 0, 'invoices_advised' => 0, 'fee_shares_advised' => 0, 'fee_shares_on_us' => 0, 'on_us_closed' => 0,
               'skipped_no_instruction' => 0, 'skipped_not_member' => 0, 'advices_created' => 0, 'delivered' => 0, 'delivery_failed' => 0];
 
     // ---------- 1. collect what is owed and not yet advised ----------
@@ -88,28 +90,28 @@ try {
                so.amount, COALESCE(so.currency, sc.currency, 'BWP') AS currency
         FROM settlement_confirmations sc
         JOIN settlement_outbox so ON so.swap_reference = sc.swap_reference AND so.message_type = 'SETTLEMENT_INSTRUCTION'
-        WHERE sc.status = 'PENDING' AND sc.advice_line_ref IS NULL AND sc.created_at <= ?
+        WHERE sc.status = 'PENDING' AND sc.advice_line_ref IS NULL AND sc.created_at <= ? AND sc.created_at >= ?
           AND NOT EXISTS (SELECT 1 FROM settlement_advice_items i WHERE i.item_type = 'SWAP' AND i.item_reference = sc.swap_reference)
         ORDER BY sc.swap_reference, so.created_at ASC
     ");
-    $swaps->execute([$cycleUtc]);
+    $swaps->execute([$cycleUtc, $adviseFromUtc]);
     $swapRows = $swaps->fetchAll(PDO::FETCH_ASSOC);
 
     $noInstr = $db->prepare("
         SELECT COUNT(*) FROM settlement_confirmations sc
-        WHERE sc.status = 'PENDING' AND sc.advice_line_ref IS NULL AND sc.created_at <= ?
+        WHERE sc.status = 'PENDING' AND sc.advice_line_ref IS NULL AND sc.created_at <= ? AND sc.created_at >= ?
           AND NOT EXISTS (SELECT 1 FROM settlement_outbox so WHERE so.swap_reference = sc.swap_reference AND so.message_type = 'SETTLEMENT_INSTRUCTION')
     ");
-    $noInstr->execute([$cycleUtc]);
+    $noInstr->execute([$cycleUtc, $adviseFromUtc]);
     $stats['skipped_no_instruction'] = (int)$noInstr->fetchColumn();
 
     $fees = $db->prepare("
         SELECT so.message_uuid::text AS message_uuid, so.source_institution, so.amount, so.currency
         FROM settlement_outbox so
-        WHERE so.message_type = 'FEE_INVOICE' AND so.status NOT IN ('ACKNOWLEDGED', 'CANCELLED') AND so.created_at <= ?
+        WHERE so.message_type = 'FEE_INVOICE' AND so.status NOT IN ('ACKNOWLEDGED', 'CANCELLED') AND so.created_at <= ? AND so.created_at >= ?
           AND NOT EXISTS (SELECT 1 FROM settlement_advice_items i WHERE i.item_type = 'FEE_INVOICE' AND i.item_reference = so.message_uuid::text)
     ");
-    $fees->execute([$cycleUtc]);
+    $fees->execute([$cycleUtc, $adviseFromUtc]);
     // With the fee ledger live, the old whole-fee invoices are not advised (they overcharge the source).
     $feeRows = $feeSource === 'LEDGER' ? [] : $fees->fetchAll(PDO::FETCH_ASSOC);
 
@@ -121,11 +123,11 @@ try {
         $sh = $db->prepare("
             SELECT f.entry_id, f.leg_reference, f.fee_role, f.institution, f.payer_institution, f.amount, f.currency
             FROM fee_ledger f
-            WHERE f.status = 'EARNED' AND f.earned_at <= ?
+            WHERE f.status = 'EARNED' AND f.earned_at <= ? AND f.earned_at >= ?
               AND NOT EXISTS (SELECT 1 FROM settlement_advice_items i WHERE i.item_type = 'FEE_LEDGER' AND i.item_reference = f.entry_id::text)
             ORDER BY f.entry_id
         ");
-        $sh->execute([$cycleUtc]);
+        $sh->execute([$cycleUtc, $adviseFromUtc]);
         $shareRows = $sh->fetchAll(PDO::FETCH_ASSOC);
     }
 
