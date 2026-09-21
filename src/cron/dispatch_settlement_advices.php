@@ -104,7 +104,7 @@ try {
     $fees = $db->prepare("
         SELECT so.message_uuid::text AS message_uuid, so.source_institution, so.amount, so.currency
         FROM settlement_outbox so
-        WHERE so.message_type = 'FEE_INVOICE' AND so.status <> 'ACKNOWLEDGED' AND so.created_at <= ?
+        WHERE so.message_type = 'FEE_INVOICE' AND so.status NOT IN ('ACKNOWLEDGED', 'CANCELLED') AND so.created_at <= ?
           AND NOT EXISTS (SELECT 1 FROM settlement_advice_items i WHERE i.item_type = 'FEE_INVOICE' AND i.item_reference = so.message_uuid::text)
     ");
     $fees->execute([$cycleUtc]);
