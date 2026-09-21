@@ -117,6 +117,26 @@ foreach ($input['sources'] as $idx => $src) {
 // EXECUTE
 // ============================================================
 $db = $container->get(PDO::class);
+
+// Incident Command gate (2026-09-21): freezes on the service, the CARD_HOOK
+// flow, the card owner or any source institution stop the hook before any
+// hold; the cap on the card's pool total is enforced in CardService.
+require_once ROOT_PATH . '/src/Application/Admin/AdminAudit.php';
+require_once ROOT_PATH . '/src/Application/Incident/Playbooks.php';
+require_once ROOT_PATH . '/src/Application/Incident/ReportBuilder.php';
+require_once ROOT_PATH . '/src/Application/Incident/IncidentDesk.php';
+require_once ROOT_PATH . '/src/Application/Incident/ServiceControls.php';
+foreach ($sources as $gateSource) {
+    $gate = \Application\Incident\ServiceControls::check($db, [
+        'amount' => 0, 'flow' => 'CARD_HOOK', 'source' => $gateSource['institution'] ?? '', 'user_id' => (string)$cardOwnerUserId,
+    ]);
+    if ($gate !== null) {
+        http_response_code($gate['http']);
+        echo json_encode(['success' => false, 'error' => $gate['message'], 'code' => $gate['code'], 'funds_moved' => false]);
+        exit;
+    }
+}
+
 $swapService = $container->get('Domain\Services\SwapService');
 $cardService = new CardService($db, $container->get('countryCode'), $container->get('countryConfig'));
 
