@@ -1108,6 +1108,23 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
      * only have an InstitutionAdapterInterface (not a raw bank client) can
      * still poll settlement status, same pattern as every other method here.
      */
+    /**
+     * Delivers a settlement advice to this (paying) institution. No consent
+     * step: this is institution-to-institution, not on a customer's account.
+     */
+    public function sendSettlementAdvice(array $payload): array
+    {
+        if (!method_exists($this->bankClient, 'sendSettlementAdvice')) {
+            return ['success' => false, 'message' => "{$this->institution}'s bank client cannot receive settlement advices"];
+        }
+        try {
+            $r = $this->bankClient->sendSettlementAdvice($payload);
+            return ['success' => $r['success'] ?? false, 'data' => $r['data'] ?? [], 'message' => $r['data']['message'] ?? ($r['error'] ?? null)];
+        } catch (\Exception $e) {
+            return ['success' => false, 'message' => $e->getMessage()];
+        }
+    }
+
     public function checkSettlementStatus(array $payload, array $context): array
     {
         $this->context = array_merge($context, $payload);
