@@ -249,18 +249,24 @@ class ReservationAccountService
         return (time() - $epoch) > $thresholdSeconds;
     }
 
-    private function createAtBank(int $id, int $ownerUserId, string $institution, string $currency, string $bankReference): array
+    private function createAtBank(int $id, ?int $ownerUserId, string $institution, string $currency, string $bankReference, ?array $identity = null): array
     {
         try {
             $adapter = $this->adapterFactory->getAdapter($institution);
-            $result = $adapter->createReservationAccount([
+            $request = [
                 'action' => 'CREATE_RESERVATION_ACCOUNT',
                 'reference' => $bankReference,
                 'bank_reference' => $bankReference,
-                'user_id' => $ownerUserId,
                 'currency' => $currency,
                 'timestamp' => time(),
-            ], [
+            ];
+            if ($ownerUserId !== null) $request['user_id'] = $ownerUserId;
+            // The bank opens (or returns) this identity's virtual account.
+            if ($identity !== null) {
+                $request['identity_type'] = $identity['type'];
+                $request['identity_value'] = $identity['value'];
+            }
+            $result = $adapter->createReservationAccount($request, [
                 'institution' => $institution,
                 'bank_reference' => $bankReference,
             ]);
@@ -345,6 +351,90 @@ class ReservationAccountService
      * to pull into a new claim, rather than resolving by (user, institution,
      * currency) as every other call site does.
      */
+    /**
+     * Point Z for an identity: the identity's virtual reservation account at
+     * this institution and currency, opened at the bank on first use and
+     * reused for life (like a mobile-number eWallet). An identity can have
+     * one at every institution.
+     */
+    public function resolveOrCreateForIdentity(string $identityType, string $identityValue, string $institution, string $currency): array
+    {
+        if (!$this->isSupported($institution)) {
+            return ['supported' => false];
+        }
+        $identityType = strtolower(trim($identityType));
+        $identityValue = trim($identityValue);
+        $existing = $this->findIdentityAccount($identityType, $identityValue, $institution, $currency);
+        if ($existing && $existing['status'] === self::STATUS_ACTIVE) {
+            return $this->toResult($existing);
+        }
+        if (!$existing) {
+            $bankReference = 'RESID_' . strtoupper(substr(hash('sha256', $identityType . ':' . $identityValue), 0, 12)) . '_' . $institution . '_' . $currency . '_' . bin2hex(random_bytes(3));
+            $stmt = $this->db->prepare("
+                INSERT INTO reservation_accounts (user_id, identity_type, identity_value, institution, currency, status, bank_reference, requested_at)
+                VALUES (NULL, :t, :v, :i, :c, 'pending', :ref, now())
+                ON CONFLICT (identity_type, identity_value, institution, currency) WHERE identity_type IS NOT NULL DO NOTHING
+                RETURNING id
+            ");
+            $stmt->execute([':t' => $identityType, ':v' => $identityValue, ':i' => $institution, ':c' => $currency, ':ref' => $bankReference]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($row) {
+                return $this->createAtBank((int)$row['id'], null, $institution, $currency, $bankReference, ['type' => $identityType, 'value' => $identityValue]);
+            }
+            $existing = $this->findIdentityAccount($identityType, $identityValue, $institution, $currency);
+            if ($existing && $existing['status'] === self::STATUS_ACTIVE) {
+                return $this->toResult($existing);
+            }
+        }
+        if ($existing) {
+            // pending or failed: ask the bank again with the same reference (the bank is idempotent on it)
+            return $this->createAtBank((int)$existing['id'], null, $institution, $currency, (string)$existing['bank_reference'], ['type' => $identityType, 'value' => $identityValue]);
+        }
+        return ['supported' => true, 'status' => self::STATUS_PENDING];
+    }
+
+    public function findIdentityAccount(string $identityType, string $identityValue, string $institution, string $currency): ?array
+    {
+        $stmt = $this->db->prepare("
+            SELECT * FROM reservation_accounts
+            WHERE identity_type = :t AND identity_value = :v AND institution = :i AND currency = :c
+        ");
+        $stmt->execute([':t' => strtolower($identityType), ':v' => $identityValue, ':i' => $institution, ':c' => $currency]);
+        return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+    }
+
+    /**
+     * Every open reservation account this identity has, at every institution:
+     * its own identity accounts, plus the registered owner's accounts when
+     * the identity belongs to a VouchMorph user. The bank holds the balances;
+     * the claim checks each one live.
+     */
+    public function listForIdentity(string $identityType, string $identityValue, ?int $ownerUserId = null, ?string $currency = null): array
+    {
+        $sql = "SELECT * FROM reservation_accounts
+                WHERE status = 'active' AND account_identifier IS NOT NULL
+                  AND ((identity_type = :t AND identity_value = :v)" . ($ownerUserId !== null ? " OR user_id = :u" : "") . ")"
+             . ($currency !== null ? " AND currency = :c" : "") . " ORDER BY id";
+        $params = [':t' => strtolower($identityType), ':v' => $identityValue];
+        if ($ownerUserId !== null) $params[':u'] = $ownerUserId;
+        if ($currency !== null) $params[':c'] = $currency;
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute($params);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /** Remembers the claim PIN that parked money here, for claims that use only reservation money. */
+    public function rememberClaimPin(int $id, string $pin): void
+    {
+        $this->db->prepare("UPDATE reservation_accounts SET claim_pin_hash = :h, updated_at = now() WHERE id = :id")
+            ->execute([':h' => password_hash($pin, PASSWORD_DEFAULT), ':id' => $id]);
+    }
+
+    public function markRolled(int $id): void
+    {
+        $this->db->prepare("UPDATE reservation_accounts SET last_rolled_at = now(), updated_at = now() WHERE id = :id")->execute([':id' => $id]);
+    }
+
     public function getById(int $id): ?array
     {
         $stmt = $this->db->prepare("SELECT * FROM reservation_accounts WHERE id = :id");
