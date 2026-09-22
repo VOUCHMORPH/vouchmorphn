@@ -273,8 +273,27 @@ if ($currentSection === 'auth' && preg_match('/^    ([a-z_]+): (.+)$/', $line, $
                     continue;
                 }
                 
+                // FIX (2026-09-22): any other endpoint group (internal,
+                // reservation_accounts, ...) starts its own sub-section. Before,
+                // only the four names above were known; lines under any other
+                // group were silently filed under the previous group, so
+                // reservation_accounts.create_account and internal.sweep could
+                // never be found for any bank.
+                if ($currentSection === 'endpoints' && preg_match('/^    ([a-z_]+):$/', $line, $matches)) {
+                    $currentSubSection = $matches[1];
+                    $result[$currentBank]['endpoints'][$currentSubSection] = $result[$currentBank]['endpoints'][$currentSubSection] ?? [];
+                    continue;
+                }
+                // Any other top-level section of the bank (oauth, callbacks, ...)
+                // ends the endpoints block.
+                if (preg_match('/^  ([a-z_]+):$/', $line, $matches)) {
+                    $currentSection = $matches[1];
+                    $currentSubSection = null;
+                    continue;
+                }
+
                 // Endpoint key-value pairs
-                if ($currentSubSection && preg_match('/^      ([a-z_]+): "?(.+?)"?$/', $line, $matches)) {
+                if ($currentSection === 'endpoints' && $currentSubSection && preg_match('/^      ([a-z_]+): "?(.+?)"?$/', $line, $matches)) {
                     $key = $matches[1];
                     $value = rtrim($matches[2], '"');
                     $result[$currentBank]['endpoints'][$currentSubSection][$key] = $value;
