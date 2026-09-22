@@ -114,4 +114,8 @@
     });
 })();
 </script>
-<?php require __DIR__ . '/cinema.php'; // sign-in and sign-out sequences ?>
+<!-- Role manual: one press away on every page, for every role, forever. -->
+<a href="<?php echo htmlspecialchars(($basePath ?? '') . 'manual.php', ENT_QUOTES); ?>" target="_blank" rel="noopener"
+   style="position:fixed;right:24px;bottom:calc(var(--footer-h,40px) + 16px);z-index:50;font-family:var(--f-display);font-weight:600;
+          font-size:14px;letter-spacing:.04em;padding:12px 18px;border:var(--border,2px) solid var(--line);background:var(--paper);
+          color:var(--ink);text-decoration:none" aria-label="Open my role manual">My manual</a>
