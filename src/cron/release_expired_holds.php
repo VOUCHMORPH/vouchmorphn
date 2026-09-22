@@ -34,21 +34,26 @@ try {
     $country = getenv('VOUCHMORPH_COUNTRY') ?: 'Botswana';
     $swapService = new SwapService($db, LoadCountry::getConfig(), $country);
 
+    // FIX (2026-09-22): each step runs on its own, so one failing step no
+    // longer stops the rest (a missing pool method once skipped step 4).
+    $step = function (string $label, callable $fn, array $empty) {
+        try {
+            $r = $fn();
+            error_log("[CRON release_expired_holds] {$label}: " . json_encode($r));
+            return $r;
+        } catch (\Throwable $e) {
+            error_log("[CRON release_expired_holds] {$label} FAILED: " . $e->getMessage());
+            return $empty + ['errors' => 1];
+        }
+    };
     // 1. Single-swap cashouts (expired after 6 hours)
-    $cashoutResults = $swapService->cancelExpiredCashouts(6);
-    error_log("[CRON release_expired_holds] Cashouts: " . json_encode($cashoutResults));
-
+    $cashoutResults = $step('Cashouts', fn() => $swapService->cancelExpiredCashouts(6), ['released' => 0]);
     // 2. Single-swap identity claims (expired after 24 hours)
-    $identityResults = $swapService->cancelExpiredIdentitySwaps();
-    error_log("[CRON release_expired_holds] Identity swaps: " . json_encode($identityResults));
-
+    $identityResults = $step('Identity swaps', fn() => $swapService->cancelExpiredIdentitySwaps(), ['cancelled' => 0]);
     // 3. Pool cashouts (expired after 6 hours)
-    $poolCashoutResults = $swapService->cancelExpiredPoolCashouts(6);
-    error_log("[CRON release_expired_holds] Pool cashouts: " . json_encode($poolCashoutResults));
-
+    $poolCashoutResults = $step('Pool cashouts', fn() => $swapService->cancelExpiredPoolCashouts(6), ['released' => 0]);
     // 4. Pool identity claims (expired after 24 hours)
-    $poolIdentityResults = $swapService->cancelExpiredPoolIdentityClaims();
-    error_log("[CRON release_expired_holds] Pool identity claims: " . json_encode($poolIdentityResults));
+    $poolIdentityResults = $step('Pool identity claims', fn() => $swapService->cancelExpiredPoolIdentityClaims(), ['cancelled' => 0]);
 
     $elapsed = round(microtime(true) - $startedAt, 2);
     error_log("[CRON release_expired_holds] Completed in {$elapsed}s - "
