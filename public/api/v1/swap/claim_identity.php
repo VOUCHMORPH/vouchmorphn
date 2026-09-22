@@ -132,13 +132,24 @@ try {
     // The agent-assisted path (finalizeAggregatedIdentityClaim) is a
     // separate flow with its own endpoint, requiring an agent's own
     // authenticated session and a pre-registered agent destination account.
+    // FIX (2026-09-22): the claimer chooses how much to claim now (C). Before,
+    // no amount was passed, so every self-service claim took everything and a
+    // partial claim (with the rest parked in a reservation account) was
+    // impossible. Omitted = claim the full available amount.
+    $claimAmount = $body['amount'] ?? $body['cash_now_amount'] ?? null;
+    if ($claimAmount !== null && (!is_numeric($claimAmount) || (float)$claimAmount <= 0)) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'error' => 'amount must be a positive number (or omitted to claim everything)']);
+        exit;
+    }
     $result = $swapService->finalizeAggregatedIdentityClaimSelfService(
         $identityType,
         $identityValue,
         $pin,
         (int)$userId,
         $destinationType,
-        $destinationDetails
+        $destinationDetails,
+        $claimAmount !== null ? round((float)$claimAmount, 2) : null
     );
 
     $message = $result['status'] === 'success'
