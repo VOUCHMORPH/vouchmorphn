@@ -4109,6 +4109,17 @@ if ($sourceIdForEarmarkCheck['has_value']) {
         $amountToSend = $feeBreakdown['dispensable_amount'];
         $remainderAtSource = $feeBreakdown['remainder_balance'];
         $netAmount = $feeBreakdown['net_amount'];
+        // MNO agent cash-out: the operator's own tariff (participants.yaml
+        // cashout_tariff) is charged on top of VouchMorph's fee, on the gross
+        // amount, and passed 100% to the operator; its agent's share is earned
+        // at pay-out (recorded in confirmCashout).
+        $mnoTariff = $this->mnoCashoutTariff((string)$destinationInstitution, (float)$amount, $deliveryMethod);
+        if ($mnoTariff['tariff'] > 0) {
+            $amountToSend = round($amountToSend - $mnoTariff['tariff'], 2);
+            $netAmount = round($netAmount - $mnoTariff['tariff'], 2);
+            $feeBreakdown['total_fee'] = round(($feeBreakdown['total_fee'] ?? 0) + $mnoTariff['tariff'], 2);
+            $feeBreakdown['mno_tariff'] = $mnoTariff;
+        }
         
         $currency = $feeBreakdown['destination_currency']
             ?? $payload['destination_currency']
@@ -4174,6 +4185,12 @@ $authId = $this->storeCashoutAuthorization(
     $generateResult['atm_pin'],
     $generateResult['expires_at']
 );
+        if (!empty($mnoTariff['tariff'])) {
+            try {
+                $this->swapDB->prepare("UPDATE cashout_authorizations SET metadata = COALESCE(metadata, '{}'::jsonb) || ?::jsonb WHERE swap_reference = ?")
+                    ->execute([json_encode(['mno_tariff' => $mnoTariff]), $this->currentSwapRef]);
+            } catch (\Throwable $e) { error_log('[SwapService] could not store MNO tariff on the authorisation: ' . $e->getMessage()); }
+        }
 
  
 // Buffer window: source-side hold must outlive the destination's
@@ -7557,6 +7574,15 @@ public function confirmCashout(array $payload): array
         // Fee ledger: cash dispensed (destination 90% of its 50% + VouchMorph 35%).
         $this->feeLedger()->record('CASH_DISPENSED', ['swap_reference' => $swapRef, 'leg_reference' => $swapRef, 'product' => 'CASHOUT',
             'source_institution' => $sourceInstitution, 'destination_institution' => $destinationInstitution, 'currency' => $currency]);
+        // MNO agent cash-out: the operator's tariff (pass-through) and its agent's commission, earned now.
+        $authMeta = is_array($authorization['metadata'] ?? null) ? $authorization['metadata'] : (json_decode((string)($authorization['metadata'] ?? ''), true) ?: []);
+        if (!empty($authMeta['mno_tariff']['tariff'])) {
+            $t = $authMeta['mno_tariff'];
+            $this->feeLedger()->recordShare($swapRef, $swapRef, 'CASHOUT', 'CASH_DISPENSED', 'MNO_TARIFF', (string)$destinationInstitution, (string)$destinationInstitution,
+                (float)$t['tariff'], null, round((float)$t['tariff'] - (float)($t['agent_commission'] ?? 0), 2), $currency, 'Operator cash-out tariff (net of agent commission)');
+            $this->feeLedger()->recordShare($swapRef, $swapRef, 'CASHOUT', 'CASH_DISPENSED', 'AGENT_COMMISSION', $destinationInstitution . '_AGENT', (string)$destinationInstitution,
+                (float)$t['tariff'], null, (float)($t['agent_commission'] ?? 0), $currency, 'Agent commission, earned when the cash was paid out');
+        }
 
         // Post ledger legs for cashout
         $this->postLedgerLegs(
