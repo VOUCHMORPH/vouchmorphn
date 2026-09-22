@@ -57,5 +57,37 @@ foreach ($pools as $p) {
         fwrite(STDOUT, "[card-hooks] {$p['hook_reference']} FAILED: " . $e->getMessage() . "\n");
     }
 }
+// Second pass: pools left UNHOOK_PARTIAL (a source's release did not go
+// through). Ask again; a bank that has since expired or released the hold
+// itself now counts as released, so these clear without anyone phoning the
+// bank. A source that still fails stays HELD and keeps its alarm.
+$stats['partial_retried'] = 0;
+$stats['partial_cleared'] = 0;
+$partial = $db->query("
+    SELECT h.id AS hook_id, h.hook_reference, s.id AS source_id, s.institution, s.asset_type, s.hold_reference, s.held_amount
+    FROM card_pool_hooks h JOIN card_pool_hook_sources s ON s.hook_id = h.id AND s.status = 'HELD'
+    WHERE h.status = 'UNHOOK_PARTIAL'
+    ORDER BY h.id
+    LIMIT 300
+")->fetchAll(PDO::FETCH_ASSOC);
+foreach ($partial as $src) {
+    $stats['partial_retried']++;
+    try {
+        $r = $swapService->releaseHold(['institution' => $src['institution'], 'asset_type' => $src['asset_type']], $src['institution'], null, $src['hold_reference']);
+        if (($r['released'] ?? $r['success'] ?? false) === true) {
+            $db->prepare("UPDATE card_pool_hook_sources SET status = 'RELEASED', released_at = NOW() WHERE id = ? AND status = 'HELD'")->execute([$src['source_id']]);
+            $left = $db->prepare("SELECT COUNT(*) FROM card_pool_hook_sources WHERE hook_id = ? AND status = 'HELD'");
+            $left->execute([$src['hook_id']]);
+            if ((int)$left->fetchColumn() === 0) {
+                $db->prepare("UPDATE card_pool_hooks SET status = 'UNHOOKED', total_held_amount = 0, unhooked_at = COALESCE(unhooked_at, NOW()) WHERE id = ? AND status = 'UNHOOK_PARTIAL'")->execute([$src['hook_id']]);
+                $stats['partial_cleared']++;
+            }
+            fwrite(STDOUT, "[card-hooks] {$src['hook_reference']} source {$src['source_id']} ({$src['institution']}) released" . (!empty($r['already_released_by_institution']) ? ' (the institution had already released it)' : '') . "\n");
+        }
+    } catch (Throwable $e) {
+        fwrite(STDOUT, "[card-hooks] {$src['hook_reference']} source {$src['source_id']} still not released: " . $e->getMessage() . "\n");
+    }
+}
+
 $db->query("SELECT pg_advisory_unlock(7743012)");
 echo json_encode($stats) . PHP_EOL;
