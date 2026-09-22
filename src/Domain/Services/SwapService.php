@@ -13178,24 +13178,24 @@ private function updateCashoutAuthorizationStatus(int $authId, string $status, ?
 
     private function findAuthorization(string $swapReference = null, int $authId = null, string $voucherNumber = null): ?array
 {
-    $sql = "SELECT * FROM cashout_authorizations WHERE 1=1";
-    $params = [];
-
-    if ($authId) {
-        $sql .= " AND auth_id = :auth_id";
-        $params[':auth_id'] = $authId;
-    } elseif ($swapReference) {
-        $sql .= " AND swap_reference = :swap_ref";
-        $params[':swap_ref'] = $swapReference;
-    } elseif ($voucherNumber) {
-        $sql .= " AND swap_code = :voucher";
-        $params[':voucher'] = $voucherNumber;
+    // FIX (2026-09-22): try every key the caller gave, most reliable first.
+    // Before, only one key was used and the swap reference won over the
+    // voucher - ZuruBank sends the reference the code was GENERATED under
+    // (e.g. "CONSOL_..._PAYOUT"), which is not the authorisation's reference,
+    // so its cash-outs were never found although the voucher number was right.
+    $try = function (string $col, $val): ?array {
+        $st = $this->swapDB->prepare("SELECT * FROM cashout_authorizations WHERE {$col} = ? ORDER BY created_at DESC LIMIT 1");
+        $st->execute([$val]);
+        return $st->fetch(PDO::FETCH_ASSOC) ?: null;
+    };
+    if ($authId && ($a = $try('auth_id', $authId))) return $a;
+    if ($voucherNumber && ($a = $try('swap_code', $voucherNumber))) return $a;          // the code typed at the ATM
+    if ($swapReference) {
+        if ($a = $try('swap_reference', $swapReference)) return $a;
+        $base = preg_replace('/_(PAYOUT|RESACC|RESACC_FALLBACK)$/', '', $swapReference);
+        if ($base !== $swapReference && ($a = $try('swap_reference', $base))) return $a;
     }
-
-    $sql .= " ORDER BY created_at DESC LIMIT 1";
-    $stmt = $this->swapDB->prepare($sql);
-    $stmt->execute($params);
-    return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+    return null;
 }
 
     /**
