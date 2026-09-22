@@ -5992,9 +5992,16 @@ private function settlePosDirect(
     string $merchantAccountIdentifierType,
     string $currency,
     float $amount,
-    string $reference
+    string $reference,
+    ?string $destinationAssetType = null
 ): float {
     $sourceSettlement = $this->getSourceSettlementAccount($sourceInstitution, $currency);
+    // FIX (2026-09-22): tell the bank what the destination really is. Before,
+    // it was always ACCOUNT, so a deposit to a phone-addressed WALLET made the
+    // bank look for an account numbered "+267..." and try to open a new
+    // customer for it (SaccusSalis: "users_phone_key" duplicate).
+    $idType = strtolower($merchantAccountIdentifierType);
+    $isWallet = strtoupper((string)$destinationAssetType) === 'WALLET' || in_array($idType, ['phone', 'msisdn', 'wallet'], true);
 
     $payload = [
         'reference' => $reference,
@@ -6004,7 +6011,7 @@ private function settlePosDirect(
         // from settleDirect()'s institution-pool version.
         'destination_identifier' => $merchantAccountIdentifier,
         'destination_identifier_type' => $merchantAccountIdentifierType,
-        'destination_asset_type' => 'ACCOUNT',
+        'destination_asset_type' => $isWallet ? 'WALLET' : 'ACCOUNT',
         'to_institution' => $destinationInstitution,
         'destination_institution' => $destinationInstitution,
         'from_institution' => $sourceInstitution,
@@ -6012,9 +6019,15 @@ private function settlePosDirect(
         'source_identifier' => $sourceSettlement['identifier'],
         'source_type' => 'INSTITUTION_SETTLEMENT_ACCOUNT',
         'action' => 'PROCESS_DEPOSIT_WITH_PROOF',
-        'account_number' => $merchantAccountIdentifier,
-        'destination_account' => $merchantAccountIdentifier,
     ];
+    if ($isWallet) {
+        $payload['phone'] = $merchantAccountIdentifier;
+        $payload['wallet_phone'] = $merchantAccountIdentifier;
+        $payload['destination_phone'] = $merchantAccountIdentifier;
+    } else {
+        $payload['account_number'] = $merchantAccountIdentifier;
+        $payload['destination_account'] = $merchantAccountIdentifier;
+    }
 
     $adapter = $this->adapterFactory->getAdapter($destinationInstitution);
     $result = $adapter->credit($payload, [
@@ -9017,7 +9030,12 @@ private function finishIdentityClaim(array $ctx, bool $doPayout): array
     );
 
     return [
-        'status' => empty($failedHolds) ? 'success' : 'partial_success',
+        // Honest outcome: if the client's request failed and N was parked in the
+        // reservation account instead, say so - never report it as delivered.
+        'status' => !empty($delivery['payout']['parked_instead']) ? 'parked_instead_of_payout'
+                    : (empty($failedHolds) ? 'success' : 'partial_success'),
+        'payout_parked_instead' => !empty($delivery['payout']['parked_instead']),
+        'payout_error' => $delivery['payout']['error'] ?? null,
         'identity_type' => $identityType,
         'identity_value' => $identityValue,
         'currency' => $currency,
@@ -9048,7 +9066,14 @@ private function verifyHoldForClaim(array $identitySwap): void
     $sourcePayload = json_decode($identitySwap['source_payload'] ?? '{}', true) ?: [];
     $sourcePayload['from_institution'] = $sourceInstitution;
     $sourcePayload['source_institution'] = $sourceInstitution;
-    $sourcePayload['amount'] = (float)$identitySwap['amount'];
+    // FIX (2026-09-22): the money is guaranteed by the HOLD, and a bank's
+    // "available" balance excludes held funds - so asking whether available
+    // still covers the hold amount fails whenever the hold is the account's
+    // whole balance (always, for a reservation account rolled into a claim).
+    // Check that the source asset is still valid and active; the pool only
+    // takes holds still inside their expiry, and the debit goes against the hold.
+    $sourcePayload['amount'] = 0.01;
+    $sourcePayload['hold_reference'] = $identitySwap['hold_reference'] ?? null;
     $sourcePayload['currency'] = $identitySwap['currency'] ?? 'BWP';
     $sourcePayload['asset_type'] = $identitySwap['source_asset_type'] ?? 'ACCOUNT';
 
@@ -9127,7 +9152,8 @@ private function deliverDirectClaim(
                 $destinationDetails['destination_identifier_type'] ?? 'account_number', $currency, $netPayoutAmount, $consolidationReference . '_PAYOUT');
         } else {
             $this->settlePosDirect($sources[0], $destinationInstitution, $destIdentifier,
-                $destinationDetails['destination_identifier_type'] ?? 'account_number', $currency, $netPayoutAmount, $consolidationReference . '_PAYOUT');
+                $destinationDetails['destination_identifier_type'] ?? 'account_number', $currency, $netPayoutAmount, $consolidationReference . '_PAYOUT',
+                $destinationDetails['destination_asset_type'] ?? null);
         }
         $legs = self::splitNetPayoutByInstitution($heldByInstitution, $netPayoutAmount);
     } catch (\Throwable $e) {
