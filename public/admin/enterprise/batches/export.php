@@ -19,6 +19,7 @@
  */
 require_once __DIR__ . '/../auth.php';
 $user = requireEnterpriseAuth();
+requirePermission('export_filings');   // added: this endpoint had no permission check
 require_once __DIR__ . '/../../../../src/Core/Database/DBConnection.php';
 require_once __DIR__ . '/../../../../vendor/autoload.php';
 use Core\Database\DBConnection;
@@ -229,4 +230,3 @@ $dompdf->setPaper('A4', 'portrait');
 $dompdf->render();
 $filename = 'batch-' . preg_replace('/[^A-Za-z0-9_-]/', '', $batch['batch_reference'] ?? (string)$batchId) . '.pdf';
 $dompdf->stream($filename, ['Attachment' => false]);
-
