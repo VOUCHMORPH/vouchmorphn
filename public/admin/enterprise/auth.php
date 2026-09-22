@@ -59,8 +59,17 @@ function requireEnterpriseAuth() {
         $_SESSION['enterprise_user']['department_id'] = $result['department_id'];
         $_SESSION['enterprise_user']['role'] = $result['role'];
     } catch (PDOException $e) {
+        // Fail closed: if we cannot confirm the account is still active,
+        // we do not let the request through on a stale session.
         error_log("Auth verification error: " . $e->getMessage());
+        header('HTTP/1.1 503 Service Unavailable');
+        exit('Unable to verify your session. Please try again shortly.');
     }
+
+    // Role induction gate: nothing but induction, manual and sign-out until
+    // the user has declared their induction at its current version.
+    require_once __DIR__ . '/partials/induction_gate.php';
+    enterpriseInductionGate($_SESSION['enterprise_user']);
 
     return $_SESSION['enterprise_user'];
 }
