@@ -10,6 +10,7 @@
  */
 require_once __DIR__ . '/../auth.php';
 $user = requireEnterpriseAuth();
+requirePermission('manage_sources');   // added: this endpoint had no permission check
 require_once __DIR__ . '/../../../../src/Core/Database/DBConnection.php';
 use Core\Database\DBConnection;
 
