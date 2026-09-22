@@ -423,6 +423,133 @@ class ReservationAccountService
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
+    // ------------------------------------------------------------------
+    // Identity resolution: identities verified to the same person resolve to
+    // ONE canonical identity, whose account is the active one.
+    // ------------------------------------------------------------------
+
+    /** Lower number = higher priority. National ID first, email last. */
+    public const IDENTITY_PRIORITY = [
+        'national_id' => 1, 'omang' => 1, 'passport' => 2, 'drivers_license' => 3, 'voter_id' => 4, 'voters_id' => 4,
+        'birth_certificate' => 5, 'phone' => 6, 'msisdn' => 6, 'email' => 7,
+    ];
+
+    private static function norm(string $type, string $value): string
+    {
+        return class_exists('\\Domain\\Services\\SwapService')
+            ? \Domain\Services\SwapService::normalizeIdentityValue($type, $value)
+            : strtolower(trim($value));
+    }
+
+    /**
+     * Every identity verified to the same person as this one (including it),
+     * highest priority first. An unverified identity resolves only to itself.
+     * @return array<array{type: string, value: string, user_id: ?int}>
+     */
+    public function personIdentities(string $identityType, string $identityValue): array
+    {
+        $type = strtolower(trim($identityType));
+        $self = [['type' => $type, 'value' => trim($identityValue), 'user_id' => null]];
+        try {
+            $target = self::norm($type, $identityValue);
+            $st = $this->db->prepare("SELECT user_id, identity_value FROM user_identities WHERE identity_type = :t AND status = 'verified'");
+            $st->execute([':t' => $type]);
+            $userId = null;
+            foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                if (self::norm($type, (string)$row['identity_value']) === $target) { $userId = (int)$row['user_id']; break; }
+            }
+            if ($userId === null) return $self;
+            $all = $this->db->prepare("SELECT identity_type, identity_value FROM user_identities WHERE user_id = :u AND status = 'verified'");
+            $all->execute([':u' => $userId]);
+            $ids = [];
+            foreach ($all->fetchAll(PDO::FETCH_ASSOC) as $r) {
+                $ids[] = ['type' => strtolower((string)$r['identity_type']), 'value' => (string)$r['identity_value'], 'user_id' => $userId];
+            }
+            if (!$ids) return $self;
+            usort($ids, fn($a, $b) => (self::IDENTITY_PRIORITY[$a['type']] ?? 50) <=> (self::IDENTITY_PRIORITY[$b['type']] ?? 50));
+            return $ids;
+        } catch (Throwable $e) {
+            $this->log('warning', 'ReservationAccountService: identity resolution failed, using the identity as given', ['error' => $e->getMessage()]);
+            return $self;
+        }
+    }
+
+    /** Point Z for a person: the canonical identity's account (identity resolution). */
+    public function resolveOrCreateForCanonical(string $identityType, string $identityValue, string $institution, string $currency): array
+    {
+        $canon = $this->canonicalIdentity($identityType, $identityValue);
+        return $this->resolveOrCreateForIdentity($canon['type'], $canon['value'], $institution, $currency);
+    }
+
+    /** The identity whose account is active for this person. */
+    public function canonicalIdentity(string $identityType, string $identityValue): array
+    {
+        return $this->personIdentities($identityType, $identityValue)[0];
+    }
+
+    /** Open accounts of EVERY identity of this person (so a claim never leaves money behind). */
+    public function listForPerson(string $identityType, string $identityValue, ?string $currency = null): array
+    {
+        $rows = [];
+        foreach ($this->personIdentities($identityType, $identityValue) as $id) {
+            foreach ($this->listForIdentity($id['type'], $id['value'], null, $currency) as $r) $rows[$r['id']] = $r;
+        }
+        return array_values($rows);
+    }
+
+    /**
+     * After a person unifies identities: move every balance held in a
+     * non-canonical identity's account into the canonical identity's account
+     * at the SAME institution, then mark the old account merged. The old
+     * account is held and debited first; the canonical account is credited
+     * only after the debit succeeds, so money is moved, never copied.
+     * @return array list of moves
+     */
+    public function mergeIntoCanonical(string $identityType, string $identityValue, callable $verifyBalance): array
+    {
+        $ids = $this->personIdentities($identityType, $identityValue);
+        $canon = $ids[0];
+        $moves = [];
+        foreach (array_slice($ids, 1) as $other) {
+            foreach ($this->listForIdentity($other['type'], $other['value']) as $old) {
+                $inst = $old['institution'];
+                $cur = $old['currency'];
+                try {
+                    $target = $this->resolveOrCreateForIdentity($canon['type'], $canon['value'], $inst, $cur);
+                    if (($target['status'] ?? null) !== self::STATUS_ACTIVE) {
+                        $moves[] = ['from' => $old['id'], 'institution' => $inst, 'error' => 'canonical account not available yet'];
+                        continue;
+                    }
+                    $balance = round((float)$verifyBalance($old), 2);
+                    if ($balance > 0) {
+                        $adapter = $this->adapterFactory->getAdapter($inst);
+                        $ref = 'IDMERGE_' . $old['id'] . '_' . bin2hex(random_bytes(4));
+                        $hold = $adapter->placeHold([
+                            'reference' => $ref, 'hold_reference' => $ref, 'amount' => $balance, 'currency' => $cur,
+                            'source_identifier' => $old['account_identifier'], 'source_identifier_type' => $old['account_identifier_type'] ?? 'account_number',
+                            'asset_type' => 'ACCOUNT', 'hold_reason' => 'IDENTITY_MERGE', 'from_institution' => $inst,
+                        ], ['institution' => $inst]);
+                        if (!($hold['success'] ?? false)) throw new RuntimeException('hold on the old account failed: ' . ($hold['message'] ?? 'unknown'));
+                        $debit = $adapter->debit([
+                            'reference' => $ref . '_D', 'hold_reference' => $hold['hold_reference'] ?? $ref, 'amount' => $balance,
+                            'reason' => 'Identities unified: balance moves to the ' . $canon['type'] . ' account', 'from_institution' => $inst, 'source_institution' => $inst,
+                        ], []);
+                        if (($debit['success'] ?? false) !== true) throw new RuntimeException('debit of the old account failed: ' . ($debit['message'] ?? 'unknown'));
+                        $this->depositToReservationAccount($inst, $cur, $balance, $target['account_identifier'], $target['account_identifier_type'] ?? 'account_number', $ref . '_C');
+                    }
+                    $this->db->prepare("UPDATE reservation_accounts SET status = 'merged', merged_into_id = :to, merged_at = now(), updated_at = now() WHERE id = :id AND status = 'active'")
+                        ->execute([':to' => $target['id'] ?? null, ':id' => $old['id']]);
+                    $moves[] = ['from' => (int)$old['id'], 'from_identity' => $other['type'] . ':' . $other['value'], 'to' => $target['id'] ?? null,
+                                'to_identity' => $canon['type'] . ':' . $canon['value'], 'institution' => $inst, 'amount' => $balance];
+                } catch (Throwable $e) {
+                    // Left active with its money: the next run (or a claim, which pulls in every account of the person) picks it up.
+                    $moves[] = ['from' => (int)$old['id'], 'institution' => $inst, 'error' => $e->getMessage()];
+                }
+            }
+        }
+        return $moves;
+    }
+
     /** Remembers the claim PIN that parked money here, for claims that use only reservation money. */
     public function rememberClaimPin(int $id, string $pin): void
     {
