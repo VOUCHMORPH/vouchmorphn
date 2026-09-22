@@ -129,6 +129,32 @@ final class FeeLedger
         }
     }
 
+    /**
+     * Records one explicitly computed share (multi-source claims, where the
+     * amounts come from the multi-source rule rather than single-swap shares).
+     * Idempotent per (leg_reference, fee_role).
+     */
+    public function recordShare(string $swapReference, string $legReference, string $product, string $event, string $role,
+                                string $institution, string $payer, float $generalFee, ?float $pct, float $amount, string $currency = 'BWP', ?string $note = null): int
+    {
+        try {
+            if ($amount <= 0 || $institution === '') return 0;
+            $institution = strtoupper($institution); $payer = strtoupper($payer);
+            $st = $this->db->prepare("
+                INSERT INTO fee_ledger (swap_reference, leg_reference, product, event, fee_role, institution, payer_institution,
+                                        general_fee, percent_of_pool, amount, currency, status, note)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (leg_reference, fee_role) DO NOTHING
+            ");
+            $st->execute([$swapReference, $legReference, $product, $event, $role, $institution, $payer, round($generalFee, 2), $pct,
+                          round($amount, 2), $currency, $institution === $payer ? 'RETAINED_BY_PAYER' : 'EARNED', $note]);
+            return $st->rowCount();
+        } catch (Throwable $e) {
+            error_log("[FeeLedger] could not record {$role} for {$legReference}: " . $e->getMessage());
+            return 0;
+        }
+    }
+
     /** A platform failure: nothing is charged for the leg (Section 23.3). */
     public function reverse(string $legReference, string $reason): int
     {
