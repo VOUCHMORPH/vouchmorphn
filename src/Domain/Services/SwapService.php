@@ -7355,6 +7355,11 @@ public function confirmCashout(array $payload): array
         $idClaim = $this->swapDB->prepare("SELECT 1 FROM identity_cashout_claims WHERE claim_reference = ?");
         $idClaim->execute([$swapRef]);
         if ($idClaim->fetchColumn()) {
+            // confirmCashout() may already have opened a transaction; the identity
+            // completion manages its own writes, so hand over cleanly.
+            if ($this->swapDB->inTransaction()) {
+                $this->swapDB->rollBack();
+            }
             return $this->completeIdentityCashoutClaim((string)$swapRef);
         }
 
@@ -7985,6 +7990,10 @@ private function prepareIdentityClaimPool(string $identityType, string $identity
                            'amount' => $balance, 'swap_reference' => $hold['swap_reference'] ?? null];
             $currency = $currency ?? $r['currency'];
         } catch (\Throwable $e) {
+            // Already fully held (by a pending rollover hold in this pool): nothing more to roll.
+            if (preg_match('/insufficient funds|available: *0/i', $e->getMessage())) {
+                continue;
+            }
             // The balance stays in its reservation account; the claim goes ahead without it.
             error_log("[SwapService] could not roll reservation account {$r['id']} ({$r['institution']}) into the claim: " . $e->getMessage());
             $rolledIn[] = ['reservation_account_id' => (int)$r['id'], 'institution' => $r['institution'], 'error' => $e->getMessage()];
@@ -8803,18 +8812,16 @@ private function executeIdentityClaimDirect(
  */
 public function completeIdentityCashoutClaim(string $claimReference): array
 {
-    $st = $this->swapDB->prepare("SELECT * FROM identity_cashout_claims WHERE claim_reference = ? FOR UPDATE");
-    $this->swapDB->beginTransaction();
-    try {
-        $st->execute([$claimReference]);
-        $claim = $st->fetch(PDO::FETCH_ASSOC);
-        if (!$claim) { $this->swapDB->rollBack(); throw new RuntimeException("No identity cash-out claim {$claimReference}."); }
-        if ($claim['status'] !== 'PENDING') { $this->swapDB->rollBack(); return ['status' => strtolower($claim['status']), 'claim_reference' => $claimReference, 'already' => true, 'result' => json_decode((string)$claim['result'], true)]; }
-        $this->swapDB->prepare("UPDATE identity_cashout_claims SET status = 'COMPLETED', completed_at = now() WHERE claim_reference = ?")->execute([$claimReference]);
-        $this->swapDB->commit();
-    } catch (\Throwable $e) {
-        if ($this->swapDB->inTransaction()) $this->swapDB->rollBack();
-        throw $e;
+    // Claim the code atomically: exactly one redemption completes it.
+    $st = $this->swapDB->prepare("UPDATE identity_cashout_claims SET status = 'COMPLETED', completed_at = now() WHERE claim_reference = ? AND status = 'PENDING' RETURNING *");
+    $st->execute([$claimReference]);
+    $claim = $st->fetch(PDO::FETCH_ASSOC);
+    if (!$claim) {
+        $cur = $this->swapDB->prepare("SELECT status, result FROM identity_cashout_claims WHERE claim_reference = ?");
+        $cur->execute([$claimReference]);
+        $row = $cur->fetch(PDO::FETCH_ASSOC);
+        if (!$row) throw new RuntimeException("No identity cash-out claim {$claimReference}.");
+        return ['status' => strtolower($row['status']), 'claim_reference' => $claimReference, 'already' => true, 'result' => json_decode((string)$row['result'], true)];
     }
     $ctx = json_decode((string)$claim['context'], true) ?: [];
     try {
