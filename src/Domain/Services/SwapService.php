@@ -8568,23 +8568,10 @@ private function executeIdentityClaimDirect(
 ): array {
     $currency = $holds[0]['currency'] ?? 'BWP';
 
-    // A cashout code is drawn on the paying institution's own settlement
-    // account, so it can only cover money that institution is itself the
-    // source of.
-    if ($destinationType === 'CASHOUT') {
-        $elsewhere = array_values(array_unique(array_filter(
-            array_column($holds, 'source_institution'),
-            fn($inst) => $inst !== $destinationInstitution
-        )));
-        if (!empty($elsewhere)) {
-            throw new RuntimeException(
-                "A cashout code can only be drawn on money already held at the paying institution, and this " .
-                "claim's funds are at " . implode(', ', $elsewhere) . ", not {$destinationInstitution}. Until " .
-                "{$destinationInstitution} supports identity-swap consolidation, either take this as a deposit, " .
-                "or cash out at {$elsewhere[0]}."
-            );
-        }
-    }
+    // FIX (2026-09-22): a cash-out follows the standard swap structure - the
+    // destination issues the code from its own float, and every source hold
+    // is debited afterwards so each source settles with the destination.
+    // (Before: refused unless every hold was already at the paying bank.)
 
     $consolidationReference = 'CONSOL_' . time() . '_' . bin2hex(random_bytes(4));
 
@@ -8678,21 +8665,21 @@ private function executeIdentityClaimDirect(
     // Resolve the parking account BEFORE any money moves: creating it is not
     // a transfer, and finding out it can't be created after the payout has
     // gone out would leave the remainder with nowhere to land.
+    // Point Z at the destination on EVERY claim (the identity's virtual
+    // account there is opened or confirmed even when nothing lands in it).
+    // It must be active before any money moves when there is a remainder.
     $reservation = null;
-    if ($remainder > 0) {
-        // One virtual account per identity, registered or not (before: a
-        // partial claim was refused outright for an unregistered identity).
-        $reservation = $this->reservationAccountService->resolveOrCreateForCanonical($identityType, $identityValue, $destinationInstitution, $currency
+    try {
+        $reservation = $this->reservationAccountService->resolveOrCreateForCanonical($identityType, $identityValue, $destinationInstitution, $currency);
+    } catch (\Throwable $e) {
+        error_log("[SwapService] Point Z at {$destinationInstitution} failed for {$identityType}={$identityValue}: " . $e->getMessage());
+    }
+    if ($remainder > 0 && (($reservation['status'] ?? null) !== 'active')) {
+        throw new RuntimeException(
+            "Only part of this balance was requested, but no reservation account is available at " .
+            "{$destinationInstitution} to hold the remaining {$remainder} {$currency}" .
+            ". Claim the full {$claimable} {$currency} instead."
         );
-
-        if (($reservation['status'] ?? null) !== 'active') {
-            throw new RuntimeException(
-                "Only part of this balance was requested, but no reservation account is available at " .
-                "{$destinationInstitution} to hold the remaining {$remainder} {$currency} (" .
-                ($reservation['supported'] ?? false ? "account status: " . ($reservation['status'] ?? 'unknown') : "not offered by this institution") .
-                "). Claim the full {$claimable} {$currency} instead."
-            );
-        }
     }
 
     // Fee applies only to money actually being delivered now, never to the
@@ -8729,60 +8716,63 @@ private function executeIdentityClaimDirect(
     $netPayoutAmount = round($feeBreakdown['net_amount_source_currency'] ?? $payoutAmount, 2);
 
     // ------------------------------------------------------------
-    // STEP 2: pay the beneficiary at the destination, against the holds.
-    // Nothing has been debited yet, so if this delivers nothing the holds
-    // are untouched and the claim can simply be retried.
+    // STEP 2a (request 1 of 2, only when something is left): deposit the
+    // remainder R into the identity's virtual account at the destination,
+    // from the destination's float. Nothing is debited yet, so if this fails
+    // the holds are untouched and the claim can simply be retried.
+    // ------------------------------------------------------------
+    $reservationAccountId = null;
+    $unparkedRemainder = 0.0;
+    $firstSource = (string)array_key_first($heldByInstitution);
+    if ($remainder > 0) {
+        try {
+            $this->settlePosDirect(
+                $firstSource, $destinationInstitution,
+                $reservation['account_identifier'], $reservation['account_identifier_type'] ?? 'account_number',
+                $currency, $remainder, $consolidationReference . '_RESACC'
+            );
+            $reservationAccountId = $reservation['id'] ?? null;
+        } catch (\Throwable $e) {
+            throw new RuntimeException(
+                "Could not deposit the remaining {$remainder} {$currency} into the reservation account at {$destinationInstitution}: " .
+                $e->getMessage() . ". Nothing was debited -- the money is still held and can be claimed again."
+            );
+        }
+    }
+
+    // ------------------------------------------------------------
+    // STEP 2b (request 2 of 2, or the only request): what the client asked
+    // for - a deposit of N, or a cash-out code for N - from the destination's
+    // float. If it fails after the remainder was parked, N is parked in the
+    // same reservation account instead, so the identity keeps every thebe at
+    // the destination and can claim it again from there.
     // ------------------------------------------------------------
     $delivery = $this->deliverDirectClaim(
         $heldByInstitution, $netPayoutAmount, $destinationInstitution, $destinationType,
         $destinationDetails, $currency, $beneficiaryPhone, $consolidationReference
     );
-
     if (empty($delivery['legs'])) {
-        throw new RuntimeException(
-            "Claim payout to {$destinationInstitution} failed: " . ($delivery['error'] ?? 'unknown error') .
-            ". Nothing was debited -- the money is still held and can be claimed again."
-        );
-    }
-
-    // ------------------------------------------------------------
-    // STEP 2b: park the part that wasn't taken now into the beneficiary's
-    // reservation account -- still before any debit, and funded the same
-    // way as the payout, from the settlement accounts of the institutions
-    // whose legs delivered.
-    // ------------------------------------------------------------
-    $reservationAccountId = null;
-    $unparkedRemainder = 0.0;
-    if ($remainder > 0) {
-        $reservationAccountId = $reservation['id'] ?? null;
-        $delivered = array_intersect_key($heldByInstitution, $delivery['legs']);
-
-        foreach (self::splitNetPayoutByInstitution($delivered, $remainder) as $sourceInstitution => $share) {
-            try {
-                $this->settlePosToMerchant(
-                    $sourceInstitution,
-                    $destinationInstitution,
-                    $reservation['account_identifier'],
-                    $reservation['account_identifier_type'] ?? 'account_number',
-                    $currency,
-                    $share,
-                    $consolidationReference . '_RESACC_' . $sourceInstitution
-                );
-            } catch (\Throwable $e) {
-                // The beneficiary has already been paid the cash-now part,
-                // so the holds still have to be debited below. This portion
-                // is theirs but didn't reach the account -- a human has to
-                // place it rather than the customer silently losing it.
-                $unparkedRemainder = round($unparkedRemainder + $share, 2);
-                error_log("[SwapService] executeIdentityClaimDirect: reservation deposit leg {$sourceInstitution} failed for {$consolidationReference}: " . $e->getMessage());
-                $this->recordManualReconciliationRequired(
-                    $consolidationReference, null, $sourceInstitution,
-                    $destinationInstitution, $share, $currency,
-                    "Claim remainder could not be deposited into reservation account " .
-                    ($reservation['account_identifier'] ?? 'unknown') . ": " . $e->getMessage() .
-                    ". The cash-now portion was already paid, so the holds were debited in full."
-                );
-            }
+        if ($remainder <= 0) {
+            throw new RuntimeException(
+                "Claim payout to {$destinationInstitution} failed: " . ($delivery['error'] ?? 'unknown error') .
+                ". Nothing was debited -- the money is still held and can be claimed again."
+            );
+        }
+        try {
+            $this->settlePosDirect(
+                $firstSource, $destinationInstitution,
+                $reservation['account_identifier'], $reservation['account_identifier_type'] ?? 'account_number',
+                $currency, $netPayoutAmount, $consolidationReference . '_RESACC_FALLBACK'
+            );
+            $delivery['legs'] = self::splitNetPayoutByInstitution($heldByInstitution, $netPayoutAmount);
+            $delivery['payout'] = ['success' => false, 'parked_instead' => true, 'error' => $delivery['error'] ?? null];
+        } catch (\Throwable $e) {
+            $this->recordManualReconciliationRequired(
+                $consolidationReference, null, $firstSource, $destinationInstitution, $remainder, $currency,
+                "Remainder {$remainder} was deposited into reservation account " . ($reservation['account_identifier'] ?? '?') .
+                " but the client's request and the fallback both failed: " . $e->getMessage() . ". Holds NOT debited."
+            );
+            throw new RuntimeException("Claim payout to {$destinationInstitution} failed after the remainder was parked; flagged for reconciliation. Holds were not debited.");
         }
     }
 
@@ -8988,7 +8978,9 @@ private function deliverDirectClaim(
             error_log("[SwapService] deliverDirectClaim: cashout failed for {$consolidationReference}: " . $e->getMessage());
             return ['legs' => [], 'payout' => null, 'error' => $e->getMessage()];
         }
-        return ['legs' => [$sourceInstitution => $netPayoutAmount], 'payout' => $payout, 'error' => null];
+        // One code, backed by the destination's float; every source in the pool
+        // is debited for its share and settles with the destination.
+        return ['legs' => self::splitNetPayoutByInstitution($heldByInstitution, $netPayoutAmount), 'payout' => $payout, 'error' => null];
     }
 
     $destIdentifier = $destinationDetails['destination_identifier'] ?? null;
@@ -8996,28 +8988,24 @@ private function deliverDirectClaim(
         throw new RuntimeException("destination_identifier is required to deposit a claim.");
     }
 
+    // One deposit request for what the client asked for (not one per source);
+    // settlement is attributed per source from the holds afterwards.
     $legs = [];
     $error = null;
-
-    foreach (self::splitNetPayoutByInstitution($heldByInstitution, $netPayoutAmount) as $sourceInstitution => $share) {
-        try {
-            $this->settlePosToMerchant(
-                $sourceInstitution,
-                $destinationInstitution,
-                $destIdentifier,
-                $destinationDetails['destination_identifier_type'] ?? 'account_number',
-                $currency,
-                $share,
-                $consolidationReference . '_PAYOUT_' . $sourceInstitution
-            );
-            $legs[$sourceInstitution] = $share;
-        } catch (\Throwable $e) {
-            error_log("[SwapService] deliverDirectClaim: leg {$sourceInstitution} failed for {$consolidationReference}: " . $e->getMessage());
-            $error = "{$sourceInstitution}: " . $e->getMessage();
-            break;
+    try {
+        $sources = array_keys($heldByInstitution);
+        if (count($sources) === 1) {
+            $this->settlePosToMerchant($sources[0], $destinationInstitution, $destIdentifier,
+                $destinationDetails['destination_identifier_type'] ?? 'account_number', $currency, $netPayoutAmount, $consolidationReference . '_PAYOUT');
+        } else {
+            $this->settlePosDirect($sources[0], $destinationInstitution, $destIdentifier,
+                $destinationDetails['destination_identifier_type'] ?? 'account_number', $currency, $netPayoutAmount, $consolidationReference . '_PAYOUT');
         }
+        $legs = self::splitNetPayoutByInstitution($heldByInstitution, $netPayoutAmount);
+    } catch (\Throwable $e) {
+        error_log("[SwapService] deliverDirectClaim: deposit failed for {$consolidationReference}: " . $e->getMessage());
+        $error = $e->getMessage();
     }
-
     return [
         'legs' => $legs,
         'payout' => ['success' => !empty($legs), 'destination_identifier' => $destIdentifier, 'legs' => $legs],
