@@ -4,7 +4,8 @@ $user = requireEnterpriseAuth();
 require_once __DIR__ . '/../../../../src/Core/Database/DBConnection.php';
 use Core\Database\DBConnection;
 
-$db = DBConnection::getInstance();
+$db = DBConnection::getConnection();   // was getInstance(), which does not exist: every call crashed
+require_once __DIR__ . '/../partials/money_guards.php';
 $orgId = getOrganizationId();
 
 $data = json_decode(file_get_contents('php://input'), true);
@@ -69,7 +70,7 @@ if ($action === 'submit') {
     // logged in could push any batch to READY_FOR_APPROVAL. Uploading and
     // submitting for approval are naturally the same actor (program_officer),
     // so this checks upload_batch rather than a separate submit permission.
-    requirePermission('upload_batch');
+    requirePermission('create_batch');   // one permission vocabulary across dashboard and endpoints
 
     $stmt = $db->prepare("
         UPDATE import_batches
@@ -84,45 +85,27 @@ if ($action === 'submit') {
     echo json_encode(['success' => true]);
 
 } elseif ($action === 'approve') {
-    requirePermission('approve_batch');
-
-    // FIXED: maker-checker -- the function existed in auth.php but was
-    // never actually called from here. This is the fix that closes the
-    // diagnostic's "Approval self-check" failure.
+    requirePermission('act_approve');
     assertNotSelfApproving($batch['uploaded_by']);
 
-    $stmt = $db->prepare("
-        UPDATE import_batches
-        SET status = 'APPROVED', approved_by = :user_id, approved_at = NOW()
-        WHERE id = :id
-    ");
-    $stmt->execute([':user_id' => $currentUserId, ':id' => $batchId]);
-
-    // Record this approval in batch_approvals for dual-control tracking --
-    // if approval_thresholds requires 2+ approvers for this amount, a
-    // second distinct approver still needs to record their own approval
-    // here before the batch should be treated as fully cleared. (Wiring the
-    // actual "still needs N more approvals" gate is the next step once you
-    // have more than one approver account to test against.)
-    try {
-        $stmt = $db->prepare("
-            INSERT INTO batch_approvals (batch_id, approver_user_id, decision, created_at)
-            VALUES (:batch_id, :approver_id, 'APPROVED', NOW())
-            ON CONFLICT (batch_id, approver_user_id) DO NOTHING
-        ");
-        $stmt->execute([':batch_id' => $batchId, ':approver_id' => $currentUserId]);
-    } catch (PDOException $e) {
-        error_log("[approve.php] Failed to record batch_approvals: " . $e->getMessage());
+    if (!in_array($batch['status'], ['READY_FOR_APPROVAL', 'AWAITING_SECOND_APPROVAL'], true)) {
+        echo json_encode(['success' => false, 'error' => "This batch is {$batch['status']} and cannot be approved."]);
+        exit;
     }
 
-    writeAuditLog($db, $orgId, $currentUserId, 'BATCH_APPROVED', $batchId,
-        ['status' => $batch['status']], ['status' => 'APPROVED', 'approved_by' => $currentUserId]);
+    // Dual control, enforced: the batch becomes APPROVED only when the number
+    // of distinct approvals meets approval_thresholds for its amount.
+    $result = vm_record_approval($db, $batch, (int)$currentUserId);
 
-    echo json_encode(['success' => true]);
+    writeAuditLog($db, $orgId, $currentUserId, 'BATCH_APPROVED', $batchId,
+        ['status' => $batch['status']],
+        ['status' => $result['status'], 'approvals' => $result['have'], 'required' => $result['need']]);
+
+    echo json_encode(['success' => true] + $result);
 
 } elseif ($action === 'reject') {
     // FIXED: previously had NO permission check at all on reject.
-    requirePermission('reject_batch');
+    requirePermission('act_approve');
 
     // FIXED: maker-checker applies to rejection too -- an uploader
     // shouldn't be able to reject (and thus control the outcome of) their
