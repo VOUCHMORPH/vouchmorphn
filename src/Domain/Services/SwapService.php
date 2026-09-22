@@ -8630,19 +8630,40 @@ private function identityClaimFeeShares(string $product, array $holds, string $d
     $shares['destination_delivery'] = round($destTotal - $shares['destination_code'], 2);
     $fd = array_sum(array_column($shares['sources'], 'amount')) + array_sum(array_column($shares['settlers'], 'amount'))
         + $shares['platform'] + $destTotal;
-    // Cap on the total the customer pays (levies + Fd); scale Fd's shares down proportionally above it.
-    $cap = (float)($ms['max_total_fee'] ?? 0);
+    // No fee cap (removed 2026-09-22): the total grows with the number of sources.
     $scale = 1.0;
-    if ($cap > 0 && ($fd + $levy * $n) > $cap && $fd > 0) {
-        $scale = max(0.0, ($cap - $levy * $n) / $fd);
-        foreach (['sources', 'settlers'] as $k) foreach ($shares[$k] as $i => $x) $shares[$k][$i]['amount'] = round($x['amount'] * $scale, 2);
-        foreach (['platform', 'destination_base', 'destination_extra', 'destination_code', 'destination_delivery'] as $k) $shares[$k] = round($shares[$k] * $scale, 2);
-        $fd = round($fd * $scale, 2);
-    }
     $shares['claim_fee'] = round($fd, 2);
     $shares['destination'] = $destinationInstitution;
     $shares['scaled_to_cap'] = $scale < 1.0;
     return $shares;
+}
+
+/**
+ * An MNO's own cash-out tariff (participants.yaml cashout_tariff), for a
+ * cash-out paid by the operator's agent: the band that covers the cash amount,
+ * flat + percent. Passed 100% to the operator; the agent's commission share of
+ * it is earned when the agent pays out the cash. Zero for non-MNO destinations
+ * and other delivery methods.
+ */
+private function mnoCashoutTariff(string $destinationInstitution, float $cashAmount, string $deliveryMethod): array
+{
+    $p = $this->participants[$destinationInstitution] ?? $this->participants[strtoupper($destinationInstitution)] ?? [];
+    $t = $p['cashout_tariff'] ?? null;
+    if (strtoupper((string)($p['type'] ?? '')) !== 'MNO' || !$t) return ['tariff' => 0.0, 'agent_commission' => 0.0];
+    if (!in_array(strtoupper($deliveryMethod), array_map('strtoupper', (array)($t['applies_to_delivery'] ?? ['AGENT'])), true)) {
+        return ['tariff' => 0.0, 'agent_commission' => 0.0];
+    }
+    $tariff = 0.0;
+    foreach ((array)($t['bands'] ?? []) as $band) {
+        $min = (float)($band['min'] ?? 0);
+        $max = isset($band['max']) && $band['max'] !== null ? (float)$band['max'] : INF;
+        if ($cashAmount >= $min && $cashAmount <= $max) {
+            $tariff = round((float)($band['flat'] ?? 0) + $cashAmount * (float)($band['percent'] ?? 0) / 100, 2);
+            break;
+        }
+    }
+    $agent = round($tariff * (float)($t['agent_commission_percent_of_tariff'] ?? 0) / 100, 2);
+    return ['tariff' => $tariff, 'agent_commission' => $agent, 'collection' => $t['collection'] ?? 'VOUCHMORPH_COLLECTS_PASS_THROUGH'];
 }
 
 /** Records every party's share of a finished multi-source identity claim in the fee ledger. */
@@ -8667,6 +8688,15 @@ private function recordIdentityClaimFees(array $shares, array $holds, string $pr
         $ledger->recordShare($ref, $ref, 'IDENTITY', 'CODE_GENERATED', 'DESTINATION_CODE_FEE', $destinationInstitution, $destinationInstitution, $fee, null, $shares['destination_code'], $currency, 'Code issued (10% of destination cut)' . $extraNote);
         $ledger->recordShare($ref, $ref, 'IDENTITY', 'CASH_DISPENSED', 'DESTINATION_CASHOUT_FEE', $destinationInstitution, $destinationInstitution, $fee, null, $shares['destination_delivery'], $currency, 'Cash dispensed (90% of destination cut)' . $extraNote);
         $ledger->recordShare($ref, $ref, 'IDENTITY', 'CASH_DISPENSED', 'PLATFORM_SHARE', 'VOUCHMORPH', $destinationInstitution, $fee, 35.0, $shares['platform'], $currency, 'VouchMorph cut');
+        // The operator's own tariff (pass-through) and its agent's commission, earned at pay-out.
+        if (($shares['mno_tariff'] ?? 0) > 0) {
+            $ledger->recordShare($ref, $ref, 'IDENTITY', 'CASH_DISPENSED', 'MNO_TARIFF', $destinationInstitution, $destinationInstitution, $fee, null,
+                round($shares['mno_tariff'] - ($shares['agent_commission'] ?? 0), 2), $currency, 'Operator cash-out tariff (net of agent commission)');
+        }
+        if (($shares['agent_commission'] ?? 0) > 0) {
+            $ledger->recordShare($ref, $ref, 'IDENTITY', 'CASH_DISPENSED', 'AGENT_COMMISSION', $destinationInstitution . '_AGENT', $destinationInstitution, $fee, null,
+                $shares['agent_commission'], $currency, 'Agent commission, earned when the cash was paid out');
+        }
     } else {
         $ledger->recordShare($ref, $ref, 'IDENTITY', 'DELIVERED', 'DESTINATION_SHARE', $destinationInstitution, $destinationInstitution, $fee, 50.0, $shares['destination_delivery'], $currency, 'Destination cut' . $extraNote);
         $ledger->recordShare($ref, $ref, 'IDENTITY', 'DELIVERED', 'PLATFORM_SHARE', 'VOUCHMORPH', $destinationInstitution, $fee, 35.0, $shares['platform'], $currency, 'VouchMorph cut');
@@ -8836,6 +8866,12 @@ private function executeIdentityClaimDirect(
     // shares - levies were already charged at each hold (Fh). One source =>
     // Fd = F1 - F7, so a single swap costs exactly F1 in total.
     $claimShares = $this->identityClaimFeeShares($destinationType === 'CASHOUT' ? 'CASHOUT' : 'DEPOSIT', $verifiedHolds, $destinationInstitution);
+    if ($destinationType === 'CASHOUT') {
+        $tariff = $this->mnoCashoutTariff($destinationInstitution, $payoutAmount, (string)($destinationDetails['delivery_method'] ?? 'ATM'));
+        $claimShares['mno_tariff'] = $tariff['tariff'];
+        $claimShares['agent_commission'] = $tariff['agent_commission'];
+        $claimShares['claim_fee'] = round($claimShares['claim_fee'] + $tariff['tariff'], 2);
+    }
     $claimFeeFd = min($claimShares['claim_fee'], $payoutAmount);
     $netPayoutAmount = round($payoutAmount - $claimFeeFd, 2);
     $feeBreakdown['total_fee'] = $claimFeeFd;
