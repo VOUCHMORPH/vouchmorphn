@@ -9,7 +9,8 @@ $root = dirname(__DIR__);
 $minute = (int)gmdate('i');
 $jobs = [
     ['src/cron/release_expired_holds.php', 'every'],        // 24-hour rule, cash-out and identity expiry
-    ['src/cron/release_expired_card_hooks.php', 'every'],   // expired card-pool hooks (nothing released them before)
+    ['src/cron/release_expired_card_hooks.php', 'every'],
+    ['src/cron/consolidate_identity_reservations.php', 'every'], // unified identities: balances move to the canonical identity's account   // expired card-pool hooks (nothing released them before)
     ['src/cron/cancel_expired_hooks.php', 'every'],         // contribution sessions
     ['src/cron/ExpireContributionSessions.php', 'every'],
     ['src/cron/dispatch_settlement_advices.php', 'every'],  // creates advices only after each cycle time
