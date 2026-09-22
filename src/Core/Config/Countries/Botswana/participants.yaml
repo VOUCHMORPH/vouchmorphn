@@ -293,6 +293,17 @@ participants:
     id: CAZACOM
     name: "CazaCom"
     type: MNO
+    # MNO cash-out tariff (the operator's own charge, outside VouchMorph's fee).
+    # Collected with the claim and passed 100% to the operator; the operator's
+    # agent earns its commission share at the moment it pays out the cash.
+    # Bands and the commission share are set from the operator's tariff sheet.
+    cashout_tariff:
+      collection: "VOUCHMORPH_COLLECTS_PASS_THROUGH"
+      applies_to_delivery: ["AGENT"]
+      bands:
+        - { min: 0, max: null, flat: 0.00, percent: 0.0 }
+      agent_commission_percent_of_tariff: 0.0
+      agent_commission_earned_at: "CASH_DISPENSED"
     country: BW
     status: ACTIVE
 
@@ -370,6 +381,17 @@ participants:
     id: MTNBWX1
     name: "MTN Mobile Money"
     type: MNO
+    # MNO cash-out tariff (the operator's own charge, outside VouchMorph's fee).
+    # Collected with the claim and passed 100% to the operator; the operator's
+    # agent earns its commission share at the moment it pays out the cash.
+    # Bands and the commission share are set from the operator's tariff sheet.
+    cashout_tariff:
+      collection: "VOUCHMORPH_COLLECTS_PASS_THROUGH"
+      applies_to_delivery: ["AGENT"]
+      bands:
+        - { min: 0, max: null, flat: 0.00, percent: 0.0 }
+      agent_commission_percent_of_tariff: 0.0
+      agent_commission_earned_at: "CASH_DISPENSED"
     country: BW
     status: ACTIVE
     technical_host: CAZACOM
