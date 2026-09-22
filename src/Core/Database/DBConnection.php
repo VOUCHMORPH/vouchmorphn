@@ -48,6 +48,16 @@ class DBConnection
     }
 
     /**
+     * Backwards-compatible alias. Nine files call getInstance(), which never
+     * existed, so each of them failed with a fatal error — including batch
+     * approval, identity resolution, token validation and OTP verification.
+     */
+    public static function getInstance(): ?PDO
+    {
+        return self::getConnection();
+    }
+
+    /**
      * Get the single database connection instance
      */
     public static function getConnection(): ?PDO
