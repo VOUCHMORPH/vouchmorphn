@@ -7,6 +7,7 @@
  */
 require_once __DIR__ . '/../auth.php';
 $user = requireEnterpriseAuth();
+requirePermission('create_batch');   // added: this endpoint had no permission check
 $pdo = getDBConnection();
 $orgId = getOrganizationId();
 $userRole = $user['role'] ?? 'viewer';
