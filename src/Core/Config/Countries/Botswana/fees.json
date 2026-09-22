@@ -52,10 +52,11 @@
       }
     },
     "multi_source": {
-      "fee_type": "F8",
-      "extra_source_fee": 1.0,
-      "max_total_fee": 15.0,
-      "description": "Extra P1 fee per additional source beyond the first, capped at P15 total"
+      "model": "PER_SOURCE_CUTS",
+      "destination_extra_percent_of_destination_cut": 30,
+      "settlement_per_settling_source": true,
+      "max_total_fee": 25.0,
+      "description": "Multi-source (2026-09-22): N sources, pool = F1 - F7. VouchMorph: F7 levy x N + 35% x pool (one cut). Each source: 13% x pool (a full cut each). Destination: 50% x pool + 30% of that 50% x (N-1) (cash-outs: 10% at code, 90% at cash dispensed, extra included). Settlement: 2% x pool per settling source. One source = exactly F1. Total capped at max_total_fee (scaled down proportionally above it). Replaces the retired F8 +P1."
     },
     "distribution": {
       "apply_after_fees": [
@@ -124,10 +125,11 @@
       }
     },
     "multi_source": {
-      "fee_type": "F8",
-      "extra_source_fee": 1.0,
-      "max_total_fee": 15.0,
-      "description": "Extra P1 fee per additional source beyond the first, capped at P15 total"
+      "model": "PER_SOURCE_CUTS",
+      "destination_extra_percent_of_destination_cut": 30,
+      "settlement_per_settling_source": true,
+      "max_total_fee": 25.0,
+      "description": "Multi-source (2026-09-22): N sources, pool = F1 - F7. VouchMorph: F7 levy x N + 35% x pool (one cut). Each source: 13% x pool (a full cut each). Destination: 50% x pool + 30% of that 50% x (N-1) (cash-outs: 10% at code, 90% at cash dispensed, extra included). Settlement: 2% x pool per settling source. One source = exactly F1. Total capped at max_total_fee (scaled down proportionally above it). Replaces the retired F8 +P1."
     },
     "distribution": {
       "apply_after_fees": [
