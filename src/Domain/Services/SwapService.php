@@ -7091,16 +7091,34 @@ private function expireIdentitySwap(array $swap): array
     $parkingEnabled = $this->isClaimAlgorithmV2Enabled($sourceInstitution);
 
     if ($parkingEnabled && self::isSourceMoneyOwedToIdentity($sourceAccountType) && $a > 0) {
+        // Point Z at the source: the owner's reservation account, or the
+        // identity's own virtual account at the government's institution.
         $owner = $this->findVerifiedIdentityOwner($swap['identity_type'], $swap['identity_value']);
         $reservation = ($owner !== null && !empty($owner['user_id']))
             ? $this->reservationAccountService->resolveOrCreateReservationAccount((int)$owner['user_id'], $sourceInstitution, $currency)
-            : ['supported' => false];
-
+            : $this->reservationAccountService->resolveOrCreateForIdentity($swap['identity_type'], $swap['identity_value'], $sourceInstitution, $currency);
+        // FIX (2026-09-22): move A, don't copy it. Before, A was credited to
+        // the reservation account and the hold was then RELEASED - which hands
+        // A back to the government account too, so the same money existed
+        // twice. Now the hold is DEBITED for A (taken from the government
+        // account) and only then credited to the reservation account.
+        $parkDebit = null;
         if (($reservation['status'] ?? null) === 'active') {
-            // Move A: hold -> reservation account at the source
-            // institution. The deposit lands the funds in the reservation
-            // account; releaseHold() below then just closes out the
-            // now-empty bank-side hold.
+            try {
+                $parkDebit = $adapter->debit([
+                    'reference' => $swapRef . '_EXPIRED_PARK',
+                    'hold_reference' => $swap['hold_reference'],
+                    'amount' => $a,
+                    'reason' => "Identity swap expired unclaimed - {$sourceAccountType} money owed to the identity, moving to its reservation account",
+                    'from_institution' => $sourceInstitution,
+                    'source_institution' => $sourceInstitution,
+                ], []);
+            } catch (Exception $e) {
+                error_log("[SwapService] Phase D: could not debit {$a} from hold {$swap['hold_reference']} to park {$swapRef}: " . $e->getMessage());
+                $parkDebit = null;
+            }
+        }
+        if (($reservation['status'] ?? null) === 'active' && $parkDebit && ($parkDebit['success'] ?? false) !== false) {
             $this->reservationAccountService->depositToReservationAccount(
                 $sourceInstitution,
                 $currency,
@@ -7109,12 +7127,7 @@ private function expireIdentitySwap(array $swap): array
                 $reservation['account_identifier_type'] ?? 'account_number',
                 $swapRef . '_EXPIRED_PARK'
             );
-
-            $releaseResult = $adapter->releaseHold([
-                'hold_reference' => $swap['hold_reference'],
-                'action' => 'RELEASE_HOLD',
-                'reason' => "Identity swap expired after 24 hours -- {$sourceAccountType} source, A={$a} parked to reservation account. Withheld Fh: {$fh}."
-            ], []);
+            $releaseResult = ['released' => false, 'note' => 'hold fully consumed: Fh withheld, A debited and parked'];
 
             $this->updateIdentityHoldStatus((int)$swap['hold_id'], 'parked', [
                 'release_result' => $releaseResult,
@@ -7124,7 +7137,7 @@ private function expireIdentitySwap(array $swap): array
                 'source_account_type' => $sourceAccountType,
                 'expired_at' => date('Y-m-d H:i:s')
             ]);
-            $this->updateHoldStatus((int)$swap['hold_id'], $fh > 0 ? 'PARTIALLY_RELEASED' : 'RELEASED');
+            $this->updateHoldStatus((int)$swap['hold_id'], 'DEBITED');   // Fh withheld + A debited to the reservation: nothing released
 
             return [
                 'swap_reference' => $swapRef,
@@ -7824,6 +7837,134 @@ public function previewIdentityClaimAvailable(string $identityType, string $iden
     ];
 }
 
+
+/**
+ * Swap-to-identity claim pool (algorithm v2, §8 + §9), shared by the agent and
+ * self-service claims.
+ *
+ * The claimable total is every pending hold for the identity PLUS every
+ * balance sitting in the identity's reservation (virtual) accounts, at every
+ * institution. After the claimer is authenticated, each reservation balance
+ * is held in full at its own institution, exactly like a fresh
+ * swap-to-identity from that account (verify, hold, Point H), so it joins the
+ * pool as one more source and is charged as one - a multi-source claim.
+ * The pool is then delivered at the destination the claimer chose, and what
+ * is left goes into the identity's reservation account THERE.
+ *
+ * The claim PIN may be the PIN of any pending swap in the pool, or the PIN of
+ * the claim that parked a reservation balance (for a claim that uses only
+ * reservation money). A wrong PIN counts against every swap's lockout.
+ *
+ * @return array{holds: array, beneficiary_phone: ?string, rolled_in: array}
+ */
+private function prepareIdentityClaimPool(string $identityType, string $identityValue, string $pin, string $confirmedByType, ?int $confirmedById, string $pinContext = 'agent'): array
+{
+    $load = function () use ($identityType, $identityValue): array {
+        $stmt = $this->swapDB->prepare("
+            SELECT * FROM identity_swap_holds
+            WHERE identity_type = :identity_type AND identity_value = :identity_value
+              AND status = 'pending' AND hold_expires_at > NOW()
+            ORDER BY created_at ASC
+        ");
+        $stmt->execute([':identity_type' => $identityType, ':identity_value' => $identityValue]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    };
+    $pendingHolds = $load();
+    $currencies = array_values(array_unique(array_column($pendingHolds, 'currency')));
+    if (count($currencies) > 1) {
+        throw new RuntimeException(
+            "This identity has pending balances in multiple currencies (" . implode(', ', $currencies) . "). " .
+            "Claim each currency separately, or contact VouchMorph support."
+        );
+    }
+    $currency = $currencies[0] ?? null;
+    $ownerUserId = $this->resolveClaimOwnerUserId($confirmedByType, $confirmedById, $identityType, $identityValue);
+    $reservations = $this->reservationAccountService->listForIdentity($identityType, $identityValue, $ownerUserId, $currency);
+    if (empty($pendingHolds) && empty($reservations)) {
+        throw new RuntimeException("No pending balance found for this identity.");
+    }
+
+    // ---- authenticate: any pending swap's PIN, or a reservation's PIN ----
+    $matchedHold = null;
+    foreach ($pendingHolds as $hold) {
+        if (!empty($hold['otp_pin_hash']) && password_verify($pin, $hold['otp_pin_hash'])) { $matchedHold = $hold; break; }
+    }
+    $matchedReservation = false;
+    if (!$matchedHold) {
+        foreach ($reservations as $r) {
+            if (!empty($r['claim_pin_hash']) && password_verify($pin, $r['claim_pin_hash'])) { $matchedReservation = true; break; }
+        }
+    }
+    if ($matchedHold) {
+        $this->verifyIdentityClaimPin($matchedHold, $pin, $pinContext);   // lockout checks + resets attempts
+    } elseif (!$matchedReservation) {
+        foreach ($pendingHolds as $hold) {
+            if (!empty($hold['otp_pin_hash'])) { $this->verifyIdentityClaimPin($hold, $pin, $pinContext); }   // counts the failure, throws
+        }
+        throw new RuntimeException("Incorrect claim PIN.");
+    }
+
+    // ---- roll every reservation balance into the pool (hold it where it sits) ----
+    $rolledIn = [];
+    foreach ($reservations as $r) {
+        if ($currency !== null && $r['currency'] !== $currency) continue;   // one currency per claim (invariant 8)
+        try {
+            $verification = $this->verifyAssetSigned([
+                'source_identifier' => $r['account_identifier'],
+                'source_identifier_type' => $r['account_identifier_type'] ?? 'account_number',
+                'asset_type' => 'ACCOUNT',
+                'currency' => $r['currency'],
+            ], $r['institution']);
+            $balance = round((float)($verification['balance'] ?? $verification['available_balance'] ?? 0), 2);
+            if (!($verification['verified'] ?? false) || $balance <= 0) continue;
+            $hold = $this->initiateSwapToIdentity([
+                'amount' => $balance,
+                'from_institution' => $r['institution'],
+                'source_institution' => $r['institution'],
+                'source_identifier' => $r['account_identifier'],
+                'source_identifier_type' => $r['account_identifier_type'] ?? 'account_number',
+                'identifier_type' => $r['account_identifier_type'] ?? 'account_number',
+                'currency' => $r['currency'],
+                'identity_type' => $identityType,
+                'identity_value' => $identityValue,
+                'asset_type' => 'ACCOUNT',
+                'reference' => 'RESROLL_' . $r['id'] . '_' . $this->generateReference(),
+                'hold_reason' => 'RESIDUAL_ROLLOVER',
+                'rolled_from_reservation_account_id' => (int)$r['id'],
+            ]);
+            $this->reservationAccountService->markRolled((int)$r['id']);
+            $rolledIn[] = ['reservation_account_id' => (int)$r['id'], 'institution' => $r['institution'], 'account' => $r['account_identifier'],
+                           'amount' => $balance, 'swap_reference' => $hold['swap_reference'] ?? null];
+            $currency = $currency ?? $r['currency'];
+        } catch (\Throwable $e) {
+            // The balance stays in its reservation account; the claim goes ahead without it.
+            error_log("[SwapService] could not roll reservation account {$r['id']} ({$r['institution']}) into the claim: " . $e->getMessage());
+            $rolledIn[] = ['reservation_account_id' => (int)$r['id'], 'institution' => $r['institution'], 'error' => $e->getMessage()];
+        }
+    }
+    if ($rolledIn) $pendingHolds = $load();
+    if (empty($pendingHolds)) {
+        throw new RuntimeException("No claimable balance found for this identity (reservation balances could not be held).");
+    }
+    $pinHold = $matchedHold ?? $pendingHolds[0];
+    $beneficiaryPhone = $pinHold['otp_pin_sent_to'] ?? null;
+    if (empty($beneficiaryPhone)) {
+        $sp = json_decode($pinHold['source_payload'] ?? '', true) ?: [];
+        $beneficiaryPhone = $sp['notification_phone'] ?? $sp['beneficiary_phone'] ?? null;
+    }
+    return ['holds' => $pendingHolds, 'beneficiary_phone' => $beneficiaryPhone, 'rolled_in' => $rolledIn];
+}
+
+/** After a claim: the reservation that received the remainder remembers the claim PIN. */
+private function afterIdentityClaim(array $result, string $pin, array $pool): array
+{
+    if (!empty($result['reservation_account_id'])) {
+        $this->reservationAccountService->rememberClaimPin((int)$result['reservation_account_id'], $pin);
+    }
+    $result['rolled_in_reservations'] = $pool['rolled_in'];
+    return $result;
+}
+
 public function finalizeAggregatedIdentityClaim(
     string $identityType,
     string $identityValue,
@@ -7852,52 +7993,14 @@ public function finalizeAggregatedIdentityClaim(
         throw new RuntimeException("Agent destination account not found, not active, or not owned by this agent.");
     }
 
-    // 2. Get ALL pending holds for this identity (unchanged)
-    $stmt = $this->swapDB->prepare("
-        SELECT * FROM identity_swap_holds
-        WHERE identity_type = :identity_type AND identity_value = :identity_value
-          AND status = 'pending' AND hold_expires_at > NOW()
-        ORDER BY created_at ASC
-    ");
-    $stmt->execute([':identity_type' => $identityType, ':identity_value' => $identityValue]);
-    $pendingHolds = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-    if (empty($pendingHolds)) {
-        throw new RuntimeException("No pending balance found for this identity.");
-    }
-
-    $currencies = array_unique(array_column($pendingHolds, 'currency'));
-    if (count($currencies) > 1) {
-        throw new RuntimeException(
-            "This identity has pending balances in multiple currencies (" . implode(', ', $currencies) . "). " .
-            "Claim each currency separately, or contact VouchMorph support."
-        );
-    }
-
-    // Spec invariant #9: validate against A (T - Fh), never T -- Fh was
-    // already earned at hold placement and is never claimable.
+    // 2-3. The pool: pending holds + every reservation balance (held in full),
+    // authenticated with the claim PIN. See prepareIdentityClaimPool().
+    $pool = $this->prepareIdentityClaimPool($identityType, $identityValue, $pin, $confirmedByType, $confirmedById, 'agent');
+    $pendingHolds = $pool['holds'];
+    $beneficiaryPhone = $pool['beneficiary_phone'];
     $available = self::computeAvailableForPendingHolds($pendingHolds)['available'];
     if ($cashNowAmount < 0 || $cashNowAmount > $available) {
         throw new RuntimeException("Requested cash amount must be between 0 and {$available}.");
-    }
-
-    // 3. PIN check ONCE — the "green light" (unchanged)
-    $holdWithPin = null;
-    foreach ($pendingHolds as $hold) {
-        if (!empty($hold['otp_pin_hash'])) {
-            $holdWithPin = $hold;
-            break;
-        }
-    }
-    if (!$holdWithPin) {
-        throw new RuntimeException("No PIN has been set for this identity. Please initiate a new swap.");
-    }
-    $this->verifyIdentityClaimPin($holdWithPin, $pin);
-
-    $beneficiaryPhone = $holdWithPin['otp_pin_sent_to'] ?? null;
-    if (empty($beneficiaryPhone)) {
-        $latestSourcePayload = json_decode($holdWithPin['source_payload'], true);
-        $beneficiaryPhone = $latestSourcePayload['notification_phone'] ?? $latestSourcePayload['beneficiary_phone'] ?? null;
     }
 
     // 4. ONE call does receiving -> holding -> payout -> remainder-hold.
@@ -7922,7 +8025,7 @@ public function finalizeAggregatedIdentityClaim(
         $identityValue
     );
 
-    return $result;
+    return $this->afterIdentityClaim($result, $pin, $pool);
 }
 
 
@@ -7955,64 +8058,18 @@ public function finalizeAggregatedIdentityClaimSelfService(
     }
     $destinationInstitution = $destinationDetails['destination_institution'];
 
-    $stmt = $this->swapDB->prepare("
-        SELECT * FROM identity_swap_holds
-        WHERE identity_type = :identity_type AND identity_value = :identity_value
-          AND status = 'pending' AND hold_expires_at > NOW()
-        ORDER BY created_at ASC
-    ");
-    $stmt->execute([':identity_type' => $identityType, ':identity_value' => $identityValue]);
-    $pendingHolds = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-    if (empty($pendingHolds)) {
-        throw new RuntimeException("No pending balance found for this identity.");
-    }
-
-    $currencies = array_unique(array_column($pendingHolds, 'currency'));
-    if (count($currencies) > 1) {
-        throw new RuntimeException(
-            "This identity has pending balances in multiple currencies (" . implode(', ', $currencies) . "). " .
-            "Claim each currency separately, or contact VouchMorph support."
-        );
-    }
-
-    // Spec invariant #9: validate against A (T - Fh), never T. Previously
-    // unvalidated here -- executeIdentityClaimWithSplit() would silently
-    // cap an over-large $cashNowAmount to the full swept gross via min(),
-    // which could pay out up to T (including money that should have
-    // stayed uncollectible as Fh).
+    // The pool: pending holds + every reservation balance (held in full),
+    // authenticated with the claim PIN. See prepareIdentityClaimPool().
+    $pool = $this->prepareIdentityClaimPool($identityType, $identityValue, $pin, 'user', $confirmedById, 'user');
+    $pendingHolds = $pool['holds'];
+    $beneficiaryPhone = $pool['beneficiary_phone'];
     if ($cashNowAmount !== null) {
         $available = self::computeAvailableForPendingHolds($pendingHolds)['available'];
         if ($cashNowAmount < 0 || $cashNowAmount > $available) {
             throw new RuntimeException("Requested cash amount must be between 0 and {$available}.");
         }
     }
-
-    $holdWithPin = null;
-    foreach ($pendingHolds as $hold) {
-        if (!empty($hold['otp_pin_hash'])) {
-            $holdWithPin = $hold;
-            break;
-        }
-    }
-    if (!$holdWithPin) {
-        throw new RuntimeException(
-            "No PIN has been set for this identity yet. If this identity is registered to your " .
-            "account, log in and finalize with your transaction PIN instead. Otherwise ask the " .
-            "sender to confirm the claim PIN was sent, or contact VouchMorph support."
-        );
-    }
-    // Hard-locked to 'user' — agent-assisted claims must go through
-    // finalizeAggregatedIdentityClaim() instead, never this method.
-    $this->verifyIdentityClaimPin($holdWithPin, $pin, 'user');
-
-    $beneficiaryPhone = $holdWithPin['otp_pin_sent_to'] ?? null;
-    if (empty($beneficiaryPhone)) {
-        $latestSourcePayload = json_decode($holdWithPin['source_payload'], true);
-        $beneficiaryPhone = $latestSourcePayload['notification_phone'] ?? $latestSourcePayload['beneficiary_phone'] ?? null;
-    }
-
-    return $this->executeIdentityClaimWithSplit(
+    $result = $this->executeIdentityClaimWithSplit(
         $pendingHolds,
         $destinationInstitution,
         $destinationType,
@@ -8024,6 +8081,7 @@ public function finalizeAggregatedIdentityClaimSelfService(
         $identityType,
         $identityValue
     );
+    return $this->afterIdentityClaim($result, $pin, $pool);
 }
 
 /**
@@ -8218,9 +8276,12 @@ public function executeIdentityClaimWithSplit(
     $reservationAccountId = null;
     if ($remainder > 0) {
         $ownerUserId = $this->resolveClaimOwnerUserId($confirmedByType, $confirmedById, $identityType, $identityValue);
+        // Point Z at the destination: the owner's reservation account, or - for an
+        // identity with no registered owner - the identity's own virtual account
+        // there (opened on first use, one per identity per institution).
         $reservation = $ownerUserId !== null
             ? $this->reservationAccountService->resolveOrCreateReservationAccount($ownerUserId, $destinationInstitution, $currency)
-            : ['supported' => false];
+            : $this->reservationAccountService->resolveOrCreateForIdentity($identityType, $identityValue, $destinationInstitution, $currency);
 
         $depositedToReservation = false;
         // Which owner_user_id (if any) to tag the pooled-holding fallback
@@ -11748,15 +11809,24 @@ private function generateCashoutToken(array $payload, string $institution, float
     // both already tolerant of pending/failed reservation accounts --
     // this one is no different, it's just running earlier.
     // ============================================================
-    if ($owner !== null && !empty($owner['user_id'])) {
+    // FIX (2026-09-22): only money that is OWED to the identity needs a
+    // parking spot at the source - a government or business disbursement,
+    // which on expiry moves into the identity's reservation account at the
+    // same institution. Personal money goes back to the sender on expiry, so
+    // no account is opened for it (before: one was opened for every
+    // registered owner, and none for an unregistered identity even when the
+    // money was a government disbursement). The account is the owner's, or -
+    // for an identity with no registered owner - the identity's own virtual
+    // account at the source institution.
+    if (self::isSourceMoneyOwedToIdentity($sourceAccountType)) {
         try {
-            $this->reservationAccountService->resolveOrCreateReservationAccount(
-                (int)$owner['user_id'],
-                $sourceInstitution,
-                $payload['currency'] ?? 'BWP'
-            );
+            if ($owner !== null && !empty($owner['user_id'])) {
+                $this->reservationAccountService->resolveOrCreateReservationAccount((int)$owner['user_id'], $sourceInstitution, $payload['currency'] ?? 'BWP');
+            } else {
+                $this->reservationAccountService->resolveOrCreateForIdentity($identityType, $identityValue, $sourceInstitution, $payload['currency'] ?? 'BWP');
+            }
         } catch (\Throwable $e) {
-            error_log("[SwapService] Point Z creation-time call failed for user_id={$owner['user_id']} at {$sourceInstitution} (non-fatal, hold placement continues): " . $e->getMessage());
+            error_log("[SwapService] Point Z creation-time call failed for {$identityType}={$identityValue} at {$sourceInstitution} (non-fatal; expiry opens it if still missing): " . $e->getMessage());
         }
     }
 
