@@ -6870,6 +6870,25 @@ private function consumeEarmarkedBalance(string $institution, string $identifier
  * path as expiry; the leg's fee shares are reversed because the customer did
  * not cause the cancellation.
  */
+/** Live balance of a reservation (virtual) account, from its institution. */
+public function reservationBalance(array $reservation): float
+{
+    $v = $this->verifyAssetSigned([
+        'source_identifier' => $reservation['account_identifier'],
+        'source_identifier_type' => $reservation['account_identifier_type'] ?? 'account_number',
+        'asset_type' => 'ACCOUNT',
+        'currency' => $reservation['currency'],
+    ], $reservation['institution']);
+    if (!($v['verified'] ?? false)) throw new RuntimeException('Could not read the balance at ' . $reservation['institution']);
+    return (float)($v['balance'] ?? $v['available_balance'] ?? 0);
+}
+
+/** Identity resolution: move a unified person's balances into the canonical identity's accounts. */
+public function consolidateIdentityReservations(string $identityType, string $identityValue): array
+{
+    return $this->reservationAccountService->mergeIntoCanonical($identityType, $identityValue, fn(array $r) => $this->reservationBalance($r));
+}
+
 public function cancelIdentitySwapNow(string $swapReference, string $reason): array
 {
     $stmt = $this->swapDB->prepare("SELECT * FROM identity_swap_holds WHERE swap_reference = ? AND status = 'pending'");
@@ -7093,7 +7112,7 @@ private function expireIdentitySwap(array $swap): array
     if ($parkingEnabled && self::isSourceMoneyOwedToIdentity($sourceAccountType) && $a > 0) {
         // Point Z at the source: the identity's own virtual account at the
         // government's institution (one per identity - registered or not).
-        $reservation = $this->reservationAccountService->resolveOrCreateForIdentity($swap['identity_type'], $swap['identity_value'], $sourceInstitution, $currency);
+        $reservation = $this->reservationAccountService->resolveOrCreateForCanonical($swap['identity_type'], $swap['identity_value'], $sourceInstitution, $currency);
         // FIX (2026-09-22): move A, don't copy it. Before, A was credited to
         // the reservation account and the hold was then RELEASED - which hands
         // A back to the government account too, so the same money existed
@@ -7879,7 +7898,10 @@ private function prepareIdentityClaimPool(string $identityType, string $identity
     // One virtual account per identity: the pool takes this identity's own
     // accounts at every institution (never another identity's, even when the
     // same registered user owns both).
-    $reservations = $this->reservationAccountService->listForIdentity($identityType, $identityValue, null, $currency);
+    // ...and, once identities are unified, every other identity of the same
+    // person (national ID, passport, phones, email): a claim takes all of them,
+    // and the remainder parks in the canonical identity's account.
+    $reservations = $this->reservationAccountService->listForPerson($identityType, $identityValue, $currency);
     if (empty($pendingHolds) && empty($reservations)) {
         throw new RuntimeException("No pending balance found for this identity.");
     }
@@ -8279,7 +8301,7 @@ public function executeIdentityClaimWithSplit(
         // Point Z at the destination: the owner's reservation account, or - for an
         // identity with no registered owner - the identity's own virtual account
         // there (opened on first use, one per identity per institution).
-        $reservation = $this->reservationAccountService->resolveOrCreateForIdentity($identityType, $identityValue, $destinationInstitution, $currency);
+        $reservation = $this->reservationAccountService->resolveOrCreateForCanonical($identityType, $identityValue, $destinationInstitution, $currency);
 
         $depositedToReservation = false;
         // Which owner_user_id (if any) to tag the pooled-holding fallback
@@ -8660,8 +8682,7 @@ private function executeIdentityClaimDirect(
     if ($remainder > 0) {
         // One virtual account per identity, registered or not (before: a
         // partial claim was refused outright for an unregistered identity).
-        $reservation = $this->reservationAccountService->resolveOrCreateForIdentity(
-            $identityType, $identityValue, $destinationInstitution, $currency
+        $reservation = $this->reservationAccountService->resolveOrCreateForCanonical($identityType, $identityValue, $destinationInstitution, $currency
         );
 
         if (($reservation['status'] ?? null) !== 'active') {
@@ -11825,7 +11846,7 @@ private function generateCashoutToken(array $payload, string $institution, float
     if (self::isSourceMoneyOwedToIdentity($sourceAccountType)) {
         try {
             // One virtual account per identity, registered or not.
-            $this->reservationAccountService->resolveOrCreateForIdentity($identityType, $identityValue, $sourceInstitution, $payload['currency'] ?? 'BWP');
+            $this->reservationAccountService->resolveOrCreateForCanonical($identityType, $identityValue, $sourceInstitution, $payload['currency'] ?? 'BWP');
         } catch (\Throwable $e) {
             error_log("[SwapService] Point Z creation-time call failed for {$identityType}={$identityValue} at {$sourceInstitution} (non-fatal; expiry opens it if still missing): " . $e->getMessage());
         }
