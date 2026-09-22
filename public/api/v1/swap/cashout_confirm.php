@@ -80,6 +80,23 @@ try {
 // ============================================================
 
 $rawInput = file_get_contents("php://input");
+
+// FIX (2026-09-22): only the paying bank may say cash was dispensed. Before,
+// this endpoint accepted anyone who knew a voucher number, and would debit
+// the source holds and settle without a note leaving an ATM. Each bank signs
+// with a secret shared only with VouchMorph: X-Signature = HMAC-SHA256 of
+// "<X-Timestamp>.<body>", secret CASHOUT_WEBHOOK_SECRET_<X-Bank-Code>. The
+// timestamp must be within 15 minutes (a bank's retry re-signs with a fresh one).
+$bankCode = strtoupper(preg_replace('/[^A-Za-z0-9_]/', '', (string)($_SERVER['HTTP_X_BANK_CODE'] ?? '')));
+$webhookSecret = $bankCode !== '' ? (getenv('CASHOUT_WEBHOOK_SECRET_' . $bankCode) ?: '') : '';
+$sigTs = (string)($_SERVER['HTTP_X_TIMESTAMP'] ?? '');
+$sig = (string)($_SERVER['HTTP_X_SIGNATURE'] ?? '');
+if ($webhookSecret === '' || $sig === '' || !ctype_digit($sigTs) || abs(time() - (int)$sigTs) > 900
+    || !hash_equals(hash_hmac('sha256', $sigTs . '.' . $rawInput, $webhookSecret), $sig)) {
+    error_log("[CashoutConfirmWebhook] REJECTED unsigned or invalid notification (bank '{$bankCode}')");
+    respond(401, ['status' => 'ERROR', 'message' => 'Unsigned or invalid notification']);
+}
+
 $data = json_decode($rawInput, true);
 
 if (json_last_error() !== JSON_ERROR_NONE) {
