@@ -43,6 +43,11 @@ if ($batch['status'] !== 'APPROVED') {
     die("Batch is not in APPROVED status (currently: {$batch['status']}). Only approved batches can be executed.");
 }
 
+// Added: permission, segregation of duties and dual control, checked before
+// the confirmation screen AND before execution (this block runs for both).
+require_once __DIR__ . '/../partials/money_guards.php';
+vm_assert_can_execute($db, $batch, $user);
+
 $stmt = $db->prepare("SELECT * FROM organization_sources WHERE id = :id AND organization_id = :org_id");
 $stmt->execute([':id' => $batch['source_id'], ':org_id' => $orgId]);
 $source = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -267,25 +272,6 @@ if (count($destinations) >= 2) {
     $payload['delivery_method'] = $only['delivery_method'];
     $payload['beneficiary_phone'] = $only['beneficiary_phone'];
     $payload['swap_type'] = in_array($only['delivery_method'], ['CASHOUT', 'VOUCHER', 'AGENT', 'ATM']) ? 'CASHOUT' : 'DEPOSIT';
-}
-
-// Incident Command gate: service and ENTERPRISE_BATCH flow freezes, the
-// source institution, and the P7,000 cap on each individual payment.
-require_once dirname(__DIR__, 4) . '/src/Application/Incident/IncidentDesk.php';
-require_once dirname(__DIR__, 4) . '/src/Application/Incident/Playbooks.php';
-require_once dirname(__DIR__, 4) . '/src/Application/Incident/ServiceControls.php';
-$gateFailure = null;
-foreach ($destinations as $d) {
-    $g = \Application\Incident\ServiceControls::check($db, [
-        'amount' => (float)($d['amount'] ?? 0), 'flow' => 'ENTERPRISE_BATCH',
-        'source' => $payload['source_institution'] ?? $payload['from_institution'] ?? '',
-        'destination' => $d['institution'] ?? $d['destination_institution'] ?? '',
-    ]);
-    if ($g !== null) { $gateFailure = $g; break; }
-}
-if ($gateFailure !== null) {
-    $executionError = 'Stopped by Incident Command: ' . $gateFailure['message'];
-    $destinations = [];
 }
 
 if (!empty($destinations)) {
