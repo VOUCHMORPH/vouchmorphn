@@ -8589,6 +8589,90 @@ private function supportsIdentityConsolidation(string $institution): bool
  * sit in this model -- there is no institution-level holding account -- so
  * if one can't be made the partial claim is refused before anything moves.
  */
+
+/**
+ * Multi-source claim fee (fees.json multi_source, 2026-09-22). N = number of
+ * source holds in the pool, pool = F1 - F7.
+ *   VouchMorph : F7 levy x N (already charged at each hold as Fh) + 35% x pool
+ *   each source: 13% x pool (a full cut each)
+ *   destination: 50% x pool + 30% of that 50% x (N-1)
+ *                (cash-out: 10% at code issue, 90% at cash dispensed)
+ *   settlement : 2% x pool per settling source
+ * The claim fee Fd is everything except the levies (those were Fh). One
+ * source => Fd = pool, so a single swap costs exactly F1 in total.
+ */
+private function identityClaimFeeShares(string $product, array $holds, string $destinationInstitution): array
+{
+    $cfg = $this->feesConfig[$product] ?? [];
+    $f1 = (float)($cfg['fee_components']['F1']['amount'] ?? 0);
+    $levy = (float)($cfg['fee_components']['F7']['amount'] ?? 0);
+    $split = $cfg['distribution']['split'] ?? [];
+    $ms = $cfg['multi_source'] ?? [];
+    $pool = round($f1 - $levy, 2);
+    $n = max(1, count($holds));
+    $srcPct = (float)($split['source_institution_percent'] ?? 13) / 100;
+    $vmPct = (float)($split['platform_percent'] ?? 35) / 100;
+    $dstPct = (float)($split['destination_institution_percent'] ?? 50) / 100;
+    $setPct = (float)($split['settlement_percent'] ?? 2) / 100;
+    $extraPct = (float)($ms['destination_extra_percent_of_destination_cut'] ?? 30) / 100;
+    $codePct = (float)($cfg['destination_split']['generate_code_fee_percent'] ?? 10) / 100;
+    $destBase = $pool * $dstPct;
+    $shares = ['pool' => $pool, 'levy' => $levy, 'n' => $n, 'sources' => [], 'settlers' => []];
+    foreach ($holds as $h) {
+        $shares['sources'][] = ['hold_id' => (int)$h['hold_id'], 'institution' => strtoupper((string)$h['source_institution']), 'amount' => round($pool * $srcPct, 2)];
+        $shares['settlers'][] = ['hold_id' => (int)$h['hold_id'], 'institution' => strtoupper((string)$h['source_institution']), 'amount' => round($pool * $setPct, 2)];
+    }
+    $shares['platform'] = round($pool * $vmPct, 2);
+    $shares['destination_base'] = round($destBase, 2);
+    $shares['destination_extra'] = round($destBase * $extraPct * ($n - 1), 2);
+    $destTotal = $shares['destination_base'] + $shares['destination_extra'];
+    $shares['destination_code'] = $product === 'CASHOUT' ? round($destTotal * $codePct, 2) : 0.0;
+    $shares['destination_delivery'] = round($destTotal - $shares['destination_code'], 2);
+    $fd = array_sum(array_column($shares['sources'], 'amount')) + array_sum(array_column($shares['settlers'], 'amount'))
+        + $shares['platform'] + $destTotal;
+    // Cap on the total the customer pays (levies + Fd); scale Fd's shares down proportionally above it.
+    $cap = (float)($ms['max_total_fee'] ?? 0);
+    $scale = 1.0;
+    if ($cap > 0 && ($fd + $levy * $n) > $cap && $fd > 0) {
+        $scale = max(0.0, ($cap - $levy * $n) / $fd);
+        foreach (['sources', 'settlers'] as $k) foreach ($shares[$k] as $i => $x) $shares[$k][$i]['amount'] = round($x['amount'] * $scale, 2);
+        foreach (['platform', 'destination_base', 'destination_extra', 'destination_code', 'destination_delivery'] as $k) $shares[$k] = round($shares[$k] * $scale, 2);
+        $fd = round($fd * $scale, 2);
+    }
+    $shares['claim_fee'] = round($fd, 2);
+    $shares['destination'] = $destinationInstitution;
+    $shares['scaled_to_cap'] = $scale < 1.0;
+    return $shares;
+}
+
+/** Records every party's share of a finished multi-source identity claim in the fee ledger. */
+private function recordIdentityClaimFees(array $shares, array $holds, string $product, string $destinationInstitution, string $ref, string $currency): void
+{
+    $ledger = $this->feeLedger();
+    $fee = $shares['claim_fee'] + $shares['levy'] * $shares['n'];
+    foreach ($holds as $h) {
+        $src = strtoupper((string)$h['source_institution']);
+        $leg = $ref . ':H' . (int)$h['hold_id'];
+        // the levy was charged at the hold (Fh) and is held by that source
+        $ledger->recordShare($ref, $leg, 'IDENTITY', 'HOLD_PLACED', 'SWAP_LEVY', 'VOUCHMORPH', $src, $fee, null, $shares['levy'], $currency, 'Swap levy, charged at the hold');
+    }
+    foreach ($shares['sources'] as $x) {
+        $ledger->recordShare($ref, $ref . ':H' . $x['hold_id'], 'IDENTITY', 'HOLD_PLACED', 'SOURCE_SHARE', $x['institution'], $destinationInstitution, $fee, 13.0, $x['amount'], $currency, 'Source cut (full cut per source)');
+    }
+    foreach ($shares['settlers'] as $x) {
+        $ledger->recordShare($ref, $ref . ':H' . $x['hold_id'], 'IDENTITY', 'SETTLED', 'SETTLEMENT_FEE', $x['institution'], $destinationInstitution, $fee, 2.0, $x['amount'], $currency, 'Settlement fee (per settling source)');
+    }
+    $extraNote = $shares['destination_extra'] > 0 ? sprintf(' incl. P%.2f for %d added source(s)', $shares['destination_extra'], $shares['n'] - 1) : '';
+    if ($product === 'CASHOUT') {
+        $ledger->recordShare($ref, $ref, 'IDENTITY', 'CODE_GENERATED', 'DESTINATION_CODE_FEE', $destinationInstitution, $destinationInstitution, $fee, null, $shares['destination_code'], $currency, 'Code issued (10% of destination cut)' . $extraNote);
+        $ledger->recordShare($ref, $ref, 'IDENTITY', 'CASH_DISPENSED', 'DESTINATION_CASHOUT_FEE', $destinationInstitution, $destinationInstitution, $fee, null, $shares['destination_delivery'], $currency, 'Cash dispensed (90% of destination cut)' . $extraNote);
+        $ledger->recordShare($ref, $ref, 'IDENTITY', 'CASH_DISPENSED', 'PLATFORM_SHARE', 'VOUCHMORPH', $destinationInstitution, $fee, 35.0, $shares['platform'], $currency, 'VouchMorph cut');
+    } else {
+        $ledger->recordShare($ref, $ref, 'IDENTITY', 'DELIVERED', 'DESTINATION_SHARE', $destinationInstitution, $destinationInstitution, $fee, 50.0, $shares['destination_delivery'], $currency, 'Destination cut' . $extraNote);
+        $ledger->recordShare($ref, $ref, 'IDENTITY', 'DELIVERED', 'PLATFORM_SHARE', 'VOUCHMORPH', $destinationInstitution, $fee, 35.0, $shares['platform'], $currency, 'VouchMorph cut');
+    }
+}
+
 private function executeIdentityClaimDirect(
     array $holds,
     string $destinationInstitution,
@@ -8748,7 +8832,16 @@ private function executeIdentityClaimDirect(
             'is_multi_source' => count($feeSources) > 1,
         ])
     );
-    $netPayoutAmount = round($feeBreakdown['net_amount_source_currency'] ?? $payoutAmount, 2);
+    // Multi-source rule (fees.json multi_source): the claim fee is the pool
+    // shares - levies were already charged at each hold (Fh). One source =>
+    // Fd = F1 - F7, so a single swap costs exactly F1 in total.
+    $claimShares = $this->identityClaimFeeShares($destinationType === 'CASHOUT' ? 'CASHOUT' : 'DEPOSIT', $verifiedHolds, $destinationInstitution);
+    $claimFeeFd = min($claimShares['claim_fee'], $payoutAmount);
+    $netPayoutAmount = round($payoutAmount - $claimFeeFd, 2);
+    $feeBreakdown['total_fee'] = $claimFeeFd;
+    $feeBreakdown['net_amount_source_currency'] = $netPayoutAmount;
+    $feeBreakdown['net_amount'] = $netPayoutAmount;
+    $feeBreakdown['identity_claim_shares'] = $claimShares;
 
     // ------------------------------------------------------------
     // CASH-OUT (standard swap structure): the claim only generates the code.
@@ -9012,6 +9105,12 @@ private function finishIdentityClaim(array $ctx, bool $doPayout): array
                 error_log("[SwapService] Point X: invoiceFee failed for {$destinationInstitution} on {$consolidationReference}: " . $e->getMessage());
             }
         }
+    }
+
+    // Every party's share of the fee, per the multi-source rule.
+    if (!empty($feeBreakdown['identity_claim_shares'])) {
+        $this->recordIdentityClaimFees($feeBreakdown['identity_claim_shares'], $verifiedHolds,
+            $destinationType === 'CASHOUT' ? 'CASHOUT' : 'DEPOSIT', $destinationInstitution, $consolidationReference, $currency);
     }
 
     $this->writeAuditLogEntry(
