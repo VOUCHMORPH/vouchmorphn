@@ -4629,6 +4629,11 @@ public function cancelExpiredCashouts(int $bufferHours = 6): array
             try {
                 // Get the actual hold reference before releasing
                 $swapRef = $auth['swap_reference'];
+                if ($this->expireIdentityCashoutClaim((string)$swapRef)) {
+                    $results['released']++;
+                    $results['details'][] = ['swap_reference' => $swapRef, 'identity_claim_code_expired' => true, 'holds' => 'unlocked, still claimable'];
+                    continue;
+                }
                 $realHoldReference = $this->getHoldReferenceForSwap($swapRef);
                 
                 if (!$realHoldReference) {
@@ -6912,6 +6917,7 @@ public function cancelExpiredIdentitySwaps(): array
         SELECT * FROM identity_swap_holds
         WHERE status = 'pending'
         AND hold_expires_at < NOW()
+        AND claim_reference IS NULL   -- locked to a live cash-out code: expires with the code, not before
     ";
 
     try {
@@ -7332,6 +7338,12 @@ public function confirmCashout(array $payload): array
 
         $authId = $authorization['auth_id'];
         $swapRef = $authorization['swap_reference'];
+        // A swap-to-identity claim's code: finish the claim (remainder, debits, settlement).
+        $idClaim = $this->swapDB->prepare("SELECT 1 FROM identity_cashout_claims WHERE claim_reference = ?");
+        $idClaim->execute([$swapRef]);
+        if ($idClaim->fetchColumn()) {
+            return $this->completeIdentityCashoutClaim((string)$swapRef);
+        }
 
         $sourceInstitution = $sourceInstitutionOverride ?? $authorization['source_institution'];
         $destinationInstitution = $destinationInstitution ?? $authorization['destination_institution'] ?? 'ATM';
@@ -7880,6 +7892,7 @@ private function prepareIdentityClaimPool(string $identityType, string $identity
             SELECT * FROM identity_swap_holds
             WHERE identity_type = :identity_type AND identity_value = :identity_value
               AND status = 'pending' AND hold_expires_at > NOW()
+              AND claim_reference IS NULL   -- locked to an unredeemed cash-out code
             ORDER BY created_at ASC
         ");
         $stmt->execute([':identity_type' => $identityType, ':identity_value' => $identityValue]);
@@ -8716,6 +8729,117 @@ private function executeIdentityClaimDirect(
     $netPayoutAmount = round($feeBreakdown['net_amount_source_currency'] ?? $payoutAmount, 2);
 
     // ------------------------------------------------------------
+    // CASH-OUT (standard swap structure): the claim only generates the code.
+    // Nothing moves - no remainder deposit, no debit - until the client
+    // collects the cash. The holds are locked to the code; at redemption
+    // completeIdentityCashoutClaim() deposits the remainder, debits the holds
+    // and settles, exactly as a deposit claim does immediately.
+    // ------------------------------------------------------------
+    if ($destinationType === 'CASHOUT') {
+        $delivery = $this->deliverDirectClaim(
+            $heldByInstitution, $netPayoutAmount, $destinationInstitution, $destinationType,
+            $destinationDetails, $currency, $beneficiaryPhone, $consolidationReference
+        );
+        if (empty($delivery['legs'])) {
+            throw new RuntimeException("Could not generate the cash-out code at {$destinationInstitution}: " . ($delivery['error'] ?? 'unknown error') . ". Nothing was debited -- the money is still held and can be claimed again.");
+        }
+        $payout = $delivery['payout'] ?? [];
+        $claimFee = round($payoutAmount - $netPayoutAmount, 2);
+        $firstSource = (string)array_key_first($heldByInstitution);
+        $authId = $this->storeCashoutAuthorization(
+            $consolidationReference, $beneficiaryPhone, $firstSource, null, 'INSTITUTION_SETTLEMENT_ACCOUNT',
+            $destinationInstitution, $netPayoutAmount, $claimFee, 0.0, 0.0,
+            $payout['swap_code'] ?? null, (string)($payout['atm_code'] ?? ''), $payout['expires_at'] ?? date('Y-m-d H:i:s', strtotime('+24 hours'))
+        );
+        $ctx = get_defined_vars();
+        $holdIds = array_map(fn($h) => (int)$h['hold_id'], $verifiedHolds);
+        $this->swapDB->prepare("
+            INSERT INTO identity_cashout_claims (claim_reference, identity_type, identity_value, destination_institution, currency,
+                                                 net_amount, remainder, hold_ids, voucher_number, code_expires_at, context)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ")->execute([$consolidationReference, $identityType, $identityValue, $destinationInstitution, $currency,
+                     $netPayoutAmount, $remainder, json_encode($holdIds), $payout['swap_code'] ?? null, $payout['expires_at'] ?? null, json_encode($ctx)]);
+        $in = implode(',', array_fill(0, count($holdIds), '?'));
+        $this->swapDB->prepare("UPDATE identity_swap_holds SET claim_reference = ? WHERE hold_id IN ($in)")->execute(array_merge([$consolidationReference], $holdIds));
+        foreach ($verifiedHolds as $h) {
+            if (!empty($h['hold_id'])) $this->updateHoldStatus((int)$h['hold_id'], 'PENDING_CASHOUT');
+        }
+        return [
+            'status' => 'pending_cashout',
+            'consolidation_reference' => $consolidationReference,
+            'destination_institution' => $destinationInstitution,
+            'cash_amount' => $netPayoutAmount,
+            'remainder_at_redemption' => $remainder,
+            'voucher_number' => $payout['swap_code'] ?? null,
+            'atm_code' => $payout['atm_code'] ?? null,
+            'code_expires_at' => $payout['expires_at'] ?? null,
+            'auth_id' => $authId,
+            'holds_locked' => $holdIds,
+            'message' => 'Cash-out code issued. Nothing has moved: when the cash is collected the remainder goes to the reservation account, then the sources are debited and settled.',
+        ];
+    }
+    return $this->finishIdentityClaim(get_defined_vars(), true);
+}
+
+/**
+ * Redemption of a swap-to-identity cash-out code: the cash has been
+ * dispensed, so now (request 1) the remainder goes into the identity's
+ * reservation account, then every locked source hold is debited and each
+ * source settles with the destination - the finishing steps a deposit claim
+ * runs immediately. Idempotent: a code is completed once.
+ */
+public function completeIdentityCashoutClaim(string $claimReference): array
+{
+    $st = $this->swapDB->prepare("SELECT * FROM identity_cashout_claims WHERE claim_reference = ? FOR UPDATE");
+    $this->swapDB->beginTransaction();
+    try {
+        $st->execute([$claimReference]);
+        $claim = $st->fetch(PDO::FETCH_ASSOC);
+        if (!$claim) { $this->swapDB->rollBack(); throw new RuntimeException("No identity cash-out claim {$claimReference}."); }
+        if ($claim['status'] !== 'PENDING') { $this->swapDB->rollBack(); return ['status' => strtolower($claim['status']), 'claim_reference' => $claimReference, 'already' => true, 'result' => json_decode((string)$claim['result'], true)]; }
+        $this->swapDB->prepare("UPDATE identity_cashout_claims SET status = 'COMPLETED', completed_at = now() WHERE claim_reference = ?")->execute([$claimReference]);
+        $this->swapDB->commit();
+    } catch (\Throwable $e) {
+        if ($this->swapDB->inTransaction()) $this->swapDB->rollBack();
+        throw $e;
+    }
+    $ctx = json_decode((string)$claim['context'], true) ?: [];
+    try {
+        $result = $this->finishIdentityClaim($ctx, false);
+    } catch (\Throwable $e) {
+        $this->swapDB->prepare("UPDATE identity_cashout_claims SET status = 'FAILED', result = ? WHERE claim_reference = ?")
+            ->execute([json_encode(['error' => $e->getMessage()]), $claimReference]);
+        throw $e;
+    }
+    $this->swapDB->prepare("UPDATE identity_cashout_claims SET result = ? WHERE claim_reference = ?")->execute([json_encode($result), $claimReference]);
+    $this->swapDB->prepare("UPDATE identity_swap_holds SET claim_reference = NULL WHERE claim_reference = ?")->execute([$claimReference]);
+    $this->swapDB->prepare("UPDATE cashout_authorizations SET status = 'COMPLETED', updated_at = NOW() WHERE swap_reference = ?")->execute([$claimReference]);
+    $result['cash_dispensed'] = (float)$claim['net_amount'];
+    return $result;
+}
+
+/** A claim's code expired unredeemed: nothing moved, so the holds are simply unlocked for a new claim. */
+private function expireIdentityCashoutClaim(string $claimReference): bool
+{
+    $st = $this->swapDB->prepare("UPDATE identity_cashout_claims SET status = 'EXPIRED', completed_at = now() WHERE claim_reference = ? AND status = 'PENDING'");
+    $st->execute([$claimReference]);
+    if ($st->rowCount() === 0) return false;
+    $this->swapDB->prepare("UPDATE identity_swap_holds SET claim_reference = NULL WHERE claim_reference = ?")->execute([$claimReference]);
+    $this->swapDB->prepare("UPDATE cashout_authorizations SET status = 'EXPIRED', updated_at = NOW() WHERE swap_reference = ?")->execute([$claimReference]);
+    return true;
+}
+
+/**
+ * The money part of a swap-to-identity claim, in SwapService order:
+ * (request 1) remainder into the identity's reservation account,
+ * (request 2) what the client asked for - skipped when completing a cash-out,
+ * whose cash was already dispensed - then debit every source hold and settle
+ * each source with the destination (Point X), and audit.
+ */
+private function finishIdentityClaim(array $ctx, bool $doPayout): array
+{
+    extract($ctx, EXTR_SKIP);
+    // ------------------------------------------------------------
     // STEP 2a (request 1 of 2, only when something is left): deposit the
     // remainder R into the identity's virtual account at the destination,
     // from the destination's float. Nothing is debited yet, so if this fails
@@ -8747,10 +8871,14 @@ private function executeIdentityClaimDirect(
     // same reservation account instead, so the identity keeps every thebe at
     // the destination and can claim it again from there.
     // ------------------------------------------------------------
-    $delivery = $this->deliverDirectClaim(
-        $heldByInstitution, $netPayoutAmount, $destinationInstitution, $destinationType,
-        $destinationDetails, $currency, $beneficiaryPhone, $consolidationReference
-    );
+    if ($doPayout) {
+        $delivery = $this->deliverDirectClaim(
+            $heldByInstitution, $netPayoutAmount, $destinationInstitution, $destinationType,
+            $destinationDetails, $currency, $beneficiaryPhone, $consolidationReference
+        );
+    }
+    // (a cash-out being completed arrives with $delivery already set: the
+    //  code was issued at claim time and the cash has now been dispensed)
     if (empty($delivery['legs'])) {
         if ($remainder <= 0) {
             throw new RuntimeException(
