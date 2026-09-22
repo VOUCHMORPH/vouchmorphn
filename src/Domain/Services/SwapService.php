@@ -8874,6 +8874,25 @@ private function executeIdentityClaimDirect(
     }
     $claimFeeFd = min($claimShares['claim_fee'], $payoutAmount);
     $netPayoutAmount = round($payoutAmount - $claimFeeFd, 2);
+    // Point Y: an ATM dispenses notes only. The code is for what notes can
+    // make (down to the smallest denomination); the non-dispensable change
+    // joins the remainder in the identity's reservation account.
+    if ($destinationType === 'CASHOUT' && strtoupper((string)($destinationDetails['delivery_method'] ?? 'ATM')) === 'ATM') {
+        $denoms = array_map('floatval', (array)($this->feesConfig['CASHOUT']['denominations'] ?? $feeBreakdown['denominations'] ?? [200, 100, 50, 20, 10]));
+        $smallest = $denoms ? min(array_filter($denoms, fn($d) => $d > 0)) : 10.0;
+        $dispensable = floor(($netPayoutAmount + 1e-9) / $smallest) * $smallest;
+        $change = round($netPayoutAmount - $dispensable, 2);
+        if ($change > 0) {
+            if (($reservation['status'] ?? null) !== 'active') {
+                $reservation = $this->reservationAccountService->resolveOrCreateForCanonical($identityType, $identityValue, $destinationInstitution, $currency);
+            }
+            if (($reservation['status'] ?? null) === 'active') {
+                $netPayoutAmount = round($dispensable, 2);
+                $remainder = round($remainder + $change, 2);
+                $feeBreakdown['atm_change_to_reservation'] = $change;
+            }
+        }
+    }
     $feeBreakdown['total_fee'] = $claimFeeFd;
     $feeBreakdown['net_amount_source_currency'] = $netPayoutAmount;
     $feeBreakdown['net_amount'] = $netPayoutAmount;
