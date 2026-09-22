@@ -7091,12 +7091,9 @@ private function expireIdentitySwap(array $swap): array
     $parkingEnabled = $this->isClaimAlgorithmV2Enabled($sourceInstitution);
 
     if ($parkingEnabled && self::isSourceMoneyOwedToIdentity($sourceAccountType) && $a > 0) {
-        // Point Z at the source: the owner's reservation account, or the
-        // identity's own virtual account at the government's institution.
-        $owner = $this->findVerifiedIdentityOwner($swap['identity_type'], $swap['identity_value']);
-        $reservation = ($owner !== null && !empty($owner['user_id']))
-            ? $this->reservationAccountService->resolveOrCreateReservationAccount((int)$owner['user_id'], $sourceInstitution, $currency)
-            : $this->reservationAccountService->resolveOrCreateForIdentity($swap['identity_type'], $swap['identity_value'], $sourceInstitution, $currency);
+        // Point Z at the source: the identity's own virtual account at the
+        // government's institution (one per identity - registered or not).
+        $reservation = $this->reservationAccountService->resolveOrCreateForIdentity($swap['identity_type'], $swap['identity_value'], $sourceInstitution, $currency);
         // FIX (2026-09-22): move A, don't copy it. Before, A was credited to
         // the reservation account and the hold was then RELEASED - which hands
         // A back to the government account too, so the same money existed
@@ -7879,7 +7876,10 @@ private function prepareIdentityClaimPool(string $identityType, string $identity
     }
     $currency = $currencies[0] ?? null;
     $ownerUserId = $this->resolveClaimOwnerUserId($confirmedByType, $confirmedById, $identityType, $identityValue);
-    $reservations = $this->reservationAccountService->listForIdentity($identityType, $identityValue, $ownerUserId, $currency);
+    // One virtual account per identity: the pool takes this identity's own
+    // accounts at every institution (never another identity's, even when the
+    // same registered user owns both).
+    $reservations = $this->reservationAccountService->listForIdentity($identityType, $identityValue, null, $currency);
     if (empty($pendingHolds) && empty($reservations)) {
         throw new RuntimeException("No pending balance found for this identity.");
     }
@@ -8279,9 +8279,7 @@ public function executeIdentityClaimWithSplit(
         // Point Z at the destination: the owner's reservation account, or - for an
         // identity with no registered owner - the identity's own virtual account
         // there (opened on first use, one per identity per institution).
-        $reservation = $ownerUserId !== null
-            ? $this->reservationAccountService->resolveOrCreateReservationAccount($ownerUserId, $destinationInstitution, $currency)
-            : $this->reservationAccountService->resolveOrCreateForIdentity($identityType, $identityValue, $destinationInstitution, $currency);
+        $reservation = $this->reservationAccountService->resolveOrCreateForIdentity($identityType, $identityValue, $destinationInstitution, $currency);
 
         $depositedToReservation = false;
         // Which owner_user_id (if any) to tag the pooled-holding fallback
@@ -8660,17 +8658,10 @@ private function executeIdentityClaimDirect(
     // gone out would leave the remainder with nowhere to land.
     $reservation = null;
     if ($remainder > 0) {
-        $ownerUserId = $this->resolveClaimOwnerUserId($confirmedByType, $confirmedById, $identityType, $identityValue);
-        if ($ownerUserId === null) {
-            throw new RuntimeException(
-                "Only part of this balance was requested, but the remainder needs a reservation account and " .
-                "this identity isn't registered to a VouchMorph account to open one against. Claim the full " .
-                "{$claimable} {$currency} instead."
-            );
-        }
-
-        $reservation = $this->reservationAccountService->resolveOrCreateReservationAccount(
-            $ownerUserId, $destinationInstitution, $currency
+        // One virtual account per identity, registered or not (before: a
+        // partial claim was refused outright for an unregistered identity).
+        $reservation = $this->reservationAccountService->resolveOrCreateForIdentity(
+            $identityType, $identityValue, $destinationInstitution, $currency
         );
 
         if (($reservation['status'] ?? null) !== 'active') {
@@ -11051,6 +11042,19 @@ private function recordSettlementPending(
 
         $released = $result['released'] ?? $result['success'] ?? false;
 
+        // FIX (2026-09-22): a hold the institution has already expired or
+        // released is released - the customer has the money back, which is
+        // what this call is for. Banks now expire holds themselves on
+        // schedule, so VouchMorph's own release often arrives second and was
+        // being counted as a failure (card pools stuck UNHOOK_PARTIAL, alarms
+        // for money that was already free).
+        if (!$released && preg_match('/not active \(status: (EXPIRED|RELEASED)\)|already (released|expired)|hold (has )?expired/i', (string)($result['message'] ?? $result['error'] ?? ''))) {
+            $released = true;
+            $result['released'] = true;
+            $result['success'] = true;
+            $result['already_released_by_institution'] = true;
+        }
+
         if ($holdId) {
             $this->updateHoldStatus((int)$holdId, 'RELEASED');
         } elseif ($released && $holdRef) {
@@ -11820,11 +11824,8 @@ private function generateCashoutToken(array $payload, string $institution, float
     // account at the source institution.
     if (self::isSourceMoneyOwedToIdentity($sourceAccountType)) {
         try {
-            if ($owner !== null && !empty($owner['user_id'])) {
-                $this->reservationAccountService->resolveOrCreateReservationAccount((int)$owner['user_id'], $sourceInstitution, $payload['currency'] ?? 'BWP');
-            } else {
-                $this->reservationAccountService->resolveOrCreateForIdentity($identityType, $identityValue, $sourceInstitution, $payload['currency'] ?? 'BWP');
-            }
+            // One virtual account per identity, registered or not.
+            $this->reservationAccountService->resolveOrCreateForIdentity($identityType, $identityValue, $sourceInstitution, $payload['currency'] ?? 'BWP');
         } catch (\Throwable $e) {
             error_log("[SwapService] Point Z creation-time call failed for {$identityType}={$identityValue} at {$sourceInstitution} (non-fatal; expiry opens it if still missing): " . $e->getMessage());
         }
@@ -12754,15 +12755,17 @@ public function confirmPoolIdentityClaim(string $poolId): array
 
 public function cancelExpiredPoolCashouts(int $bufferHours = 6): array
 {
-    if ($this->multiSourceOrchestrator === null) {
-        return ['total_expired' => 0, 'released' => 0, 'errors' => 0, 'details' => []];
+    // FIX (2026-09-22): the pool coordinator has no cash-out expiry yet; calling
+    // it crashed the whole release job after the single-swap steps.
+    if ($this->multiSourceOrchestrator === null || !method_exists($this->multiSourceOrchestrator, 'cancelExpiredPoolCashouts')) {
+        return ['total_expired' => 0, 'released' => 0, 'errors' => 0, 'details' => [], 'note' => 'pool cash-out expiry not implemented'];
     }
     return $this->multiSourceOrchestrator->cancelExpiredPoolCashouts($bufferHours);
 }
 
 public function cancelExpiredPoolIdentityClaims(): array
 {
-    if ($this->multiSourceOrchestrator === null) {
+    if ($this->multiSourceOrchestrator === null || !method_exists($this->multiSourceOrchestrator, 'cancelExpiredPoolIdentityClaims')) {
         return ['total_expired' => 0, 'cancelled' => 0, 'errors' => 0, 'details' => []];
     }
     return $this->multiSourceOrchestrator->cancelExpiredPoolIdentityClaims();
