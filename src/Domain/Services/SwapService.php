@@ -9061,35 +9061,33 @@ private function finishIdentityClaim(array $ctx, bool $doPayout): array
  */
 private function verifyHoldForClaim(array $identitySwap): void
 {
+    // Claim-time source check (rule, 2026-09-22): the money is guaranteed by
+    // the HOLD placed when the swap was created (or when a reservation balance
+    // was rolled into this claim), so NO balance is asked for here - a held
+    // account's available balance is zero by design. The check only confirms
+    // the source account is still valid and active. "Insufficient funds" is
+    // therefore not a failure; closed, frozen or not-found accounts still stop
+    // the claim.
     $sourceInstitution = $identitySwap['source_institution'];
-
     $sourcePayload = json_decode($identitySwap['source_payload'] ?? '{}', true) ?: [];
     $sourcePayload['from_institution'] = $sourceInstitution;
     $sourcePayload['source_institution'] = $sourceInstitution;
-    // FIX (2026-09-22): the money is guaranteed by the HOLD, and a bank's
-    // "available" balance excludes held funds - so asking whether available
-    // still covers the hold amount fails whenever the hold is the account's
-    // whole balance (always, for a reservation account rolled into a claim).
-    // Check that the source asset is still valid and active; the pool only
-    // takes holds still inside their expiry, and the debit goes against the hold.
-    $sourcePayload['amount'] = 0.01;
-    $sourcePayload['hold_reference'] = $identitySwap['hold_reference'] ?? null;
+    $sourcePayload['amount'] = 0;
     $sourcePayload['currency'] = $identitySwap['currency'] ?? 'BWP';
     $sourcePayload['asset_type'] = $identitySwap['source_asset_type'] ?? 'ACCOUNT';
-
-    // verifyAssetSigned() reads these straight into the signed request's
-    // reference fields, so they have to be set before the call, not after.
+    $sourcePayload['hold_reference'] = $identitySwap['hold_reference'] ?? null;
     $this->currentSwapRef = $identitySwap['swap_reference'];
     $this->currentHoldReference = $identitySwap['hold_reference'];
     $this->currentHoldId = (int)$identitySwap['hold_id'];
-
     $verificationResult = $this->verifyAssetSigned($sourcePayload, $sourceInstitution);
-    if (!($verificationResult['verified'] ?? false)) {
-        throw new RuntimeException(
-            "Source funds no longer available for hold {$identitySwap['hold_id']}: " .
-            ($verificationResult['message'] ?? 'verification failed')
-        );
+    if ($verificationResult['verified'] ?? false) {
+        return;
     }
+    $message = (string)($verificationResult['message'] ?? 'verification failed');
+    if (preg_match('/insufficient funds|insufficient balance|available: *0/i', $message)) {
+        return;   // balance is not part of this check - the hold covers the money
+    }
+    throw new RuntimeException("Source account no longer valid for hold {$identitySwap['hold_id']}: {$message}");
 }
 
 /**
