@@ -20,6 +20,7 @@ declare(strict_types=1);
  *   REPORT_48H_OVERDUE    48-hour written report not sent (SEV2)
  *   ACTION_OVERDUE        a playbook step past its deadline (SEV3, notifies its owner)
  *   SELF_BILLED_INVOICE   fee invoices addressed to VouchMorph itself (SEV4)
+ *   JOBS_STALLED          a scheduled job missing, never run, or gone quiet (SEV2)
  *   DAILY_SIGNOFF_MISSING yesterday's reconciliation not signed by 09:00 (S2, SEV3)
  */
 
@@ -29,6 +30,7 @@ require_once __DIR__ . '/../../src/Application/Admin/AdminAudit.php';
 require_once __DIR__ . '/../../src/Application/Incident/Playbooks.php';
 require_once __DIR__ . '/../../src/Application/Incident/ReportBuilder.php';
 require_once __DIR__ . '/../../src/Application/Incident/IncidentDesk.php';
+require_once __DIR__ . '/../../src/Application/Incident/ScheduledJobHealth.php';
 require_once __DIR__ . '/../../src/Application/Incident/ServiceControls.php';
 
 use Application\Incident\IncidentDesk;
@@ -189,18 +191,16 @@ rule('FEE_IMBALANCE', function () use ($db, $desk) {
 }, $stats);
 
 rule('JOBS_STALLED', function () use ($db, $desk) {
-    // Every job should run every 5 minutes; 20 minutes of silence is a stopped scheduler.
-    $rows = $db->query("
-        SELECT j.job, MAX(j.finished_at) AS last_run
-        FROM scheduled_job_runs j GROUP BY j.job
-        HAVING MAX(j.finished_at) < NOW() - INTERVAL '20 minutes'
-    ")->fetchAll(PDO::FETCH_ASSOC);
+    // Checked against the schedule itself, not just against what has run
+    // before: a job that never ran once used to be invisible here.
+    $schedule = require __DIR__ . '/../../src/Core/Config/scheduled_jobs.php';
+    $problems = \Application\Incident\ScheduledJobHealth::problems($db, $schedule);
     $keys = [];
-    foreach ($rows as $r) {
-        $keys[] = $k = 'JOBS_STALLED:' . $r['job'];
-        $desk->raiseAlert('JOBS_STALLED', $k, "Scheduled job {$r['job']} has not run since {$r['last_run']}", $r);
+    foreach ($problems as $p) {
+        $keys[] = $k = 'JOBS_STALLED:' . $p['job'] . ':' . $p['state'];
+        $desk->raiseAlert('JOBS_STALLED', $k, \Application\Incident\ScheduledJobHealth::describe($p), $p);
     }
-    return count($rows) . ' stalled, ' . $desk->autoResolve('JOBS_STALLED', $keys) . ' cleared';
+    return count($problems) . ' problem(s), ' . $desk->autoResolve('JOBS_STALLED', $keys) . ' cleared';
 }, $stats);
 
 rule('RETURN_OVERDUE', function () use ($db, $desk) {
