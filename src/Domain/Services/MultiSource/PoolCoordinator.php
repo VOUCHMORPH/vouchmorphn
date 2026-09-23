@@ -1499,6 +1499,22 @@ class PoolCoordinator
             );
         }
 
+        // Each source's settlement cut — same fixed amount per source as
+        // SOURCE_FEE in invoiceImmediateFees(), just the settlement_percent
+        // share instead of source_institution_percent. The calculator counts
+        // it toward deferred_charge (not immediate_charge), so it belongs
+        // here rather than alongside SOURCE_FEE at hold time.
+        $settlementFeePerSource = $feeResult['settlement_fee_per_source'] ?? 0;
+        if ($settlementFeePerSource > 0) {
+            foreach ($contributions as $contribution) {
+                $institution = $contribution['institution'];
+                $invoiceResults[] = $this->settlement->invoiceFee(
+                    $reference, $institution, $this->swapService->getParticipantId($institution),
+                    'SETTLEMENT_FEE', $settlementFeePerSource, $currency
+                );
+            }
+        }
+
         return $invoiceResults;
     }
 
