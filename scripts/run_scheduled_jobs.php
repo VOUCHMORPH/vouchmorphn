@@ -30,20 +30,13 @@ use Core\Database\DBConnection;
 const JOB_TIMEOUT_SECONDS = 240;        // shorter than the 5-minute schedule
 const HOURLY_GAP_MINUTES  = 55;
 
-$jobs = [
-    ['src/cron/release_expired_holds.php', 'every'],              // 24-hour rule: cash-out and identity expiry
-    ['src/cron/release_expired_card_hooks.php', 'every'],          // expired card-pool hooks
-    ['src/cron/consolidate_identity_reservations.php', 'every'],   // unified identities: balances move to the canonical account
-    ['src/cron/cancel_expired_hooks.php', 'every'],
-    ['src/cron/ExpireContributionSessions.php', 'every'],           // contribution sessions
-    ['src/cron/sweep_reservation_account_remainders.php', 'every'], // ADDED: safety net for pooled remainders
-    ['src/cron/dispatch_settlement_advices.php', 'every'],          // creates advices only after each cycle time
-    ['src/cron/poll_settlement_confirmations.php', 'every'],
-    ['src/cron/settlement_confirmation_worker.php', 'every'],       // ADDED: closes the pending-settlement loop
-    ['src/cron/incident_monitor.php', 'every'],                     // alarms, incidents, deadlines
-    ['src/cron/reconcile_settlement_obligations.php', 'hourly'],
-    ['src/cron/swap_integrity_reconciler.php', 'hourly'],
-];
+// The schedule lives in one file, shared with incident_monitor.php so a job
+// cannot be scheduled without being watched, or watched without being run.
+$schedule = require $root . '/src/Core/Config/scheduled_jobs.php';
+$jobs = [];
+foreach ($schedule as $name => $cfg) {
+    $jobs[] = ["src/cron/{$name}", $cfg['when']];
+}
 
 $db = null;
 try {
