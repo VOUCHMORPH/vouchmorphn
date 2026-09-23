@@ -97,101 +97,62 @@ class MultiSourceFeeCalculator
 
         $F1 = (float)($baseFeeConfig['fee_components']['F1']['amount'] ?? 0);
         $F7 = (float)($baseFeeConfig['fee_components']['F7']['amount'] ?? 0);
-        $pool = $F1 - $F7;
+        $pool = round($F1 - $F7, 2);
+        $N = $sourceCount;
 
-        if ($pool < 0) {
-            throw new \RuntimeException(
-                "Invalid fee config for {$deliveryMode}: F1 ({$F1}) is less than F7 ({$F7}), pool would be negative"
-            );
-        }
-
-        $splitConfig = $baseFeeConfig['distribution']['split'] ?? [
-            'platform_percent' => 35,
-            'source_institution_percent' => 15,
-            'destination_institution_percent' => 50,
-        ];
+        // ============================================================
+        // THE RULE (confirmed 2026-09-22) - one rule for every product:
+        // identity claims, card pools and multi-source swaps alike.
+        //   VouchMorph : F7 levy x N  +  ONE cut of platform_percent x pool
+        //   each source: source_percent x pool - a FULL cut each, not divided
+        //   destination: destination_percent x pool
+        //                + 30% of that cut per ADDED source
+        //                (cash-out: 10% at code issue, 90% at cash dispensed)
+        //   settlement : settlement_percent x pool PER SETTLING SOURCE
+        //   no cap.
+        // Replaces the 2026-08-20 formula (15% per source, a platform bonus
+        // per extra source, 10%-of-pool destination bonus, P15 cap), which
+        // made the same pooling cost different amounts by product.
+        // ============================================================
+        $splitConfig = $baseFeeConfig['distribution']['split'] ?? [];
+        $ms = $baseFeeConfig['multi_source'] ?? [];
         $platformPercent = (float)($splitConfig['platform_percent'] ?? 35);
-        $sourcePercent = (float)($splitConfig['source_institution_percent'] ?? 15);
+        $sourcePercent = (float)($splitConfig['source_institution_percent'] ?? 13);
         $destinationPercent = (float)($splitConfig['destination_institution_percent'] ?? 50);
-
-        $extraSourceBonusPercent = (float)(
-            $baseFeeConfig['multi_source']['extra_source_bonus_percent']
-            ?? self::DEFAULT_EXTRA_SOURCE_BONUS_PERCENT
-        );
-        $maxTotalFee = (float)($baseFeeConfig['multi_source']['max_total_fee'] ?? $this->maxTotalFee);
-
-        $extraSources = max(0, $sourceCount - 1);
-
-        // ------------------------------------------------------------
-        // Core formula
-        // ------------------------------------------------------------
-        $perSourceCut = round($pool * ($sourcePercent / 100), 2);
-        $totalSourceCut = round($perSourceCut * $sourceCount, 2);
+        $settlementPercent = (float)($splitConfig['settlement_percent'] ?? 2);
+        $extraSourceBonusPercent = (float)($ms['destination_extra_percent_of_destination_cut'] ?? 30);
 
         $levyPerUnit = $F7;
-        $levyTotal = round($F7 * $sourceCount, 2);
+        $levyTotal = round($F7 * $N, 2);
+        $perSourceCut = round($pool * $sourcePercent / 100, 2);
+        $totalSourceCut = round($perSourceCut * $N, 2);
+        $settlementFeePerSource = round($pool * $settlementPercent / 100, 2);
+        $settlementFeeTotal = round($settlementFeePerSource * $N, 2);
+        $platformCut = round($pool * $platformPercent / 100, 2);
+        $destinationBase = round($pool * $destinationPercent / 100, 2);
+        $destinationExtra = round($destinationBase * $extraSourceBonusPercent / 100 * ($N - 1), 2);
+        $destinationCut = round($destinationBase + $destinationExtra, 2);
 
-        $destinationCut = round(
-            $pool * ($destinationPercent / 100) + $pool * ($extraSourceBonusPercent / 100) * $extraSources,
-            2
-        );
-        $platformCut = round(
-            $pool * ($platformPercent / 100) + $pool * ($extraSourceBonusPercent / 100) * $extraSources,
-            2
-        );
+        $destSplit = $baseFeeConfig['destination_split'] ?? [];
+        $codePercent = (float)($destSplit['generate_code_fee_percent'] ?? 10);
+        $isCashout = in_array(strtolower($deliveryMode), ['cashout', 'cash_out', 'atm', 'agent'], true);
+        $destinationImmediate = $isCashout ? round($destinationCut * $codePercent / 100, 2) : 0.0;
+        $destinationDeferred = round($destinationCut - $destinationImmediate, 2);
 
-        $totalFeeUncapped = round($totalSourceCut + $destinationCut + $platformCut + $levyTotal, 2);
-
-        // ------------------------------------------------------------
-        // Cap enforcement - proportional scale-down of every component
-        // if the uncapped total exceeds max_total_fee. Levy is NOT
-        // scaled (it's a fixed per-source regulatory-style charge, not
-        // a revenue share) - only the three revenue components share
-        // the squeeze.
-        // ------------------------------------------------------------
-        $scaleFactor = 1.0;
-        $totalFee = $totalFeeUncapped;
-        $capped = false;
-
-        if ($totalFeeUncapped > $maxTotalFee) {
-            $capped = true;
-            $revenueUncapped = $totalSourceCut + $destinationCut + $platformCut;
-            $revenueBudget = max(0, $maxTotalFee - $levyTotal);
-
-            if ($revenueUncapped > 0) {
-                $scaleFactor = $revenueBudget / $revenueUncapped;
-            } else {
-                $scaleFactor = 0.0;
-            }
-
-            $perSourceCut = round($perSourceCut * $scaleFactor, 2);
-            $totalSourceCut = round($perSourceCut * $sourceCount, 2);
-            $destinationCut = round($destinationCut * $scaleFactor, 2);
-            $platformCut = round($platformCut * $scaleFactor, 2);
-            $totalFee = round($totalSourceCut + $destinationCut + $platformCut + $levyTotal, 2);
+        $perSourceFees = [];
+        for ($i = 0; $i < $N; $i++) {
+            $perSourceFees[] = ['source_index' => $i, 'source_cut' => $perSourceCut, 'swap_levy' => $levyPerUnit, 'settlement_fee' => $settlementFeePerSource];
         }
 
-        // ------------------------------------------------------------
-        // CASHOUT: split destination's cut into immediate (generate
-        // code) vs deferred (completion), using the same percentages
-        // already defined for single-source cashout in fees.json.
-        // DEPOSIT/CARD_LOAD: destination's entire cut is deferred to
-        // completion (there's no separate "code generation" event).
-        // ------------------------------------------------------------
-        $destSplitConfig = $baseFeeConfig['destination_split'] ?? null;
-        $destinationImmediate = 0.0;
-        $destinationDeferred = $destinationCut;
-
-        if ($deliveryMode === 'cashout' && $destSplitConfig) {
-            $generateCodePercent = (float)($destSplitConfig['generate_code_fee_percent'] ?? 10);
-            $destinationImmediate = round($destinationCut * ($generateCodePercent / 100), 2);
-            $destinationDeferred = round($destinationCut - $destinationImmediate, 2);
-        }
-
-        $perSourceFees = $this->buildPerSourceFees($sourceCount, $perSourceCut);
-
+        // Charged when each source is held: its levy and its own cut (and, for a
+        // cash-out, the destination's code portion). The rest on completion.
         $immediateCharge = round($levyTotal + $totalSourceCut + $destinationImmediate, 2);
-        $deferredCharge = round($platformCut + $destinationDeferred, 2);
+        $deferredCharge = round($platformCut + $destinationDeferred + $settlementFeeTotal, 2);
+        $totalFee = round($immediateCharge + $deferredCharge, 2);
+        $totalFeeUncapped = $totalFee;
+        $capped = false;
+        $scaleFactor = 1.0;
+        $maxTotalFee = null;
 
         return [
             'total_fee' => $totalFee,
@@ -212,6 +173,10 @@ class MultiSourceFeeCalculator
             'destination_deferred' => $destinationDeferred,
 
             'platform_cut' => $platformCut,
+            'settlement_fee_per_source' => $settlementFeePerSource,
+            'settlement_fee_total' => $settlementFeeTotal,
+            'destination_base' => $destinationBase,
+            'destination_extra_for_added_sources' => $destinationExtra,
 
             'immediate_charge' => $immediateCharge,
             'deferred_charge' => $deferredCharge,
