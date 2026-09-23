@@ -4936,6 +4936,12 @@ $this->feeLedger()->record('DELIVERED', $feeCtx);
     private ?\Domain\Services\Fees\FeeLedger $feeLedgerInstance = null;
 
     /** Section 23 Rev. 2: records which institution performed each service and the fee it earns. */
+    /** For callers that hold a SwapService but not their own ledger (CardService). */
+    public function feeLedgerPublic(): \Domain\Services\Fees\FeeLedger
+    {
+        return $this->feeLedger();
+    }
+
     private function feeLedger(): \Domain\Services\Fees\FeeLedger
     {
         return $this->feeLedgerInstance ??= new \Domain\Services\Fees\FeeLedger($this->swapDB, $this->feesConfig ?? []);
@@ -7931,6 +7937,15 @@ public function previewIdentityClaimAvailable(string $identityType, string $iden
  */
 private function prepareIdentityClaimPool(string $identityType, string $identityValue, string $pin, string $confirmedByType, ?int $confirmedById, string $pinContext = 'agent'): array
 {
+    // FIX (2026-09-22): two claims for the same identity at the same instant
+    // (an agent and the app, say) could each pool the same holds. The pool is
+    // now taken under a lock on this identity, so the second claim waits and
+    // then sees what the first one left.
+    try {
+        $this->swapDB->query("SELECT pg_advisory_xact_lock(hashtext('identity_claim:" . str_replace("'", "", strtolower($identityType . ':' . $identityValue)) . "'))");
+    } catch (\Throwable $e) {
+        error_log('[SwapService] could not take the claim lock: ' . $e->getMessage());
+    }
     $load = function () use ($identityType, $identityValue): array {
         $stmt = $this->swapDB->prepare("
             SELECT * FROM identity_swap_holds
@@ -7938,6 +7953,7 @@ private function prepareIdentityClaimPool(string $identityType, string $identity
               AND status = 'pending' AND hold_expires_at > NOW()
               AND claim_reference IS NULL   -- locked to an unredeemed cash-out code
             ORDER BY created_at ASC
+            FOR UPDATE
         ");
         $stmt->execute([':identity_type' => $identityType, ':identity_value' => $identityValue]);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -8692,6 +8708,34 @@ private function mnoCashoutTariff(string $destinationInstitution, float $cashAmo
     return ['tariff' => $tariff, 'agent_commission' => $agent, 'collection' => $t['collection'] ?? 'VOUCHMORPH_COLLECTS_PASS_THROUGH'];
 }
 
+/**
+ * Every thebe the customer paid must be attributable to a party. Compares what
+ * was charged with the sum of the fee-ledger rows; a mismatch is recorded in
+ * fee_imbalances, which the incident monitor raises as an alarm. Never throws:
+ * the money has already moved, so this reports, it does not block.
+ */
+public function assertFeeBalance(string $swapReference, float $charged, string $product = 'IDENTITY'): bool
+{
+    try {
+        $st = $this->swapDB->prepare("SELECT COALESCE(SUM(amount), 0) FROM fee_ledger WHERE swap_reference = ? AND status <> 'REVERSED'");
+        $st->execute([$swapReference]);
+        $recorded = round((float)$st->fetchColumn(), 2);
+        $charged = round($charged, 2);
+        if (abs($charged - $recorded) < 0.005) {
+            return true;
+        }
+        $rows = $this->swapDB->prepare("SELECT fee_role, institution, payer_institution, amount FROM fee_ledger WHERE swap_reference = ?");
+        $rows->execute([$swapReference]);
+        $this->swapDB->prepare("INSERT INTO fee_imbalances (swap_reference, product, charged, recorded, detail) VALUES (?, ?, ?, ?, ?)")
+            ->execute([$swapReference, $product, $charged, $recorded, json_encode($rows->fetchAll(PDO::FETCH_ASSOC))]);
+        error_log("[SwapService] FEE IMBALANCE on {$swapReference}: customer paid {$charged}, ledger accounts for {$recorded}");
+        return false;
+    } catch (\Throwable $e) {
+        error_log('[SwapService] fee balance check failed for ' . $swapReference . ': ' . $e->getMessage());
+        return true;   // never block on the check itself
+    }
+}
+
 /** Records every party's share of a finished multi-source identity claim in the fee ledger. */
 private function recordIdentityClaimFees(array $shares, array $holds, string $product, string $destinationInstitution, string $ref, string $currency): void
 {
@@ -9190,8 +9234,11 @@ private function finishIdentityClaim(array $ctx, bool $doPayout): array
 
     // Every party's share of the fee, per the multi-source rule.
     if (!empty($feeBreakdown['identity_claim_shares'])) {
-        $this->recordIdentityClaimFees($feeBreakdown['identity_claim_shares'], $verifiedHolds,
+        $shares = $feeBreakdown['identity_claim_shares'];
+        $this->recordIdentityClaimFees($shares, $verifiedHolds,
             $destinationType === 'CASHOUT' ? 'CASHOUT' : 'DEPOSIT', $destinationInstitution, $consolidationReference, $currency);
+        // Every thebe the customer paid must be attributable to a party.
+        $this->assertFeeBalance($consolidationReference, $shares['claim_fee'] + $shares['levy'] * $shares['n'], 'IDENTITY');
     }
 
     $this->writeAuditLogEntry(
