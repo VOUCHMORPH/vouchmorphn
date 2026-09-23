@@ -115,14 +115,33 @@ final class FeeLedger
     public function settleLeg(string $legReference, string $settlingInstitution): int
     {
         try {
+            // FIX (2026-09-22): a multi-source claim already recorded a settlement
+            // fee per source when it completed. Mark that row paid and record WHO
+            // settled, instead of writing a second row for the same fee under a
+            // different leg reference.
+            $settler = strtoupper($settlingInstitution);
+            $existing = $this->db->prepare("
+                UPDATE fee_ledger SET status = 'PAID', paid_at = COALESCE(paid_at, now()), settled_by = ?, settled_at = now()
+                WHERE fee_role = 'SETTLEMENT_FEE' AND institution = ? AND status IN ('EARNED', 'ADVISED')
+                  AND swap_reference = (SELECT swap_reference FROM fee_ledger WHERE leg_reference = ? LIMIT 1)
+            ");
+            $existing->execute([$settler, $settler, $legReference]);
+            if ($existing->rowCount() > 0) {
+                return $existing->rowCount();
+            }
             $st = $this->db->prepare("SELECT swap_reference, product, payer_institution, currency FROM fee_ledger WHERE leg_reference = ? AND status <> 'REVERSED' ORDER BY entry_id LIMIT 1");
             $st->execute([$legReference]);
             $leg = $st->fetch(PDO::FETCH_ASSOC);
             if (!$leg) return 0;
-            return $this->record('SETTLED', [
+            $written = $this->record('SETTLED', [
                 'swap_reference' => $leg['swap_reference'], 'leg_reference' => $legReference, 'product' => $leg['product'],
                 'source_institution' => $leg['payer_institution'], 'settling_institution' => $settlingInstitution, 'currency' => $leg['currency'],
             ]);
+            if ($written > 0) {
+                $this->db->prepare("UPDATE fee_ledger SET settled_by = ?, settled_at = now() WHERE leg_reference = ? AND fee_role = 'SETTLEMENT_FEE'")
+                    ->execute([$settler, $legReference]);
+            }
+            return $written;
         } catch (Throwable $e) {
             error_log("[FeeLedger] could not settle {$legReference}: " . $e->getMessage());
             return 0;
