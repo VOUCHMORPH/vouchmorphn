@@ -771,7 +771,7 @@ $nextMonth = date('Y-m', strtotime("+1 month", strtotime($year . '-' . $month . 
         <a href="../admin_dashboard.php" class="nav-item">DASHBOARD</a>
         <a href="daily_reconciliations.php" class="nav-item">DAILY REPORT</a>
         <a href="monthly_reconciliations.php" class="nav-item active">MONTHLY REPORT</a>
-        <a href="audit_trails.php" class="nav-item">AUDIT</a>
+        <a href="../admin_dashboard.php?view=audit" class="nav-item">AUDIT</a>
         <a href="suspicious_activity_report.php" class="nav-item">SUSPICIOUS</a>
         <?php if (isset($_SESSION['admin_role_id']) && $_SESSION['admin_role_id'] == 999): ?>
             <a href="../admin_management.php" class="nav-item">ADMIN</a>

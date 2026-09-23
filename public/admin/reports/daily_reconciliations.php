@@ -763,7 +763,7 @@ $formattedDate = date('F j, Y', strtotime($selectedDate));
         <a href="../admin_dashboard.php" class="nav-item">DASHBOARD</a>
         <a href="daily_reconciliations.php" class="nav-item active">DAILY REPORT</a>
         <a href="monthly_reconciliations.php" class="nav-item">MONTHLY REPORT</a>
-        <a href="audit_trails.php" class="nav-item">AUDIT</a>
+        <a href="../admin_dashboard.php?view=audit" class="nav-item">AUDIT</a>
         <a href="suspicious_activity_report.php" class="nav-item">SUSPICIOUS</a>
         <?php if (isset($_SESSION['admin_role_id']) && $_SESSION['admin_role_id'] == 999): ?>
             <a href="../admin_management.php" class="nav-item">ADMIN</a>
