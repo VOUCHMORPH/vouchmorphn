@@ -2283,6 +2283,23 @@ if ($balance <= 0) {
                     'levy' => $levyPerSource,
                     'currency' => $chargeCurrency,
                 ];
+                // FIX (2026-09-22): record the shares in the fee ledger, with who
+                // earns and who pays, so a card pool reconciles exactly like a
+                // claim does. Before, the hook invoiced an amount against an
+                // institution and the ledger knew nothing about it.
+                try {
+                    $ledger = $swapService->feeLedgerPublic();
+                    $leg = $hookReference . ':S' . ($source['institution'] ?? '?') . ':' . count($placedHolds);
+                    $totalFee = round($perSourceCut + $levyPerSource, 2);
+                    // the source withheld the levy from what it sends on: it owes that to VouchMorph
+                    $ledger->recordShare($hookReference, $leg, 'CARD_POOL', 'HOLD_PLACED', 'SWAP_LEVY', 'VOUCHMORPH',
+                        (string)$source['institution'], $totalFee, null, $levyPerSource, $chargeCurrency, 'Swap levy, charged when the source was hooked');
+                    // the source keeps its own cut
+                    $ledger->recordShare($hookReference, $leg, 'CARD_POOL', 'HOLD_PLACED', 'SOURCE_SHARE', (string)$source['institution'],
+                        (string)$source['institution'], $totalFee, null, $perSourceCut, $chargeCurrency, 'Source cut for this hooked source');
+                } catch (\Throwable $ledgerError) {
+                    error_log('[CardService] could not record hook fee shares for ' . ($source['institution'] ?? '?') . ': ' . $ledgerError->getMessage());
+                }
 
             } catch (\Throwable $feeError) {
                 // A fee-charging failure must never block a real,
