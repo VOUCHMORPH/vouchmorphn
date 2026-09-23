@@ -24,5 +24,19 @@ foreach ($jobs as [$file, $when]) {
     if (!is_file("$root/$file")) { fwrite(STDOUT, "[jobs] missing $file\n"); continue; }
     $t = microtime(true);
     passthru(PHP_BINARY . ' ' . escapeshellarg("$root/$file") . ' 2>&1', $code);
+    // Heartbeat: one row per run, so the monitor can raise an alarm when the
+    // scheduler stops (a stopped service or a lapsed subscription).
+    try {
+        static $hb = null;
+        if ($hb === null) {
+            $dsn = getenv('DATABASE_URL');
+            $hb = $dsn ? new PDO($dsn) : null;
+            if ($hb) $hb->exec("CREATE TABLE IF NOT EXISTS scheduled_job_runs (id BIGSERIAL PRIMARY KEY, job VARCHAR(80) NOT NULL, started_at TIMESTAMPTZ NOT NULL, finished_at TIMESTAMPTZ NOT NULL DEFAULT now(), exit_code INT NOT NULL DEFAULT 0, seconds NUMERIC(10,2), release_ref VARCHAR(80))");
+        }
+        if ($hb) {
+            $hb->prepare("INSERT INTO scheduled_job_runs (job, started_at, exit_code, seconds, release_ref) VALUES (?, to_timestamp(?), ?, ?, ?)")
+               ->execute([basename($file), $t, $code, round(microtime(true) - $t, 2), getenv('RAILWAY_GIT_COMMIT_SHA') ?: null]);
+        }
+    } catch (Throwable $e) { error_log('[jobs] heartbeat failed: ' . $e->getMessage()); }
     fwrite(STDOUT, sprintf("[jobs] %s exit=%d %.1fs\n", basename($file), $code, microtime(true) - $t));
 }
