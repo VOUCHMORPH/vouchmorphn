@@ -30,9 +30,9 @@ namespace Domain\Services;
  *   - Charged immediately (at hold/verify time): levy_total, every
  *     source's fixed cut, and - for CASHOUT only - the destination's
  *     generate-code portion.
- *   - Charged at swap completion: platform's cut, and destination's
+ *   - Charged at swap completion: platform's cut, destination's
  *     remaining share (all of it for DEPOSIT; the completion portion
- *     for CASHOUT).
+ *     for CASHOUT), and every source's settlement cut (settlement_fee_per_source).
  *
  * F8 (the old flat "P1 per extra source, capped at 15" fee) is RETIRED
  * as a separate charge. This formula already scales cost with N on its
@@ -139,10 +139,7 @@ class MultiSourceFeeCalculator
         $destinationImmediate = $isCashout ? round($destinationCut * $codePercent / 100, 2) : 0.0;
         $destinationDeferred = round($destinationCut - $destinationImmediate, 2);
 
-        $perSourceFees = [];
-        for ($i = 0; $i < $N; $i++) {
-            $perSourceFees[] = ['source_index' => $i, 'source_cut' => $perSourceCut, 'swap_levy' => $levyPerUnit, 'settlement_fee' => $settlementFeePerSource];
-        }
+        $perSourceFees = $this->buildPerSourceFees($N, $perSourceCut);
 
         // Charged when each source is held: its levy and its own cut (and, for a
         // cash-out, the destination's code portion). The rest on completion.
