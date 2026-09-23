@@ -177,6 +177,32 @@ rule('ACTION_OVERDUE', function () use ($db, $desk) {
     return count($rows) . ' overdue, ' . $desk->autoResolve('ACTION_OVERDUE', $keys) . ' cleared';
 }, $stats);
 
+rule('FEE_IMBALANCE', function () use ($db, $desk) {
+    // Every thebe charged must be attributable to a party.
+    $rows = $db->query("SELECT swap_reference, product, charged, recorded, difference FROM fee_imbalances WHERE resolved_at IS NULL ORDER BY detected_at DESC LIMIT 50")->fetchAll(PDO::FETCH_ASSOC);
+    $keys = [];
+    foreach ($rows as $r) {
+        $keys[] = $k = 'FEE_IMBALANCE:' . $r['swap_reference'];
+        $desk->raiseAlert('FEE_IMBALANCE', $k, "Swap {$r['swap_reference']}: customer paid {$r['charged']}, fee ledger accounts for {$r['recorded']} (difference {$r['difference']})", $r);
+    }
+    return count($rows) . ' open, ' . $desk->autoResolve('FEE_IMBALANCE', $keys) . ' cleared';
+}, $stats);
+
+rule('JOBS_STALLED', function () use ($db, $desk) {
+    // Every job should run every 5 minutes; 20 minutes of silence is a stopped scheduler.
+    $rows = $db->query("
+        SELECT j.job, MAX(j.finished_at) AS last_run
+        FROM scheduled_job_runs j GROUP BY j.job
+        HAVING MAX(j.finished_at) < NOW() - INTERVAL '20 minutes'
+    ")->fetchAll(PDO::FETCH_ASSOC);
+    $keys = [];
+    foreach ($rows as $r) {
+        $keys[] = $k = 'JOBS_STALLED:' . $r['job'];
+        $desk->raiseAlert('JOBS_STALLED', $k, "Scheduled job {$r['job']} has not run since {$r['last_run']}", $r);
+    }
+    return count($rows) . ' stalled, ' . $desk->autoResolve('JOBS_STALLED', $keys) . ' cleared';
+}, $stats);
+
 rule('RETURN_OVERDUE', function () use ($db, $desk) {
     $rows = $db->query("SELECT request_id, swap_reference, destination_institution, amount FROM ic_return_requests WHERE status IN ('REQUESTED','SENT') AND respond_by < NOW()")->fetchAll(PDO::FETCH_ASSOC);
     $keys = [];
