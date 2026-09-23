@@ -196,7 +196,11 @@ class PoolCoordinator
             // Non-refundable from this point on except a system-caused rollback
             // below (see catch block).
             $this->invoiceImmediateFees($pool, $contributions);
-            
+
+            // Record this swap as 'pending' now — see recordPoolSwapTracking()'s
+            // docblock for why this can't wait until completeDeferredPool().
+            $this->recordPoolSwapTracking($pool, $contributions, 'pending');
+
             // 7. Transition to FUNDED
             $this->stateMachine->transition($pool, PoolStatus::FUNDED->value);
             
@@ -305,24 +309,48 @@ class PoolCoordinator
         $this->stateMachine->transition($pool, PoolStatus::COMPLETED->value);
         $this->poolRepository->updateStatus($pool['id'], PoolStatus::COMPLETED->value);
 
-        // ============================================================
-        // FIX: record this pool swap in swap_requests/swap_transactions
-        // — the same tables the user's swap history and the admin
-        // transaction log actually read from. A completed multi-source
-        // pool swap (this includes card-hook-funded swaps) previously
-        // never appeared there at all, even though it had genuinely
-        // gone through — createPool()/persistContributions() correctly
-        // track it in this subsystem's OWN pool/pool_contributions
-        // tables, but nothing ever forwarded that into the shared
-        // tracking tables every single-source swap already populates.
-        //
-        // Best-effort: populateTrackingTables() already catches and
-        // logs its own DB errors per-table rather than throwing, and
-        // this call runs after the swap has already genuinely
-        // completed above, so a failure here can only mean this swap
-        // stays invisible in the history log — never that the swap
-        // itself is undone or reported as failed.
-        // ============================================================
+        // Same swap_uuid as the 'pending' write made back in execute()/
+        // executeFromCardHook() right after invoiceImmediateFees() —
+        // populateSwapRequest() upserts on swap_uuid, so this updates
+        // that same swap_requests row to 'completed' rather than
+        // duplicating it.
+        $this->recordPoolSwapTracking($pool, $contributions, 'completed');
+
+        return ['debits' => $debits, 'settlement' => $settlementResult, 'invoices' => $invoiceResult];
+    }
+
+    /**
+     * Mirrors what every single-source swap does via
+     * SwapService::populateTrackingTables() (e.g. executeSignedCashout()
+     * writes a 'pending' swap_requests/swap_transactions row right after
+     * the code is generated, long before cash is actually dispensed) —
+     * write (or upsert) this pool's row in the SAME tables the admin
+     * dashboard's "swaps made"/swap history actually reads from.
+     *
+     * Called twice: once with 'pending' right after invoiceImmediateFees()
+     * (execute()/executeFromCardHook()), and again with 'completed' from
+     * completeDeferredPool(). Without the first call, a DEFERRED pool
+     * (CASHOUT/IDENTITY — see the _defer_debit branch) writes NOTHING
+     * until confirmPoolCashout()/confirmPoolIdentityClaim() eventually
+     * runs completeDeferredPool() — and if that confirmation never
+     * arrives, the pool swap never shows up anywhere except the card's
+     * own hook bookkeeping (card_pool_hooks/card_pool_hook_sources),
+     * exactly matching what was reported: "only the hook to card
+     * transactions show".
+     *
+     * populateSwapRequest() upserts on swap_uuid (ON CONFLICT DO UPDATE),
+     * so the second call updates the same swap_requests row rather than
+     * creating a duplicate; populateSwapTransaction() inserts a fresh
+     * swap_transactions row each time, same as every other swap type's
+     * pending -> completed sequence.
+     *
+     * Best-effort: populateTrackingTables() already catches and logs its
+     * own DB errors per-table rather than throwing, and a failure here
+     * can only mean this swap stays invisible in the history log — never
+     * that the swap itself is undone or reported as failed.
+     */
+    private function recordPoolSwapTracking(array $pool, array $contributions, string $status): void
+    {
         try {
             $sourceInstitutions = implode(', ', array_unique(array_column($contributions, 'institution')));
             // Same request as createPool() -> in-memory snapshot; deferred
@@ -341,7 +369,7 @@ class PoolCoordinator
                     'user_id' => $pool['user_id'] ?? null,
                 ],
                 [
-                    'status' => 'completed',
+                    'status' => $status,
                     'currency' => $pool['currency'] ?? 'BWP',
                     'destination_currency' => $pool['destination_currency'] ?? $pool['currency'] ?? 'BWP',
                     'forex_rate' => $poolForexRate,
@@ -354,11 +382,9 @@ class PoolCoordinator
             );
         } catch (\Throwable $trackingErr) {
             $this->logger->warning('Failed to record pool swap in swap_requests/swap_transactions', [
-                'pool_id' => $pool['id'] ?? null, 'error' => $trackingErr->getMessage(),
+                'pool_id' => $pool['id'] ?? null, 'status' => $status, 'error' => $trackingErr->getMessage(),
             ]);
         }
-
-        return ['debits' => $debits, 'settlement' => $settlementResult, 'invoices' => $invoiceResult];
     }
 
     private function createPool(array $payload): array
@@ -1797,6 +1823,10 @@ class PoolCoordinator
             // the first point PoolCoordinator can see the finalized contribution
             // set. See note below on hook-time vs pool-time charging.
             $this->invoiceImmediateFees($pool, $contributions);
+
+            // Record this swap as 'pending' now — see recordPoolSwapTracking()'s
+            // docblock for why this can't wait until completeDeferredPool().
+            $this->recordPoolSwapTracking($pool, $contributions, 'pending');
 
             // 6. Master signature, destination execution — identical to
             // the normal path from here on.
