@@ -153,11 +153,36 @@ final class FeeLedger
      * amounts come from the multi-source rule rather than single-swap shares).
      * Idempotent per (leg_reference, fee_role).
      */
+    /**
+     * Runs a ledger write inside a SAVEPOINT when the caller already has a
+     * transaction open. Without this, a rejected ledger row (a value the
+     * schema does not allow, say) aborts the caller's whole transaction - and
+     * a hold already placed at an institution then cannot be recorded locally.
+     * Recording a fee must never be able to break the money path.
+     */
+    private function inSavepoint(callable $fn): int
+    {
+        if (!$this->db->inTransaction()) {
+            return $fn();
+        }
+        $sp = 'fee_ledger_' . bin2hex(random_bytes(4));
+        $this->db->exec("SAVEPOINT {$sp}");
+        try {
+            $n = $fn();
+            $this->db->exec("RELEASE SAVEPOINT {$sp}");
+            return $n;
+        } catch (Throwable $e) {
+            $this->db->exec("ROLLBACK TO SAVEPOINT {$sp}");
+            error_log('[FeeLedger] write rolled back, caller unaffected: ' . $e->getMessage());
+            return 0;
+        }
+    }
+
     public function recordShare(string $swapReference, string $legReference, string $product, string $event, string $role,
                                 string $institution, string $payer, float $generalFee, ?float $pct, float $amount, string $currency = 'BWP', ?string $note = null): int
     {
-        try {
-            if ($amount <= 0 || $institution === '') return 0;
+        if ($amount <= 0 || $institution === '') return 0;
+        return $this->inSavepoint(function () use ($swapReference, $legReference, $product, $event, $role, $institution, $payer, $generalFee, $pct, $amount, $currency, $note) {
             $institution = strtoupper($institution); $payer = strtoupper($payer);
             $st = $this->db->prepare("
                 INSERT INTO fee_ledger (swap_reference, leg_reference, product, event, fee_role, institution, payer_institution,
@@ -168,10 +193,7 @@ final class FeeLedger
             $st->execute([$swapReference, $legReference, $product, $event, $role, $institution, $payer, round($generalFee, 2), $pct,
                           round($amount, 2), $currency, $institution === $payer ? 'RETAINED_BY_PAYER' : 'EARNED', $note]);
             return $st->rowCount();
-        } catch (Throwable $e) {
-            error_log("[FeeLedger] could not record {$role} for {$legReference}: " . $e->getMessage());
-            return 0;
-        }
+        });
     }
 
     /** A platform failure: nothing is charged for the leg (Section 23.3). */
