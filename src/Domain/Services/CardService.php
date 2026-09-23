@@ -2292,10 +2292,10 @@ if ($balance <= 0) {
                     $leg = $hookReference . ':S' . ($source['institution'] ?? '?') . ':' . count($placedHolds);
                     $totalFee = round($perSourceCut + $levyPerSource, 2);
                     // the source withheld the levy from what it sends on: it owes that to VouchMorph
-                    $ledger->recordShare($hookReference, $leg, 'CARD_POOL', 'HOLD_PLACED', 'SWAP_LEVY', 'VOUCHMORPH',
+                    $ledger->recordShare($hookReference, $leg, 'CARD_LOAD', 'HOLD_PLACED', 'SWAP_LEVY', 'VOUCHMORPH',
                         (string)$source['institution'], $totalFee, null, $levyPerSource, $chargeCurrency, 'Swap levy, charged when the source was hooked');
                     // the source keeps its own cut
-                    $ledger->recordShare($hookReference, $leg, 'CARD_POOL', 'HOLD_PLACED', 'SOURCE_SHARE', (string)$source['institution'],
+                    $ledger->recordShare($hookReference, $leg, 'CARD_LOAD', 'HOLD_PLACED', 'SOURCE_SHARE', (string)$source['institution'],
                         (string)$source['institution'], $totalFee, null, $perSourceCut, $chargeCurrency, 'Source cut for this hooked source');
                 } catch (\Throwable $ledgerError) {
                     error_log('[CardService] could not record hook fee shares for ' . ($source['institution'] ?? '?') . ': ' . $ledgerError->getMessage());
