@@ -58,6 +58,14 @@ $roleName = $roleInfo['name'] ?? 'Auditor';
 $availableViews = $roleInfo['view'] ?? ['dashboard'];
 $isSuperAdmin = ($adminRoleId === 999);
 
+// These two live in separate files (public/admin/incident_command.php,
+// public/admin/regulator_reports.php), each with its own role check at
+// the top — nothing in this file's canView()/$availableViews governs
+// them. Mirrored here only to decide whether the nav shows the link;
+// the files themselves remain the actual access control.
+$canViewIncidentCommand = in_array($adminRoleId, [999, 4, 10, 11, 20, 5, 3], true); // mirrors incident_command.php's own $canView allowlist
+$canViewRegulatorReports = ($adminRoleId === 3 || $isSuperAdmin); // mirrors regulator_reports.php's role_id check; COMPLIANCE_OFFICER/MANAGING_DIRECTOR functional-role holders reach it via the signing subsystem's own nav (_signing_bootstrap.php's vm_nav()) instead
+
 function canView($view) {
     global $availableViews, $isSuperAdmin;
     return $isSuperAdmin || in_array($view, $availableViews);
@@ -2634,6 +2642,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             Alerts <?php if ($totalAlerts > 0): ?><span class="nav-badge"><?php echo $totalAlerts; ?></span><?php endif; ?>
         </a>
         <?php endif; ?>
+        <?php if ($canViewIncidentCommand): ?><a href="incident_command.php" class="nav-item">Incident Command</a><?php endif; ?>
         <?php if (canView('live_transactions')): ?><a href="?view=live_transactions" class="nav-item <?php echo $view === 'live_transactions' ? 'active' : ''; ?>">Live Txns</a><?php endif; ?>
         <?php if (canView('multi_destination')): ?><a href="?view=multi_destination" class="nav-item <?php echo $view === 'multi_destination' ? 'active' : ''; ?>">Multi-Dest</a><?php endif; ?>
         <?php if (canView('recent_swaps')): ?><a href="?view=recent_swaps" class="nav-item <?php echo $view === 'recent_swaps' ? 'active' : ''; ?>">Swaps</a><?php endif; ?>
@@ -2641,6 +2650,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         <?php if (canView('participants')): ?><a href="?view=participants" class="nav-item <?php echo $view === 'participants' ? 'active' : ''; ?>">Participants</a><?php endif; ?>
         <?php if (canView('regulatory')): ?><a href="?view=regulatory" class="nav-item <?php echo $view === 'regulatory' ? 'active' : ''; ?>">Regulatory</a><?php endif; ?>
         <?php if (canView('reports')): ?><a href="?view=reports" class="nav-item <?php echo $view === 'reports' ? 'active' : ''; ?>">Reports</a><?php endif; ?>
+        <?php if ($canViewRegulatorReports): ?><a href="regulator_reports.php" class="nav-item">Issued Reports</a><?php endif; ?>
         <?php if (canView('audit')): ?><a href="?view=audit" class="nav-item <?php echo $view === 'audit' ? 'active' : ''; ?>">Audit</a><?php endif; ?>
         <?php if (canView('ledger')): ?><a href="?view=ledger" class="nav-item <?php echo $view === 'ledger' ? 'active' : ''; ?>">Ledger</a><?php endif; ?>
         <?php if (canView('invoices')): ?><a href="?view=invoices" class="nav-item <?php echo $view === 'invoices' ? 'active' : ''; ?>">Invoices &amp; Settlement</a><?php endif; ?>
