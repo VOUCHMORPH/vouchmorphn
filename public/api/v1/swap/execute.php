@@ -471,12 +471,35 @@ try {
     // READ INPUT (after authentication is confirmed)
     // ============================================
     $input = json_decode(file_get_contents('php://input'), true);
-    if (!$input) {
+    if (!$input || !is_array($input)) {
         throw new Exception('Invalid JSON payload', 400);
     }
-    
-    // Never trust a client-supplied user_id — always override with session
+
+    // Never trust a client-supplied user_id — always override with session.
+    // SwapService::executeAtomicSwap() swaps in original_payload wholesale
+    // when one is sent (verifying no signature), so the override has to
+    // reach inside it too.
     $input['user_id'] = $sessionUserId;
+    if (isset($input['original_payload'])) {
+        if (!is_array($input['original_payload'])) {
+            throw new Exception('original_payload must be an object', 400);
+        }
+        $input['original_payload']['user_id'] = $sessionUserId;
+    }
+
+    // FIX (2026-09-24): identity claims are not executed here. CONFIRM_IDENTITY
+    // reaches SwapService::confirmAndFinalizeIdentitySwap(), which takes the
+    // claimer's role (confirmed_by_type / confirmed_by_id) and the agent's
+    // "document checked" flag from its payload - that is, from this request
+    // body - so any logged-in user could finalize a claim as an "agent", or
+    // try and lock an identity owner's transaction PIN. Claims have their own
+    // endpoints, which take all of that from the session:
+    // swap/claim_identity.php (the app) and agent/finalize_claim.php (agents).
+    foreach ([$input, $input['original_payload'] ?? []] as $requested) {
+        if (strtoupper(trim((string)($requested['swap_type'] ?? ''))) === 'CONFIRM_IDENTITY') {
+            throw new Exception('Identity claims are finalized from the claim screen in the app, or by an agent, not through this endpoint.', 400);
+        }
+    }
 
     // ============================================================
     // NEW: enforce idempotency even when the caller doesn't supply

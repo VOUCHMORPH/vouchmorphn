@@ -11,7 +11,9 @@ require_once __DIR__ . '/../../vendor/autoload.php';
 /**
  * Who can open an identity's claim pool (SwapService::prepareIdentityClaimPool(),
  * behind both the app's claim button and the agent portal), and which lockout
- * a wrong PIN counts against.
+ * a wrong PIN counts against. Also who can confirm a single hold
+ * (confirmAndFinalizeIdentitySwap()), the path swap/execute.php used to
+ * expose to any logged-in user (see SwapExecuteClaimRefusalTest).
  *
  * Money sent to a registered, verified owner's identity is held with
  * claim_type 'account_pin' and a one-time SMS code: the owner claims it in the
@@ -114,7 +116,17 @@ class IdentityClaimPinTest extends TestCase
         // have no tracked CREATE TABLE in this repository (see
         // database/migrations/2026_09_16_source_account_type.sql), so these are
         // the columns the claim code reads and writes.
-        self::$main->exec('DROP TABLE IF EXISTS user_identities, identity_swap_holds, reservation_accounts');
+        self::$main->exec('DROP TABLE IF EXISTS user_identities, identity_swap_holds, reservation_accounts, agent_destination_accounts');
+        // What makes AGENT_ID an approved agent (SwapService::isApprovedAgent()).
+        self::$main->exec("
+            CREATE TABLE agent_destination_accounts (
+                id          BIGSERIAL PRIMARY KEY,
+                user_id     BIGINT NOT NULL,
+                status      VARCHAR(20) NOT NULL,
+                deleted_at  TIMESTAMPTZ
+            )
+        ");
+        self::$main->exec("INSERT INTO agent_destination_accounts (user_id, status) VALUES (" . self::AGENT_ID . ", 'active')");
         self::$main->exec("
             CREATE TABLE user_identities (
                 id              BIGSERIAL PRIMARY KEY,
@@ -293,6 +305,19 @@ class IdentityClaimPinTest extends TestCase
     private function claimAsAgent(string $pin): array
     {
         return $this->claim(self::OWNED, $pin, 'agent', self::AGENT_ID);
+    }
+
+    /** The single-hold path, confirmAndFinalizeIdentitySwap(), for this hold. */
+    private function confirmSingleHold(int $holdId, string $pin, string $confirmedByType, int $confirmedById): array
+    {
+        return $this->service->confirmAndFinalizeIdentitySwap([
+            'swap_reference' => $this->hold($holdId)['swap_reference'],
+            'pin' => $pin,
+            'confirmed_by_type' => $confirmedByType,
+            'confirmed_by_id' => $confirmedById,
+            'identity_document_verified' => true,
+            'destination_type' => 'DEPOSIT',
+        ]);
     }
 
     private function afterClaim(array $result, string $pin, array $pool): array
@@ -694,5 +719,51 @@ class IdentityClaimPinTest extends TestCase
         $this->assertTrue(password_verify('111111', $reservation['claim_pin_hash']));
         $this->assertSame(0, (int)$reservation['claim_pin_attempts']);
         $this->assertNull($reservation['claim_pin_locked_until']);
+    }
+
+    // ------------------------------------------------------------
+    // The single-hold path (confirmAndFinalizeIdentitySwap()), which
+    // swap/execute.php used to expose as swap_type CONFIRM_IDENTITY
+    // ------------------------------------------------------------
+
+    public function testOnlyAnApprovedAgentCanConfirmAHoldAsAnAgent(): void
+    {
+        $holdId = $this->addHold(self::OWNED, 'account_pin', '111111');
+
+        // The right code and the "document checked" flag aren't enough from
+        // someone who isn't an agent.
+        $this->assertRefused(
+            fn() => $this->confirmSingleHold($holdId, '111111', 'agent', self::OTHER_USER_ID),
+            'Only an approved VouchMorph agent can confirm a claim as an agent.'
+        );
+        $hold = $this->hold($holdId);
+        $this->assertSame('pending', $hold['status']);
+        $this->assertTrue(password_verify('111111', $hold['otp_pin_hash']));   // not used up
+        $this->assertSame(0, (int)$hold['otp_pin_attempts']);
+
+        // An approved agent gets through to the code check.
+        $this->assertRefused(fn() => $this->confirmSingleHold($holdId, '000000', 'agent', self::AGENT_ID), 'Incorrect claim PIN.');
+        $this->assertSame(1, (int)$this->hold($holdId)['otp_pin_attempts']);
+    }
+
+    public function testTheSingleHoldPathNeverTriesTheOwnersTransactionPinForSomeoneElse(): void
+    {
+        $holdId = $this->addHold(self::OWNED, 'account_pin', '111111');
+
+        // Guessing used to count against it, locking it after five...
+        for ($i = 0; $i < 6; $i++) {
+            $this->assertRefused(fn() => $this->confirmSingleHold($holdId, '000000', 'user', self::OTHER_USER_ID), 'Only they can claim it in the app.');
+        }
+        // ...and knowing it used to be enough.
+        $this->assertRefused(fn() => $this->confirmSingleHold($holdId, self::TRANSACTION_PIN, 'user', self::OTHER_USER_ID), 'Only they can claim it in the app.');
+
+        $pin = $this->transactionPin();
+        $this->assertSame(0, (int)$pin['failed_attempts']);
+        $this->assertNull($pin['locked_until']);
+        $this->assertSame('pending', $this->hold($holdId)['status']);
+
+        // The owner still gets through to their PIN.
+        $this->assertRefused(fn() => $this->confirmSingleHold($holdId, '000000', 'user', self::OWNER_ID), 'Incorrect transaction PIN.');
+        $this->assertSame(1, (int)$this->transactionPin()['failed_attempts']);
     }
 }

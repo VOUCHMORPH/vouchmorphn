@@ -5212,6 +5212,13 @@ public function initiateResidualRollover(int $reservationAccountId, string $iden
     return $result;
 }
 
+    /**
+     * Finalizes ONE identity hold (the single-hold path; claims normally go
+     * through the pool, prepareIdentityClaimPool()). confirmed_by_type,
+     * confirmed_by_id and the agent's document flag are trusted as given, so
+     * they must come from the caller's own authentication, never from a
+     * request body - which is why swap/execute.php refuses CONFIRM_IDENTITY.
+     */
     public function confirmAndFinalizeIdentitySwap(array $payload): array
 {
     error_log("[SwapService] ===== confirmAndFinalizeIdentitySwap =====");
@@ -5250,6 +5257,22 @@ public function initiateResidualRollover(int $reservationAccountId, string $iden
             || ($payload['national_id_verified'] ?? null) === true;
         if (!$documentVerified) {
             throw new RuntimeException("Agent must verify the physical {$identityType} first");
+        }
+        // FIX (2026-09-24): the flag above is only the agent's word. The
+        // confirmer has to be an approved agent, as the agent portal requires
+        // (agent/finalize_claim.php).
+        if (!$this->isApprovedAgent((int)($payload['confirmed_by_id'] ?? 0))) {
+            throw new RuntimeException("Only an approved VouchMorph agent can confirm a claim as an agent.");
+        }
+    }
+
+    // FIX (2026-09-24): money sent to a registered owner is claimed in the app
+    // by that owner alone. Their transaction PIN is never checked, or counted
+    // against, for anyone else (as in authenticateIdentityClaimPool()).
+    if ($confirmedByType === 'user' && ($identitySwap['claim_type'] ?? null) === 'account_pin') {
+        $owner = $this->findVerifiedIdentityOwner($identityType, (string)$identitySwap['identity_value']);
+        if (!$owner || (int)$owner['user_id'] !== (int)($payload['confirmed_by_id'] ?? 0)) {
+            throw new RuntimeException("This money was sent to a registered VouchMorph user. Only they can claim it in the app.");
         }
     }
 
