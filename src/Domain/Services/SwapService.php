@@ -3,6 +3,7 @@ declare(strict_types=1);
  
 namespace Domain\Services;  
 require_once __DIR__ . '/Fees/FeeLedger.php';
+require_once __DIR__ . '/../../Infrastructure/Credentials/CredentialsRepository.php';
 
 use PDO;
 use Exception;
@@ -25,6 +26,7 @@ use Infrastructure\Crypto\SignatureVerifier;
 use Infrastructure\Crypto\MessageSigner;
 use Infrastructure\Crypto\CertificateManager;
 use Infrastructure\Crypto\AggregateSigner;
+use Infrastructure\Credentials\CredentialsRepository;
 
 
 /**
@@ -12730,6 +12732,20 @@ private function findVerifiedIdentityOwner(string $identityType, string $identit
         return null;
     }
 }
+
+private ?CredentialsRepository $credentialsRepository = null;
+
+/**
+ * Users' transaction PINs (and their lockout counters) live in the
+ * separate credentials database, not on the users row -- see
+ * CredentialsRepository. Resolved on first use, so building a SwapService
+ * never needs that database unless a PIN is actually checked or set.
+ */
+private function credentialsRepository(): CredentialsRepository
+{
+    return $this->credentialsRepository ??= CredentialsRepository::fromEnvironment();
+}
+
  /**
  * Verifies the PIN supplied at claim time.
  * 
@@ -12766,26 +12782,21 @@ private function verifyIdentityClaimPin(array $identitySwap, string $suppliedPin
             throw new RuntimeException("This identity's verification status changed - claim cannot proceed. Contact support.");
         }
  
-        $stmt = $this->swapDB->prepare("
-            SELECT transaction_pin_hash, transaction_pin_attempts, transaction_pin_locked_until
-            FROM users WHERE user_id = :id
-        ");
-        $stmt->execute([':id' => $owner['user_id']]);
-        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+        $credentials = $this->credentialsRepository();
+        $storedPin = $credentials->findUserTransactionPin($owner['user_id']);
  
-        if (!$user || empty($user['transaction_pin_hash'])) {
+        if (!$storedPin || empty($storedPin['pin_hash'])) {
             throw new RuntimeException("No transaction PIN has been set on this account yet. Set one in your VouchMorph profile before claiming.");
         }
  
-        $this->assertNotLocked($user['transaction_pin_locked_until'] ?? null, 'transaction PIN');
+        $this->assertNotLocked($storedPin['locked_until'] ?? null, 'transaction PIN');
  
-        if (!password_verify($suppliedPin, $user['transaction_pin_hash'])) {
-            $this->recordFailedAccountPinAttempt($owner['user_id'], (int)($user['transaction_pin_attempts'] ?? 0));
+        if (!password_verify($suppliedPin, $storedPin['pin_hash'])) {
+            $this->recordFailedAccountPinAttempt($owner['user_id']);
             throw new RuntimeException("Incorrect transaction PIN.");
         }
  
-        $stmt = $this->swapDB->prepare("UPDATE users SET transaction_pin_attempts = 0 WHERE user_id = :id");
-        $stmt->execute([':id' => $owner['user_id']]);
+        $credentials->resetUserPinFailedAttempts($owner['user_id']);
         
         $this->markIdentityHoldsAuthorized($identityType, $identityValue, 'account_pin_verification');
         return;
@@ -12887,21 +12898,13 @@ private function recordFailedIdentityOtpAttempt(int $holdId, int $currentAttempt
     }
 }
  
-private function recordFailedAccountPinAttempt(int $userId, int $currentAttempts): void
+private function recordFailedAccountPinAttempt(int $userId): void
 {
-    $attempts = $currentAttempts + 1;
-    $maxAttempts = 5;
-    $lockUntil = $attempts >= $maxAttempts ? date('Y-m-d H:i:s', strtotime('+30 minutes')) : null;
+    // 5 misses -> 30-minute lock, applied in the credentials database.
+    $state = $this->credentialsRepository()->recordFailedUserPinAttempt($userId, 5, 30);
  
-    $stmt = $this->swapDB->prepare("
-        UPDATE users
-        SET transaction_pin_attempts = :attempts, transaction_pin_locked_until = :lock
-        WHERE user_id = :id
-    ");
-    $stmt->execute([':attempts' => $attempts, ':lock' => $lockUntil, ':id' => $userId]);
- 
-    if ($lockUntil) {
-        error_log("[SECURITY] User {$userId} transaction PIN locked after {$attempts} failed attempts");
+    if (!empty($state['locked_until'])) {
+        error_log("[SECURITY] User {$userId} transaction PIN locked after {$state['failed_attempts']} failed attempts");
     }
 }
  
@@ -12910,14 +12913,7 @@ public function setUserTransactionPin(int $userId, string $pin): void
     if (!preg_match('/^\d{4,6}$/', $pin)) {
         throw new RuntimeException("PIN must be 4-6 digits.");
     }
-    $hash = password_hash($pin, PASSWORD_DEFAULT);
-    $stmt = $this->swapDB->prepare("
-        UPDATE users
-        SET transaction_pin_hash = :hash, transaction_pin_set_at = NOW(),
-            transaction_pin_attempts = 0, transaction_pin_locked_until = NULL
-        WHERE user_id = :id
-    ");
-    $stmt->execute([':hash' => $hash, ':id' => $userId]);
+    $this->credentialsRepository()->setUserTransactionPin($userId, password_hash($pin, PASSWORD_DEFAULT));
 }
  
 public function getPendingClaimsForUser(int $userId): array

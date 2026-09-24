@@ -8,13 +8,15 @@ use RuntimeException;
 
 /**
  * Single point of access for login secrets (password_hash, plus admin
- * lockout counters) against the isolated credentials database.
+ * lockout counters) and users' transaction PINs (plus their lockout
+ * counters) against the isolated credentials database.
  *
  * Every place in the app that used to read or write users.password_hash,
- * admins.password_hash, or organization_users.password_hash directly goes
- * through here instead — so the credentials database is the only place
- * those secrets live, and there is exactly one code path to review for
- * how they're hashed, verified, and rate-limited.
+ * admins.password_hash, organization_users.password_hash, or
+ * users.transaction_pin_* directly goes through here instead — so the
+ * credentials database is the only place those secrets live, and there is
+ * exactly one code path to review for how they're hashed, verified, and
+ * rate-limited.
  *
  * Deliberately keyed by numeric id only (users.user_id / admins.admin_id)
  * — no username or email lives in this database. Identifier lookup
@@ -166,6 +168,140 @@ class CredentialsRepository
             "UPDATE admin_credentials SET failed_login_attempts = 0, locked_until = NULL, updated_at = NOW() WHERE admin_id = :id"
         );
         $stmt->execute([':id' => $adminId]);
+    }
+
+    // ============================================================================
+    // USER TRANSACTION PINS
+    // ============================================================================
+    //
+    // The PIN a user types to claim money sent to one of their verified
+    // identities (claim_type 'account_pin' in SwapService). It used to live
+    // in users.transaction_pin_* on the main database, where — for every
+    // self-registered and agent-registered user — it started out as the
+    // very same hash as their login credential, i.e. a second copy of the
+    // login secret outside this database.
+    //
+    // Every write below clears copied_from_main_db, which is what stops the
+    // one-time migration (TransactionPinMigrationRunner) from ever
+    // overwriting a row once the app has touched it — see
+    // scripts/credentials_db/schema.sql.
+
+    public function findUserTransactionPin(int $userId): ?array
+    {
+        $stmt = $this->db->prepare(
+            "SELECT user_id, pin_hash, failed_attempts, locked_until, pin_set_at
+             FROM user_transaction_pins WHERE user_id = :id"
+        );
+        $stmt->execute([':id' => $userId]);
+        return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+    }
+
+    /**
+     * Yes/no without pulling the hash out of the database, for callers
+     * (the dashboard's "Set a transaction PIN" step) that only need to
+     * know whether one exists.
+     */
+    public function hasUserTransactionPin(int $userId): bool
+    {
+        $stmt = $this->db->prepare("SELECT 1 FROM user_transaction_pins WHERE user_id = :id");
+        $stmt->execute([':id' => $userId]);
+        return (bool)$stmt->fetchColumn();
+    }
+
+    /**
+     * Sets or replaces the user's transaction PIN and clears any lockout,
+     * as setting a PIN always has. Upserts, since a user who has never set
+     * one has no row yet.
+     */
+    public function setUserTransactionPin(int $userId, string $pinHash): void
+    {
+        $stmt = $this->db->prepare("
+            INSERT INTO user_transaction_pins
+                (user_id, pin_hash, failed_attempts, locked_until, pin_set_at, copied_from_main_db, created_at, updated_at)
+            VALUES (:id, :hash, 0, NULL, NOW(), FALSE, NOW(), NOW())
+            ON CONFLICT (user_id) DO UPDATE
+                SET pin_hash = EXCLUDED.pin_hash,
+                    failed_attempts = 0,
+                    locked_until = NULL,
+                    pin_set_at = NOW(),
+                    copied_from_main_db = FALSE,
+                    updated_at = NOW()
+        ");
+        $stmt->execute([':id' => $userId, ':hash' => $pinHash]);
+    }
+
+    /**
+     * Sign-up's two secrets together: the login credential and the
+     * transaction PIN (the same hash, for every sign-up path that sets
+     * both), in one credentials-DB transaction so a new user can never end
+     * up with one and not the other. Same contract as
+     * createUserCredential(): the main-DB users row must already exist —
+     * see the class-level note on the two-step create.
+     */
+    public function createUserCredentialWithTransactionPin(int $userId, string $passwordHash, string $pinHash): void
+    {
+        $this->db->beginTransaction();
+        try {
+            $this->createUserCredential($userId, $passwordHash);
+            $this->setUserTransactionPin($userId, $pinHash);
+            $this->db->commit();
+        } catch (\Throwable $e) {
+            $this->db->rollBack();
+            throw $e;
+        }
+    }
+
+    /**
+     * Records one wrong PIN and, once $maxAttempts is reached, locks the
+     * PIN for $lockMinutes — the policy SwapService used to apply to
+     * users.transaction_pin_* directly, unchanged (including re-locking on
+     * every further miss after the first lock: only a correct PIN or a new
+     * PIN resets the counter).
+     *
+     * The counter is incremented in SQL rather than written back from a
+     * value the caller read earlier, so two wrong guesses racing each
+     * other can't both store the same "attempts + 1" and lose one. And
+     * because this is a separate connection from the main database, the
+     * miss stays recorded even when the main-DB swap transaction the PIN
+     * check ran inside is rolled back.
+     *
+     * Returns the row's new failed_attempts / locked_until; locked_until is
+     * non-null only when this miss is the one that locked the PIN.
+     */
+    public function recordFailedUserPinAttempt(int $userId, int $maxAttempts = 5, int $lockMinutes = 30): array
+    {
+        // The typed NULL is for Postgres: with only an untyped parameter
+        // and a bare NULL, the CASE would resolve to text, which can't be
+        // assigned to a timestamptz column.
+        $stmt = $this->db->prepare("
+            UPDATE user_transaction_pins
+            SET failed_attempts = failed_attempts + 1,
+                locked_until = CASE WHEN failed_attempts + 1 >= :max
+                                    THEN :lock_until
+                                    ELSE CAST(NULL AS TIMESTAMP WITH TIME ZONE) END,
+                copied_from_main_db = FALSE,
+                updated_at = NOW()
+            WHERE user_id = :id
+            RETURNING failed_attempts, locked_until
+        ");
+        $stmt->bindValue(':max', $maxAttempts, PDO::PARAM_INT);
+        // An absolute instant (with its UTC offset) rather than a bare
+        // local time, so the lock ends when intended whatever timezone
+        // this database session happens to run in.
+        $stmt->bindValue(':lock_until', date(DATE_ATOM, time() + $lockMinutes * 60));
+        $stmt->bindValue(':id', $userId, PDO::PARAM_INT);
+        $stmt->execute();
+        return $stmt->fetch(PDO::FETCH_ASSOC) ?: ['failed_attempts' => 0, 'locked_until' => null];
+    }
+
+    public function resetUserPinFailedAttempts(int $userId): void
+    {
+        $stmt = $this->db->prepare("
+            UPDATE user_transaction_pins
+            SET failed_attempts = 0, locked_until = NULL, copied_from_main_db = FALSE, updated_at = NOW()
+            WHERE user_id = :id
+        ");
+        $stmt->execute([':id' => $userId]);
     }
 
     // ============================================================================

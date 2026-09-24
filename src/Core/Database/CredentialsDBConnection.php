@@ -8,13 +8,13 @@ use Exception;
 /**
  * Connection to the isolated credentials database.
  *
- * Login secrets (username/email + password_hash) for users and admins live
- * here instead of the main application database, per the financial
- * regulations requirement to separate authentication secrets from
- * operational/business data. Deliberately its own class rather than a
- * parameter on DBConnection — the two databases have different
- * credentials, different access policies, and should never accidentally
- * share a connection or a transaction.
+ * Login secrets (password_hash) for users and admins, and users'
+ * transaction PINs, live here instead of the main application database,
+ * per the financial regulations requirement to separate authentication
+ * secrets from operational/business data. Deliberately its own class
+ * rather than a parameter on DBConnection — the two databases have
+ * different credentials, different access policies, and should never
+ * accidentally share a connection or a transaction.
  *
  * Mirrors DBConnection's shape (singleton, URL-only config, same SSL/DSN
  * handling) so anyone who understands one understands the other.
