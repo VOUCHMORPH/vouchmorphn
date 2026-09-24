@@ -124,7 +124,10 @@ even when the main-DB swap transaction the check ran inside rolls back.
 The system-generated one-time PINs (claim OTPs on `identity_swap_holds`,
 `reservation_accounts.claim_pin_hash`, identity-verification codes on
 `user_identities`, cash-out codes) aren't set by users and stay in the
-main database.
+main database. A claim made with the transaction PIN leaves no trace of it
+there: the reservation account that takes a claim's remainder remembers
+the claim's one-time code, never the transaction PIN
+(`SwapService::afterIdentityClaim()`).
 
 Components, in addition to the ones above:
 
