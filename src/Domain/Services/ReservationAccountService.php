@@ -76,8 +76,8 @@ class ReservationAccountService
     // into a jsonb column (same convention already used elsewhere in
     // SwapService, e.g. placeHoldOnHoldingRemainder's :source_holds::jsonb).
     // Kept driver-conditional (rather than hardcoded) so this class also
-    // runs against the sqlite PDO driver used by ReservationAccountServiceTest,
-    // which has no jsonb type and no cast syntax for it.
+    // runs against the sqlite PDO driver, which has no jsonb type and no
+    // cast syntax for it.
     private string $jsonCast;
 
     public function __construct(

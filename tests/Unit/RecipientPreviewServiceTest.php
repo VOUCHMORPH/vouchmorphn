@@ -12,7 +12,7 @@ require_once __DIR__ . '/../../vendor/autoload.php';
  * from the test without a live bank. InstitutionAdapterFactory picks the
  * adapter class out of the participant config's adapter_class field, so
  * pointing a fake participant at this class substitutes it in with no change
- * to production code (same trick ReservationAccountServiceTest uses).
+ * to production code (same trick as TransactionAuditTrailTest's FakeDebitAdapter).
  */
 class NameEnquiryFakeAdapter implements InstitutionAdapterInterface
 {
