@@ -27,7 +27,7 @@ class IdentityOwnerMatchingTest extends TestCase
         $this->db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         // getPendingIdentitySwaps() uses Postgres's NOW() -- register it as
         // a SQLite UDF rather than touching the production SQL (same
-        // approach ReservationAccountServiceTest already uses).
+        // approach TransactionAuditTrailTest uses).
         $this->db->sqliteCreateFunction('now', function () {
             return date('Y-m-d H:i:s');
         });

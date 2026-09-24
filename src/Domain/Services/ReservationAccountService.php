@@ -76,8 +76,8 @@ class ReservationAccountService
     // into a jsonb column (same convention already used elsewhere in
     // SwapService, e.g. placeHoldOnHoldingRemainder's :source_holds::jsonb).
     // Kept driver-conditional (rather than hardcoded) so this class also
-    // runs against the sqlite PDO driver used by ReservationAccountServiceTest,
-    // which has no jsonb type and no cast syntax for it.
+    // runs against the sqlite PDO driver, which has no jsonb type and no
+    // cast syntax for it.
     private string $jsonCast;
 
     public function __construct(
@@ -550,11 +550,67 @@ class ReservationAccountService
         return $moves;
     }
 
-    /** Remembers the claim PIN that parked money here, for claims that use only reservation money. */
+    /**
+     * Remembers the claim PIN that parked money here, for claims that use only
+     * reservation money. A new PIN starts with a clean attempt count.
+     */
     public function rememberClaimPin(int $id, string $pin): void
     {
-        $this->db->prepare("UPDATE reservation_accounts SET claim_pin_hash = :h, updated_at = now() WHERE id = :id")
-            ->execute([':h' => password_hash($pin, PASSWORD_DEFAULT), ':id' => $id]);
+        $this->db->prepare("
+            UPDATE reservation_accounts
+            SET claim_pin_hash = :h, claim_pin_attempts = 0, claim_pin_locked_until = NULL, updated_at = now()
+            WHERE id = :id
+        ")->execute([':h' => password_hash($pin, PASSWORD_DEFAULT), ':id' => $id]);
+    }
+
+    /**
+     * Counts one wrong claim PIN against each of these accounts and, once an
+     * account has $maxAttempts misses, locks its PIN for $lockMinutes - the
+     * policy of every other claim credential, including re-locking on every
+     * further miss until a match or a new PIN resets the count. Incremented
+     * in SQL, so misses racing each other can't overwrite each other's count.
+     *
+     * @param int[] $ids
+     */
+    public function recordFailedClaimPinAttempt(array $ids, int $maxAttempts = 5, int $lockMinutes = 30): void
+    {
+        if (!$ids) {
+            return;
+        }
+        $placeholders = [];
+        foreach (array_values($ids) as $i => $id) {
+            $placeholders[":id{$i}"] = (int)$id;
+        }
+        // The typed NULL is for Postgres, as in
+        // CredentialsRepository::recordFailedUserPinAttempt(): with an untyped
+        // parameter and a bare NULL the CASE would resolve to text.
+        $stmt = $this->db->prepare("
+            UPDATE reservation_accounts
+            SET claim_pin_attempts = claim_pin_attempts + 1,
+                claim_pin_locked_until = CASE WHEN claim_pin_attempts + 1 >= :max
+                                              THEN :lock_until
+                                              ELSE CAST(NULL AS TIMESTAMP WITH TIME ZONE) END,
+                updated_at = now()
+            WHERE id IN (" . implode(', ', array_keys($placeholders)) . ")
+        ");
+        $stmt->bindValue(':max', $maxAttempts, PDO::PARAM_INT);
+        // An absolute instant, so the lock ends when intended whatever
+        // timezone the database session runs in.
+        $stmt->bindValue(':lock_until', date(DATE_ATOM, time() + $lockMinutes * 60));
+        foreach ($placeholders as $name => $id) {
+            $stmt->bindValue($name, $id, PDO::PARAM_INT);
+        }
+        $stmt->execute();
+    }
+
+    /** The account's claim PIN matched: its attempt count starts again. */
+    public function resetClaimPinAttempts(int $id): void
+    {
+        $this->db->prepare("
+            UPDATE reservation_accounts
+            SET claim_pin_attempts = 0, claim_pin_locked_until = NULL, updated_at = now()
+            WHERE id = :id
+        ")->execute([':id' => $id]);
     }
 
     public function markRolled(int $id): void

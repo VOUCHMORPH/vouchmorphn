@@ -5212,6 +5212,13 @@ public function initiateResidualRollover(int $reservationAccountId, string $iden
     return $result;
 }
 
+    /**
+     * Finalizes ONE identity hold (the single-hold path; claims normally go
+     * through the pool, prepareIdentityClaimPool()). confirmed_by_type,
+     * confirmed_by_id and the agent's document flag are trusted as given, so
+     * they must come from the caller's own authentication, never from a
+     * request body - which is why swap/execute.php refuses CONFIRM_IDENTITY.
+     */
     public function confirmAndFinalizeIdentitySwap(array $payload): array
 {
     error_log("[SwapService] ===== confirmAndFinalizeIdentitySwap =====");
@@ -5250,6 +5257,22 @@ public function initiateResidualRollover(int $reservationAccountId, string $iden
             || ($payload['national_id_verified'] ?? null) === true;
         if (!$documentVerified) {
             throw new RuntimeException("Agent must verify the physical {$identityType} first");
+        }
+        // FIX (2026-09-24): the flag above is only the agent's word. The
+        // confirmer has to be an approved agent, as the agent portal requires
+        // (agent/finalize_claim.php).
+        if (!$this->isApprovedAgent((int)($payload['confirmed_by_id'] ?? 0))) {
+            throw new RuntimeException("Only an approved VouchMorph agent can confirm a claim as an agent.");
+        }
+    }
+
+    // FIX (2026-09-24): money sent to a registered owner is claimed in the app
+    // by that owner alone. Their transaction PIN is never checked, or counted
+    // against, for anyone else (as in authenticateIdentityClaimPool()).
+    if ($confirmedByType === 'user' && ($identitySwap['claim_type'] ?? null) === 'account_pin') {
+        $owner = $this->findVerifiedIdentityOwner($identityType, (string)$identitySwap['identity_value']);
+        if (!$owner || (int)$owner['user_id'] !== (int)($payload['confirmed_by_id'] ?? 0)) {
+            throw new RuntimeException("This money was sent to a registered VouchMorph user. Only they can claim it in the app.");
         }
     }
 
@@ -8056,10 +8079,11 @@ private function prepareIdentityClaimPool(string $identityType, string $identity
  *
  * One lockout throttles each claimer. For the owner with a transaction PIN,
  * that PIN's: a miss counts against it once, and while it is locked nothing
- * is tried at all (their misses no longer reach the one-time codes' lockout,
- * so without that their session could go on guessing the codes). Everyone
- * else's misses count against the one-time codes, as before - never against
- * the owner's transaction PIN, which no one else can now lock.
+ * is tried at all (their misses reach no other lockout, so without that
+ * their session could go on guessing the codes). Everyone else's misses
+ * count once against every code they were compared with - the pending
+ * swaps' one-time codes and the reservation PINs, each locking after 5 -
+ * and never against the owner's transaction PIN, which no one else can lock.
  *
  * @return array{method: string, hold: ?array} hold: the swap whose code matched
  */
@@ -8111,18 +8135,40 @@ private function authenticateIdentityClaimPool(
         $this->verifyIdentityClaimPin($matchedHold, $pin, $pinContext);   // lockout checks + resets attempts
         return ['method' => 'claim_otp', 'hold' => $matchedHold];
     }
+
+    // Reservation PINs, each with its own lock. For a claimer whose misses
+    // count against these codes, a locked one isn't compared at all - that
+    // is what keeps their guesses limited. The owner's misses count against
+    // their transaction PIN instead, so for them a locked one is compared,
+    // but only to tell them it is locked.
+    $comparedReservationIds = [];
+    $lockedReservationUntil = null;
     foreach ($reservations as $r) {
-        if (!empty($r['claim_pin_hash']) && password_verify($pin, $r['claim_pin_hash'])) {
+        if (empty($r['claim_pin_hash'])) {
+            continue;
+        }
+        $lockedUntil = $r['claim_pin_locked_until'] ?? null;
+        if (!$hasTransactionPin && self::isLocked($lockedUntil)) {
+            $lockedReservationUntil = $lockedUntil;
+            continue;
+        }
+        if (password_verify($pin, $r['claim_pin_hash'])) {
+            $this->assertNotLocked($lockedUntil, 'claim PIN');
+            $this->reservationAccountService->resetClaimPinAttempts((int)$r['id']);
             return ['method' => 'reservation_pin', 'hold' => null];
         }
+        $comparedReservationIds[] = (int)$r['id'];
     }
+
     if ($hasTransactionPin) {
         $this->verifyOwnerTransactionPin($ownerUserId, $identityType, $identityValue, $pin);   // a miss counts once, throws
         return ['method' => 'transaction_pin', 'hold' => null];
     }
 
-    // A miss, counted against the one-time codes as it always has been. The
-    // owner without a transaction PIN is told that's what is missing.
+    // A miss, counted once against every code it was compared with: the
+    // reservation PINs here, the one-time codes below as they always have
+    // been. The owner without a transaction PIN is told that's what is missing.
+    $this->reservationAccountService->recordFailedClaimPinAttempt($comparedReservationIds);
     $missMessage = $ownerUserId !== null
         ? "No transaction PIN has been set on this account yet. Set one in your VouchMorph profile before claiming."
         : "Incorrect claim PIN.";
@@ -8131,6 +8177,10 @@ private function authenticateIdentityClaimPool(
             $this->verifyIdentityClaimOtp($identityType, $identityValue, $pin, $hold['claim_type'] ?? null, $missMessage);   // counts the failure, throws
             break;
         }
+    }
+    // With nothing else to compare it with, a locked reservation PIN is what refused it.
+    if (!$comparedReservationIds) {
+        $this->assertNotLocked($lockedReservationUntil, 'claim PIN');
     }
     throw new RuntimeException($missMessage);
 }
@@ -8145,7 +8195,13 @@ private function afterIdentityClaim(array $result, string $pin, array $pool): ar
 {
     if (!empty($result['reservation_account_id'])
         && in_array($pool['authenticated_by'] ?? null, ['claim_otp', 'reservation_pin'], true)) {
-        $this->reservationAccountService->rememberClaimPin((int)$result['reservation_account_id'], $pin);
+        // The claim has paid out by now, so failing to remember its PIN must
+        // not report it as failed; the account keeps the PIN it had.
+        try {
+            $this->reservationAccountService->rememberClaimPin((int)$result['reservation_account_id'], $pin);
+        } catch (\Throwable $e) {
+            error_log("[SwapService] could not remember the claim PIN on reservation account {$result['reservation_account_id']}: " . $e->getMessage());
+        }
     }
     $result['rolled_in_reservations'] = $pool['rolled_in'];
     return $result;
@@ -12976,9 +13032,14 @@ private function verifyIdentityClaimOtp(string $identityType, string $identityVa
     $this->markIdentityHoldsAuthorized($identityType, $identityValue, 'pin_verification');
 }
  
+private static function isLocked(?string $lockedUntil): bool
+{
+    return $lockedUntil && strtotime($lockedUntil) > time();
+}
+
 private function assertNotLocked(?string $lockedUntil, string $label): void
 {
-    if ($lockedUntil && strtotime($lockedUntil) > time()) {
+    if (self::isLocked($lockedUntil)) {
         $waitMinutes = ceil((strtotime($lockedUntil) - time()) / 60);
         throw new RuntimeException("Too many incorrect attempts on the {$label}. Try again in {$waitMinutes} minute(s).");
     }
