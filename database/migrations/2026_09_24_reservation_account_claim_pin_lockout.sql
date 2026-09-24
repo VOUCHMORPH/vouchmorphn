@@ -13,9 +13,17 @@
 -- resets the count (ReservationAccountService::recordFailedClaimPinAttempt(),
 -- resetClaimPinAttempts(), rememberClaimPin()).
 --
--- Apply BEFORE deploying the code that uses these columns: that code
--- counts a wrong PIN here and resets the count on a match, and both fail
--- until the columns exist. Idempotent (IF NOT EXISTS), safe to re-run.
+-- With a shell, apply it BEFORE deploying the code that uses these columns:
+-- that code counts a wrong PIN here and resets the count on a match, and
+-- both fail until the columns exist.
+--     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f database/migrations/2026_09_24_reservation_account_claim_pin_lockout.sql
+-- Without one, deploy first and apply it straight away from
+-- /admin/run_swap_identity_v2_migrations.php, which ships with that code.
+-- Until then, a claim that involves a reservation account's claim PIN fails
+-- before any money moves, and a claim that leaves a remainder in one goes
+-- through without saving its code there. Nothing else is affected.
+--
+-- Idempotent (IF NOT EXISTS), safe to re-run.
 --
 -- claim_pin_hash itself predates tracked migrations (as identity_swap_holds
 -- does, see 2026_09_16_source_account_type.sql), hence ALTER only.
