@@ -157,13 +157,17 @@ before and after the deploy.
    psql "$CREDENTIALS_DATABASE_URL" -f scripts/credentials_db/schema.sql
    ```
 
-2. **Dry-run, apply, and verify** the copy (or use the same three
-   buttons on `/admin/run_transaction_pin_migration.php`):
+2. **Dry-run, apply, and verify** the copy:
    ```
    php scripts/management/migrate_transaction_pins_to_secure_db.php
    php scripts/management/migrate_transaction_pins_to_secure_db.php --apply
    php scripts/management/migrate_transaction_pins_to_secure_db.php --verify
    ```
+   Without a shell, skip to step 3: the browser version,
+   `/admin/run_transaction_pin_migration.php`, ships with this change, so
+   click its Dry run, Apply and Verify buttons straight after the deploy
+   instead. That order is safe too. The only cost is that until Apply
+   finishes, existing users are told they have no transaction PIN set.
 
 3. **Deploy the application code from this change.** From here, every
    PIN check, PIN change, and sign-up reads/writes the credentials
