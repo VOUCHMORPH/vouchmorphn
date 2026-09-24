@@ -1,0 +1,53 @@
+-- ============================================================================
+-- TRANSACTION PINS, PHASE 2 — DESTRUCTIVE. Run manually, against the MAIN
+-- database, only after ALL of the following are true:
+--
+--   1. The user_transaction_pins table exists in the credentials database
+--      in every environment that runs this app (re-run
+--      scripts/credentials_db/schema.sql against CREDENTIALS_DATABASE_URL —
+--      it is idempotent).
+--   2. scripts/management/migrate_transaction_pins_to_secure_db.php --apply
+--      has been run against production, and --verify reports OK — run both
+--      again AFTER the deploy in step 3, too: that picks up any PIN set on
+--      the old code between the last --apply and the deploy, and is safe
+--      (the copy never overwrites a PIN the new code has written).
+--   3. The application code from this same change (CredentialsRepository's
+--      transaction PIN methods, and every touchpoint that used to read or
+--      write users.transaction_pin_* directly) has been deployed and is
+--      confirmed working in production: a real self-service identity claim
+--      finalized with a transaction PIN, a PIN set/changed from the profile,
+--      and a new self-service and agent-assisted sign-up whose PIN then
+--      works for a claim.
+--   4. You have a fresh backup of the main database.
+--
+-- This is NOT run automatically by anything in this codebase — no deploy
+-- script, migration runner, or application code executes this file. That
+-- is intentional: the moment this runs, any code path still reading these
+-- columns directly (instead of through CredentialsRepository) breaks
+-- immediately and permanently, with no easy rollback beyond the backup from
+-- step 4.
+--
+-- What this drops and why:
+--   - users.transaction_pin_hash: the secret itself. For every self- and
+--     agent-registered user it started out as the very same hash as their
+--     login password, so as long as it exists here, this database still
+--     holds a copy of the login secret that the credentials-DB move was
+--     meant to take out of it.
+--   - users.transaction_pin_attempts / users.transaction_pin_locked_until:
+--     lockout state that only makes sense next to the hash it protects;
+--     the app now reads and writes it exclusively in the credentials
+--     database.
+--   - users.transaction_pin_set_at: moved with the hash (pin_set_at).
+--
+-- Deliberately NOT dropped:
+--   - users.has_transaction_pin: a boolean, not a secret, and
+--     public/user/login.php still selects it.
+--   - users.pin_attempts / users.pin_locked_until: declared by the
+--     checked-in schema but never read or written by the app — not part of
+--     this change.
+-- ============================================================================
+
+ALTER TABLE users DROP COLUMN IF EXISTS transaction_pin_hash;
+ALTER TABLE users DROP COLUMN IF EXISTS transaction_pin_attempts;
+ALTER TABLE users DROP COLUMN IF EXISTS transaction_pin_locked_until;
+ALTER TABLE users DROP COLUMN IF EXISTS transaction_pin_set_at;
