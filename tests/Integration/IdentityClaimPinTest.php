@@ -19,7 +19,9 @@ require_once __DIR__ . '/../../vendor/autoload.php';
  * code. Money sent to an unregistered recipient ('otp_pin') is claimed with
  * the code. The owner used to be able to do neither in the app: the
  * transaction PIN ended in "Incorrect claim PIN.", and the SMS code was checked
- * as a transaction PIN, failing and counting towards that PIN's lockout.
+ * as a transaction PIN, failing and counting towards that PIN's lockout. A
+ * reservation account's claim PIN, which also opens the pool, used to have no
+ * attempt limit at all.
  *
  * Runs against a real PostgreSQL server: the pool is loaded with SELECT ...
  * FOR UPDATE, which SQLite can't parse. Same throwaway-database pattern and
@@ -34,8 +36,9 @@ require_once __DIR__ . '/../../vendor/autoload.php';
  * tearDownAfterClass. SwapService is built without running its constructor
  * and wired up by reflection (as in TransactionPinCredentialsTest), with the
  * real CredentialsRepository and ReservationAccountService. Only the bank is
- * stubbed, by the subclass that skips the constructor: it never confirms a
- * reservation balance, so none is rolled into a pool.
+ * stubbed, by the subclass that skips the constructor: it confirms a
+ * reservation balance only when a test sets one, and rolling that balance
+ * into a pool just adds a pending hold for it.
  */
 class IdentityClaimPinTest extends TestCase
 {
@@ -161,6 +164,8 @@ class IdentityClaimPinTest extends TestCase
                 updated_at               TIMESTAMPTZ DEFAULT now()
             )
         ");
+        // The claim PIN's attempt limit, from the real migration.
+        self::$main->exec(file_get_contents(__DIR__ . '/../../database/migrations/2026_09_24_reservation_account_claim_pin_lockout.sql'));
         self::$cred->exec('DROP TABLE IF EXISTS user_credentials, admin_credentials, user_transaction_pins');
         self::$cred->exec(file_get_contents(__DIR__ . '/../../scripts/credentials_db/schema.sql'));
 
@@ -171,16 +176,35 @@ class IdentityClaimPinTest extends TestCase
         $credentials = new CredentialsRepository(self::$cred);
         $credentials->setUserTransactionPin(self::OWNER_ID, self::hash(self::TRANSACTION_PIN));
 
-        $this->service = new class extends SwapService {
-            public function __construct()
+        $this->service = new class(self::$main) extends SwapService {
+            // What the bank holds in each reservation account: nothing unless
+            // a test says so, so by default no balance is rolled into a pool.
+            public float $reservationBalance = 0.0;
+
+            public function __construct(private PDO $testDb)
             {
             }
 
-            // The bank never confirms a reservation balance, so none is
-            // rolled into a pool.
             public function verifyAssetSigned(array $payload, string $institution): array
             {
-                return ['verified' => false, 'balance' => null];
+                return ['verified' => $this->reservationBalance > 0, 'balance' => $this->reservationBalance];
+            }
+
+            // Rolling a reservation balance into the pool: a pending hold for it.
+            public function initiateSwapToIdentity(array $payload): array
+            {
+                $reference = 'RESROLL_' . bin2hex(random_bytes(6));
+                $this->testDb->prepare("
+                    INSERT INTO identity_swap_holds
+                        (swap_reference, identity_type, identity_value, amount, hold_expires_at, source_payload)
+                    VALUES (:ref, :type, :value, :amount, NOW() + INTERVAL '1 day', '{}'::jsonb)
+                ")->execute([
+                    ':ref' => $reference,
+                    ':type' => $payload['identity_type'],
+                    ':value' => $payload['identity_value'],
+                    ':amount' => $payload['amount'],
+                ]);
+                return ['swap_reference' => $reference];
             }
         };
         $adapters = (new ReflectionClass(InstitutionAdapterFactory::class))->newInstanceWithoutConstructor();
@@ -231,20 +255,27 @@ class IdentityClaimPinTest extends TestCase
     }
 
     /** An open reservation account of the identity; $code is the claim PIN it remembers. */
-    private function addReservation(array $identity, ?string $code): int
+    private function addReservation(array $identity, ?string $code, string $institution = 'ZURUBANK'): int
     {
         $stmt = self::$main->prepare("
             INSERT INTO reservation_accounts
                 (identity_type, identity_value, institution, currency, account_identifier, status, claim_pin_hash)
-            VALUES (:type, :value, 'ZURUBANK', 'BWP', 'RES-0001', 'active', :hash)
+            VALUES (:type, :value, :institution, 'BWP', 'RES-0001', 'active', :hash)
             RETURNING id
         ");
         $stmt->execute([
             ':type' => $identity[0],
             ':value' => $identity[1],
+            ':institution' => $institution,
             ':hash' => $code !== null ? self::hash($code) : null,
         ]);
         return (int)$stmt->fetchColumn();
+    }
+
+    /** As five misses leave it: locked for the next 30 minutes. */
+    private static function lockReservationPins(): void
+    {
+        self::$main->exec("UPDATE reservation_accounts SET claim_pin_attempts = 5, claim_pin_locked_until = NOW() + INTERVAL '30 minutes'");
     }
 
     /** prepareIdentityClaimPool() as the app ('user') or the agent portal ('agent') calls it. */
@@ -542,5 +573,126 @@ class IdentityClaimPinTest extends TestCase
         $this->assertSame('reservation_pin', $this->claimAsAgent('246810')['authenticated_by']);
         $this->assertSame('reservation_pin', $this->claimAsOwner('246810')['authenticated_by']);
         $this->assertSame(0, (int)$this->transactionPin()['failed_attempts']);
+    }
+
+    // ------------------------------------------------------------
+    // A reservation account's claim PIN: an attempt limit of its own
+    // ------------------------------------------------------------
+
+    public function testWrongPinsLockTheReservationPinOfAPoolWithOnlyReservationMoney(): void
+    {
+        // No pending swap, so no one-time code for a miss to count against.
+        $reservationId = $this->addReservation(self::UNREGISTERED, '246810');
+        $this->service->reservationBalance = 50.0;
+        $claim = fn(string $pin) => $this->claim(self::UNREGISTERED, $pin, 'user', self::OTHER_USER_ID);
+
+        for ($i = 1; $i <= 5; $i++) {
+            $this->assertRefused(fn() => $claim('000000'), 'Incorrect claim PIN.');
+            $this->assertSame($i, (int)$this->reservation($reservationId)['claim_pin_attempts']);
+        }
+        $lockedFor = strtotime($this->reservation($reservationId)['claim_pin_locked_until']) - time();
+        $this->assertGreaterThan(29 * 60, $lockedFor);
+        $this->assertLessThanOrEqual(30 * 60, $lockedFor);
+
+        // While locked the PIN isn't compared, so the right one gets the same
+        // answer as a wrong one, and nothing more is counted.
+        foreach (['246810', '000000'] as $pin) {
+            $this->assertRefused(fn() => $claim($pin), 'Too many incorrect attempts on the claim PIN');
+        }
+        $this->assertSame(5, (int)$this->reservation($reservationId)['claim_pin_attempts']);
+
+        // Once the lock has run out, every further miss locks it again...
+        self::$main->exec("UPDATE reservation_accounts SET claim_pin_locked_until = NOW() - INTERVAL '1 minute'");
+        $this->assertRefused(fn() => $claim('000000'), 'Incorrect claim PIN.');
+        $this->assertRefused(fn() => $claim('246810'), 'Too many incorrect attempts on the claim PIN');
+
+        // ...and the right PIN opens the pool and resets the count.
+        self::$main->exec("UPDATE reservation_accounts SET claim_pin_locked_until = NOW() - INTERVAL '1 minute'");
+        $pool = $claim('246810');
+        $this->assertSame('reservation_pin', $pool['authenticated_by']);
+        $this->assertCount(1, $pool['holds']);   // the reservation balance, rolled in
+        $reservation = $this->reservation($reservationId);
+        $this->assertSame(0, (int)$reservation['claim_pin_attempts']);
+        $this->assertNull($reservation['claim_pin_locked_until']);
+    }
+
+    public function testAMissCountsOnceAgainstEveryCodeItWasComparedWith(): void
+    {
+        $holdId = $this->addHold(self::OWNED, 'account_pin', '111111');
+        $first = $this->addReservation(self::OWNED, '246810');
+        $second = $this->addReservation(self::OWNED, '135790', 'OTHERBANK');
+
+        $this->assertRefused(fn() => $this->claimAsAgent('000000'), 'Incorrect claim PIN.');
+
+        $this->assertSame(1, (int)$this->hold($holdId)['otp_pin_attempts']);
+        $this->assertSame(1, (int)$this->reservation($first)['claim_pin_attempts']);
+        $this->assertSame(1, (int)$this->reservation($second)['claim_pin_attempts']);
+        $this->assertSame(0, (int)$this->transactionPin()['failed_attempts']);
+    }
+
+    public function testTheOwnersMissesStillCountOnlyAgainstTheirTransactionPin(): void
+    {
+        $holdId = $this->addHold(self::OWNED, 'account_pin', '111111');
+        $reservationId = $this->addReservation(self::OWNED, '246810');
+
+        $this->assertRefused(fn() => $this->claimAsOwner('000000'), 'Incorrect transaction PIN.');
+
+        $this->assertSame(1, (int)$this->transactionPin()['failed_attempts']);
+        $this->assertSame(0, (int)$this->reservation($reservationId)['claim_pin_attempts']);
+        $this->assertSame(0, (int)$this->hold($holdId)['otp_pin_attempts']);
+
+        // And while their transaction PIN is locked, the reservation PIN isn't tried either.
+        self::$cred->exec("UPDATE user_transaction_pins SET failed_attempts = 5, locked_until = NOW() + INTERVAL '30 minutes'");
+        $this->assertRefused(fn() => $this->claimAsOwner('246810'), 'Too many incorrect attempts on the transaction PIN');
+    }
+
+    public function testALockedReservationPinDoesNotStandInTheOwnersWay(): void
+    {
+        $this->addHold(self::OWNED, 'account_pin', '111111');
+        $reservationId = $this->addReservation(self::OWNED, '246810');
+        // Someone else's guessing, through an agent, locks it.
+        for ($i = 0; $i < 5; $i++) {
+            $this->assertRefused(fn() => $this->claimAsAgent('000000'), 'Incorrect claim PIN.');
+        }
+        $this->assertNotNull($this->reservation($reservationId)['claim_pin_locked_until']);
+
+        // The owner is told it's locked, at no cost to their transaction PIN...
+        $this->assertRefused(fn() => $this->claimAsOwner('246810'), 'Too many incorrect attempts on the claim PIN');
+        $this->assertSame(0, (int)$this->transactionPin()['failed_attempts']);
+        // ...and their transaction PIN opens the pool anyway.
+        $this->assertSame('transaction_pin', $this->claimAsOwner(self::TRANSACTION_PIN)['authenticated_by']);
+    }
+
+    public function testTheSwapsOwnCodeStaysLimitedWhileAReservationPinIsLocked(): void
+    {
+        $reservationId = $this->addReservation(self::UNREGISTERED, '246810');
+        self::lockReservationPins();
+        // New money arrives, with a code of its own.
+        $holdId = $this->addHold(self::UNREGISTERED, 'otp_pin', '333333');
+        $claim = fn(string $pin) => $this->claim(self::UNREGISTERED, $pin, 'user', self::OTHER_USER_ID);
+
+        for ($i = 1; $i <= 5; $i++) {
+            $this->assertRefused(fn() => $claim('000000'), 'Incorrect claim PIN.');
+            $this->assertSame($i, (int)$this->hold($holdId)['otp_pin_attempts']);
+        }
+        $this->assertRefused(fn() => $claim('333333'), 'Too many incorrect attempts on the claim PIN');
+        // The locked reservation PIN was never compared, so never counted.
+        $this->assertSame(5, (int)$this->reservation($reservationId)['claim_pin_attempts']);
+    }
+
+    public function testANewClaimPinOnTheReservationAccountStartsWithACleanCount(): void
+    {
+        $this->addHold(self::OWNED, 'account_pin', '111111');
+        $reservationId = $this->addReservation(self::OWNED, '246810');
+        self::lockReservationPins();
+
+        // The swap's own code still works, and the claim parks a remainder there.
+        $pool = $this->claimAsAgent('111111');
+        $this->afterClaim(['reservation_account_id' => $reservationId], '111111', $pool);
+
+        $reservation = $this->reservation($reservationId);
+        $this->assertTrue(password_verify('111111', $reservation['claim_pin_hash']));
+        $this->assertSame(0, (int)$reservation['claim_pin_attempts']);
+        $this->assertNull($reservation['claim_pin_locked_until']);
     }
 }

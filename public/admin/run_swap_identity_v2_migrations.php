@@ -4,12 +4,12 @@ declare(strict_types=1);
 /**
  * platform-admin/run_swap_identity_v2_migrations.php
  *
- * Browser-based front end for running the three pending migrations behind
+ * Browser-based front end for running the pending migrations behind
  * the swap-to-identity algorithm v2 build-out, for environments where a
  * shell isn't available (e.g. some Railway plans) — same rationale and
  * same auth pattern as run_credentials_migration.php.
  *
- * Scoped deliberately narrow: this runs exactly these three files, never
+ * Scoped deliberately narrow: this runs exactly these files, never
  * arbitrary SQL and never anything from database/migrations/ this page
  * doesn't explicitly name. It does NOT include
  * 2026_08_30_message_cards_unique_user_id.sql — that migration predates
@@ -20,8 +20,9 @@ declare(strict_types=1);
  *   2. database/migrations/2026_09_16_source_account_type.sql
  *   3. database/migrations/2026_09_17_reservation_account_consumed_status.sql
  *   4. database/migrations/2026_09_18_activity_and_sub_requests.sql
+ *   5. database/migrations/2026_09_24_reservation_account_claim_pin_lockout.sql
  *
- * All four are idempotent (IF NOT EXISTS / DROP...IF EXISTS guards
+ * All five are idempotent (IF NOT EXISTS / DROP...IF EXISTS guards
  * throughout) — safe to click Apply more than once. Each file's own
  * BEGIN/COMMIT makes it atomic; a failure partway through one file rolls
  * that file back, and this page stops before running any file after it,
@@ -31,7 +32,7 @@ declare(strict_types=1);
  * organizations/create.php and run_credentials_migration.php use, since
  * this writes schema to the main database.
  *
- * Safe to delete once all three migrations are applied and verified in
+ * Safe to delete once all of these migrations are applied and verified in
  * every environment that needs them — it has no other purpose.
  */
 
@@ -63,6 +64,11 @@ const MIGRATIONS = [
         'key' => 'activity_and_sub_requests',
         'label' => '2026_09_18_activity_and_sub_requests.sql',
         'path' => __DIR__ . '/../../database/migrations/2026_09_18_activity_and_sub_requests.sql',
+    ],
+    [
+        'key' => 'reservation_account_claim_pin_lockout',
+        'label' => '2026_09_24_reservation_account_claim_pin_lockout.sql',
+        'path' => __DIR__ . '/../../database/migrations/2026_09_24_reservation_account_claim_pin_lockout.sql',
     ],
 ];
 
@@ -124,6 +130,13 @@ function checkMigrationStatus(PDO $db): array {
           AND table_name IN ('swap_activity', 'swap_sub_requests')
     ");
     $status['activity_and_sub_requests'] = (int)$stmt->fetchColumn() === 2;
+
+    $stmt = $db->query("
+        SELECT COUNT(*) FROM information_schema.columns
+        WHERE table_name = 'reservation_accounts'
+          AND column_name IN ('claim_pin_attempts', 'claim_pin_locked_until')
+    ");
+    $status['reservation_account_claim_pin_lockout'] = (int)$stmt->fetchColumn() === 2;
 
     return $status;
 }
@@ -257,7 +270,7 @@ $displayStatus = $statusAfter ?? $statusBefore;
 
 <div class="step">
     <h2>Check status</h2>
-    <p>Read-only — queries information_schema/pg_catalog directly to see which of the three migrations are already applied. Runs no SQL that changes anything.</p>
+    <p>Read-only — queries information_schema/pg_catalog directly to see which of these migrations are already applied. Runs no SQL that changes anything.</p>
     <form method="POST">
         <input type="hidden" name="csrf_token" value="<?php echo safeHtmlV($csrfToken); ?>">
         <input type="hidden" name="action" value="status">
@@ -267,7 +280,7 @@ $displayStatus = $statusAfter ?? $statusBefore;
 
 <div class="step">
     <h2>Apply pending migrations</h2>
-    <p>Runs whichever of the three files above are not yet applied, in order, stopping if one fails. Already-applied files are skipped. Safe to run more than once — every statement in these files is guarded (IF NOT EXISTS / DROP...IF EXISTS), so re-running an already-applied file is a no-op rather than an error.</p>
+    <p>Runs whichever of the files above are not yet applied, in order, stopping if one fails. Already-applied files are skipped. Safe to run more than once — every statement in these files is guarded (IF NOT EXISTS / DROP...IF EXISTS), so re-running an already-applied file is a no-op rather than an error.</p>
     <form method="POST" onsubmit="return confirm('This will run schema-changing SQL against the main database. Continue?');">
         <input type="hidden" name="csrf_token" value="<?php echo safeHtmlV($csrfToken); ?>">
         <input type="hidden" name="action" value="apply">
@@ -275,7 +288,7 @@ $displayStatus = $statusAfter ?? $statusBefore;
     </form>
 </div>
 
-<p style="font-size:12px;color:#888;">This page only runs the three files named above, never arbitrary SQL. It does not touch 2026_08_30_message_cards_unique_user_id.sql (unrelated, predates this work).</p>
+<p style="font-size:12px;color:#888;">This page only runs the files named above, never arbitrary SQL. It does not touch 2026_08_30_message_cards_unique_user_id.sql (unrelated, predates this work).</p>
 
 </body>
 </html>
