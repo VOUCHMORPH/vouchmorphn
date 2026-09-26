@@ -5542,6 +5542,15 @@ return $result;
         if ($status !== 'all') {
             $sql .= " AND h.status = :status AND h.hold_expires_at > NOW()";
         }
+        if ($status === 'pending') {
+            // FIX: a hold a cash-out claim has locked to its code stays
+            // 'pending' until the cash is collected, but it is no longer
+            // waiting to be claimed (prepareIdentityClaimPool() skips it) -
+            // listing it kept "Finalize identity swap" on the claimer's
+            // screen after they had claimed. If the code expires unused the
+            // lock is lifted and the hold is listed again.
+            $sql .= " AND h.claim_reference IS NULL";
+        }
 
         $sql .= " ORDER BY h.created_at DESC";
 
@@ -5960,20 +5969,23 @@ private function settlePosToMerchant(
     string $merchantAccountIdentifierType,
     string $currency,
     float $amount,
-    string $reference
+    string $reference,
+    ?string $destinationAssetType = null
 ): float {
     $switchCode = $this->getCommonSwitch([$sourceInstitution, $destinationInstitution]);
 
     if ($switchCode !== null) {
         return $this->settlePosViaSwitch(
             $switchCode, $sourceInstitution, $destinationInstitution,
-            $merchantAccountIdentifier, $currency, $amount, $reference
+            $merchantAccountIdentifier, $currency, $amount, $reference,
+            $merchantAccountIdentifierType, $destinationAssetType
         );
     }
 
     return $this->settlePosDirect(
         $sourceInstitution, $destinationInstitution,
-        $merchantAccountIdentifier, $merchantAccountIdentifierType, $currency, $amount, $reference
+        $merchantAccountIdentifier, $merchantAccountIdentifierType, $currency, $amount, $reference,
+        $destinationAssetType
     );
 }
 
@@ -5984,7 +5996,9 @@ private function settlePosViaSwitch(
     string $merchantAccountIdentifier,
     string $currency,
     float $amount,
-    string $reference
+    string $reference,
+    string $merchantAccountIdentifierType = 'account_number',
+    ?string $destinationAssetType = null
 ): float {
     $sourceSettlement = $this->getSourceSettlementAccount($sourceInstitution, $currency);
 
@@ -6022,7 +6036,7 @@ private function settlePosViaSwitch(
         ]);
         return $this->settlePosDirect(
             $sourceInstitution, $destinationInstitution, $merchantAccountIdentifier,
-            'account_number', $currency, $amount, $reference
+            $merchantAccountIdentifierType, $currency, $amount, $reference, $destinationAssetType
         );
     }
 
@@ -7735,6 +7749,7 @@ public function getAggregatedIdentityBalance(string $identityType, string $ident
           AND identity_value = :identity_value
           AND status = 'pending'
           AND hold_expires_at > NOW()
+          AND claim_reference IS NULL   -- already claimed as a cash-out code (see getPendingIdentitySwaps())
         GROUP BY identity_type, identity_value, currency
     ";
 
@@ -8299,6 +8314,11 @@ public function finalizeAggregatedIdentityClaimSelfService(
         throw new RuntimeException("destination_institution is required for CASHOUT");
     }
     $destinationInstitution = $destinationDetails['destination_institution'];
+    if ($destinationType === 'DEPOSIT') {
+        // Before the PIN check, so a destination the bank can't take is
+        // refused without costing the claimer an attempt.
+        $destinationDetails = $this->claimDepositDestination($destinationInstitution, $destinationDetails);
+    }
 
     // The pool: pending holds + every reservation balance (held in full),
     // authenticated with the claim PIN. See prepareIdentityClaimPool().
@@ -8324,6 +8344,56 @@ public function finalizeAggregatedIdentityClaimSelfService(
         $identityValue
     );
     return $this->afterIdentityClaim($result, $pin, $pool);
+}
+
+/**
+ * Where a self-service DEPOSIT claim lands: the account or wallet the claimer
+ * chose, described to the bank as exactly that. The claim form says which
+ * kind it is; an older client sends only the number, which is taken as an
+ * account (as before) unless its identifier type names a phone or wallet.
+ *
+ * Without this the kind was lost: every claim went out as an ACCOUNT deposit,
+ * so a claim into a wallet reached the bank as an account "numbered" with the
+ * wallet's phone number, and the money never arrived where the claimer chose.
+ * A kind the institution doesn't offer (a wallet at a bank without wallets)
+ * is refused here, before the PIN is checked.
+ */
+private function claimDepositDestination(string $institution, array $details): array
+{
+    $walletIdentifierTypes = ['phone', 'msisdn', 'wallet', 'wallet_id'];
+    // WALLET, BANK-WALLET, MNO-WALLET -> WALLET; ACCOUNT, BANK-ACCOUNT, SAVINGS-ACCOUNT -> ACCOUNT
+    $kindOf = function ($type): string {
+        $type = strtoupper(trim((string)$type));
+        return str_contains($type, 'WALLET') ? 'WALLET' : (str_contains($type, 'ACCOUNT') ? 'ACCOUNT' : $type);
+    };
+    $identifierType = strtolower(trim((string)($details['destination_identifier_type'] ?? '')));
+    $requested = trim((string)($details['destination_asset_type'] ?? ''));
+
+    $assetType = $requested === ''
+        ? (in_array($identifierType, $walletIdentifierTypes, true) ? 'WALLET' : 'ACCOUNT')
+        : $kindOf($requested);
+    if (!in_array($assetType, ['ACCOUNT', 'WALLET'], true)) {
+        throw new RuntimeException("An identity claim can be deposited into an account or a wallet, not a {$assetType}.");
+    }
+
+    $participant = $this->participants[$institution] ?? $this->participants[strtoupper($institution)] ?? [];
+    if (is_array($participant['asset_types'] ?? null)) {
+        $offered = array_map($kindOf, $participant['asset_types']);
+        if (!in_array($assetType, $offered, true)) {
+            $name = $participant['name'] ?? $institution;
+            throw new RuntimeException($assetType === 'WALLET'
+                ? "{$name} doesn't offer wallets. Choose an account there, or a wallet at another institution."
+                : "{$name} doesn't offer accounts. Choose a wallet there, or an account at another institution.");
+        }
+    }
+
+    $details['destination_asset_type'] = $assetType;
+    if ($assetType === 'WALLET' && !in_array($identifierType, $walletIdentifierTypes, true)) {
+        $details['destination_identifier_type'] = 'phone';
+    } elseif ($assetType === 'ACCOUNT' && ($identifierType === '' || $identifierType === 'account' || in_array($identifierType, $walletIdentifierTypes, true))) {
+        $details['destination_identifier_type'] = 'account_number';
+    }
+    return $details;
 }
 
 /**
@@ -9513,8 +9583,14 @@ private function deliverDirectClaim(
     try {
         $sources = array_keys($heldByInstitution);
         if (count($sources) === 1) {
+            // FIX: the destination's asset type is passed on here too, as the
+            // multi-source branch below already did. Without it a claim into
+            // a WALLET went to the bank as an ACCOUNT deposit to an "account"
+            // numbered with the wallet's phone number, so the money never
+            // reached the wallet the claimer chose.
             $this->settlePosToMerchant($sources[0], $destinationInstitution, $destIdentifier,
-                $destinationDetails['destination_identifier_type'] ?? 'account_number', $currency, $netPayoutAmount, $consolidationReference . '_PAYOUT');
+                $destinationDetails['destination_identifier_type'] ?? 'account_number', $currency, $netPayoutAmount, $consolidationReference . '_PAYOUT',
+                $destinationDetails['destination_asset_type'] ?? null);
         } else {
             $this->settlePosDirect($sources[0], $destinationInstitution, $destIdentifier,
                 $destinationDetails['destination_identifier_type'] ?? 'account_number', $currency, $netPayoutAmount, $consolidationReference . '_PAYOUT',

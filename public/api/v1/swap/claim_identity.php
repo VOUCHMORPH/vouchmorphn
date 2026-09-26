@@ -102,9 +102,15 @@ if ($destinationType === 'DEPOSIT') {
     }
     $destinationDetails['destination_institution'] = $destinationInstitution;
     $destinationDetails['destination_identifier'] = $destinationIdentifier;
-    $destinationDetails['destination_identifier_type'] = $body['destination_identifier_type'] ?? 'account';
+    // Account or wallet, as the claimer chose; when a client doesn't say,
+    // SwapService::claimDepositDestination() works it out (an account, as
+    // before). This used to default the type to 'account' outright, so a
+    // wallet was paid as if it were an account numbered with its phone.
+    if (!empty($body['destination_identifier_type'])) {
+        $destinationDetails['destination_identifier_type'] = (string)$body['destination_identifier_type'];
+    }
     if (!empty($body['destination_asset_type'])) {
-        $destinationDetails['destination_asset_type'] = $body['destination_asset_type'];
+        $destinationDetails['destination_asset_type'] = (string)$body['destination_asset_type'];
     }
 } else {
     // CASHOUT
@@ -152,9 +158,12 @@ try {
         $claimAmount !== null ? round((float)$claimAmount, 2) : null
     );
 
-    $message = $result['status'] === 'success'
-        ? 'Funds claimed successfully!'
-        : 'Some holds could not be claimed — see details.';
+    $message = match ($result['status'] ?? null) {
+        'success' => 'Funds claimed successfully!',
+        'pending_cashout' => 'Cash-out code issued — collect the cash with it before it expires.',
+        'parked_instead_of_payout' => 'The payout could not be delivered, so the money was kept in your reservation account instead.',
+        default => 'Some holds could not be claimed — see details.',
+    };
 
     echo json_encode(['success' => true, 'data' => $result, 'message' => $message]);
 

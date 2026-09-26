@@ -61,7 +61,23 @@ class CardService
     private const ATM_DAILY_LIMIT = 2000;
     private const POS_MAX_TRANSACTION = 5000;
     private const DEFAULT_ACTIVATION_FEE = 5.00;
-    
+
+    /**
+     * The hold references that a card swap which hasn't finished still has
+     * to debit (see isHoldReservedForPendingSwap()), as a subquery. Shared
+     * with the incident monitor, which must not report such a hold as a
+     * failed release.
+     */
+    public const PENDING_SWAP_HOLDS_SQL = "
+        SELECT pc.hold_reference
+        FROM pool_contributions pc
+        JOIN virtual_funding_pools p ON p.pool_id = pc.pool_id
+        WHERE pc.hold_reference IS NOT NULL
+          AND pc.status NOT IN ('DEBITED', 'COMPLETED', 'FAILED', 'CANCELLED')
+          AND p.status IN ('PENDING_CASHOUT', 'PENDING_ID_CLAIM')
+          AND p.created_at > NOW() - INTERVAL '24 hours'
+    ";
+
     public function __construct(
         PDO $db, 
         string $countryCode, 
@@ -1722,7 +1738,38 @@ public function regenerateTotpSecret(string $cardSuffix, int $userId): array
         }
     }
 
-    
+
+/**
+ * True while a card swap that hasn't finished still has to debit part of
+ * this hold: a cash-out code not collected yet, or a swap to an identity
+ * not claimed yet (PoolCoordinator defers those debits until then). A swap
+ * that used only part of a hooked source leaves the rest hooked under the
+ * SAME hold, and an institution releases a hold whole - releasing the rest
+ * now would release that swap's share with it, and its debit would fail
+ * after the cash was already paid out. Such a source stays held and its
+ * release is retried (release_expired_card_hooks.php) until the swap has
+ * finished, or its 24-hour hold window is over.
+ */
+public function isHoldReservedForPendingSwap(?string $holdReference): bool
+{
+    if ($holdReference === null || $holdReference === '') {
+        return false;
+    }
+    $check = function () use ($holdReference): bool {
+        $stmt = $this->db->prepare("SELECT 1 FROM (" . self::PENDING_SWAP_HOLDS_SQL . ") pending WHERE pending.hold_reference = ? LIMIT 1");
+        $stmt->execute([$holdReference]);
+        return (bool)$stmt->fetchColumn();
+    };
+    try {
+        return $this->db->inTransaction() ? (bool)$this->runInSavepoint('pending_swap_hold', $check) : $check();
+    } catch (\Throwable $e) {
+        // Releasing is what every hook did before this check existed; a
+        // check that can't run must not leave every hook held.
+        error_log("[CardService] Could not check hold {$holdReference} for a pending card swap, releasing it as usual: " . $e->getMessage());
+        return false;
+    }
+}
+
 public function releaseHook(
     string $hookReference,
     int $requestingUserId,
@@ -1766,8 +1813,19 @@ public function releaseHook(
  
         $released = [];
         $failed = [];
- 
+        $reserved = [];
+
         foreach ($heldSources as $source) {
+            // Part of this hold is a swap's that hasn't finished: the source
+            // stays held, and the hook UNHOOK_PARTIAL so the release is
+            // retried once the swap is done.
+            if ($this->isHoldReservedForPendingSwap($source['hold_reference'] ?? null)) {
+                $reserved[] = [
+                    'institution' => $source['institution'],
+                    'amount' => (float)$source['held_amount'],
+                ];
+                continue;
+            }
             try {
                 $releaseResult = $swapService->releaseHold(
                     ['institution' => $source['institution'], 'asset_type' => $source['asset_type']],
@@ -1817,7 +1875,7 @@ public function releaseHook(
             }
         }
  
-        $hookStatus = empty($failed) ? 'UNHOOKED' : 'UNHOOK_PARTIAL';
+        $hookStatus = empty($failed) && empty($reserved) ? 'UNHOOKED' : 'UNHOOK_PARTIAL';
  
         // ============================================================
         // FIX: Wrap hook-level status update in a savepoint
@@ -1833,17 +1891,31 @@ public function releaseHook(
         $this->db->commit();
  
         error_log("[CardService] releaseHook: hook={$hookReference} status={$hookStatus} "
-            . "released=" . count($released) . " failed=" . count($failed));
- 
+            . "released=" . count($released) . " failed=" . count($failed) . " reserved=" . count($reserved));
+
+        if (!empty($failed)) {
+            $message = 'Some sources could not be released automatically — they remain held and will need a retry or manual review.';
+        } elseif (!empty($reserved)) {
+            $message = 'Unhooked. ' . implode(', ', array_map(
+                fn($r) => $r['institution'] . ' P' . number_format($r['amount'], 2),
+                $reserved
+            )) . ' stays held a little longer: a swap from this card still has to collect its share of that hold '
+                . '(a cash-out code not used yet, or money sent to an identity not claimed yet). '
+                . 'It is released automatically once that swap is done.';
+        } else {
+            $message = 'All hooked sources released.';
+        }
+
         return [
+            // Reserved sources aren't a failure: they're released automatically
+            // as soon as the swap holding them finishes.
             'success' => empty($failed),
             'hook_reference' => $hookReference,
             'status' => $hookStatus,
             'released' => $released,
             'failed' => $failed,
-            'message' => empty($failed)
-                ? 'All hooked sources released.'
-                : 'Some sources could not be released automatically — they remain held and will need a retry or manual review.',
+            'reserved' => $reserved,
+            'message' => $message,
         ];
  
     } catch (\Throwable $e) {
@@ -1919,6 +1991,18 @@ public function releaseHookSource(
         if (!$isCardOwner && !$isSourceOwner) {
             $this->db->rollBack();
             return ['success' => false, 'error' => "Only the card owner or this source's own contributor can unhook it."];
+        }
+
+        // Same rule as releaseHook(): the hold also carries the share of a
+        // swap that hasn't finished, and can only be released whole.
+        if ($this->isHoldReservedForPendingSwap($source['hold_reference'] ?? null)) {
+            $this->db->rollBack();
+            return [
+                'success' => false,
+                'error' => 'This source can\'t be unhooked yet: a swap from this card still has to collect its share of it '
+                    . '(a cash-out code not used yet, or money sent to an identity not claimed yet). '
+                    . 'Try again once that swap is done — or leave it, and it is released automatically when the hook ends.',
+            ];
         }
 
         $releaseResult = $swapService->releaseHold(
@@ -2665,7 +2749,12 @@ public function reversePooledSwipe(string $hookReference, string $reversalReason
                 throw new RuntimeException("Hook not found or not in SWIPE_RECEIVED state");
             }
 
-            $sourcesStmt = $this->db->prepare("SELECT * FROM card_pool_hook_sources WHERE hook_id = ?");
+            // Only what is still held: a hook outlives a swap that spent part
+            // of it (CardContributionSessionService::execute()), so it can
+            // also have sources that swap already used up (DEBITED) or that
+            // were unhooked on their own (RELEASED). Drawing on those would
+            // debit a hold that is no longer there, and bill its owner.
+            $sourcesStmt = $this->db->prepare("SELECT * FROM card_pool_hook_sources WHERE hook_id = ? AND status = 'HELD' ORDER BY id");
             $sourcesStmt->execute([$hook['id']]);
             $sources = $sourcesStmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -2729,7 +2818,14 @@ $contributions = $contributionCalculator->calculateContributions(
 
                     $unused = (float)$sourceRow['held_amount'] - $contribution['actual_amount'];
                     if ($unused > 0.01) {
-                        $swapService->releaseHold([], $sourceRow['institution'], null, $sourceRow['hold_reference']);
+                        if ($this->isHoldReservedForPendingSwap($sourceRow['hold_reference'] ?? null)) {
+                            // Releasing would take a pending card swap's share
+                            // with it; the institution lets the rest go when
+                            // the hold expires.
+                            error_log("[CardService] finalizePooledSwipe: NOT releasing the unused {$unused} of hold {$sourceRow['hold_reference']} ({$sourceRow['institution']}) - a card swap that hasn't finished still has to debit part of it");
+                        } else {
+                            $swapService->releaseHold([], $sourceRow['institution'], null, $sourceRow['hold_reference']);
+                        }
                     }
 
                 } catch (Exception $debitErr) {

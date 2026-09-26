@@ -214,11 +214,16 @@ rule('RETURN_OVERDUE', function () use ($db, $desk) {
 }, $stats);
 
 rule('HOOK_RELEASE_PARTIAL', function () use ($db, $desk) {
+    // A source kept held because a card swap that hasn't finished still has
+    // to debit part of its hold is waiting, not a failed release: the card
+    // hook job releases it once that swap is done.
     $rows = $db->query("
         SELECT h.hook_reference, h.card_suffix, COUNT(s.id) AS sources, COALESCE(SUM(s.held_amount),0) AS still_held,
                string_agg(DISTINCT s.institution, ', ') AS institutions
         FROM card_pool_hooks h JOIN card_pool_hook_sources s ON s.hook_id = h.id AND s.status = 'HELD'
-        WHERE h.status = 'UNHOOK_PARTIAL' GROUP BY 1, 2
+        WHERE h.status = 'UNHOOK_PARTIAL'
+          AND (s.hold_reference IS NULL OR s.hold_reference NOT IN (" . \Domain\Services\CardService::PENDING_SWAP_HOLDS_SQL . "))
+        GROUP BY 1, 2
     ")->fetchAll(PDO::FETCH_ASSOC);
     $keys = [];
     foreach ($rows as $r) {
