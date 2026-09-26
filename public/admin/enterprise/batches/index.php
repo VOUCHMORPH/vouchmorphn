@@ -6,6 +6,7 @@
 require_once __DIR__ . '/../auth.php';
 $user = requireEnterpriseAuth();
 require_once __DIR__ . '/../../../../src/Core/Database/DBConnection.php';
+require_once __DIR__ . '/../partials/batch_display.php';
 use Core\Database\DBConnection;
 
 $db = DBConnection::getConnection();
@@ -15,8 +16,19 @@ $userId = $user['user_id'] ?? $user['id'] ?? null;
 $departmentId = $user['department_id'] ?? null;
 
 // Filters
-$statusFilter = $_GET['status'] ?? 'all';
+$statusFilter = is_string($_GET['status'] ?? null) ? $_GET['status'] : 'all';
 $search = $_GET['search'] ?? '';
+
+// Tabs that stand for more than one stored status. 'completed' includes a
+// batch that finished with some destinations failed: it is done paying
+// out, and no tab used to hold it, so it could only be found under All.
+$statusTabs = [
+    'pending_approval' => ['pending', 'pending_approval'],
+    'approved' => ['approved'],
+    'executing' => ['executing'],
+    'completed' => vm_batch_statuses('finished'),
+    'draft' => ['draft'],
+];
 
 // Build query
 $params = [':org_id' => $orgId];
@@ -28,29 +40,42 @@ if (in_array($userRole, ['department_head', 'program_officer'])) {
     $params[':dept_id'] = $departmentId;
 }
 
-// Status filter - keep original behavior
+// Status filter — a known tab covers its whole group; anything else
+// (e.g. ?status=rejected from the dashboard) matches that one status.
 if ($statusFilter !== 'all') {
-    $where[] = "LOWER(status) = LOWER(:status)";
-    $params[':status'] = $statusFilter;
+    if (isset($statusTabs[$statusFilter])) {
+        $where[] = vm_batch_status_in($statusTabs[$statusFilter]);
+    } else {
+        $where[] = "LOWER(status) = LOWER(:status)";
+        $params[':status'] = $statusFilter;
+    }
 }
 
-// Search
+// Search — the destination too: its institution, account/phone, or recipient.
 if ($search) {
-    $where[] = "(batch_reference ILIKE :search OR batch_name ILIKE :search OR source_institution ILIKE :search)";
+    $where[] = "(batch_reference ILIKE :search OR batch_name ILIKE :search OR source_institution ILIKE :search
+                 OR EXISTS (SELECT 1 FROM disbursement_destinations d
+                            WHERE d.batch_id = disbursement_batches.id
+                              AND (d.institution ILIKE :search OR d.identifier ILIKE :search OR d.beneficiary_name ILIKE :search)))";
     $params[':search'] = "%$search%";
 }
 
-// Role-based visibility
+// Role-based visibility. A role that can see a batch at one stage keeps
+// seeing it at every later one — these lists used to stop at 'approved'/
+// 'completed', so an executed batch vanished for every role but the top
+// two. See partials/batch_display.php for the groups.
+$beforeApproval = vm_batch_statuses('before_approval');
+$approvedOnward = vm_batch_statuses('approved_onward');
 if ($userRole === 'owner' || $userRole === 'it_manager_enterprise') {
     // Owners and IT Managers see ALL batches
 } elseif (in_array($userRole, ['auditor', 'viewer'])) {
-    $where[] = "status IN ('completed', 'executed', 'COMPLETED', 'EXECUTED')";
+    $where[] = vm_batch_status_in(vm_batch_statuses('released'));
 } elseif (in_array($userRole, ['approver', 'senior_approver'])) {
-    $where[] = "status IN ('pending', 'pending_approval', 'approved', 'draft', 'PENDING', 'PENDING_APPROVAL', 'APPROVED')";
+    $where[] = vm_batch_status_in(array_merge($beforeApproval, $approvedOnward));
 } elseif ($userRole === 'supervisor') {
-    $where[] = "status IN ('approved', 'completed', 'executed', 'APPROVED', 'COMPLETED', 'EXECUTED')";
+    $where[] = vm_batch_status_in($approvedOnward);
 } elseif (in_array($userRole, ['program_officer', 'department_head'])) {
-    $where[] = "(created_by = :user_id OR status IN ('pending', 'pending_approval', 'approved', 'draft', 'PENDING', 'PENDING_APPROVAL', 'APPROVED'))";
+    $where[] = "(created_by = :user_id OR " . vm_batch_status_in(array_merge($beforeApproval, $approvedOnward)) . ")";
     $params[':user_id'] = $userId;
 }
 
@@ -62,15 +87,22 @@ $stmt = $db->prepare("
         id, batch_reference, batch_name, source_institution,
         total_amount, currency, total_destinations, status, created_at,
         updated_at, created_by,
-        approved_at, executed_at
+        approved_at, executed_at,
+        dest.recipients, dest.institutions
     FROM disbursement_batches
+    LEFT JOIN LATERAL (
+        SELECT COUNT(*) AS recipients, string_agg(DISTINCT d.institution, ',') AS institutions
+        FROM disbursement_destinations d WHERE d.batch_id = disbursement_batches.id
+    ) dest ON true
     WHERE $whereClause
     ORDER BY
-        CASE
-            WHEN status IN ('pending', 'pending_approval', 'PENDING', 'PENDING_APPROVAL') THEN 1
-            WHEN status = 'approved' THEN 2
-            WHEN status = 'draft' THEN 3
-            ELSE 4
+        CASE LOWER(status)
+            WHEN 'pending' THEN 1
+            WHEN 'pending_approval' THEN 1
+            WHEN 'approved' THEN 2
+            WHEN 'executing' THEN 3
+            WHEN 'draft' THEN 4
+            ELSE 5
         END,
         created_at DESC
 ");
@@ -82,7 +114,13 @@ $counts = [];
 $stmt = $db->prepare("SELECT status, COUNT(*) as count FROM disbursement_batches WHERE organization_id = :org_id GROUP BY status");
 $stmt->execute([':org_id' => $orgId]);
 while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-    $counts[strtolower($row['status'])] = $row['count'];
+    // Added up, not assigned: 'DRAFT' and 'draft' rows are the same tab.
+    $key = strtolower((string)$row['status']);
+    $counts[$key] = ($counts[$key] ?? 0) + (int)$row['count'];
+}
+$tabCounts = [];
+foreach ($statusTabs as $tab => $tabStatuses) {
+    $tabCounts[$tab] = array_sum(array_map(fn($st) => $counts[$st] ?? 0, $tabStatuses));
 }
 
 function getStatusClass($status) {
@@ -91,8 +129,9 @@ function getStatusClass($status) {
         'draft' => 'draft',
         'pending', 'pending_approval' => 'pending',
         'approved' => 'approved',
+        'executing', 'partially_completed', 'partial_success' => 'pending',
         'completed', 'executed' => 'completed',
-        'rejected' => 'rejected',
+        'rejected', 'cancelled', 'failed' => 'rejected',
         default => 'draft'
     };
 }
@@ -103,9 +142,13 @@ function getStatusLabel($status) {
         'draft' => '📝 Draft',
         'pending', 'pending_approval' => '⏳ Pending',
         'approved' => '✅ Approved',
+        'executing' => '⚙️ Executing',
+        'partially_completed', 'partial_success' => '⚠️ Partially completed',
         'completed' => '✔️ Completed',
         'executed' => '🚀 Executed',
         'rejected' => '❌ Rejected',
+        'cancelled' => '🚫 Cancelled',
+        'failed' => '❌ Failed',
         default => ucfirst($status)
     };
 }
@@ -184,7 +227,7 @@ $navUtility = [
 $topbarSearchShow = true;
 $topbarSearchAction = 'index.php';
 $topbarSearchName = 'search';
-$topbarSearchPlaceholder = 'Search reference, name, source institution…';
+$topbarSearchPlaceholder = 'Search reference, name, source, destination…';
 $topbarSearchValue = $search;
 ?>
 <!DOCTYPE html>
@@ -222,16 +265,19 @@ $topbarSearchValue = $search;
                 <div style="display:flex; gap:8px; flex-wrap:wrap;">
                     <a href="?status=all" class="filter-tab <?php echo $statusFilter === 'all' ? 'active' : ''; ?>">All</a>
                     <a href="?status=pending_approval" class="filter-tab <?php echo $statusFilter === 'pending_approval' ? 'active' : ''; ?>">
-                        ⏳ Pending <?php if (($counts['pending_approval'] ?? 0) > 0): ?><span class="count"><?php echo $counts['pending_approval']; ?></span><?php endif; ?>
+                        ⏳ Pending <?php if ($tabCounts['pending_approval'] > 0): ?><span class="count"><?php echo $tabCounts['pending_approval']; ?></span><?php endif; ?>
                     </a>
                     <a href="?status=approved" class="filter-tab <?php echo $statusFilter === 'approved' ? 'active' : ''; ?>">
-                        ✅ Approved <?php if (($counts['approved'] ?? 0) > 0): ?><span class="count"><?php echo $counts['approved']; ?></span><?php endif; ?>
+                        ✅ Approved <?php if ($tabCounts['approved'] > 0): ?><span class="count"><?php echo $tabCounts['approved']; ?></span><?php endif; ?>
+                    </a>
+                    <a href="?status=executing" class="filter-tab <?php echo $statusFilter === 'executing' ? 'active' : ''; ?>">
+                        ⚙️ In progress <?php if ($tabCounts['executing'] > 0): ?><span class="count"><?php echo $tabCounts['executing']; ?></span><?php endif; ?>
                     </a>
                     <a href="?status=completed" class="filter-tab <?php echo $statusFilter === 'completed' ? 'active' : ''; ?>">
-                        ✔️ Completed <?php if (($counts['completed'] ?? 0) > 0): ?><span class="count"><?php echo $counts['completed']; ?></span><?php endif; ?>
+                        ✔️ Completed <?php if ($tabCounts['completed'] > 0): ?><span class="count"><?php echo $tabCounts['completed']; ?></span><?php endif; ?>
                     </a>
                     <a href="?status=draft" class="filter-tab <?php echo $statusFilter === 'draft' ? 'active' : ''; ?>">
-                        📝 Draft <?php if (($counts['draft'] ?? 0) > 0): ?><span class="count"><?php echo $counts['draft']; ?></span><?php endif; ?>
+                        📝 Draft <?php if ($tabCounts['draft'] > 0): ?><span class="count"><?php echo $tabCounts['draft']; ?></span><?php endif; ?>
                     </a>
                 </div>
                 <?php if ($search): ?>
@@ -257,7 +303,7 @@ $topbarSearchValue = $search;
                                 <th>Name</th>
                                 <th>Source</th>
                                 <th>Amount</th>
-                                <th>Destinations</th>
+                                <th>Destination</th>
                                 <th>Status</th>
                                 <th>Created</th>
                                 <th>Actions</th>
@@ -270,13 +316,13 @@ $topbarSearchValue = $search;
                                 <td><?php echo safeHtml($batch['batch_name'] ?? '—'); ?></td>
                                 <td><?php echo safeHtml($batch['source_institution'] ?? '—'); ?></td>
                                 <td><strong><?php echo formatCurrency($batch['total_amount'] ?? 0, $batch['currency'] ?? 'BWP'); ?></strong></td>
-                                <td><?php echo number_format($batch['total_destinations'] ?? 0); ?></td>
+                                <td><?php echo safeHtml(vm_destination_summary($batch['institutions'] ?? null, $batch['recipients'] ?? 0)); ?></td>
                                 <td>
                                     <span class="status status-<?php echo getStatusClass($batch['status']); ?>">
                                         <?php echo getStatusLabel($batch['status']); ?>
                                     </span>
                                 </td>
-                                <td><?php echo date('Y-m-d H:i', strtotime($batch['created_at'] ?? 'now')); ?></td>
+                                <td><?php echo safeHtml(vm_local_time($batch['created_at'])); ?></td>
                                 <td>
                                     <a href="view.php?id=<?php echo $batch['id']; ?>" class="btn btn-outline btn-sm">View</a>
                                     <?php if ($batch['created_by'] == $userId && strtolower($batch['status']) === 'draft'): ?>

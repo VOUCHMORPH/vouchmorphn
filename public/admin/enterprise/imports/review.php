@@ -489,7 +489,7 @@ $roleDisplay = strtoupper($user['role'] ?? 'USER');
                 <h1>Review & Approve</h1>
                 <div class="sub">Review batch details before submission</div>
             </div>
-            <div class="timestamp"><?php echo date('l, F j, Y · H:i'); ?></div>
+            <div class="timestamp"><?php echo htmlspecialchars(vm_local_now('l, F j, Y · H:i'), ENT_QUOTES, 'UTF-8'); ?></div>
         </div>
 
         <!-- Step Indicator -->

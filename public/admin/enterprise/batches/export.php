@@ -22,6 +22,7 @@ $user = requireEnterpriseAuth();
 requirePermission('export_filings');   // added: this endpoint had no permission check
 require_once __DIR__ . '/../../../../src/Core/Database/DBConnection.php';
 require_once __DIR__ . '/../../../../vendor/autoload.php';
+require_once __DIR__ . '/../partials/batch_display.php';
 use Core\Database\DBConnection;
 use Dompdf\Dompdf;
 use Dompdf\Options;
@@ -140,19 +141,19 @@ if (!empty($batch['rejection_reason'])) {
 // review_batch.php already display — nothing new computed here. ----
 $approvalRows = [];
 if (!empty($batch['created_by_name'])) {
-    $approvalRows[] = ['Created', $batch['created_by_name'], !empty($batch['created_at']) ? date('Y-m-d H:i', strtotime($batch['created_at'])) : '—'];
+    $approvalRows[] = ['Created', $batch['created_by_name'], vm_local_time($batch['created_at'])];
 }
 if (!empty($batch['submitted_by_name'])) {
-    $approvalRows[] = ['Submitted for Approval', $batch['submitted_by_name'], !empty($batch['submitted_at']) ? date('Y-m-d H:i', strtotime($batch['submitted_at'])) : '—'];
+    $approvalRows[] = ['Submitted for Approval', $batch['submitted_by_name'], vm_local_time($batch['submitted_at'])];
 }
 if (!empty($batch['approved_by_name'])) {
-    $approvalRows[] = ['Approved', $batch['approved_by_name'], !empty($batch['approved_at']) ? date('Y-m-d H:i', strtotime($batch['approved_at'])) : '—'];
+    $approvalRows[] = ['Approved', $batch['approved_by_name'], vm_local_time($batch['approved_at'])];
 }
 if (!empty($batch['reviewed_by_name']) && strtolower($batch['status'] ?? '') === 'rejected') {
-    $approvalRows[] = ['Rejected', $batch['reviewed_by_name'], !empty($batch['reviewed_at']) ? date('Y-m-d H:i', strtotime($batch['reviewed_at'])) : '—'];
+    $approvalRows[] = ['Rejected', $batch['reviewed_by_name'], vm_local_time($batch['reviewed_at'])];
 }
 if (!empty($batch['executed_by_name'])) {
-    $approvalRows[] = ['Executed', $batch['executed_by_name'], !empty($batch['executed_at']) ? date('Y-m-d H:i', strtotime($batch['executed_at'])) : '—'];
+    $approvalRows[] = ['Executed', $batch['executed_by_name'], vm_local_time($batch['executed_at'])];
 }
 $bodyHtml .= '<div class="pdf-section-title">Approval Trail</div>';
 $bodyHtml .= tableBlock(['Stage', 'By', 'When'], $approvalRows, empty($approvalRows) ? null : 'Stages this batch has not yet reached are omitted, not blank.');
@@ -166,18 +167,19 @@ foreach ($destinations as $d) {
     $destRows[] = [
         $d['destination_index'],
         $d['beneficiary_name'] ?? 'N/A',
+        vm_destination_label($d['institution'] ?? null),
         $identifierDisplay,
         formatCurrencyExp($d['amount'] ?? 0, $d['currency'] ?? $batchCurrency),
         $d['status'] ?? 'PENDING',
     ];
 }
 $bodyHtml .= '<div class="pdf-section-title">Recipients (' . count($destinations) . ')</div>';
-$bodyHtml .= tableBlock(['#', 'Beneficiary', 'Identifier', 'Amount', 'Status'], $destRows);
+$bodyHtml .= tableBlock(['#', 'Beneficiary', 'Destination', 'Identifier', 'Amount', 'Status'], $destRows);
 
 // ============================================================
 // BRANDED PAGE SHELL + STREAM
 // ============================================================
-$generated = date('Y-m-d H:i:s');
+$generated = vm_local_now('Y-m-d H:i:s T');
 $reportTitle = 'Disbursement Batch Record';
 $reportSubtitle = safeHtmlExp($batch['batch_reference']) . ' &middot; ' . safeHtmlExp($orgName);
 

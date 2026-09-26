@@ -341,7 +341,7 @@ $totalPages = ceil($totalBatches / $limit);
                                     <td style="color: #ef4444;"><?php echo $batch['invalid_count'] ?? 0; ?></td>
                                     <td><strong>P<?php echo number_format($batch['total_amount'] ?? 0, 2); ?></strong></td>
                                     <td><?php echo htmlspecialchars($batch['department_name'] ?? '—'); ?></td>
-                                    <td><?php echo date('d M Y', strtotime($batch['created_at'])); ?></td>
+                                    <td><?php echo htmlspecialchars(vm_local_time($batch['created_at'], 'd M Y'), ENT_QUOTES, 'UTF-8'); ?></td>
                                     <td>
                                         <a href="review.php?batch_id=<?php echo $batch['id']; ?>" class="btn btn-primary" style="font-size: 11px; padding: 4px 12px;">
                                             View
