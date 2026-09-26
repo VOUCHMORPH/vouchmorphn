@@ -38,6 +38,13 @@ declare(strict_types=1);
  *  - FIXED: Session validation now occurs AFTER API key check and
  *    BEFORE reading input, ensuring proper authentication order and
  *    that $input['user_id'] is always overridden with session value.
+ *  - FIXED (SOURCE OWNERSHIP): a customer can only pay from a source
+ *    they have proved is theirs (SourceOwnershipGuard) - the account
+ *    number is no longer taken as typed. Only customer swap types are
+ *    accepted (CARD_ISSUE / VERIFY_CASHOUT / CONFIRM_CASHOUT were
+ *    reachable here), original_payload is unwrapped before any check
+ *    instead of silently replacing what was checked, "_" override keys
+ *    are stripped, and admin sessions are refused.
  */
 require_once __DIR__ . '/../../../../vendor/autoload.php';
 
@@ -459,6 +466,13 @@ try {
         echo json_encode(['success' => false, 'error' => 'Not logged in']);
         exit();
     }
+    // An admin session's id is an admin_id, which can equal some customer's
+    // user_id - never let it spend from a customer's sources.
+    if (!\Application\Utils\SessionManager::isUser()) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'error' => 'Only a customer can start a swap.']);
+        exit();
+    }
     $sessionUserId = (int)(\Application\Utils\SessionManager::getUser()['id']
         ?? \Application\Utils\SessionManager::getUser()['user_id'] ?? 0);
     if (!$sessionUserId) {
@@ -499,6 +513,33 @@ try {
         if (strtoupper(trim((string)($requested['swap_type'] ?? ''))) === 'CONFIRM_IDENTITY') {
             throw new Exception('Identity claims are finalized from the claim screen in the app, or by an agent, not through this endpoint.', 400);
         }
+    }
+
+    // FIX: every check below - the swap type, the sandbox cap and freezes,
+    // the source ownership check - has to look at the payload that actually
+    // runs. executeAtomicSwap() runs original_payload INSTEAD of the request
+    // when one is sent (and verifies no signature on it), so an outer
+    // P10 swap from your own account could carry an inner P10,000 swap from
+    // someone else's. Unwrap it here, once, and check only what runs.
+    if (isset($input['original_payload'])) {
+        $input = array_merge($input['original_payload'], ['user_id' => $sessionUserId]);
+    }
+
+    // Keys starting with "_" are SwapService's internal markers and
+    // overrides (confirmCashout() honours _amount, _hold_reference and
+    // _user_id; _is_hooked skips the PIN). None may come from a customer.
+    $input = \Domain\Services\SourceOwnershipGuard::withoutInternalKeys($input);
+
+    // Only the swaps a customer starts from the app. CARD_ISSUE issued a
+    // card against ANY active hold_reference and returned its number and
+    // code; VERIFY_CASHOUT and CONFIRM_CASHOUT are the ATM's and the
+    // destination's steps. Normalised first, because executeAtomicSwap()
+    // matches the type case-sensitively and would run an unknown spelling
+    // as a standard swap.
+    $input['swap_type'] = strtoupper(trim((string)($input['swap_type'] ?? ''))) ?: 'STANDARD';
+    if (!in_array($input['swap_type'], \Domain\Services\SourceOwnershipGuard::CUSTOMER_SWAP_TYPES, true)) {
+        $refusedType = preg_match('/^[A-Z_]{1,40}$/', $input['swap_type']) ? $input['swap_type'] : 'swap of that type';
+        throw new Exception("A {$refusedType} can't be started from the app.", 400);
     }
 
     // ============================================================
@@ -620,6 +661,26 @@ $gate = \Application\Incident\ServiceControls::check($db, [
     $tracer->success('COUNTRY_RESOLUTION', "Resolved country: {$countryConfig['name']}", null, [
         'country_code' => $countryCode,
     ]);
+
+    // ============================================================
+    // SOURCE OWNERSHIP - before routing, so it covers the switch
+    // strategy too (which never reaches SwapService).
+    //
+    // Every source this swap would debit - the single source, or each
+    // of a combined swap's sources[] - must be one this customer has
+    // proved is theirs (SourceOwnershipGuard), and is pinned to the
+    // identifier they verified. The account number used to be taken
+    // as typed: a made-up one, or someone else's, went straight to the
+    // bank for a hold.
+    // ============================================================
+    try {
+        $input = \Domain\Services\SourceOwnershipGuard::forCountry($db, $countryConfig)->securePayload($sessionUserId, $input);
+    } catch (\Domain\Services\SourceOwnershipException $e) {
+        $tracer->error('VALIDATION', 'Source is not one of the customer\'s verified sources', $e->getMessage());
+        $tracer->finish(false);
+        throw new Exception($e->getMessage(), 403);
+    }
+    $tracer->success('VALIDATION', 'Every source is one of the customer\'s verified sources');
 
     $composerPath = ROOT_PATH . '/vendor/autoload.php';
     if (file_exists($composerPath)) {

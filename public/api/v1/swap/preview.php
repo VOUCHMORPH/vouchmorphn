@@ -116,7 +116,7 @@ try {
     // ============================================
     require_once __DIR__ . '/../../../../src/Application/Utils/SessionManager.php';
     \Application\Utils\SessionManager::start();
-    if (!\Application\Utils\SessionManager::isLoggedIn()) {
+    if (!\Application\Utils\SessionManager::isLoggedIn() || !\Application\Utils\SessionManager::isUser()) {
         http_response_code(401);
         echo json_encode(['success' => false, 'error' => 'Not logged in']);
         exit();
@@ -130,11 +130,13 @@ try {
     }
 
     $input = json_decode(file_get_contents('php://input'), true);
-    if (!$input) {
+    if (!$input || !is_array($input)) {
         throw new Exception('Invalid JSON payload', 400);
     }
 
-    error_log("[PREVIEW] Input payload: " . json_encode($input));
+    // Keys only: the payload carries wallet and voucher PINs, which used to
+    // be written to the log in full.
+    error_log("[PREVIEW] Input keys: " . implode(', ', array_keys($input)));
 
     $countryConfig = \Core\Config\LoadCountry::getConfig();
 
@@ -154,6 +156,20 @@ try {
         throw new Exception("Database connection failed");
     }
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
+    // A live balance is only ever looked up for the signed-in customer's own
+    // verified sources (SourceOwnershipGuard). This used to fetch and return
+    // the balance of whatever account number it was sent - a balance lookup
+    // on anyone's account. A quote that names no source still prices.
+    $namesASource = (!empty($input['sources']) && is_array($input['sources']))
+        || (!empty($input['from_institution'] ?? $input['source_institution'] ?? null) && !empty($input['source_identifier']));
+    if ($namesASource) {
+        try {
+            $input = \Domain\Services\SourceOwnershipGuard::forCountry($db, $countryConfig)->securePayload($sessionUserId, $input);
+        } catch (\Domain\Services\SourceOwnershipException $e) {
+            throw new Exception($e->getMessage(), 403);
+        }
+    }
 
     $isMultiSource = isset($input['sources']) && is_array($input['sources']) && count($input['sources']) > 1;
     $swapType = $input['swap_type'] ?? 'CASHOUT';

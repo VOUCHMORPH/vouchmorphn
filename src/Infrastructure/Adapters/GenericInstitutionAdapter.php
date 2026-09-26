@@ -88,6 +88,35 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
         }
     }
 
+    /**
+     * Whether an institution's answer to VERIFY_ASSET confirms the account
+     * exists and can be held. The request itself having succeeded is not
+     * enough: an explicit verified / exists / valid / found of false, or a
+     * status such as NOT_FOUND, CLOSED or BLOCKED - at the top level or one
+     * level down under "data", where several institutions nest their answer -
+     * means there is no usable account behind the identifier, and a hold must
+     * not be attempted on it.
+     */
+    public static function assetConfirmed(array $response): bool
+    {
+        $negativeStatuses = ['NOT_FOUND', 'NOTFOUND', 'INVALID', 'UNKNOWN_ACCOUNT', 'CLOSED', 'BLOCKED', 'FROZEN',
+            'INACTIVE', 'DORMANT', 'SUSPENDED', 'DECLINED', 'REJECTED', 'FAILED', 'FAILURE', 'ERROR'];
+
+        foreach ([$response, is_array($response['data'] ?? null) ? $response['data'] : []] as $level) {
+            foreach (['verified', 'exists', 'valid', 'found', 'success'] as $flag) {
+                if (array_key_exists($flag, $level) && in_array($level[$flag], [false, 0, '0', 'false', 'FALSE', 'no'], true)) {
+                    return false;
+                }
+            }
+            foreach (['status', 'account_status'] as $statusKey) {
+                if (is_string($level[$statusKey] ?? null) && in_array(strtoupper(trim($level[$statusKey])), $negativeStatuses, true)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
     public function supports(string $capability): bool
     {
         return in_array($capability, [
@@ -155,9 +184,25 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
             }
             
             $data = $result['data'] ?? [];
-            
+
+            // FIX: a 2xx with success:true used to count as "verified" even
+            // when the institution said, one level down, that the account was
+            // not there - {"success":true,"data":{"verified":false}} passed,
+            // because only the top-level "verified" key was read. See
+            // assetConfirmed().
+            if (!self::assetConfirmed(is_array($data) ? $data : [])) {
+                return [
+                    'verified' => false,
+                    'success' => false,
+                    'message' => $data['message'] ?? $data['data']['message'] ?? "{$this->institution} did not confirm this account",
+                    'account_id' => $payload['account_id'] ?? $payload['source_identifier'] ?? null,
+                    'status_code' => $result['status_code'] ?? 0,
+                    'raw_response' => $result['raw_response'] ?? null
+                ];
+            }
+
             return [
-                'verified' => $data['verified'] ?? $result['success'] ?? true,
+                'verified' => true,
                 'success' => $data['success'] ?? $result['success'] ?? true,
                 'message' => $data['message'] ?? 'Asset verified',
                 'account_id' => $data['asset_id'] ?? $payload['account_id'] ?? $payload['source_identifier'] ?? null,

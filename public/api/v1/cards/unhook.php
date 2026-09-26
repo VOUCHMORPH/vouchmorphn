@@ -43,7 +43,9 @@ use Application\Utils\SessionManager;
 
 SessionManager::start();
 
-if (!SessionManager::isLoggedIn()) {
+// An admin session's id is an admin_id, which can equal some customer's
+// user_id - so only a customer session may release a customer's holds.
+if (!SessionManager::isLoggedIn() || !SessionManager::isUser()) {
     http_response_code(401);
     echo json_encode(['success' => false, 'error' => 'Not logged in']);
     exit();

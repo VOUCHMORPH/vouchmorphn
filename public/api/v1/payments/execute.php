@@ -42,6 +42,13 @@ if (!SessionManager::isLoggedIn()) {
     echo json_encode(['success' => false, 'error' => 'Not logged in']);
     exit();
 }
+// An admin session's id is an admin_id, which can equal some customer's
+// user_id - never let it pay from a customer's sources.
+if (!SessionManager::isUser()) {
+    http_response_code(403);
+    echo json_encode(['success' => false, 'error' => 'Only a customer can pay a payment request.']);
+    exit();
+}
 
 $sessionUser = SessionManager::getUser();
 $payerUserId = (int)($sessionUser['id'] ?? $sessionUser['user_id'] ?? 0);
@@ -192,6 +199,23 @@ try {
             $swapPayload['delivery_method'] = $request['destination_asset_type']; // e.g. ATM/AGENT
             $swapPayload['beneficiary_phone'] = $input['beneficiary_phone'] ?? null;
         }
+    }
+
+    // ------------------------------------------------------------
+    // The payer pays only from sources they have proved are theirs
+    // (SourceOwnershipGuard), pinned to the identifiers they verified.
+    // The payer's account number used to be taken as typed, so a
+    // request could be paid out of anybody's account. Checked while the
+    // request row is still locked, before anything is held.
+    // ------------------------------------------------------------
+    try {
+        $swapPayload = \Domain\Services\SourceOwnershipGuard::forCountry($db, $container->get('countryConfig'))
+            ->securePayload($payerUserId, $swapPayload);
+    } catch (\Domain\Services\SourceOwnershipException $e) {
+        $db->rollBack();
+        http_response_code(403);
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+        exit();
     }
 
     // Commit the row lock's transaction before calling into SwapService,

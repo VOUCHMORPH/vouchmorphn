@@ -55,6 +55,13 @@ if (!SessionManager::isLoggedIn()) {
     echo json_encode(['success' => false, 'error' => 'Not logged in']);
     exit();
 }
+// An admin session's id is an admin_id, which can equal some customer's
+// user_id - never let it act on a customer's sources.
+if (!SessionManager::isUser()) {
+    http_response_code(403);
+    echo json_encode(['success' => false, 'error' => 'Only a customer can hook sources to a card.']);
+    exit();
+}
 
 // ============================================================
 // INPUT
@@ -78,39 +85,60 @@ if (empty($input['sources']) || !is_array($input['sources']) || count($input['so
     exit();
 }
 
-// Each source must identify itself and its owner. If owner_user_id is
-// omitted, it defaults to the requesting card owner - this is the
-// self-funded case. A THIRD-PARTY source (someone else's account funding
-// this card) MUST explicitly carry its own owner_user_id AND be verified
-// as consented separately - this endpoint does not itself collect that
-// consent, it assumes upstream flows (source linking / hooking consent)
-// already gated it. Flagging this because it's a real security boundary,
-// not just a data field.
-$cardOwnerUserId = (int)(SessionManager::getUser()['user_id'] ?? 0);
-if (!$cardOwnerUserId) {
+// Every hooked source belongs to the signed-in user, who is the only person
+// who can put it on a card - their own card or, through its QR or suffix,
+// someone else's. owner_user_id used to be read from each source in this
+// body (defaulting to the card owner), so a request could hook any account
+// number and name anyone as its owner. The owner now comes from the session
+// alone, and CardService::hookSourcesToCard() refuses any source that is
+// not one of this user's verified sources (SourceOwnershipGuard).
+$requestingUserId = (int)(SessionManager::getUser()['user_id'] ?? 0);
+if (!$requestingUserId) {
     http_response_code(401);
-    echo json_encode(['success' => false, 'error' => 'Could not resolve card owner from session']);
+    echo json_encode(['success' => false, 'error' => 'Could not resolve the signed-in user from the session']);
     exit();
 }
 
 $sources = [];
 foreach ($input['sources'] as $idx => $src) {
+    if (!is_array($src)) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'error' => "sources[{$idx}] must be an object"]);
+        exit();
+    }
     foreach (['institution', 'asset_type', 'identifier'] as $field) {
-        if (empty($src[$field])) {
+        if (empty($src[$field]) || !is_scalar($src[$field])) {
             http_response_code(400);
             echo json_encode(['success' => false, 'error' => "sources[{$idx}].{$field} is required"]);
             exit();
         }
     }
- if (!isset($src['authorized_amount']) || !is_numeric($src['authorized_amount']) || (float)$src['authorized_amount'] <= 0) {
+    if (!isset($src['authorized_amount']) || !is_numeric($src['authorized_amount']) || (float)$src['authorized_amount'] <= 0) {
         http_response_code(400);
         echo json_encode(['success' => false, 'error' => "sources[{$idx}].authorized_amount is required and must be greater than zero"]);
         exit();
     }
-    $sources[] = array_merge($src, [
-        'owner_user_id' => (int)($src['owner_user_id'] ?? $cardOwnerUserId),
+    if (isset($src['owner_user_id']) && (int)$src['owner_user_id'] !== $requestingUserId) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'error' => 'You can only hook your own sources. The owner of that account has to hook it themselves.']);
+        exit();
+    }
+    // Only these fields go on to the institution. Anything else in the body
+    // (access tokens, source references, SwapService's internal "_" flags)
+    // is dropped rather than forwarded with the hold.
+    $sources[] = array_filter([
+        'institution' => (string)$src['institution'],
+        'asset_type' => (string)$src['asset_type'],
+        'identifier' => trim((string)$src['identifier']),
+        'identifier_type' => isset($src['identifier_type']) && is_scalar($src['identifier_type']) ? (string)$src['identifier_type'] : null,
+        'currency' => isset($src['currency']) && is_scalar($src['currency']) ? (string)$src['currency'] : null,
+        'pin' => isset($src['pin']) && is_scalar($src['pin']) ? (string)$src['pin'] : null,
+        'wallet_pin' => isset($src['wallet_pin']) && is_scalar($src['wallet_pin']) ? (string)$src['wallet_pin'] : null,
+        'voucher_pin' => isset($src['voucher_pin']) && is_scalar($src['voucher_pin']) ? (string)$src['voucher_pin'] : null,
+    ], fn($value) => $value !== null && $value !== '') + [
+        'owner_user_id' => $requestingUserId,
         'authorized_amount' => (float)$src['authorized_amount'],
-    ]);
+    ];
 }
 
 // ============================================================
@@ -128,7 +156,7 @@ require_once ROOT_PATH . '/src/Application/Incident/IncidentDesk.php';
 require_once ROOT_PATH . '/src/Application/Incident/ServiceControls.php';
 foreach ($sources as $gateSource) {
     $gate = \Application\Incident\ServiceControls::check($db, [
-        'amount' => 0, 'flow' => 'CARD_HOOK', 'source' => $gateSource['institution'] ?? '', 'user_id' => (string)$cardOwnerUserId,
+        'amount' => 0, 'flow' => 'CARD_HOOK', 'source' => $gateSource['institution'] ?? '', 'user_id' => (string)$requestingUserId,
     ]);
     if ($gate !== null) {
         http_response_code($gate['http']);
@@ -145,7 +173,7 @@ try {
         $input['card_suffix'],
         $sources,
         $swapService,
-        $cardOwnerUserId
+        $requestingUserId
     );
 
     http_response_code($result['success'] ? 200 : 422);

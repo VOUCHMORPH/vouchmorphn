@@ -444,6 +444,93 @@ if ($view === 'agent_approvals' && canView('agent_approvals') && $_SERVER['REQUE
 }
 
 // ============================================================
+// CUSTOMER SOURCE APPROVALS - POST only, CSRF-checked.
+//
+// A customer's source at an institution that cannot confirm ownership by
+// OTP or bank login waits in user_source_accounts as
+// 'pending_confirmation', and nothing can be hooked, swapped or paid from
+// it (SourceOwnershipGuard) until an admin who has confirmed with the
+// institution that the account is this customer's approves it here. There
+// used to be no way to decide these at all. Same rules as agent accounts
+// below: the decision and its audit row are one transaction, a rejection
+// needs a written reason, POST/Redirect/GET.
+// ============================================================
+if ($view === 'agent_approvals' && canView('agent_approvals') && $_SERVER['REQUEST_METHOD'] === 'POST'
+    && in_array($_POST['action'] ?? '', ['approve_source', 'reject_source'], true)) {
+    $action = (string)$_POST['action'];
+    $sourceId = (int)($_POST['source_id'] ?? 0);
+    $reason = trim((string)($_POST['reason'] ?? ''));
+    $csrfOk = isset($_POST['csrf_token']) && hash_equals($_SESSION['csrf_token'], (string)$_POST['csrf_token']);
+
+    if (!$csrfOk) {
+        AdminAudit::recordOrLog($db, $adminId, 'CSRF_REJECTED', 'user_source', (string)$sourceId,
+            ['attempted_action' => $action], AdminAudit::CATEGORY_SECURITY, 'warning');
+        $_SESSION['admin_flash'] = ['type' => 'bad', 'text' => 'Your session form expired. Nothing was changed; please try again.'];
+    } elseif ($sourceId <= 0) {
+        $_SESSION['admin_flash'] = ['type' => 'bad', 'text' => 'Invalid request. Nothing was changed.'];
+    } elseif ($action === 'reject_source' && mb_strlen($reason) < 5) {
+        $_SESSION['admin_flash'] = ['type' => 'bad', 'text' => 'A rejection needs a reason of at least 5 characters. Nothing was changed.'];
+    } else {
+        $newStatus = $action === 'approve_source' ? 'active' : 'rejected';
+        try {
+            $db->beginTransaction();
+            $stmt = $db->prepare("
+                SELECT id, user_id, institution, asset_type, identifier, status
+                FROM user_source_accounts
+                WHERE id = :id AND deleted_at IS NULL
+                FOR UPDATE
+            ");
+            $stmt->execute([':id' => $sourceId]);
+            $source = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$source) {
+                throw new RuntimeException('That source no longer exists.');
+            }
+            if ($source['status'] !== 'pending_confirmation') {
+                throw new RuntimeException("That source was already decided (status: {$source['status']}).");
+            }
+            $upd = $db->prepare("
+                UPDATE user_source_accounts
+                SET status = :status,
+                    confirmed_at = CASE WHEN :status2 = 'active' THEN NOW() ELSE confirmed_at END,
+                    updated_at = NOW()
+                WHERE id = :id AND status = 'pending_confirmation'
+            ");
+            $upd->execute([':status' => $newStatus, ':status2' => $newStatus, ':id' => $sourceId]);
+            if ($upd->rowCount() !== 1) {
+                throw new RuntimeException('The source changed while you were deciding. Nothing was changed.');
+            }
+            AdminAudit::record(
+                $db, $adminId,
+                $newStatus === 'active' ? 'CUSTOMER_SOURCE_APPROVED' : 'CUSTOMER_SOURCE_REJECTED',
+                'user_source', (string)$sourceId,
+                ['status' => $source['status']],
+                [
+                    'status' => $newStatus,
+                    'reason' => $reason !== '' ? $reason : null,
+                    'customer_user_id' => (int)$source['user_id'],
+                    'institution' => $source['institution'],
+                    'asset_type' => $source['asset_type'],
+                    'identifier' => AdminAudit::mask((string)$source['identifier']),
+                ],
+                $newStatus === 'rejected' ? 'warning' : 'info'
+            );
+            $db->commit();
+            $_SESSION['admin_flash'] = ['type' => 'good', 'text' => $newStatus === 'active'
+                ? 'Source approved and recorded in the audit log. The customer can use it now.'
+                : 'Source rejected and recorded in the audit log.'];
+        } catch (Throwable $e) {
+            if ($db->inTransaction()) {
+                $db->rollBack();
+            }
+            error_log('[ADMIN DASHBOARD] customer source decision failed: ' . $e->getMessage());
+            $_SESSION['admin_flash'] = ['type' => 'bad', 'text' => 'Nothing was changed: ' . ($e instanceof RuntimeException && !$e instanceof PDOException ? $e->getMessage() : 'the decision or its audit record could not be saved.')];
+        }
+    }
+    header('Location: ?view=agent_approvals#customer-sources');
+    exit;
+}
+
+// ============================================================
 // AGENT DESTINATION APPROVALS - POST only, CSRF-checked.
 //
 // Agents are users with the 'agent' role; what needs an admin decision
@@ -949,6 +1036,35 @@ if (canView('agent_approvals')) {
     }
 }
 $agentApprovalCount = count($pendingAgents);
+
+// Customer sources waiting for a manual ownership check (CUSTOMER SOURCE
+// APPROVALS above). other_active_owners counts other customers who already
+// have the same account as a verified source - a reason to look harder
+// before approving.
+$pendingCustomerSources = [];
+$customerSourceApprovalCount = 0;
+if (canView('agent_approvals')) {
+    try {
+        $customerSourceApprovalCount = (int)$db->query("SELECT COUNT(*) FROM user_source_accounts WHERE status = 'pending_confirmation' AND deleted_at IS NULL")->fetchColumn();
+    } catch (Throwable $e) { dashError('customer source approvals: count', $e); }
+    if ($view === 'agent_approvals') {
+        try {
+            $pendingCustomerSources = $db->query("
+                SELECT s.id, s.user_id, s.institution, s.asset_type, s.identifier, s.account_name,
+                       s.proposed_at AS created_at,
+                       COALESCE(u.full_name, u.username) AS full_name, u.phone, u.email, u.national_id,
+                       (SELECT COUNT(*) FROM user_source_accounts o
+                         WHERE o.institution = s.institution AND o.identifier = s.identifier
+                           AND o.user_id <> s.user_id AND o.status = 'active' AND o.deleted_at IS NULL) AS other_active_owners
+                FROM user_source_accounts s
+                LEFT JOIN users u ON u.user_id = s.user_id
+                WHERE s.status = 'pending_confirmation' AND s.deleted_at IS NULL
+                ORDER BY s.proposed_at ASC
+                LIMIT 200
+            ")->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Throwable $e) { dashError('customer source approvals: pending list', $e); }
+    }
+}
 
 // Agent role: who has it, and the customers an admin searched for to give
 // it to. Phone numbers are matched as sign-in matches them (login.php).
@@ -2704,7 +2820,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
         <?php if (canView('client_lookup')): ?><a href="?view=client_lookup" class="nav-item <?php echo $view === 'client_lookup' ? 'active' : ''; ?>">Client Lookup</a><?php endif; ?>
         <?php if (canView('agent_approvals')): ?>
         <a href="?view=agent_approvals" class="nav-item <?php echo $view === 'agent_approvals' ? 'active' : ''; ?>">
-            Agents <?php if ($agentApprovalCount > 0): ?><span class="nav-badge"><?php echo $agentApprovalCount; ?></span><?php endif; ?>
+            Approvals <?php if ($agentApprovalCount + $customerSourceApprovalCount > 0): ?><span class="nav-badge"><?php echo $agentApprovalCount + $customerSourceApprovalCount; ?></span><?php endif; ?>
         </a>
         <?php endif; ?>
         <?php if (canView('alerts')): ?>
@@ -2781,6 +2897,14 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                 </div>
             </div>
             <?php endif; ?>
+            <?php if ($customerSourceApprovalCount > 0 && canView('agent_approvals')): ?>
+            <div class="card" style="border-color:var(--line-strong);">
+                <div class="card-header">
+                    <span class="card-title" style="color:var(--brass-deep);">🏦 <?php echo $customerSourceApprovalCount; ?> customer source<?php echo $customerSourceApprovalCount === 1 ? '' : 's'; ?> awaiting an ownership check</span>
+                    <a href="?view=agent_approvals#customer-sources" class="btn btn-primary btn-sm">Review Sources</a>
+                </div>
+            </div>
+            <?php endif; ?>
 
             <div class="metrics-grid">
                 <div class="metric-card"><span class="metric-label">Total Swaps</span><span class="metric-value"><?php echo number_format($metrics['total_swaps'] ?? 0); ?></span><span class="metric-sub">Lifetime</span></div>
@@ -2808,8 +2932,8 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             <!-- AGENT APPROVALS -->
             <?php if ($view === 'agent_approvals' && canView('agent_approvals')): ?>
             <div class="content-header">
-                <h1>Agent Approvals</h1>
-                <span class="timestamp">Agent role, and agent destination accounts awaiting manual verification</span>
+                <h1>Approvals</h1>
+                <span class="timestamp">Agent role, agent payout accounts, and customer sources awaiting a manual ownership check</span>
                 <a href="?view=dashboard" class="back-link">← Back</a>
             </div>
             <div class="metrics-grid" style="grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));">
@@ -2852,6 +2976,55 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                             <input type="hidden" name="csrf_token" value="<?php echo safeHtml($_SESSION['csrf_token']); ?>">
                             <input type="hidden" name="agent_id" value="<?php echo safeHtml($agent['id']); ?>">
                             <input type="hidden" name="action" value="reject">
+                            <input type="text" name="reason" required minlength="5" maxlength="500" placeholder="Reason for rejecting (required)" style="min-width:220px;height:var(--btn-h-sm);">
+                            <button type="submit" class="btn btn-bad btn-sm">Reject</button>
+                        </form>
+                    </div>
+                </div>
+                <?php endforeach; endif; ?>
+            </div>
+
+            <div class="card" id="customer-sources">
+                <div class="card-header"><span class="card-title">Customer Sources Awaiting an Ownership Check</span><span class="card-badge brass"><?php echo count($pendingCustomerSources); ?></span></div>
+                <p style="font-size:13px;color:var(--ink-500);text-align:center;margin-bottom:var(--sp-4);">
+                    These institutions cannot confirm by OTP or bank login that an account belongs to the customer who added it,
+                    so nothing can be hooked, swapped or paid from it until it is approved here. Confirm with the institution that
+                    the account holder is this customer (name and ID number) before approving. Every decision is written to the
+                    audit log with your name; if that record cannot be written, the decision is not made.
+                </p>
+                <?php if (empty($pendingCustomerSources)): ?>
+                <div class="empty-state"><span class="icon">✅</span><p>No customer sources waiting on an ownership check.</p></div>
+                <?php else: foreach ($pendingCustomerSources as $pendingSource): ?>
+                <div class="card agent-row">
+                    <div class="card-header">
+                        <span class="card-title"><?php echo safeHtml($pendingSource['full_name'] ?? ('User #' . $pendingSource['user_id'])); ?></span>
+                        <span class="status status-pending">PENDING</span>
+                    </div>
+                    <?php if ((int)($pendingSource['other_active_owners'] ?? 0) > 0): ?>
+                    <p style="font-size:13px;color:var(--bad);margin-bottom:var(--sp-2);">
+                        ⚠️ This account is already a verified source of <?php echo (int)$pendingSource['other_active_owners']; ?> other customer<?php echo (int)$pendingSource['other_active_owners'] === 1 ? '' : 's'; ?>. Check who the account holder is before approving.
+                    </p>
+                    <?php endif; ?>
+                    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(160px,1fr)); gap:var(--sp-2); font-size:14px;">
+                        <div><strong>User #:</strong> <?php echo safeHtml($pendingSource['user_id']); ?></div>
+                        <div><strong>Phone:</strong> <?php echo safeHtml($pendingSource['phone'] ?? 'N/A'); ?></div>
+                        <div><strong>ID number:</strong> <?php echo safeHtml($pendingSource['national_id'] ?? 'N/A'); ?></div>
+                        <div><strong>Institution:</strong> <?php echo safeHtml($pendingSource['institution'] ?? 'N/A'); ?></div>
+                        <div><strong>Account:</strong> <?php echo safeHtml(($pendingSource['asset_type'] ?? '') . ' ' . ($pendingSource['identifier'] ?? '')); ?></div>
+                        <div><strong>Account name:</strong> <?php echo safeHtml($pendingSource['account_name'] ?? '—'); ?></div>
+                        <div><strong>Added:</strong> <?php echo tsHtml($pendingSource['created_at'] ?? ''); ?></div>
+                    </div>
+                    <div class="agent-actions" style="flex-wrap:wrap;align-items:flex-start;">
+                        <form class="inline-form" method="post" action="?view=agent_approvals" onsubmit="return confirm('Approve this source? The customer will be able to pay from it. This is recorded in the audit log.');">
+                            <input type="hidden" name="csrf_token" value="<?php echo safeHtml($_SESSION['csrf_token']); ?>">
+                            <input type="hidden" name="source_id" value="<?php echo safeHtml($pendingSource['id']); ?>">
+                            <input type="hidden" name="action" value="approve_source">
+                            <button type="submit" class="btn btn-good btn-sm">Approve</button>
+                        </form>
+                        <form class="inline-form search-box" style="margin:0;" method="post" action="?view=agent_approvals">
+                            <input type="hidden" name="csrf_token" value="<?php echo safeHtml($_SESSION['csrf_token']); ?>">
+                            <input type="hidden" name="source_id" value="<?php echo safeHtml($pendingSource['id']); ?>">
+                            <input type="hidden" name="action" value="reject_source">
                             <input type="text" name="reason" required minlength="5" maxlength="500" placeholder="Reason for rejecting (required)" style="min-width:220px;height:var(--btn-h-sm);">
                             <button type="submit" class="btn btn-bad btn-sm">Reject</button>
                         </form>

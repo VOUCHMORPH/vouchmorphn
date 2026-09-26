@@ -18,6 +18,7 @@ use Domain\Services\MultiSourceFeeCalculator;
 use Domain\Services\MultiSource\MultiSourceSwapOrchestrator;
 use Domain\Services\Compliance\SanctionsScreeningService;
 use Domain\Services\ReservationAccountService;
+use Domain\Services\SourceOwnershipGuard;
 use Infrastructure\Adapters\InstitutionAdapterFactory;
 use Infrastructure\SMS\SmsNotificationService;
 use Infrastructure\Email\EmailGatewayClient;
@@ -75,6 +76,13 @@ class SwapService
      * the safe way round.
      */
     private const CASHOUT_EXPIRY_SAFETY_MARGIN_HOURS = 2;
+
+    /**
+     * Wrong codes one source registration attempt survives. The code proves
+     * the account is the registrant's; with no limit a short one could be
+     * guessed, and someone else's account registered as a verified source.
+     */
+    private const SOURCE_OTP_MAX_ATTEMPTS = 5;
 
     private const IDENTITY_TYPES_SELF_SERVICE = ['phone', 'email'];
     private const IDENTITY_TYPES_AGENT_VERIFIABLE = ['national_id', 'birth_certificate', 'voter_id'];
@@ -1197,22 +1205,19 @@ public function retryPendingSource(int $userId, string $type, int $sourceId): ar
     if (!in_array($source['status'], ['cancelled', 'rejected', 'failed'])) {
         throw new RuntimeException("This source cannot be retried (status: {$source['status']}).");
     }
-    
-    // Reset the status
-    $stmt = $this->swapDB->prepare("
-        UPDATE {$table}
-        SET status = 'pending_confirmation',
-            deleted_at = NULL,
-            updated_at = NOW()
-        WHERE {$idColumn} = :id AND user_id = :user_id
-    ");
-    $stmt->execute([':id' => $sourceId, ':user_id' => $userId]);
-    
-    // For user_source_accounts, initiate a new verification
+
+    // FIX: a user source used to be reset straight to pending_confirmation
+    // here - which put a source an admin had REJECTED back in the manual
+    // review queue - and the fresh registration below then failed on that
+    // very row as a duplicate. A rejection stands; anything else retires the
+    // old row and starts over with a new ownership check.
     if ($type === 'user_source') {
-        $callbackUrl = rtrim(getenv('APP_BASE_URL') ?: 'https://vouchmorphn-production.up.railway.app', '/')
-            . '/api/v1/user/source_oauth_callback.php';
-        
+        if ($source['status'] === 'rejected') {
+            throw new RuntimeException("This source was rejected after an ownership check, so it can't be retried. Contact support if the account is yours.");
+        }
+        $this->swapDB->prepare("UPDATE user_source_accounts SET deleted_at = NOW(), updated_at = NOW() WHERE id = :id AND user_id = :user_id")
+            ->execute([':id' => $sourceId, ':user_id' => $userId]);
+
         return $this->initiateUserSourceRegistration(
             $userId,
             $source['institution'],
@@ -1222,7 +1227,17 @@ public function retryPendingSource(int $userId, string $type, int $sourceId): ar
             $source['account_name'] ?? null
         );
     }
-    
+
+    // Reset the status
+    $stmt = $this->swapDB->prepare("
+        UPDATE {$table}
+        SET status = 'pending_confirmation',
+            deleted_at = NULL,
+            updated_at = NOW()
+        WHERE {$idColumn} = :id AND user_id = :user_id
+    ");
+    $stmt->execute([':id' => $sourceId, ':user_id' => $userId]);
+
     // For agent destinations
     if ($type === 'agent_destination') {
         $callbackUrl = rtrim(getenv('APP_BASE_URL') ?: 'https://vouchmorphn-production.up.railway.app', '/')
@@ -1246,6 +1261,44 @@ public function retryPendingSource(int $userId, string $type, int $sourceId): ar
  */
 public function resendOtpForAttempt(int $userId, int $attemptId): array
 {
+    // FIX: a source registration's code comes from the institution, and only
+    // the institution can send a new one it will accept. This used to SMS a
+    // code VouchMorph made up (and never stored) to the attempt's identifier
+    // - an account number, for an account - and push the attempt's expiry
+    // out ten minutes every time, keeping a guessing window open for good.
+    // Ask the institution for a new code instead; wrong codes already
+    // counted against the attempt still count (recordFailedSourceOtp()).
+    $stmt = $this->swapDB->prepare("
+        SELECT * FROM user_source_registration_attempts
+        WHERE id = :id AND user_id = :user_id AND status = 'otp_pending'
+    ");
+    $stmt->execute([':id' => $attemptId, ':user_id' => $userId]);
+    $sourceAttempt = $stmt->fetch(PDO::FETCH_ASSOC);
+    if ($sourceAttempt) {
+        $link = $this->initiateSourceLink([
+            'institution' => $sourceAttempt['institution'],
+            'identifier' => $sourceAttempt['identifier'],
+            'identifier_type' => $sourceAttempt['identifier_type'],
+            'asset_type' => $sourceAttempt['asset_type'],
+            'user_id' => $userId,
+        ]);
+        if (!($link['success'] ?? false) || ($link['auth_type'] ?? null) !== 'otp') {
+            throw new RuntimeException("{$sourceAttempt['institution']} could not send a new code: " . ($link['message'] ?? 'unknown reason'));
+        }
+        $this->swapDB->prepare("
+            UPDATE user_source_registration_attempts
+            SET bank_auth_id = :auth_id, otp_method = :method, otp_expires_at = :expires_at
+            WHERE id = :id AND user_id = :user_id AND status = 'otp_pending'
+        ")->execute([
+            ':auth_id' => $link['auth_id'] ?? null,
+            ':method' => $link['method'] ?? 'sms',
+            ':expires_at' => date('Y-m-d H:i:s', time() + (int)($link['expires_in'] ?? 300)),
+            ':id' => $attemptId,
+            ':user_id' => $userId,
+        ]);
+        return ['success' => true, 'message' => $link['message'] ?? "{$sourceAttempt['institution']} has sent you a new code."];
+    }
+
     // Find the attempt
     $stmt = $this->swapDB->prepare("
         SELECT * FROM user_source_registration_attempts
@@ -2706,7 +2759,24 @@ public function recordExternalRailExecution(array $payload, array $railResult, s
             $swapType = 'MULTI_DESTINATION';
             error_log("[SwapService] MULTI-DESTINATION DETECTED: " . count($payload['destinations']) . " destinations");
         }
-        
+
+        // ============================================================
+        // SOURCE OWNERSHIP (defense in depth)
+        //
+        // A customer's swap carries their user_id (swap/execute.php,
+        // payments/execute.php and USSD set it from the session or the
+        // caller's phone); system work - enterprise batches, the batch
+        // worker, remainder re-swaps, Mojaloop - carries none. Every source
+        // a customer swap would debit must be one the customer has proved
+        // is theirs, and is pinned to the identifier they verified,
+        // whichever caller forgot to check (SourceOwnershipGuard). Before
+        // the idempotency cache and before anything is held.
+        // ============================================================
+        $customerUserId = (int)($payload['user_id'] ?? 0);
+        if ($customerUserId > 0 && !in_array(strtoupper((string)$swapType), SourceOwnershipGuard::SOURCELESS_SWAP_TYPES, true)) {
+            $payload = SourceOwnershipGuard::forCountry($this->swapDB, $this->config)->securePayload($customerUserId, $payload);
+        }
+
         if ($swapType !== 'IDENTITY' && $swapType !== 'CONFIRM_IDENTITY') {
             if ($isMultiSource) {
                 foreach ($payload['sources'] as $idx => $source) {
@@ -10307,7 +10377,33 @@ public function initiateUserSourceRegistration(
     };
 
     // ============================================================
-    // FIX: SKIP verifyAsset here - the bank doesn't know the user yet  
+    // FIX: nothing checked what was being registered. Any string at any
+    // "institution" was accepted: an unknown institution failed to start
+    // OTP/OAuth and the row was then filed as pending manual review, and
+    // random characters went to the bank as an account number. Refuse an
+    // institution VouchMorph doesn't work with (or can't debit), and an
+    // identifier that cannot be an account of this kind, before anyone is
+    // asked to verify anything.
+    // ============================================================
+    $participantCode = null;
+    foreach (array_keys($this->participants) as $code) {
+        if (strcasecmp((string)$code, trim($institution)) === 0) {
+            $participantCode = (string)$code;
+            break;
+        }
+    }
+    if ($participantCode === null) {
+        throw new RuntimeException("'{$institution}' is not an institution VouchMorph works with.");
+    }
+    $institution = $participantCode;
+    $this->assertCanBeSource($institution);
+
+    $identifier = trim($identifier);
+    [$dialCode, $localLength] = SourceOwnershipGuard::phoneRules($this->config);
+    SourceOwnershipGuard::assertIdentifierFormat($assetType, $identifier, $dialCode, $localLength);
+
+    // ============================================================
+    // FIX: SKIP verifyAsset here - the bank doesn't know the user yet
     // The account will be verified during the OTP/OAuth completion
     // ============================================================
 
@@ -10359,9 +10455,11 @@ public function initiateUserSourceRegistration(
     $isOauth = $linkSucceeded && ($linkResult['auth_type'] ?? null) === 'oauth';
 
     if (!$linkSucceeded) {
-        // No OTP/OAuth support - register without ownership proof
-        // This should be rare and flagged for manual review
-        error_log("[SwapService] {$institution} has no OTP/OAuth support for sources - registering without ownership proof");
+        // No OTP/OAuth support: the source waits, unusable, until an admin
+        // approves it after checking ownership with the institution (admin
+        // dashboard, Agent Approvals). SourceOwnershipGuard refuses a
+        // pending_confirmation source everywhere money moves.
+        error_log("[SwapService] {$institution} has no OTP/OAuth support for sources - holding for manual ownership review");
         $id = $this->insertUserSourceAccount(
             $userId, $institution, $assetType, $identifier, $identifierType,
             $accountName ?? null,
@@ -10374,7 +10472,7 @@ public function initiateUserSourceRegistration(
             'otp_supported' => false,
             'id' => $id,
             'status' => 'pending_confirmation',
-            'message' => "Registered without ownership verification - awaiting manual review.",
+            'message' => "{$institution} can't confirm account ownership automatically, so this source is waiting for a manual ownership check. You can use it as soon as it is approved.",
         ];
     }
 
@@ -10462,14 +10560,18 @@ public function completeUserSourceRegistration(int $userId, int $attemptId, stri
         $verifyResult = $this->verifySourceLink([
             'institution' => $attempt['institution'],
             'auth_id' => $attempt['bank_auth_id'],
-            'otp' => $otp,
+            'otp' => trim($otp),
         ]);
     } catch (Exception $e) {
         throw new RuntimeException("Could not verify code: " . $e->getMessage());
     }
 
     if (!($verifyResult['success'] ?? false) || !($verifyResult['authorized'] ?? false)) {
-        throw new RuntimeException($verifyResult['message'] ?? 'Incorrect or expired code.');
+        $remaining = $this->recordFailedSourceOtp((int)$attempt['id']);
+        $reason = rtrim((string)($verifyResult['message'] ?? 'Incorrect or expired code'), '. ');
+        throw new RuntimeException($remaining > 0
+            ? "{$reason}. {$remaining} " . ($remaining === 1 ? 'try' : 'tries') . ' left.'
+            : "{$reason}. This verification has been stopped - add the source again to get a new code.");
     }
 
     // ============================================================
@@ -10520,7 +10622,54 @@ public function completeUserSourceRegistration(int $userId, int $attemptId, stri
     return ['id' => $id, 'status' => 'active', 'message' => "Ownership verified. Account added as a source."];
 }
 
-public function completeUserSourceRegistrationByState(string $oauthState, string $code): array
+/**
+ * Counts one wrong code against a source registration attempt and returns
+ * how many tries are left; at SOURCE_OTP_MAX_ATTEMPTS the attempt is
+ * failed and a new one (with a new code from the institution) is needed.
+ * resendOtpForAttempt() never resets the count.
+ *
+ * otp_failed_attempts comes from
+ * database/migrations/2026_09_27_source_registration_otp_lockout.sql. Until
+ * that is applied there is nothing to count in, so the attempt ends at the
+ * first wrong code rather than allowing unlimited guesses.
+ */
+private function recordFailedSourceOtp(int $attemptId): int
+{
+    try {
+        $failures = (int)$this->runInSavepoint('source_otp_miss_' . $attemptId, function () use ($attemptId) {
+            // The limit is written into the SQL, not bound: a bound value can
+            // arrive as text, and an integer is never >= text in every driver.
+            $stmt = $this->swapDB->prepare("
+                UPDATE user_source_registration_attempts
+                SET otp_failed_attempts = COALESCE(otp_failed_attempts, 0) + 1,
+                    status = CASE WHEN COALESCE(otp_failed_attempts, 0) + 1 >= " . self::SOURCE_OTP_MAX_ATTEMPTS . " THEN 'failed' ELSE status END
+                WHERE id = :id
+                RETURNING otp_failed_attempts
+            ");
+            $stmt->execute([':id' => $attemptId]);
+            return $stmt->fetchColumn();
+        });
+    } catch (PDOException $e) {
+        error_log("[SwapService] Could not count a wrong source OTP for attempt {$attemptId} (is 2026_09_27_source_registration_otp_lockout.sql applied?) - failing the attempt instead: " . $e->getMessage());
+        $this->swapDB->prepare("UPDATE user_source_registration_attempts SET status = 'failed' WHERE id = :id")
+            ->execute([':id' => $attemptId]);
+        $failures = self::SOURCE_OTP_MAX_ATTEMPTS;
+    }
+
+    if ($failures >= self::SOURCE_OTP_MAX_ATTEMPTS) {
+        error_log("[SECURITY] Source registration attempt {$attemptId} stopped after {$failures} wrong codes");
+    }
+    return max(0, self::SOURCE_OTP_MAX_ATTEMPTS - $failures);
+}
+
+/**
+ * FIX: the attempt is bound to the signed-in user who started it. It used
+ * to be found by its OAuth state alone, so a link someone else started - to
+ * register THEIR account number under THEIR profile - completed with
+ * whoever's bank login answered it (classic OAuth CSRF), and the account
+ * number typed at the start was never checked against that login at all.
+ */
+public function completeUserSourceRegistrationByState(string $oauthState, string $code, int $userId): array
 {
     $stmt = $this->swapDB->prepare("
         SELECT * FROM user_source_registration_attempts WHERE oauth_state = :state AND status = 'oauth_pending'
@@ -10529,6 +10678,10 @@ public function completeUserSourceRegistrationByState(string $oauthState, string
     $attempt = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$attempt) {
         throw new RuntimeException("Registration attempt not found or already completed.");
+    }
+    if ((int)$attempt['user_id'] !== $userId) {
+        error_log("[SECURITY] User {$userId} tried to complete source registration attempt {$attempt['id']}, which belongs to user {$attempt['user_id']}");
+        throw new RuntimeException("This bank login was started from another VouchMorph account. Sign in to that account, or add the source again from yours.");
     }
 
     $callbackUrl = rtrim(getenv('APP_BASE_URL') ?: 'https://vouchmorphn-production.up.railway.app', '/')
@@ -10547,10 +10700,35 @@ public function completeUserSourceRegistrationByState(string $oauthState, string
         throw new RuntimeException($verifyResult['message'] ?? 'Bank login could not be verified.');
     }
 
+    // The bank login proves who the customer is at the bank; the account
+    // number they typed still has to be one that login can use. Asked with
+    // the login's own token, the same check the OTP path makes.
+    $assetVerification = $this->adapterFactory->getAdapter($attempt['institution'])->verifyAsset([
+        'action' => 'VERIFY_ASSET',
+        'reference' => 'USER_SRC_' . (int)$attempt['user_id'] . '_' . time(),
+        'source_identifier' => $attempt['identifier'],
+        'identifier_type' => $attempt['identifier_type'],
+        'asset_type' => $attempt['asset_type'],
+        'requester' => 'VOUCHMORPH',
+        'timestamp' => time(),
+        'from_institution' => $attempt['institution'],
+        'source_institution' => $attempt['institution'],
+        'access_token' => $verifyResult['access_token'] ?? null,
+    ], [
+        'institution' => $attempt['institution'],
+        'purpose' => 'user_source_verification',
+        'access_token' => $verifyResult['access_token'] ?? null,
+    ]);
+    if (!($assetVerification['verified'] ?? false)) {
+        $this->swapDB->prepare("UPDATE user_source_registration_attempts SET status = 'failed' WHERE id = :id")
+            ->execute([':id' => $attempt['id']]);
+        throw new RuntimeException("{$attempt['institution']} did not confirm that account for this bank login: " . ($assetVerification['message'] ?? 'unknown reason'));
+    }
+
     $id = $this->insertUserSourceAccount(
         (int)$attempt['user_id'], $attempt['institution'], $attempt['asset_type'],
         $attempt['identifier'], $attempt['identifier_type'], $attempt['account_name'],
-        'BWP', true,
+        $assetVerification['currency'] ?? 'BWP', true,
         $verifyResult['access_token'] ?? null,
         $verifyResult['refresh_token'] ?? null,
         $verifyResult['expires_at'] ?? null,

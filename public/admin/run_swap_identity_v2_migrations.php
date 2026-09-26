@@ -21,8 +21,12 @@ declare(strict_types=1);
  *   3. database/migrations/2026_09_17_reservation_account_consumed_status.sql
  *   4. database/migrations/2026_09_18_activity_and_sub_requests.sql
  *   5. database/migrations/2026_09_24_reservation_account_claim_pin_lockout.sql
+ *   6. database/migrations/2026_09_27_source_registration_otp_lockout.sql
+ *      (not swap-to-identity work, but the same kind of attempt limit, and
+ *      shipped the same way - listed here so it can be applied without a
+ *      shell)
  *
- * All five are idempotent (IF NOT EXISTS / DROP...IF EXISTS guards
+ * All six are idempotent (IF NOT EXISTS / DROP...IF EXISTS guards
  * throughout) — safe to click Apply more than once. Each file's own
  * BEGIN/COMMIT makes it atomic; a failure partway through one file rolls
  * that file back, and this page stops before running any file after it,
@@ -69,6 +73,11 @@ const MIGRATIONS = [
         'key' => 'reservation_account_claim_pin_lockout',
         'label' => '2026_09_24_reservation_account_claim_pin_lockout.sql',
         'path' => __DIR__ . '/../../database/migrations/2026_09_24_reservation_account_claim_pin_lockout.sql',
+    ],
+    [
+        'key' => 'source_registration_otp_lockout',
+        'label' => '2026_09_27_source_registration_otp_lockout.sql',
+        'path' => __DIR__ . '/../../database/migrations/2026_09_27_source_registration_otp_lockout.sql',
     ],
 ];
 
@@ -137,6 +146,14 @@ function checkMigrationStatus(PDO $db): array {
           AND column_name IN ('claim_pin_attempts', 'claim_pin_locked_until')
     ");
     $status['reservation_account_claim_pin_lockout'] = (int)$stmt->fetchColumn() === 2;
+
+    $stmt = $db->query("
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'user_source_registration_attempts' AND column_name = 'otp_failed_attempts'
+        )
+    ");
+    $status['source_registration_otp_lockout'] = (bool)$stmt->fetchColumn();
 
     return $status;
 }

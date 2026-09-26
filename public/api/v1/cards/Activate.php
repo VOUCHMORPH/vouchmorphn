@@ -38,6 +38,13 @@ if (!SessionManager::isLoggedIn()) {
     echo json_encode(['success' => false, 'error' => 'Not logged in']);
     exit();
 }
+// An admin session's id is an admin_id, which can equal some customer's
+// user_id - never let it pay from a customer's sources.
+if (!SessionManager::isUser()) {
+    http_response_code(403);
+    echo json_encode(['success' => false, 'error' => 'Only a customer can activate their card.']);
+    exit();
+}
 $userData = SessionManager::getUser();
 $userId = (int)($userData['id'] ?? $userData['user_id'] ?? 0);
 
@@ -62,10 +69,12 @@ try {
     $cardService = $container->get('Domain\Services\CardService');
     $swapService = $container->get('Domain\Services\SwapService');
 
+    // activateCard() charges the fee only from one of this user's verified
+    // sources (SourceOwnershipGuard), under the identifier they verified.
     $sourcePayload = [
-        'institution' => $input['institution'],
-        'asset_type' => $input['asset_type'],
-        'source_identifier' => $input['identifier'],
+        'institution' => (string)$input['institution'],
+        'asset_type' => (string)$input['asset_type'],
+        'source_identifier' => trim((string)$input['identifier']),
         'wallet_pin' => $input['pin'] ?? $input['wallet_pin'] ?? null,
         'pin' => $input['pin'] ?? $input['wallet_pin'] ?? null,
     ];
