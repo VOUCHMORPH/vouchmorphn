@@ -2,6 +2,7 @@
 
 use PHPUnit\Framework\TestCase;
 use Domain\Services\FeeService;
+use Domain\Services\MultiSourceFeeCalculator;
 
 require_once __DIR__ . '/../../vendor/autoload.php';
 
@@ -13,12 +14,16 @@ require_once __DIR__ . '/../../vendor/autoload.php';
  */
 class FeeServiceTest extends TestCase
 {
-    private function makeFeeService(): FeeService
+    private function feesConfig(): array
     {
         $feesJsonPath = __DIR__ . '/../../src/Core/Config/Countries/Botswana/fees.json';
-        $feesConfig = json_decode(file_get_contents($feesJsonPath), true);
 
-        return new FeeService($feesConfig, [], 'BWP', null);
+        return json_decode(file_get_contents($feesJsonPath), true);
+    }
+
+    private function makeFeeService(): FeeService
+    {
+        return new FeeService($this->feesConfig(), [], 'BWP', null);
     }
 
     public function testIdentityHoldFhIsFlatOnePulaRegardlessOfAmount(): void
@@ -126,67 +131,94 @@ class FeeServiceTest extends TestCase
     }
 
     /**
-     * The multi_source schedule in fees.json ("extra P1 per additional source
-     * beyond the first, capped at P15") has to reach what the customer is
-     * actually charged. It used to be written to its own slot that nothing
-     * downstream reads, so an N-source swap was billed exactly like a
-     * single-source one.
+     * fees.json's multi_source rule (model PER_SOURCE_CUTS, 2026-09-22)
+     * "Replaces the retired F8 +P1": the extra P1 per additional source that
+     * FeeService used to fold into F1. FeeService prices one source; the
+     * per-source cuts are MultiSourceFeeCalculator's, and
+     * SwapService::identityClaimFeeShares()'s for an identity claim. So a
+     * swap flagged as multi-source must come back as one source does.
      */
-    public function testExtraSourceFeeIsChargedPerAdditionalSource(): void
+    public function testRetiredExtraSourceFeeIsNotCharged(): void
     {
         $feeService = $this->makeFeeService();
         $sources = fn(int $n) => array_fill(0, $n, ['institution' => 'ZURUBANK', 'amount' => 100.00]);
 
-        $single = $feeService->calculateFees('DEPOSIT', 500.00, [
-            'currency' => 'BWP',
-            'sources' => $sources(1),
-            'is_multi_source' => false,
-        ])['total_fee'];
-
-        foreach ([2 => 1.00, 3 => 2.00, 5 => 4.00] as $count => $expectedExtra) {
-            $result = $feeService->calculateFees('DEPOSIT', 500.00, [
+        foreach (['DEPOSIT', 'CASHOUT'] as $product) {
+            $single = $feeService->calculateFees($product, 500.00, [
                 'currency' => 'BWP',
-                'sources' => $sources($count),
-                'is_multi_source' => true,
+                'sources' => $sources(1),
+                'is_multi_source' => false,
             ]);
 
-            $this->assertSame(
-                round($single + $expectedExtra, 2),
-                round($result['total_fee'], 2),
-                "{$count} sources must cost P{$expectedExtra} more than one"
-            );
-            $this->assertSame(
-                round(500.00 - $result['total_fee'], 2),
-                round($result['net_amount_source_currency'], 2),
-                'the extra must come out of the delivered amount, not vanish'
-            );
-        }
-    }
+            foreach ([2, 3, 5] as $count) {
+                $result = $feeService->calculateFees($product, 500.00, [
+                    'currency' => 'BWP',
+                    'sources' => $sources($count),
+                    'is_multi_source' => true,
+                ]);
 
-    public function testExtraSourceFeeIsCappedAtTheConfiguredMaximum(): void
-    {
-        $feeService = $this->makeFeeService();
-
-        $base = $feeService->calculateFees('DEPOSIT', 500.00, ['currency' => 'BWP'])['total_fee'];
-
-        foreach ([16, 20, 200] as $count) {
-            $result = $feeService->calculateFees('DEPOSIT', 500.00, [
-                'currency' => 'BWP',
-                'sources' => array_fill(0, $count, ['institution' => 'ZURUBANK', 'amount' => 1.00]),
-                'is_multi_source' => true,
-            ]);
-
-            $this->assertSame(
-                round($base + 15.00, 2),
-                round($result['total_fee'], 2),
-                "the extra-source charge must stop at P15 however many sources ({$count}) there are"
-            );
+                $this->assertSame(
+                    $single['total_fee'],
+                    $result['total_fee'],
+                    "{$product} with {$count} sources must cost what one source does"
+                );
+                $this->assertSame(
+                    $single['net_amount_source_currency'],
+                    $result['net_amount_source_currency'],
+                    'nothing extra may come out of the delivered amount'
+                );
+                $this->assertArrayNotHasKey(
+                    'F8',
+                    $result['fees']['active_slots'],
+                    'the retired F8 multi-source fee must not be charged'
+                );
+            }
         }
     }
 
     /**
-     * A single-source swap must be completely unaffected by the multi-source
-     * branch, whether or not the caller passes the fields at all.
+     * The retired schedule's P15 cap went with it ("No fee cap (removed
+     * 2026-09-22)"), and FeeService adds nothing per source, so there is
+     * nothing left to cap. What an identity claim still reads from this
+     * result for a pool is the platform share: SwapService invoices it to the
+     * destination as IDENTITY_CLAIM_PLATFORM_FEE, while fee_ledger records
+     * the per-source-cuts rule's platform cut for the same claim. Under that
+     * rule VouchMorph takes one cut of the pool however many sources there
+     * are, so the two must agree at every source count, including the counts
+     * that used to hit the cap.
+     */
+    public function testPlatformShareIsOneCutWhateverTheSourceCount(): void
+    {
+        $feeService = $this->makeFeeService();
+        $calculator = new MultiSourceFeeCalculator($this->feesConfig(), 'BW');
+
+        foreach (['DEPOSIT' => 'deposit', 'CASHOUT' => 'cashout'] as $product => $deliveryMode) {
+            $single = $feeService->calculateFees($product, 500.00, ['currency' => 'BWP']);
+
+            foreach ([2, 16, 20, 200] as $count) {
+                $result = $feeService->calculateFees($product, 500.00, [
+                    'currency' => 'BWP',
+                    'sources' => array_fill(0, $count, ['institution' => 'ZURUBANK', 'amount' => 1.00]),
+                    'is_multi_source' => true,
+                ]);
+
+                $this->assertSame(
+                    $calculator->calculateFees($count, $deliveryMode, 500.00)['platform_cut'],
+                    $result['distribution']['platform']['amount'],
+                    "{$product} with {$count} sources: the platform share must be the per-source-cuts rule's one cut"
+                );
+                $this->assertSame(
+                    $single['total_fee'],
+                    $result['total_fee'],
+                    "{$product} with {$count} sources: nothing may be added, or capped"
+                );
+            }
+        }
+    }
+
+    /**
+     * A single-source swap must come out the same whether or not the caller
+     * passes the multi-source fields at all.
      */
     public function testSingleSourceFeeIsUnchanged(): void
     {
