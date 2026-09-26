@@ -4897,9 +4897,134 @@ function claimReadyInstitutions(currency) {
     });
 }
 
+// FIX: the claim form used to take only an institution and a typed number,
+// and sent no word on what the number was, so the server paid every claim
+// out as an ACCOUNT deposit. A claim into a wallet reached the bank as an
+// account "numbered" with the wallet's phone number and never arrived where
+// the claimer chose. The claimer now picks one of their own accounts or
+// wallets (or enters one, saying which kind it is), and that choice -- the
+// institution, the kind (destination_asset_type) and the number -- is what
+// claim_identity.php is sent and what the money is paid into.
+const CLAIM_DEPOSIT_KINDS = {
+    ACCOUNT: { label: 'Bank account', idLabel: 'Account number', placeholder: 'Account number', identifierType: 'account_number', inputmode: 'text' },
+    WALLET: { label: 'Wallet', idLabel: 'Wallet phone number', placeholder: 'Phone number the wallet is on', identifierType: 'phone', inputmode: 'tel' },
+};
+
+// The kinds of account a claim can be deposited into at this institution.
+function claimDepositKinds(instCode) {
+    const offered = (PARTICIPANTS[instCode]?.asset_types || []).map(t => normalizeAssetType(t));
+    return Object.keys(CLAIM_DEPOSIT_KINDS).filter(kind => offered.includes(kind));
+}
+
+function claimDepositInstitutions(currency) {
+    return claimReadyInstitutions(currency).filter(code => PARTICIPANTS[code]?.capabilities?.deposit && claimDepositKinds(code).length > 0);
+}
+
+function claimCashoutInstitutions(currency) {
+    return claimReadyInstitutions(currency).filter(code => PARTICIPANTS[code]?.capabilities?.cashout);
+}
+
+// The claimer's own linked accounts and wallets a claim can be deposited into.
+function claimDepositSavedSources(currency) {
+    const ready = claimDepositInstitutions(currency);
+    return userSources.filter(s => s.status === 'active'
+        && ready.includes(s.institution)
+        && claimDepositKinds(s.institution).includes(normalizeAssetType(s.asset_type))
+        && (s.identifier || s.source_identifier));
+}
+
+// "Receive as" plus the destination fields for it. prefix names the form's
+// elements ('claim' or 'directClaim'); fill them with renderClaimDestinationChoice()
+// once this is on the page.
+function renderClaimDestinationFields(prefix, currency) {
+    return `
+        <div id="${prefix}DestFields" data-currency="${escapeHtml(currency || '')}">
+            <div class="field-group"><label>Receive as</label><select id="${prefix}DestType" onchange="renderClaimDestinationChoice('${prefix}')"><option value="CASHOUT">Cashout (ATM / Agent code)</option><option value="DEPOSIT">Deposit to an account/wallet</option></select></div>
+            <div id="${prefix}DestChoice"></div>
+        </div>`;
+}
+
+// preset: { institution, kind, identifier } to show selected -- a saved
+// source the claimer tapped, or what they had entered before changing the
+// institution or the kind.
+function renderClaimDestinationChoice(prefix, preset) {
+    const holder = document.getElementById(prefix + 'DestChoice');
+    if (!holder) return;
+    const currency = document.getElementById(prefix + 'DestFields')?.dataset.currency || null;
+    const type = document.getElementById(prefix + 'DestType')?.value || 'CASHOUT';
+    const instOptions = (codes, selected) => codes.map(code => `<option value="${code}" ${code === selected ? 'selected' : ''}>${escapeHtml(PARTICIPANTS[code]?.name || code)}</option>`).join('');
+
+    if (type === 'CASHOUT') {
+        const insts = claimCashoutInstitutions(currency);
+        const own = userSources.find(s => insts.includes(s.institution));
+        const selected = (preset?.institution && insts.includes(preset.institution) && preset.institution) || own?.institution || insts[0];
+        holder.innerHTML = insts.length === 0
+            ? '<div style="font-size:12px;color:var(--danger);margin-bottom:10px;">No institution can pay this out as cash right now. Choose a deposit instead, or contact VouchMorph support.</div>'
+            : `<div class="field-group"><label>Cashout via</label><select id="${prefix}DestInst">${instOptions(insts, selected)}</select><div class="help">You'll get a code to collect the cash at this institution's ATMs or agents.</div></div>`;
+        return;
+    }
+
+    const insts = claimDepositInstitutions(currency);
+    if (insts.length === 0) {
+        holder.innerHTML = '<div style="font-size:12px;color:var(--danger);margin-bottom:10px;">No institution can receive this deposit right now. Choose a cashout instead, or contact VouchMorph support.</div>';
+        return;
+    }
+    const saved = claimDepositSavedSources(currency);
+    const pick = preset || (saved[0] ? { institution: saved[0].institution, kind: normalizeAssetType(saved[0].asset_type), identifier: saved[0].identifier || saved[0].source_identifier } : null);
+    const inst = pick?.institution && insts.includes(pick.institution) ? pick.institution : insts[0];
+    const kinds = claimDepositKinds(inst);
+    const kind = pick?.kind && kinds.includes(pick.kind) ? pick.kind : kinds[0];
+    const cfg = CLAIM_DEPOSIT_KINDS[kind];
+    const savedHtml = saved.length === 0 ? '' : `
+        <div class="field-group"><label>Your accounts and wallets</label>
+            <div style="border:1px solid var(--border-strong);">${saved.map((s, i) => `<div class="saved-source-row" onclick="useSavedSourceForClaim('${prefix}', ${i})"><div class="row-main"><div class="row-inst">${escapeHtml(PARTICIPANTS[s.institution]?.name || s.institution)} · ${escapeHtml(CLAIM_DEPOSIT_KINDS[normalizeAssetType(s.asset_type)].label)}</div><div class="row-ident">${escapeHtml(s.identifier || s.source_identifier || '')}</div></div></div>`).join('')}</div>
+            <div class="help">Tap one to deposit there, or enter another below.</div>
+        </div>`;
+    const keepEntered = `{ institution: document.getElementById('${prefix}DestInst').value, kind: document.getElementById('${prefix}DestKind').value, identifier: document.getElementById('${prefix}DestIdentifier').value }`;
+    holder.innerHTML = `${savedHtml}
+        <div class="field-group"><label>Deposit to</label><select id="${prefix}DestInst" onchange="renderClaimDestinationChoice('${prefix}', ${keepEntered})">${instOptions(insts, inst)}</select></div>
+        <div class="field-group"><label>Account type</label><select id="${prefix}DestKind" onchange="renderClaimDestinationChoice('${prefix}', ${keepEntered})">${kinds.map(k => `<option value="${k}" ${k === kind ? 'selected' : ''}>${CLAIM_DEPOSIT_KINDS[k].label}</option>`).join('')}</select></div>
+        <div class="field-group"><label>${cfg.idLabel}</label><input id="${prefix}DestIdentifier" inputmode="${cfg.inputmode}" autocomplete="off" placeholder="${cfg.placeholder}"></div>`;
+    // Set via the DOM, not the markup: it can be anything the claimer typed.
+    document.getElementById(prefix + 'DestIdentifier').value = pick?.identifier || '';
+}
+
+function useSavedSourceForClaim(prefix, idx) {
+    const currency = document.getElementById(prefix + 'DestFields')?.dataset.currency || null;
+    const source = claimDepositSavedSources(currency)[idx];
+    if (!source) return;
+    renderClaimDestinationChoice(prefix, { institution: source.institution, kind: normalizeAssetType(source.asset_type), identifier: source.identifier || source.source_identifier });
+}
+
+// What the form says, as claim_identity.php fields plus a label for the
+// preview and the result -- or null (with a message) when it's incomplete.
+function readClaimDestination(prefix) {
+    const type = document.getElementById(prefix + 'DestType')?.value;
+    const inst = document.getElementById(prefix + 'DestInst')?.value;
+    if (!inst) { showMessage('Select where to receive the money.', 'warning'); return null; }
+    const instName = PARTICIPANTS[inst]?.name || inst;
+    if (type !== 'DEPOSIT') {
+        return { fields: { destination_type: 'CASHOUT', destination_institution: inst }, label: `Cashout via ${instName}` };
+    }
+    const kind = document.getElementById(prefix + 'DestKind')?.value;
+    const cfg = CLAIM_DEPOSIT_KINDS[kind];
+    const identifier = (document.getElementById(prefix + 'DestIdentifier')?.value || '').trim();
+    if (!cfg) { showMessage('Choose a bank account or a wallet.', 'warning'); return null; }
+    if (!identifier) { showMessage(`Enter the ${cfg.idLabel.toLowerCase()}.`, 'warning'); return null; }
+    return {
+        fields: {
+            destination_type: 'DEPOSIT',
+            destination_institution: inst,
+            destination_identifier: identifier,
+            destination_asset_type: kind,
+            destination_identifier_type: cfg.identifierType,
+        },
+        label: `${instName} ${cfg.label.toLowerCase()} ${identifier}`,
+    };
+}
+
 async function submitClaim(swapReference) {
     const pin = document.getElementById('claimPin').value.trim();
-    const destType = document.getElementById('claimDestType').value;
     if (!pin) { showMessage('Enter your claim PIN.', 'warning'); return; }
 
     // FIX: claim_identity.php resolves the claim by identity_type +
@@ -4915,94 +5040,110 @@ async function submitClaim(swapReference) {
         return;
     }
 
+    const destination = readClaimDestination('claim');
+    if (!destination) return;
+
     const payload = {
         swap_reference: swapReference,
         identity_type: claim.identity_type,
         identity_value: claim.identity_value,
         pin,
-        destination_type: destType,
+        ...destination.fields,
     };
-    let destInst = null, destIdentifier = null;
 
-    // FIX: claim_identity.php requires destination_institution for
-    // CASHOUT too (which network to dispense the code through), not
-    // just DEPOSIT -- read it unconditionally instead of only inside
-    // the DEPOSIT branch, or every CASHOUT claim 400s.
-    if (destType !== 'HOOK') {
-        destInst = document.getElementById('claimDestInst').value;
-        if (!destInst) { showMessage('Select a destination institution.', 'warning'); return; }
-        payload.destination_institution = destInst;
-    }
-
-    if (destType === 'DEPOSIT') {
-        destIdentifier = document.getElementById('claimDestIdentifier').value.trim();
-        payload.destination_identifier = destIdentifier;
-        if (!destIdentifier) { showMessage('Enter an account/wallet number.', 'warning'); return; }
-    } else if (destType === 'HOOK') {
-        if (!claimHookCardSuffix) { showMessage('Choose which card to hook this to first.', 'warning'); return; }
-        payload.card_suffix = claimHookCardSuffix;
-    }
-
-    const amount = claim?.amount || 0;
-    const currency = claim?.currency || 'BWP';
-    const sourceInst = claim?.source_institution || 'Unknown';
-
-    let destLabel = '';
-    if (destType === 'HOOK') {
-        destLabel = `Hook to ${claimHookCardLabel || '•••• ' + claimHookCardSuffix}`;
-    } else if (destType === 'DEPOSIT') {
-        destLabel = `Deposit to ${PARTICIPANTS[destInst]?.name || destInst} — ${destIdentifier}`;
-    } else {
-        destLabel = `Cashout via ${PARTICIPANTS[destInst]?.name || destInst}`;
-    }
+    // One PIN claims everything waiting for this identity, so that is what
+    // the preview shows, not just the payment that was tapped.
+    const together = pendingClaims.filter(c => c.identity_type === claim.identity_type && c.identity_value === claim.identity_value && c.currency === claim.currency);
+    const amount = together.reduce((sum, c) => sum + (parseFloat(c.amount) || 0), 0);
+    const currency = claim.currency || 'BWP';
+    const fromNote = together.length > 1
+        ? `${together.length} payments sent to your ${escapeHtml(IDENTITY_TYPE_LABELS[claim.identity_type] || claim.identity_type)}`
+        : `From ${escapeHtml(claim.source_institution || 'Unknown')}`;
 
     const bodyHtml = `
         <div class="review-hero">
             <div class="review-hero-label">You're claiming</div>
             <div class="review-hero-amount">${formatMoney(amount, currency)}</div>
-            <div class="review-hero-note">From ${escapeHtml(sourceInst)}</div>
+            <div class="review-hero-note">${fromNote}</div>
         </div>
         <div class="preview-box">
             <div class="preview-row">
                 <span>Destination</span>
-                <span class="value">${escapeHtml(destLabel)}</span>
+                <span class="value">${escapeHtml(destination.fields.destination_type === 'DEPOSIT' ? 'Deposit to ' + destination.label : destination.label)}</span>
             </div>
         </div>
-        <div class="preview-reassure">This is final — confirm to complete the claim.</div>`;
+        <div class="preview-reassure">This is final — confirm to complete the claim. Fees are taken from the amount.</div>`;
 
     pendingExecution = {
         type: 'claim',
         payload: payload,
-        callback: () => executeClaim()
+        callback: () => executeClaim(destination.label)
     };
     showPreviewModal('Claim preview', bodyHtml, null, 'Confirm claim');
 }
 
-async function executeClaim() {
+async function executeClaim(destinationLabel) {
     const payload = pendingExecution.payload;
     if (!payload) return;
+    openModal('Claiming…', '<div style="text-align:center;padding:20px;"><div class="spinner" style="border-color:rgba(16,30,27,0.15);border-top-color:var(--primary);"></div> Delivering your money…</div>');
     const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/claim_identity.php', payload);
-    if (!result.ok) { showMessage('That claim didn\'t go through: ' + friendlyApiError(result.error), 'error'); return; }
-    checkPendingClaims();
+    if (!result.ok) { closeModal(); showMessage('That claim didn\'t go through: ' + friendlyApiError(result.error), 'error'); return; }
+    // What was just claimed is no longer waiting: clear it everywhere before
+    // showing the result.
+    await checkPendingClaims();
+    showClaimResult(result.body?.data || {}, payload, destinationLabel);
+}
 
-    if (payload.destination_type === 'HOOK') {
-        showMessage(`Claimed and hooked to ${claimHookCardLabel || 'the card'}. 🎉`, 'success');
-        claimHookCardSuffix = null; claimHookCardLabel = null; pendingClaimIdxForHook = null;
-        loadToolboxView();
-        return;
+// Where the claimed money went, as the server reports it -- a deposit into
+// the chosen account or wallet, a cash-out code at the chosen institution,
+// or, if the deposit couldn't be delivered, the reservation account it was
+// kept in instead.
+function showClaimResult(data, payload, destinationLabel) {
+    const currency = data.currency || 'BWP';
+    const instName = PARTICIPANTS[data.destination_institution || payload.destination_institution]?.name || data.destination_institution || payload.destination_institution || '';
+    const failedCount = Array.isArray(data.holds_failed) ? data.holds_failed.length : 0;
+    const stillWaiting = failedCount > 0
+        ? `<div class="result-sub">${failedCount} payment${failedCount === 1 ? '' : 's'} couldn't be claimed right now and ${failedCount === 1 ? 'is' : 'are'} still waiting for you under Toolbox → Finalize identity swap.</div>`
+        : '';
+    let icon = '✓', title, sub, details = '', celebrate = true;
+
+    if (data.status === 'pending_cashout') {
+        title = 'Your cash-out code is ready';
+        sub = `Collect ${formatMoney(data.cash_amount, currency)} at a ${escapeHtml(instName)} ATM or agent with this code.`;
+        details = `
+            <div class="atm-code" style="margin-top:12px;">
+                ${data.voucher_number ? `<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Cash-out code</div><div class="code">${escapeHtml(data.voucher_number)}</div>` : ''}
+                ${data.atm_code ? `<div style="font-size:11px;color:var(--text-muted);margin:10px 0 4px;">PIN</div><div class="code">${escapeHtml(data.atm_code)}</div>` : ''}
+                ${data.code_expires_at ? `<div style="font-size:11px;color:var(--text-dim);margin-top:8px;">Expires ${new Date(data.code_expires_at).toLocaleString()}</div>` : ''}
+            </div>`;
+    } else if (data.status === 'parked_instead_of_payout') {
+        icon = '!';
+        celebrate = false;
+        title = 'Kept safe for you';
+        sub = `It couldn't be delivered to ${escapeHtml(destinationLabel)}, so ${formatMoney(data.payout_amount_net, currency)} was kept in your reservation account at ${escapeHtml(instName)}. Nothing was lost — claim it again, or contact VouchMorph support.`;
+    } else {
+        const net = data.payout_amount_net ?? data.payout_amount_gross;
+        const fee = (parseFloat(data.payout_amount_gross) || 0) - (parseFloat(data.payout_amount_net) || 0);
+        title = 'Claim complete! 🎉';
+        sub = payload.destination_type === 'DEPOSIT'
+            ? `${formatMoney(net, currency)} was deposited to your ${escapeHtml(destinationLabel)}.`
+            : 'The money is now yours.';
+        if (fee > 0.004) details = `<div class="result-sub">Fee: ${formatMoney(fee, currency)}</div>`;
     }
 
     const bodyHtml = `
         <div class="result-box" id="resultBoxRoot">
-            <div class="icon">✓</div>
-            <div class="result-title">Claim complete! 🎉</div>
-            <div class="result-sub">The money is now yours.</div>
+            <div class="icon">${icon}</div>
+            <div class="result-title">${title}</div>
+            <div class="result-sub">${sub}</div>
+            ${details}
+            ${stillWaiting}
         </div>
         <div class="cta-row" style="margin-top:16px;">
             <button class="btn btn-primary" onclick="closeModal(); loadToolboxView();">Done</button>
         </div>`;
-    openModal('Claim complete', bodyHtml);
-    setTimeout(() => fireConfetti(document.getElementById('resultBoxRoot')), 150);
+    openModal(celebrate ? 'Claim complete' : 'Claim result', bodyHtml);
+    if (celebrate) setTimeout(() => fireConfetti(document.getElementById('resultBoxRoot')), 150);
 }
 
 // ============================================================
@@ -5075,7 +5216,25 @@ async function loadToolboxView() {
     await getCurrentUserRole();
     await loadUserSources();
     await loadUserIdentities();
+    await checkPendingClaims();
     body.innerHTML = renderToolboxBody();
+}
+
+// Re-draws the Toolbox in place when what it lists has changed underneath it
+// (a claim finalized by an agent), keeping the search and open sections.
+function refreshToolboxIfShown() {
+    if (viewStack[viewStack.length - 1] !== 'toolbox') return;
+    const body = document.getElementById('toolboxViewBody');
+    if (!body || !body.querySelector('.toolbox-accordion')) return;   // still loading
+    const search = document.getElementById('toolboxSearchInput');
+    const query = search?.value || '';
+    const hadFocus = document.activeElement === search;
+    const open = [...body.querySelectorAll('.toolbox-accordion')].filter(d => d.open).map(d => d.dataset.groupIdx);
+    body.innerHTML = renderToolboxBody();
+    body.querySelectorAll('.toolbox-accordion').forEach(d => { if (open.includes(d.dataset.groupIdx)) d.open = true; });
+    const newSearch = document.getElementById('toolboxSearchInput');
+    if (newSearch && query) { newSearch.value = query; filterToolbox(query); }
+    if (newSearch && hadFocus) newSearch.focus();
 }
 
 function renderToolboxBody() {
@@ -5287,19 +5446,16 @@ function hookSelectedSourceToCard() {}
 // ============================================================
 // FINALIZE IDENTITY SWAP (self-service)
 // ============================================================
-function openFinalizeIdentityModal() {
+async function openFinalizeIdentityModal() {
+    // Show what's waiting now, not what was waiting when the page loaded: an
+    // agent may have finalized it since.
+    openModal('Finalize identity swap', '<div style="text-align:center;padding:20px;"><div class="spinner" style="border-color:rgba(16,30,27,0.15);border-top-color:var(--primary);"></div> Loading...</div>');
+    await checkPendingClaims();
     openModal('Finalize identity swap', renderFinalizeIdentityModal());
+    renderClaimDestinationChoice('directClaim');
 }
 
 function renderFinalizeIdentityModal() {
-    // Currency isn't known yet for the manual-reference claim below (the
-    // swap hasn't been looked up client-side), so this considers an
-    // institution ready if it's onboarded for ANY currency.
-    const readyInstitutions = claimReadyInstitutions();
-    const defaultInst = (userSources[0] && readyInstitutions.includes(userSources[0].institution) && userSources[0].institution) || readyInstitutions[0] || '';
-    const instOptionsHtml = readyInstitutions.map(code =>
-        `<option value="${code}" ${code === defaultInst ? 'selected' : ''}>${PARTICIPANTS[code]?.name || code}</option>`
-    ).join('');
     const claimsHtml = pendingClaims.length === 0
         ? `<div style="font-size:12px;color:var(--text-dim);margin-bottom:16px;">No identity money is currently waiting for you.</div>`
         : `<div style="margin-bottom:16px;">${pendingClaims.map((c, i) => {
@@ -5336,13 +5492,8 @@ function renderFinalizeIdentityModal() {
             <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">If you received a swap notification, enter the claim PIN below to complete the transaction.</div>
             <div class="field-group"><label>Swap reference</label><input id="directClaimRef" placeholder="e.g. SWAP_123456789"></div>
             <div class="field-group"><label>Claim PIN</label><input type="password" id="directClaimPin" placeholder="Enter the PIN you received" maxlength="6"></div>
-            <div class="field-group"><label>Receive as</label><select id="directClaimDestType" onchange="toggleDirectClaimDestFields(this.value)"><option value="CASHOUT">Cashout (ATM / Agent code)</option><option value="DEPOSIT">Deposit to an account/wallet</option></select></div>
-            <div class="field-group"><label id="directClaimDestInstLabel">Cashout via</label><select id="directClaimDestInst" ${readyInstitutions.length === 0 ? 'disabled' : ''}>${instOptionsHtml}</select></div>
-            <div id="directClaimDepositFields" style="display:none;">
-                <div class="field-group"><label>Account / wallet number</label><input id="directClaimDestIdentifier" placeholder="Account number or phone"></div>
-            </div>
-            ${readyInstitutions.length === 0 ? '<div style="font-size:12px;color:var(--danger);margin-bottom:10px;">No destination institution can currently receive claims. Contact VouchMorph support.</div>' : ''}
-            <div class="cta-row"><button class="btn btn-primary" onclick="submitDirectClaim()" ${readyInstitutions.length === 0 ? 'disabled' : ''}>Claim swap</button></div>
+            ${renderClaimDestinationFields('directClaim', null)}
+            <div class="cta-row"><button class="btn btn-primary" onclick="submitDirectClaim()">Claim swap</button></div>
         </div>
         <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px;font-size:11px;color:var(--text-dim);">
             <span class="quick-link muted" onclick="closeModal();openAddIdentityModal();">Need to register a new identity instead? Click here &rarr;</span>
@@ -5365,40 +5516,17 @@ function openClaimForm(idx) {
     // case it doesn't need to be an active decision every time. Default it
     // to wherever the recipient already has a linked account, so claiming
     // is just "enter PIN, confirm" unless they want to send it somewhere
-    // else.
-    const readyInstitutions = claimReadyInstitutions(claim.currency);
-    const defaultInst = (userSources[0] && readyInstitutions.includes(userSources[0].institution) && userSources[0].institution) || readyInstitutions[0] || '';
-    const instOptionsHtml = readyInstitutions.map(code =>
-        `<option value="${code}" ${code === defaultInst ? 'selected' : ''}>${PARTICIPANTS[code]?.name || code}</option>`
-    ).join('');
+    // else (see renderClaimDestinationChoice()).
     const body = `
         <div style="background:var(--accent-soft);padding:14px;margin-bottom:14px;">
             <div style="font-size:20px;font-weight:600;color:var(--accent);font-family:var(--font-mono);">${formatMoney(claim.amount, claim.currency)}</div>
             <div style="font-size:12px;color:var(--text-muted);">From ${escapeHtml(claim.source_institution || 'Unknown')}</div>
         </div>
         <div class="field-group"><label>Claim PIN</label><input type="password" id="claimPin" inputmode="numeric" maxlength="6" placeholder="&bull;&bull;&bull;&bull;"><div class="help">${pinHint}</div></div>
-        <div class="field-group"><label>Receive as</label><select id="claimDestType" onchange="toggleClaimDestFields(this.value)"><option value="CASHOUT">Cashout (ATM / Agent code)</option><option value="DEPOSIT">Deposit to an account/wallet</option></select></div>
-        <div class="field-group"><label id="claimDestInstLabel">Cashout via</label><select id="claimDestInst" ${readyInstitutions.length === 0 ? 'disabled' : ''}>${instOptionsHtml}</select></div>
-        <div id="claimDepositFields" style="display:none;">
-            <div class="field-group"><label>Account / wallet number</label><input id="claimDestIdentifier" placeholder="Account number or phone"></div>
-        </div>
-        ${readyInstitutions.length === 0 ? '<div style="font-size:12px;color:var(--danger);margin-bottom:10px;">No destination institution can currently receive this claim. Contact VouchMorph support.</div>' : ''}
-        <div class="cta-row"><button class="btn btn-secondary" onclick="openFinalizeIdentityModal()">Back</button><button class="btn btn-primary" onclick="submitClaim('${claim.swap_reference}')" ${readyInstitutions.length === 0 ? 'disabled' : ''}>Finalize</button></div>`;
+        ${renderClaimDestinationFields('claim', claim.currency)}
+        <div class="cta-row"><button class="btn btn-secondary" onclick="openFinalizeIdentityModal()">Back</button><button class="btn btn-primary" onclick="submitClaim('${claim.swap_reference}')">Finalize</button></div>`;
     openModal('Finalize identity swap', body);
-}
-
-function toggleClaimDestFields(type) {
-    const el = document.getElementById('claimDepositFields');
-    if (el) el.style.display = type === 'DEPOSIT' ? 'block' : 'none';
-    const label = document.getElementById('claimDestInstLabel');
-    if (label) label.textContent = type === 'DEPOSIT' ? 'Destination institution' : 'Cashout via';
-}
-
-function toggleDirectClaimDestFields(type) {
-    const el = document.getElementById('directClaimDepositFields');
-    if (el) el.style.display = type === 'DEPOSIT' ? 'block' : 'none';
-    const label = document.getElementById('directClaimDestInstLabel');
-    if (label) label.textContent = type === 'DEPOSIT' ? 'Destination institution' : 'Cashout via';
+    renderClaimDestinationChoice('claim');
 }
 
 async function submitDirectClaim() {
@@ -5413,17 +5541,10 @@ async function submitDirectClaim() {
     // CASHOUT and DEPOSIT -- every manual claim 400'd with
     // "destination_institution is required for CASHOUT" regardless of
     // whether the reference/PIN were even correct.
-    const destType = document.getElementById('directClaimDestType').value;
-    const destInst = document.getElementById('directClaimDestInst').value;
-    if (!destInst) { showMessage('Select a destination institution.', 'warning'); return; }
+    const destination = readClaimDestination('directClaim');
+    if (!destination) return;
 
-    const payload = { swap_reference: swapRef, pin, destination_type: destType, destination_institution: destInst };
-
-    if (destType === 'DEPOSIT') {
-        const destIdentifier = document.getElementById('directClaimDestIdentifier').value.trim();
-        if (!destIdentifier) { showMessage('Enter an account/wallet number.', 'warning'); return; }
-        payload.destination_identifier = destIdentifier;
-    }
+    const payload = { swap_reference: swapRef, pin, ...destination.fields };
 
     // FIX: this form only has the reference the recipient typed in, not
     // identity_type/identity_value. It used to resolve those first via
@@ -5435,9 +5556,8 @@ async function submitDirectClaim() {
     // check is the real authorization), so just send the reference.
     const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/claim_identity.php', payload);
     if (!result.ok) { showMessage('Claim failed: ' + friendlyApiError(result.error), 'error'); return; }
-    closeModal();
-    showMessage('Funds claimed successfully! 🎉', 'success');
-    checkPendingClaims();
+    await checkPendingClaims();
+    showClaimResult(result.body?.data || {}, payload, destination.label);
 }
 
 // ============================================================
@@ -5570,17 +5690,29 @@ async function submitAgentFinalizeAggregated(identityType, identityValue, totalA
     if (!result.ok) { showMessage('Failed: ' + friendlyApiError(result.error), 'error'); return; }
     const data = result.body.data || {};
     closeModal();
-    const netDeposited = data.actually_claimed_net || totalAmount;
-    const grossAmount = data.actually_claimed_gross || totalAmount;
-    const remainder = data.remainder_reswap?.amount || 0;
+    checkPendingClaims();
+    // The deposit into the agent's account didn't go through, and the money
+    // was kept for the client instead: the agent has received nothing.
+    if (data.status === 'parked_instead_of_payout') {
+        showMessage(`The deposit into your account didn't go through, so don't give the client any cash. Their money is kept safe for them to claim again.`, 'error');
+        agentSearchData = null;
+        return;
+    }
+    // FIX: these read actually_claimed_net / remainder_reswap, which the
+    // claim no longer returns, so the message always showed the gross total
+    // as deposited. The claim reports payout_amount_net/_gross (what reached
+    // the agent's account, before and after fees) and remainder_held.
+    const netDeposited = data.payout_amount_net ?? data.actually_claimed_net ?? totalAmount;
+    const grossAmount = data.payout_amount_gross ?? data.actually_claimed_gross ?? totalAmount;
+    const remainder = data.remainder_held ?? data.remainder_reswap?.amount ?? 0;
     const cashGiven = data.cash_now_amount || cashNowAmount;
-    const successfulSwaps = data.swap_count || 0;
-    const failedSwaps = data.failed_deposits ? data.failed_deposits.length : 0;
+    const successfulSwaps = data.holds_landed ?? data.swap_count ?? 0;
+    const failedSwaps = Array.isArray(data.holds_failed) ? data.holds_failed.length : (data.failed_deposits ? data.failed_deposits.length : 0);
     const totalFees = parseFloat(grossAmount) - parseFloat(netDeposited);
     let msg = '';
     if (netDeposited > 0) { msg += `Deposited ${formatMoney(netDeposited, currency)} into your account`; if (totalFees > 0) msg += ` (fee: ${formatMoney(totalFees, currency)})`; msg += '. '; }
     if (cashGiven > 0) msg += `Gave client ${formatMoney(cashGiven, currency)} in cash. `; else msg += `No cash given now. `;
-    if (remainder > 0) msg += `The remaining ${formatMoney(remainder, currency)} was sent back to their identity — a new PIN was texted to them. `;
+    if (remainder > 0) msg += `The remaining ${formatMoney(remainder, currency)} stays saved for them to claim later. `;
     if (successfulSwaps > 1) { msg += `(Processed ${successfulSwaps} source(s)`; if (failedSwaps > 0) msg += `, ${failedSwaps} failed`; msg += `)`; }
     else if (failedSwaps > 0) msg += `(${failedSwaps} source(s) failed)`;
     if (data.status === 'partial_success') msg += ' Partial success — some sources failed.';
@@ -6051,12 +6183,37 @@ async function checkPendingClaims() {
     try { 
         const result = await callApi(CONFIG.API_BASE + '/api/v1/swap/pending_claims.php', {}); 
         if (!result.ok) return; 
+        const before = pendingClaims.map(c => c.hold_id).join(',');
         pendingClaims = result.body.data || []; 
         updateToolboxBadge(); 
+        // FIX: "Finalize identity swap" and the "Identity claim … pending"
+        // rows were drawn from the list fetched when the page loaded, so they
+        // stayed up after the money was claimed -- until a full reload when
+        // an agent finalized it. Redraw as soon as the list changes.
+        if (pendingClaims.map(c => c.hold_id).join(',') !== before) refreshToolboxIfShown();
     } catch (e) { 
         console.warn('[claims] Failed to check pending claims:', e); 
+    } finally {
+        schedulePendingClaimsCheck();
     }
 }
+
+// While money is waiting to be claimed, look again every 20 seconds (only
+// while the page is on screen), so a claim an agent finalizes -- often with
+// the recipient standing right there -- disappears from the recipient's
+// screen too, not just from the screen that claimed it.
+let pendingClaimsTimer = null;
+function schedulePendingClaimsCheck() {
+    clearTimeout(pendingClaimsTimer);
+    pendingClaimsTimer = null;
+    if (pendingClaims.length === 0 || document.hidden) return;
+    pendingClaimsTimer = setTimeout(checkPendingClaims, 20000);
+}
+
+document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) checkPendingClaims();
+    else { clearTimeout(pendingClaimsTimer); pendingClaimsTimer = null; }
+});
 
 function updateToolboxBadge() {
     const badge = document.getElementById('toolboxBadge');

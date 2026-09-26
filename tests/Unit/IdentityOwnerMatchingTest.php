@@ -57,6 +57,7 @@ class IdentityOwnerMatchingTest extends TestCase
                 currency TEXT DEFAULT 'BWP',
                 status TEXT DEFAULT 'pending',
                 hold_expires_at TEXT,
+                claim_reference TEXT,
                 source_institution TEXT,
                 source_identifier TEXT,
                 metadata TEXT,
