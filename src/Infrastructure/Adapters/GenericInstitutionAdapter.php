@@ -1041,6 +1041,15 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
 {
     $this->context = array_merge($context, $payload);
 
+    // A voucher has no account to read a balance from: its value lives on the
+    // voucher record itself, and it only counts if the voucher is unredeemed
+    // and unexpired. verify_asset answers all three; the balance endpoint
+    // answers none of them, and on PostgreSQL its voucher branch fails on the
+    // integer/text comparison and returns 404 as though nothing was found.
+    if (strtoupper((string)($payload['asset_type'] ?? 'ACCOUNT')) === 'VOUCHER') {
+        return $this->getVoucherValue($payload, $context);
+    }
+
     try {
         $this->ensureConsent();
 
@@ -1096,6 +1105,121 @@ class GenericInstitutionAdapter implements InstitutionAdapterInterface
         ];
     }
 }
+
+    /**
+     * Voucher value, read through verify_asset and mapped into the shape every
+     * caller of getBalance() already expects.
+     *
+     * Returns success = false when the voucher is redeemed or expired, because
+     * a redeemed voucher worth P500 is worth nothing to a swap, and a bare
+     * balance figure cannot say so.
+     */
+    private function getVoucherValue(array $payload, array $context): array
+    {
+        $voucherNumber = $payload['voucher_number']
+            ?? $payload['voucher_code']
+            ?? $payload['source_identifier']
+            ?? $payload['identifier']
+            ?? null;
+
+        $currency = $payload['currency'] ?? 'BWP';
+
+        if (!$voucherNumber) {
+            return [
+                'success'    => false,
+                'message'    => 'No voucher number supplied',
+                'balance'    => 0,
+                'available_balance' => 0,
+                'currency'   => $currency,
+                'asset_type' => 'VOUCHER',
+            ];
+        }
+
+        $verifyPayload = array_merge($payload, [
+            'action'                 => 'VERIFY_ASSET',
+            'asset_type'             => 'VOUCHER',
+            'reference'              => $payload['reference'] ?? ($context['swap_reference'] ?? uniqid('voucher_')),
+            'voucher_number'         => $voucherNumber,
+            'source_identifier'      => $voucherNumber,
+            'source_identifier_type' => 'voucher_number',
+            'from_institution'       => $this->institution,
+            'source_institution'     => $this->institution,
+        ]);
+
+        try {
+            // Signed, like every other verification this adapter performs.
+            $result = $this->bankClient->verifyAssetSigned($verifyPayload);
+        } catch (\Throwable $e) {
+            return [
+                'success'    => false,
+                'message'    => 'Voucher verification failed: ' . $e->getMessage(),
+                'balance'    => 0,
+                'available_balance' => 0,
+                'currency'   => $currency,
+                'asset_type' => 'VOUCHER',
+            ];
+        }
+
+        if (empty($result['success']) || !($result['verified'] ?? $result['data']['verified'] ?? false)) {
+            return [
+                'success'      => false,
+                'message'      => $result['message'] ?? $result['data']['message'] ?? 'Voucher could not be verified',
+                'balance'      => 0,
+                'available_balance' => 0,
+                'currency'     => $currency,
+                'asset_type'   => 'VOUCHER',
+                'status_code'  => $result['status_code'] ?? 0,
+                'raw_response' => $result['raw_response'] ?? null,
+            ];
+        }
+
+        $data = $result['data'] ?? $result;
+
+        $value = (float)($data['voucher_amount']
+            ?? $data['available_balance']
+            ?? $data['amount']
+            ?? $data['balance']
+            ?? 0);
+
+        $redeemed = (bool)($data['redeemed'] ?? $data['is_redeemed'] ?? false);
+        $expiresAt = $data['expires_at'] ?? $data['expiry'] ?? null;
+        $expired = $expiresAt !== null && strtotime((string)$expiresAt) !== false
+                   && strtotime((string)$expiresAt) < time();
+
+        if ($redeemed || $expired) {
+            return [
+                'success'           => false,
+                'message'           => $redeemed ? 'Voucher has already been redeemed' : 'Voucher has expired',
+                'balance'           => 0,
+                'available_balance' => 0,
+                'face_value'        => $value,
+                'currency'          => $data['currency'] ?? $currency,
+                'asset_type'        => 'VOUCHER',
+                'voucher_number'    => $voucherNumber,
+                'redeemed'          => $redeemed,
+                'expires_at'        => $expiresAt,
+            ];
+        }
+
+        return [
+            'success'           => true,
+            'balance'           => $value,
+            'available_balance' => $value,
+            'face_value'        => $value,
+            'currency'          => $data['currency'] ?? $currency,
+            'asset_type'        => 'VOUCHER',
+            'voucher_number'    => $voucherNumber,
+            'asset_id'          => $data['asset_id'] ?? null,
+            'account_id'        => $data['asset_id'] ?? $voucherNumber,
+            'account_name'      => $data['holder_name'] ?? $data['account_name'] ?? null,
+            'redeemed'          => false,
+            'expires_at'        => $expiresAt,
+            'signature'         => $data['signature'] ?? $result['signature'] ?? null,
+            'certificate'       => $data['certificate'] ?? $result['certificate'] ?? null,
+            'last_updated'      => date('Y-m-d H:i:s'),
+        ];
+    }
+
     // ============================================================
     // SETTLEMENT CONFIRMATION
     // ============================================================
