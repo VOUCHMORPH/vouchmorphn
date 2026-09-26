@@ -33,8 +33,10 @@ class SmsNotificationService
     
     /**
      * Match a phone number to its telco by prefix, per communication.json's
-     * routing table. Returns null if no enabled telco matches — e.g. a
-     * Mascom/Orange number today, since only Cazacom has real credentials.
+     * routing table. A number no enabled telco claims (e.g. a Mascom/Orange
+     * number today, since only Cazacom has real credentials) goes to
+     * sms_gateway.default_telco. Returns null only when there is no usable
+     * default either.
      */
     private function resolveTelcoForPhone(string $phoneNumber): ?array
     {
@@ -57,7 +59,34 @@ class SmsNotificationService
             }
         }
 
+        // Without this, sendSms() "mock sent" to these numbers: it reported
+        // success while the cash-out code or claim PIN never left.
+        $default = $this->defaultTelco();
+        if ($default !== null) {
+            return [$default, $telcos[$default]];
+        }
+
         return null;
+    }
+
+    /**
+     * Same rule as CommunicationFactory::defaultSmsTelco(), which routes
+     * sign-up codes: the telco named by sms_gateway.default_telco, as long
+     * as it exists and has SMS switched on.
+     */
+    private function defaultTelco(): ?string
+    {
+        $name = $this->config['sms_gateway']['default_telco'] ?? null;
+        if (!is_string($name) || !isset($this->config['telcos'][$name])) {
+            return null;
+        }
+
+        $telco = $this->config['telcos'][$name];
+        if (empty($telco['enabled']) || empty($telco['sms_enabled'])) {
+            return null;
+        }
+
+        return $name;
     }
 
     /**

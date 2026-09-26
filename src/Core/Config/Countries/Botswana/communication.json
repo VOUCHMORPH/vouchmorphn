@@ -1,7 +1,9 @@
 {
   "sms_gateway": {
     "provider": "multi_network",
-    "enabled": true
+    "enabled": true,
+    "default_telco": "cazacom",
+    "comment": "default_telco's gateway sends SMS to every number no enabled telco claims by prefix, e.g. Mascom/Orange numbers while their own gateways are disabled"
   },
   "telcos": {
     "cazacom": {
