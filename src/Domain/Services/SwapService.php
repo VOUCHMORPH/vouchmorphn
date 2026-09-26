@@ -9049,20 +9049,12 @@ private function executeIdentityClaimDirect(
     // it's just changing which account it sits in.
     //
     // A pooled claim really is a multi-source swap: each hold is its own
-    // funding source, exactly like the 50 + 150 + 100 bundle a multi-source
-    // send builds. FeeService only applies the multi_source schedule when it
-    // is told both of these (see its $context build: is_multi_source, and
-    // source_count from count($payload['sources'])), so without them a pool
-    // of N holds was silently charged as a single source.
-    $feeSources = array_map(
-        fn(array $hold) => [
-            'institution' => $hold['source_institution'],
-            'amount' => (float)$hold['amount'],
-            'hold_id' => (int)$hold['hold_id'],
-        ],
-        $verifiedHolds
-    );
-
+    // funding source. FeeService prices a single source whatever the source
+    // count, so this breakdown is the one-source fee and split; the pool's
+    // fee is identityClaimFeeShares() below, which replaces total_fee and
+    // the net. Its platform share is still right for a pool - VouchMorph
+    // takes one cut however many sources there are - and the
+    // IDENTITY_CLAIM_PLATFORM_FEE invoice is read from it.
     $feeBreakdown = $this->calculateFeesWithDetails(
         $destinationType === 'CASHOUT' ? 'CASHOUT' : 'DEPOSIT',
         $payoutAmount,
@@ -9071,8 +9063,6 @@ private function executeIdentityClaimDirect(
             'institution' => $destinationInstitution,
             'destination_institution' => $destinationInstitution,
             'asset_type' => $destinationDetails['destination_asset_type'] ?? 'ACCOUNT',
-            'sources' => $feeSources,
-            'is_multi_source' => count($feeSources) > 1,
         ])
     );
     // Multi-source rule (fees.json multi_source): the claim fee is the pool

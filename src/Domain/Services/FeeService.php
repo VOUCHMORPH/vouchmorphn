@@ -363,38 +363,17 @@ class FeeService
             $slotAmounts[$slotKey] = $amountValue;
         }
         
-        // Handle multi-source
-        if ($this->context['is_multi_source'] && ($this->context['source_count'] ?? 1) > 1) {
-            $multiSourceConfig = $productConfig['multi_source'] ?? [];
-            if (!empty($multiSourceConfig)) {
-                $extraFeeSlot = $multiSourceConfig['fee_type'] ?? 'F8';
-                $extraFeeAmount = $multiSourceConfig['extra_source_fee'] ?? 1.00;
-                $extraCount = ($this->context['source_count'] ?? 1) - 1;
-                $calculatedExtra = $extraCount * $extraFeeAmount;
-                $maxTotal = $multiSourceConfig['max_total_fee'] ?? 15.00;
-                $extra = min($calculatedExtra, $maxTotal);
+        // Multi-source is not priced here. fees.json's multi_source rule
+        // (model PER_SOURCE_CUTS, 2026-09-22) retired the F8 schedule this
+        // method used to fold into F1 (P1 per extra source, capped at P15).
+        // The per-source cuts are MultiSourceFeeCalculator's, and
+        // SwapService::identityClaimFeeShares()'s for an identity claim. So
+        // this is always the single-source fee and split, whatever the source
+        // count, and its platform share is VouchMorph's one cut of the pool:
+        // what an identity claim invoices as IDENTITY_CLAIM_PLATFORM_FEE, and
+        // what fee_ledger records for it. is_multi_source and source_count
+        // stay in the context for information only.
 
-                // FIX: the extra used to be written to its own slot and left
-                // there. Nothing downstream reads that slot -- total_fee is
-                // slots['F1'], the net deducts F1, and calculateDistribution()
-                // splits F1/F7 -- so the multi-source schedule was computed and
-                // then silently discarded, and an N-source swap was charged
-                // exactly like a single-source one.
-                //
-                // The slot is still written, because the breakdown and audit
-                // trail should show WHY the customer fee is higher. But the
-                // charge itself is added to F1, which is the fee the customer
-                // actually pays. Folding it in rather than adding a parallel
-                // total also keeps every distribution invariant intact: the
-                // split is derived from F1/F7, so the extra is shared out by
-                // the same rules as the rest of the fee instead of becoming
-                // undistributed revenue that breaks the config's own
-                // platform + source + destination = pool checks.
-                $slotAmounts[$extraFeeSlot] = $extra;
-                $slotAmounts['F1'] = round(($slotAmounts['F1'] ?? 0) + $extra, 2);
-            }
-        }
-        
         // Handle retry fees
         if ($this->context['is_retry'] && isset($productConfig['retry_rules'])) {
             $retryRules = $productConfig['retry_rules'];
