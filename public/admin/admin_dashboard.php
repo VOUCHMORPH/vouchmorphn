@@ -19,12 +19,14 @@ require_once PROJECT_ROOT . '/src/Application/Admin/Auth/AdminAuth.php';
 require_once PROJECT_ROOT . '/vendor/autoload.php';
 require_once PROJECT_ROOT . '/src/Core/Config/LoadCountry.php';
 require_once PROJECT_ROOT . '/src/Application/Admin/AdminAudit.php';
+require_once PROJECT_ROOT . '/src/Application/Admin/AgentRoles.php';
 
 use Core\Database\DBConnection;
 use Application\Utils\SessionManager;
 use Application\Admin\Auth\AdminAuth;
 use Core\Config\LoadCountry;
 use Application\Admin\AdminAudit;
+use Application\Admin\AgentRoles;
 use Dompdf\Dompdf;
 use Dompdf\Options;
 
@@ -396,6 +398,49 @@ $accessDenied = !in_array($view, $knownViews, true) || !canView($view) || ($view
 if ($accessDenied && in_array($view, $knownViews, true)) {
     AdminAudit::recordOrLog($db, $adminId, 'ACCESS_DENIED', 'admin_view', $view,
         ['role_id' => $adminRoleId], AdminAudit::CATEGORY_SECURITY, 'warning');
+}
+
+// ============================================================
+// AGENT ROLE - POST only, CSRF-checked, on the same tab as the approvals
+// below and under the same rules.
+//
+// Giving a customer the 'agent' role shows them the Agent menu in their
+// app, where they register the account they pay out from; that account
+// is then approved below. The role change and its audit row are one
+// transaction (Application\Admin\AgentRoles), and removing the role needs
+// a written reason, as a rejection does. POST/Redirect/GET, back to the
+// search the admin came from.
+// ============================================================
+if ($view === 'agent_approvals' && canView('agent_approvals') && $_SERVER['REQUEST_METHOD'] === 'POST'
+    && in_array($_POST['action'] ?? '', ['grant_agent_role', 'revoke_agent_role'], true)) {
+    $action = (string)$_POST['action'];
+    $targetUserId = (int)($_POST['user_id'] ?? 0);
+    $agentUserQuery = trim((string)($_POST['agent_user'] ?? ''));
+    $csrfOk = isset($_POST['csrf_token']) && hash_equals($_SESSION['csrf_token'], (string)$_POST['csrf_token']);
+
+    if (!$csrfOk) {
+        AdminAudit::recordOrLog($db, $adminId, 'CSRF_REJECTED', 'user', (string)$targetUserId,
+            ['attempted_action' => $action], AdminAudit::CATEGORY_SECURITY, 'warning');
+        $_SESSION['admin_flash'] = ['type' => 'bad', 'text' => 'Your session form expired. Nothing was changed; please try again.'];
+    } elseif ($targetUserId <= 0) {
+        $_SESSION['admin_flash'] = ['type' => 'bad', 'text' => 'Invalid request. Nothing was changed.'];
+    } else {
+        try {
+            $changed = $action === 'grant_agent_role'
+                ? AgentRoles::grant($db, $adminId, $targetUserId)
+                : AgentRoles::revoke($db, $adminId, $targetUserId, (string)($_POST['reason'] ?? ''));
+            $_SESSION['admin_flash'] = ['type' => 'good', 'text' => $changed['name'] . ($action === 'grant_agent_role'
+                ? ' is now an agent. Recorded in the audit log.'
+                : ' is no longer an agent. Recorded in the audit log.')];
+        } catch (Throwable $e) {
+            error_log('[ADMIN DASHBOARD] agent role change failed: ' . $e->getMessage());
+            // AgentRoles explains a refusal in words; a database error is logged, not shown.
+            $refusal = $e instanceof RuntimeException && !$e instanceof PDOException;
+            $_SESSION['admin_flash'] = ['type' => 'bad', 'text' => 'Nothing was changed: ' . ($refusal ? $e->getMessage() : 'the role change or its audit record could not be saved.')];
+        }
+    }
+    header('Location: ?view=agent_approvals' . ($agentUserQuery !== '' ? '&agent_user=' . rawurlencode($agentUserQuery) : ''));
+    exit;
 }
 
 // ============================================================
@@ -904,6 +949,31 @@ if (canView('agent_approvals')) {
     }
 }
 $agentApprovalCount = count($pendingAgents);
+
+// Agent role: who has it, and the customers an admin searched for to give
+// it to. Phone numbers are matched as sign-in matches them (login.php).
+$agentRoleId = null;
+$roleAgents = [];
+$agentUserQuery = trim((string)($_GET['agent_user'] ?? ''));
+$agentUserMatches = [];
+if ($view === 'agent_approvals' && canView('agent_approvals')) {
+    try {
+        $agentRoleId = AgentRoles::roleId($db, AgentRoles::AGENT);
+    } catch (Throwable $e) { dashError('agent role: roles', $e); }
+    try {
+        $roleAgents = AgentRoles::listAgents($db);
+    } catch (Throwable $e) { dashError('agent role: agents list', $e); }
+    if ($agentUserQuery !== '') {
+        try {
+            $lookupConfig = LoadCountry::getConfig();
+            $lookupCountry = $lookupConfig['country_settings'][$lookupConfig['country'] ?? 'BW'] ?? [];
+            $agentUserMatches = AgentRoles::search($db, $agentUserQuery,
+                $lookupCountry['dial_code'] ?? '+267', (int)($lookupCountry['local_phone_length'] ?? 8));
+        } catch (Throwable $e) { dashError('agent role: customer search', $e); }
+        AdminAudit::recordOrLog($db, $adminId, 'AGENT_ROLE_LOOKUP', 'user', AdminAudit::mask($agentUserQuery),
+            ['results' => count($agentUserMatches)]);
+    }
+}
 
 // ============================================================
 // PARTICIPANTS — read-only view of every configured institution's
@@ -1946,7 +2016,7 @@ $viewMeta = [
     'audit' => ['side' => 'right', 'eyebrow' => 'Audit Trail', 'blurb' => "Every recorded action, most recent first. This is the trail — who did what, and when."],
     'ledger' => ['side' => 'left', 'eyebrow' => 'Ledger Reconciliation', 'blurb' => "Variances between debits, credits, and fees across the general ledger — the standing cross-check that shows whether every swap balances perfectly."],
     'invoices' => ['side' => 'right', 'eyebrow' => 'Invoices & Settlement', 'blurb' => "Every fee invoice beside its destination settlement: invoiced or paid, and whether the destination has been paid by the source."],
-    'agent_approvals' => ['side' => 'left', 'eyebrow' => 'Agent Onboarding', 'blurb' => "Agents can't touch a client's money until an admin has approved them. Review, approve, or reject every applicant here."],
+    'agent_approvals' => ['side' => 'left', 'eyebrow' => 'Agent Onboarding', 'blurb' => "Give a customer the agent role, then approve the payout account they register. Agents can't touch a client's money until an admin has approved them."],
     'reports' => ['side' => 'right', 'eyebrow' => 'Reporting Suite', 'blurb' => "Executive, regulatory, finance, and audit reports — built for the people who never see the raw tables."],
 ];
 $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph Admin', 'blurb' => "Administrative tools for VouchMorph's enterprise disbursement network."];
@@ -2739,7 +2809,7 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
             <?php if ($view === 'agent_approvals' && canView('agent_approvals')): ?>
             <div class="content-header">
                 <h1>Agent Approvals</h1>
-                <span class="timestamp">Agent destination accounts awaiting manual verification</span>
+                <span class="timestamp">Agent role, and agent destination accounts awaiting manual verification</span>
                 <a href="?view=dashboard" class="back-link">← Back</a>
             </div>
             <div class="metrics-grid" style="grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));">
@@ -2788,6 +2858,88 @@ $currentMeta = $viewMeta[$view] ?? ['side' => 'right', 'eyebrow' => 'VouchMorph 
                     </div>
                 </div>
                 <?php endforeach; endif; ?>
+            </div>
+
+            <div class="card" id="agent-role">
+                <div class="card-header"><span class="card-title">Assign Agent Role</span></div>
+                <p style="font-size:13px;color:var(--ink-500);text-align:center;margin-bottom:var(--sp-4);">
+                    The agent role shows a customer the Agent menu in their app, where they register the business account they
+                    pay out from. They cannot act as an agent until that account is approved above. Only a customer with the
+                    plain user role can be made an agent. Every change is written to the audit log with your name.
+                </p>
+                <?php if ($agentRoleId === null): ?>
+                <div class="empty-state"><span class="icon">⚠️</span><p>There is no 'agent' role in the roles table yet, so nobody can be made an agent. Apply <code><?php echo safeHtml(AgentRoles::MIGRATION); ?></code>, then reload this page.</p></div>
+                <?php endif; ?>
+                <form method="get" class="search-box" action="#agent-role">
+                    <input type="hidden" name="view" value="agent_approvals">
+                    <input type="text" name="agent_user" placeholder="Customer's phone, email, ID number, or user ID..." value="<?php echo safeHtml($agentUserQuery); ?>">
+                    <button type="submit" class="btn btn-primary">Find</button>
+                </form>
+                <?php if ($agentUserQuery !== '' && empty($agentUserMatches)): ?>
+                <div class="empty-state"><span class="icon">🔍</span><p>No customer matches "<?php echo safeHtml($agentUserQuery); ?>".</p></div>
+                <?php endif; ?>
+                <?php foreach ($agentUserMatches as $match): $matchRole = (string)$match['role_name']; ?>
+                <div class="card agent-row">
+                    <div class="card-header">
+                        <span class="card-title"><?php echo safeHtml(AgentRoles::displayName($match)); ?></span>
+                        <span class="status status-<?php echo $matchRole === AgentRoles::AGENT ? 'success' : 'info'; ?>"><?php echo safeHtml(strtoupper($matchRole)); ?></span>
+                    </div>
+                    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(160px,1fr)); gap:var(--sp-2); font-size:14px;">
+                        <div><strong>User #:</strong> <?php echo safeHtml($match['user_id']); ?></div>
+                        <div><strong>Username:</strong> <?php echo safeHtml($match['username'] ?? '—'); ?></div>
+                        <div><strong>Phone:</strong> <?php echo safeHtml($match['phone'] ?? 'N/A'); ?></div>
+                        <div><strong>Email:</strong> <?php echo safeHtml($match['email'] ?? 'N/A'); ?></div>
+                    </div>
+                    <div class="agent-actions">
+                        <?php if ($matchRole === AgentRoles::AGENT): ?>
+                        <span style="font-size:13px;color:var(--ink-500);">Already an agent. To take the role away, use <a href="#agent-list">the list below</a>.</span>
+                        <?php elseif ($matchRole !== AgentRoles::USER): ?>
+                        <span style="font-size:13px;color:var(--ink-500);">Has the '<?php echo safeHtml($matchRole); ?>' role, which is not changed here.</span>
+                        <?php elseif ($agentRoleId !== null): ?>
+                        <form class="inline-form" method="post" action="?view=agent_approvals" onsubmit="return confirm('Give this customer the agent role? This is recorded in the audit log.');">
+                            <input type="hidden" name="csrf_token" value="<?php echo safeHtml($_SESSION['csrf_token']); ?>">
+                            <input type="hidden" name="action" value="grant_agent_role">
+                            <input type="hidden" name="user_id" value="<?php echo safeHtml($match['user_id']); ?>">
+                            <input type="hidden" name="agent_user" value="<?php echo safeHtml($agentUserQuery); ?>">
+                            <button type="submit" class="btn btn-good btn-sm">Make agent</button>
+                        </form>
+                        <?php endif; ?>
+                    </div>
+                </div>
+                <?php endforeach; ?>
+            </div>
+
+            <div class="card" id="agent-list">
+                <div class="card-header"><span class="card-title">Users With the Agent Role</span><span class="card-badge"><?php echo count($roleAgents); ?></span></div>
+                <p style="font-size:13px;color:var(--ink-500);text-align:center;margin-bottom:var(--sp-4);">
+                    Approved accounts are the payout accounts approved above; an agent with none cannot pay out claims yet.
+                    Removing the role takes the Agent menu out of their app. It does not change accounts that are already approved.
+                </p>
+                <?php if (empty($roleAgents)): ?>
+                <div class="empty-state"><span class="icon">🧑‍💼</span><p>No customer has the agent role yet.</p></div>
+                <?php else: ?>
+                <div class="table-responsive"><table><thead><tr><th>Agent</th><th>User #</th><th>Phone</th><th>Email</th><th>Approved accounts</th><th>Remove role</th></tr></thead><tbody>
+                <?php foreach ($roleAgents as $roleAgent): $approvedAccounts = (int)($roleAgent['approved_accounts'] ?? 0); ?>
+                <tr>
+                    <td><?php echo safeHtml(AgentRoles::displayName($roleAgent)); ?></td>
+                    <td><?php echo safeHtml($roleAgent['user_id']); ?></td>
+                    <td><?php echo safeHtml($roleAgent['phone'] ?? 'N/A'); ?></td>
+                    <td><?php echo safeHtml($roleAgent['email'] ?? 'N/A'); ?></td>
+                    <td><span class="status status-<?php echo $approvedAccounts > 0 ? 'success' : 'pending'; ?>"><?php echo $approvedAccounts > 0 ? $approvedAccounts : 'NONE YET'; ?></span></td>
+                    <td>
+                        <form class="inline-form search-box" style="margin:0;" method="post" action="?view=agent_approvals" onsubmit="return confirm('Take the agent role away from this customer? This is recorded in the audit log.');">
+                            <input type="hidden" name="csrf_token" value="<?php echo safeHtml($_SESSION['csrf_token']); ?>">
+                            <input type="hidden" name="action" value="revoke_agent_role">
+                            <input type="hidden" name="user_id" value="<?php echo safeHtml($roleAgent['user_id']); ?>">
+                            <input type="hidden" name="agent_user" value="<?php echo safeHtml($agentUserQuery); ?>">
+                            <input type="text" name="reason" required minlength="5" maxlength="500" placeholder="Reason (required)" style="min-width:160px;height:var(--btn-h-sm);">
+                            <button type="submit" class="btn btn-bad btn-sm">Remove</button>
+                        </form>
+                    </td>
+                </tr>
+                <?php endforeach; ?>
+                </tbody></table></div>
+                <?php endif; ?>
             </div>
 
             <div class="card">
