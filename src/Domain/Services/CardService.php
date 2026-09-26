@@ -2765,7 +2765,7 @@ public function reversePooledSwipe(string $hookReference, string $reversalReason
 $destinationDeliveryMethod = strtoupper($merchantContext['delivery_method'] ?? 'DEPOSIT');
 $isCashout = in_array($destinationDeliveryMethod, ['ATM', 'AGENT', 'CASHOUT'], true);
 
-$feesConfig = $swapService->getFeeService()->getRawFeesConfig(); // exposes fees.json — confirm this getter exists; if not, thread $this->feesConfig through the constructor the same way SwapService already does
+$feesConfig = $swapService->getFeeService()->getFeesConfig();
 $currency = $hook['currency'] ?? 'BWP';
 
 if ($isCashout) {
@@ -2779,6 +2779,7 @@ if ($isCashout) {
 $contributions = $contributionCalculator->calculateContributions(
     $swipeAmount,
     array_map(fn($s) => [
+        'hook_source_id' => (int)$s['id'],
         'institution' => $s['institution'],
         'asset_type' => $s['asset_type'],
         'identifier' => $s['source_identifier'],
@@ -2790,11 +2791,22 @@ $contributions = $contributionCalculator->calculateContributions(
     $minContribution   // NEW
 );
 
+            // A contribution is matched to its source by the source it
+            // carries back, never by position: calculateContributions()
+            // puts vouchers first, leaves the other sources out when
+            // vouchers cover the swipe, and drops a source whose share
+            // would be under $minContribution.
+            $sourcesById = array_column($sources, null, 'id');
+            $undrawnSources = $sourcesById;
+            foreach ($contributions as $contribution) {
+                unset($undrawnSources[$contribution['source']['hook_source_id']]);
+            }
+
             $bills = [];
             $totalDebited = 0.0;
 
-            foreach ($contributions as $i => $contribution) {
-                $sourceRow = $sources[$i];
+            foreach ($contributions as $contribution) {
+                $sourceRow = $sourcesById[$contribution['source']['hook_source_id']];
                 $debitPayload = [
                     'amount' => $contribution['actual_amount'],
                     'hold_reference' => $sourceRow['hold_reference'],
@@ -2818,14 +2830,7 @@ $contributions = $contributionCalculator->calculateContributions(
 
                     $unused = (float)$sourceRow['held_amount'] - $contribution['actual_amount'];
                     if ($unused > 0.01) {
-                        if ($this->isHoldReservedForPendingSwap($sourceRow['hold_reference'] ?? null)) {
-                            // Releasing would take a pending card swap's share
-                            // with it; the institution lets the rest go when
-                            // the hold expires.
-                            error_log("[CardService] finalizePooledSwipe: NOT releasing the unused {$unused} of hold {$sourceRow['hold_reference']} ({$sourceRow['institution']}) - a card swap that hasn't finished still has to debit part of it");
-                        } else {
-                            $swapService->releaseHold([], $sourceRow['institution'], null, $sourceRow['hold_reference']);
-                        }
+                        $this->releaseUnusedSwipeHold($swapService, $sourceRow, $unused);
                     }
 
                 } catch (Exception $debitErr) {
@@ -2852,6 +2857,17 @@ $contributions = $contributionCalculator->calculateContributions(
                 }
             }
 
+            // A source the swipe didn't draw on has its whole hold unused.
+            // Release it here: the card hook job only releases sources of
+            // hooks still HOOKED or UNHOOK_PARTIAL, and this one is SETTLED.
+            foreach ($undrawnSources as $sourceRow) {
+                if ($this->releaseUnusedSwipeHold($swapService, $sourceRow, (float)$sourceRow['held_amount'])) {
+                    $this->db->prepare("
+                        UPDATE card_pool_hook_sources SET status = 'RELEASED', released_at = NOW() WHERE id = ?
+                    ")->execute([$sourceRow['id']]);
+                }
+            }
+
             // Resolve the REAL destination institution (the bank whose ATM
 // dispensed cash, or whose merchant terminal took the POS payment) —
 // never a free-text label the terminal itself supplied.
@@ -2873,8 +2889,8 @@ if (!$destinationInstitution) {
 // actually debited, same granularity debitSource() already used above.
 $settlementResults = [];
 $totalSettled = 0.0;
-foreach ($contributions as $i => $contribution) {
-    $sourceRow = $sources[$i];
+foreach ($contributions as $contribution) {
+    $sourceRow = $sourcesById[$contribution['source']['hook_source_id']];
     $debitedAmount = (float)($sourceRow['debited_amount'] ?? $contribution['actual_amount']);
     if ($debitedAmount <= 0) continue;
 
@@ -2933,10 +2949,42 @@ $settlementResult = [
                 'settlement' => $settlementResult,
             ];
 
-        } catch (Exception $e) {
-            $this->db->rollBack();
+        } catch (\Throwable $e) {
+            // Not just Exception: an Error (a call to a method that doesn't
+            // exist, say) used to skip this and leave the transaction open,
+            // with the hook row still locked.
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
             error_log("[CardService] finalizePooledSwipe failed: " . $e->getMessage());
             throw $e;
         }
+    }
+
+    /**
+     * Releases what a pooled swipe left unused of a source's hold: the rest
+     * of a source it debited, or the whole hold of a source it didn't draw
+     * on. Returns whether the hold was released.
+     */
+    private function releaseUnusedSwipeHold(SwapService $swapService, array $sourceRow, float $unused): bool
+    {
+        if ($this->isHoldReservedForPendingSwap($sourceRow['hold_reference'] ?? null)) {
+            // Releasing would take a pending card swap's share with it; the
+            // institution lets the rest go when the hold expires.
+            error_log("[CardService] finalizePooledSwipe: NOT releasing the unused {$unused} of hold {$sourceRow['hold_reference']} ({$sourceRow['institution']}) - a card swap that hasn't finished still has to debit part of it");
+            return false;
+        }
+
+        $result = $swapService->releaseHold(
+            ['institution' => $sourceRow['institution'], 'asset_type' => $sourceRow['asset_type']],
+            $sourceRow['institution'],
+            null,
+            $sourceRow['hold_reference']
+        );
+        if (!($result['success'] ?? $result['released'] ?? false)) {
+            error_log("[CardService] finalizePooledSwipe: could not release the unused {$unused} of hold {$sourceRow['hold_reference']} ({$sourceRow['institution']}), it stays held until it expires there: " . ($result['message'] ?? 'no reason given'));
+            return false;
+        }
+        return true;
     }
 }
