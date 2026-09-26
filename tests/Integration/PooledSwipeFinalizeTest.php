@@ -23,6 +23,14 @@ require_once __DIR__ . '/../../vendor/autoload.php';
  * which the calculator doesn't keep: vouchers come first, and a source left
  * out of the swipe shifts every source after it.
  *
+ * A swipe too small to split evenly threw as well, after the terminal had
+ * paid out: P50 at an ATM on three P500 sources is P16.67 each, under the
+ * P20 minimum, though any one source could pay it all. It now goes on the
+ * largest holds. ATM withdrawals got the POS minimum, because it was read
+ * from a delivery_method neither enqueuer sets rather than the channel. And
+ * authorizePooledSwipe() declines a swipe no split can pay, instead of
+ * approving one the worker then fails on.
+ *
  * Runs against a real PostgreSQL server, with the same throwaway-schema
  * pattern and variable as CardHookRemainderTest:
  *
@@ -36,6 +44,8 @@ class PooledSwipeFinalizeTest extends TestCase
 {
     private const SCHEMA = 'pooled_swipe_finalize';
     private const OWNER_ID = 42;
+    /** atm_notes.json's BWP notes: with CASHOUT's P10 F1, the ATM minimum share is P20. */
+    public const ATM_NOTES = [200, 100, 50, 20, 10];
 
     private static ?PDO $db = null;
 
@@ -152,16 +162,16 @@ class PooledSwipeFinalizeTest extends TestCase
     // ------------------------------------------------------------
 
     /**
-     * An approved swipe waiting for the worker: a SWIPE_RECEIVED hook with
-     * these sources, given as [institution, asset type, held amount] plus a
-     * status other than HELD if need be. Source n (from 1) is under HOLD_n.
+     * A card hooked to these sources, given as [institution, asset type,
+     * held amount] plus a status other than HELD if need be. Source n (from
+     * 1) is under HOLD_n.
      */
-    private function swipe(float $amount, array $sources): void
+    private function hook(array $sources, string $status = 'HOOKED', ?float $swipeAmount = null): void
     {
         self::$db->prepare("
             INSERT INTO card_pool_hooks (hook_reference, card_suffix, user_id, total_held_amount, status, swipe_amount, expires_at)
-            VALUES ('HOOK_1', '4821', :owner, :total, 'SWIPE_RECEIVED', :amount, NOW() + INTERVAL '1 hour')
-        ")->execute([':owner' => self::OWNER_ID, ':total' => array_sum(array_column($sources, 2)), ':amount' => $amount]);
+            VALUES ('HOOK_1', '4821', :owner, :total, :status, :amount, NOW() + INTERVAL '1 hour')
+        ")->execute([':owner' => self::OWNER_ID, ':total' => array_sum(array_column($sources, 2)), ':status' => $status, ':amount' => $swipeAmount]);
         foreach (array_values($sources) as $i => $source) {
             [$institution, $assetType, $held] = $source;
             self::$db->prepare("
@@ -175,6 +185,15 @@ class PooledSwipeFinalizeTest extends TestCase
         }
     }
 
+    /**
+     * An approved swipe waiting for the worker: a SWIPE_RECEIVED hook with
+     * these sources, given as for hook().
+     */
+    private function swipe(float $amount, array $sources): void
+    {
+        $this->hook($sources, 'SWIPE_RECEIVED', $amount);
+    }
+
     /** A card swap that hasn't finished yet still has to debit its share of this hold. */
     private function pendingCashOutOn(string $holdReference): void
     {
@@ -183,18 +202,43 @@ class PooledSwipeFinalizeTest extends TestCase
             ->execute(['POOL_' . $holdReference, $holdReference]);
     }
 
-    private function finalize(string $channel = 'POS'): array
+    private function cardService(): CardService
     {
         $card = (new ReflectionClass(CardService::class))->newInstanceWithoutConstructor();
         (new ReflectionProperty(CardService::class, 'db'))->setValue($card, self::$db);
+        return $card;
+    }
 
-        return $card->finalizePooledSwipe(
+    /**
+     * A swipe at a terminal on this channel, through the ISO 8583 bridge:
+     * the HSM has verified its PIN.
+     */
+    private function authorize(float $amount, string $channel): array
+    {
+        $card = $this->cardService();
+        // The country config authorize.php and the ISO 8583 bridge build it with.
+        (new ReflectionProperty(CardService::class, 'config'))->setValue($card, [
+            'fees' => $this->fees->getFeesConfig(),
+            'atm_notes' => ['BWP' => self::ATM_NOTES],
+        ]);
+        return $card->authorizePooledSwipe('4821', $amount, ['channel' => $channel, 'pin_verified_via_hsm' => true]);
+    }
+
+    /**
+     * The worker's finalization, with the merchant context the swipe was
+     * queued with: the channel it came in on, which is all either enqueuer
+     * says about ATM or POS (authorize.php passes the one it was given,
+     * 'POS' by default and 'ATM' for a withdrawal; the ISO 8583 bridge
+     * 'ISO8583_POS' or 'ISO8583_ATM'), plus anything in $context.
+     */
+    private function finalize(string $channel = 'POS', array $context = []): array
+    {
+        return $this->cardService()->finalizePooledSwipe(
             'HOOK_1',
             $this->institutions(),
             (new ReflectionClass(HybridSettlementStrategy::class))->newInstanceWithoutConstructor(),
             new ContributionCalculator(),
-            // delivery_method ATM makes the minimum share the cash-out one.
-            ['resolved_destination_institution' => 'FNBB'] + ($channel === 'ATM' ? ['delivery_method' => 'ATM'] : [])
+            ['resolved_destination_institution' => 'FNBB', 'channel' => $channel] + $context
         );
     }
 
@@ -212,7 +256,7 @@ class PooledSwipeFinalizeTest extends TestCase
 
             public function getAtmDenominations(string $currency): array
             {
-                return [200, 100, 50, 20, 10];
+                return PooledSwipeFinalizeTest::ATM_NOTES;
             }
 
             public function debitSource(array $payload, string $institution): array
@@ -386,6 +430,127 @@ class PooledSwipeFinalizeTest extends TestCase
         $this->assertEquals(['HOLD_2' => 100.0], $this->debits);
         $this->assertSame([], $this->released, 'releasing either hold would release the cash-out\'s share with it');
         $this->assertSame(['HOLD_1' => 'HELD', 'HOLD_2' => 'DEBITED'], $this->sourceStatuses());
+        $this->assertSame('SETTLED', $this->hookStatus());
+    }
+
+    // ------------------------------------------------------------
+    // A swipe too small to split evenly is paid by the largest holds
+    // ------------------------------------------------------------
+
+    public static function smallSwipesOnMultiSourceCards(): array
+    {
+        return [
+            // P16.67 each is under the ATM minimum (P20), though any one source could pay it all.
+            'ATM P50 on three P500 sources' => ['ATM', 50, [['ZURUBANK', 'ACCOUNT', 500], ['SACCUSSALIS', 'ACCOUNT', 500], ['ABSA', 'ACCOUNT', 500]],
+                ['HOLD_1' => 50.0], ['ZURUBANK' => 50.0]],
+            // P5 each is under the POS minimum (P6).
+            'POS P10 on two P500 sources' => ['POS', 10, [['ZURUBANK', 'ACCOUNT', 500], ['SACCUSSALIS', 'ACCOUNT', 500]],
+                ['HOLD_1' => 10.0], ['ZURUBANK' => 10.0]],
+            'the largest hold pays it' => ['ATM', 50, [['ZURUBANK', 'ACCOUNT', 30], ['SACCUSSALIS', 'ACCOUNT', 45], ['ABSA', 'ACCOUNT', 200]],
+                ['HOLD_3' => 50.0], ['ABSA' => 50.0]],
+            // No one hold covers P50: the largest pays all it can while leaving the next the minimum.
+            'the two largest holds pay it, each at least the minimum' => ['ATM', 50, [['ZURUBANK', 'ACCOUNT', 25], ['SACCUSSALIS', 'ACCOUNT', 45], ['ABSA', 'ACCOUNT', 30]],
+                ['HOLD_2' => 30.0, 'HOLD_3' => 20.0], ['SACCUSSALIS' => 30.0, 'ABSA' => 20.0]],
+        ];
+    }
+
+    #[DataProvider('smallSwipesOnMultiSourceCards')]
+    public function testASmallSwipeIsPaidByTheLargestHoldsInsteadOfFailing(string $channel, float $amount, array $sources, array $debits, array $settled): void
+    {
+        $this->swipe($amount, $sources);
+
+        $result = $this->finalize($channel);
+
+        $this->assertTrue($result['success']);
+        $this->assertEquals($debits, $this->debits);
+        $this->assertEqualsWithDelta($amount, $result['total_debited'], 0.001);
+        $this->assertEquals($settled, $this->settled, 'FNBB is paid from each source that paid');
+        $statuses = [];
+        foreach (array_keys($sources) as $i) {
+            $statuses['HOLD_' . ($i + 1)] = isset($debits['HOLD_' . ($i + 1)]) ? 'DEBITED' : 'RELEASED';
+        }
+        $this->assertSame($statuses, $this->sourceStatuses());
+        $this->assertEqualsCanonicalizing(array_keys($statuses), $this->released, 'the rest of each hold is released, all of it where the source didn\'t pay');
+        $this->assertSame([], $result['shortfall_bills']);
+        $this->assertSame('SETTLED', $this->hookStatus());
+    }
+
+    // ------------------------------------------------------------
+    // An ATM withdrawal takes the cash-out minimum
+    // ------------------------------------------------------------
+
+    public static function channels(): array
+    {
+        // A P100 swipe on a P15 and a P500 source puts P15 on the first:
+        // over the POS minimum (P6), under the ATM one (P20).
+        return [
+            'ATM, from authorize.php' => ['ATM', [], ['HOLD_2' => 100.0]],
+            'ATM, from the ISO 8583 bridge' => ['ISO8583_ATM', [], ['HOLD_2' => 100.0]],
+            'POS, from authorize.php' => ['POS', [], ['HOLD_1' => 15.0, 'HOLD_2' => 85.0]],
+            'POS, from the ISO 8583 bridge' => ['ISO8583_POS', [], ['HOLD_1' => 15.0, 'HOLD_2' => 85.0]],
+            'delivery_method ATM, whatever the channel' => ['POS', ['delivery_method' => 'ATM'], ['HOLD_2' => 100.0]],
+        ];
+    }
+
+    #[DataProvider('channels')]
+    public function testTheMinimumShareIsTheCashOutOneForAnAtmWithdrawal(string $channel, array $context, array $debits): void
+    {
+        $this->swipe(100, [['ZURUBANK', 'ACCOUNT', 15], ['SACCUSSALIS', 'ACCOUNT', 500]]);
+
+        $this->finalize($channel, $context);
+
+        $this->assertEquals($debits, $this->debits);
+        $this->assertSame('SETTLED', $this->hookStatus());
+    }
+
+    // ------------------------------------------------------------
+    // A swipe no split can pay is declined, not approved
+    // ------------------------------------------------------------
+
+    public static function swipesNoSplitCanPay(): array
+    {
+        return [
+            'a POS swipe under the P6 minimum' => ['ISO8583_POS', 5, [['ZURUBANK', 'ACCOUNT', 500]], 6.0],
+            'an ATM withdrawal under the P20 minimum' => ['ISO8583_ATM', 10, [['ZURUBANK', 'ACCOUNT', 500]], 20.0],
+            'no source holds the minimum' => ['ISO8583_ATM', 40, [['ZURUBANK', 'ACCOUNT', 15], ['SACCUSSALIS', 'ACCOUNT', 15], ['ABSA', 'ACCOUNT', 15]], 20.0],
+            // Either could pay P20, but not both out of P30.
+            'the sources holding the minimum can\'t each pay it' => ['ISO8583_ATM', 30, [['ZURUBANK', 'ACCOUNT', 25], ['SACCUSSALIS', 'ACCOUNT', 25]], 20.0],
+        ];
+    }
+
+    #[DataProvider('swipesNoSplitCanPay')]
+    public function testASwipeNoSplitCanPayIsDeclined(string $channel, float $amount, array $sources, float $minShare): void
+    {
+        $this->hook($sources);
+
+        $result = $this->authorize($amount, $channel);
+
+        $this->assertFalse($result['authorized']);
+        $this->assertSame('51', $result['response_code']);
+        $this->assertSame($minShare, $result['min_share']);
+        $this->assertSame('HOOKED', $this->hookStatus(), 'nothing for the worker to fail on after the terminal has paid out');
+    }
+
+    public static function smallSwipesTheWorkerCanSplit(): array
+    {
+        return [
+            'ATM P50 on three P500 sources' => ['ISO8583_ATM', 50, [['ZURUBANK', 'ACCOUNT', 500], ['SACCUSSALIS', 'ACCOUNT', 500], ['ABSA', 'ACCOUNT', 500]]],
+            'POS P10 on two P500 sources' => ['ISO8583_POS', 10, [['ZURUBANK', 'ACCOUNT', 500], ['SACCUSSALIS', 'ACCOUNT', 500]]],
+        ];
+    }
+
+    #[DataProvider('smallSwipesTheWorkerCanSplit')]
+    public function testASmallSwipeIsApprovedAndThenFinalized(string $channel, float $amount, array $sources): void
+    {
+        $this->hook($sources);
+
+        $this->assertTrue($this->authorize($amount, $channel)['authorized']);
+        $this->assertSame('SWIPE_RECEIVED', $this->hookStatus());
+
+        $result = $this->finalize($channel);
+
+        $this->assertTrue($result['success']);
+        $this->assertEquals(['HOLD_1' => $amount], $this->debits);
         $this->assertSame('SETTLED', $this->hookStatus());
     }
 }

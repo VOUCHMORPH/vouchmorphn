@@ -2621,6 +2621,39 @@ if ($balance <= 0) {
             ];
         }
 
+        // ============================================================
+        // SPLIT PRE-CHECK
+        // ============================================================
+        // finalizePooledSwipe() splits the swipe across the HELD sources
+        // with every source that pays putting in at least the minimum
+        // share. When no split can — the swipe is under that minimum, or
+        // the sources holding it can't cover the swipe in shares that size
+        // — finalizing throws after the terminal has already paid out, so
+        // decline HERE instead, with the same split and the same minimum.
+        // The fees and ATM notes come from the country config authorize.php
+        // and the ISO 8583 bridge build this service with;
+        // finalizePooledSwipe() reads the same files through SwapService.
+        $currency = $hook['currency'] ?? 'BWP';
+        $minShare = $this->minimumSwipeShare(
+            $merchantContext,
+            $this->config['fees'] ?? [],
+            fn() => $this->config['atm_notes'][$currency] ?? []
+        );
+        $heldStmt = $this->db->prepare("SELECT * FROM card_pool_hook_sources WHERE hook_id = ? AND status = 'HELD' ORDER BY id");
+        $heldStmt->execute([$hook['id']]);
+
+        try {
+            $this->splitPooledSwipe(new ContributionCalculator(), $amount, $heldStmt->fetchAll(PDO::FETCH_ASSOC), $minShare);
+        } catch (RuntimeException $e) {
+            error_log("[CardService] authorizePooledSwipe: declined {$amount} {$currency} on hook {$hook['hook_reference']}: " . $e->getMessage());
+            return [
+                'success' => false, 'authorized' => false,
+                'response_code' => '51',
+                'response_message' => sprintf("This card's sources can't cover %.2f with at least %.2f from each source that pays", $amount, $minShare),
+                'min_share' => $minShare, 'requested' => $amount,
+            ];
+        }
+
         $update = $this->db->prepare("
             UPDATE card_pool_hooks
             SET status = 'SWIPE_RECEIVED', swipe_amount = ?, merchant_reference = ?
@@ -2759,37 +2792,14 @@ public function reversePooledSwipe(string $hookReference, string $reversalReason
             $sources = $sourcesStmt->fetchAll(PDO::FETCH_ASSOC);
 
             $swipeAmount = (float)$hook['swipe_amount'];
+            $currency = $hook['currency'] ?? 'BWP';
 
-            // Inside finalizePooledSwipe(), before calling calculateContributions():
-
-$destinationDeliveryMethod = strtoupper($merchantContext['delivery_method'] ?? 'DEPOSIT');
-$isCashout = in_array($destinationDeliveryMethod, ['ATM', 'AGENT', 'CASHOUT'], true);
-
-$feesConfig = $swapService->getFeeService()->getFeesConfig();
-$currency = $hook['currency'] ?? 'BWP';
-
-if ($isCashout) {
-    $cashoutF1 = (float)($feesConfig['CASHOUT']['fee_components']['F1']['amount'] ?? 0);
-    $smallestNote = min($swapService->getAtmDenominations($currency)); // already exists on SwapService
-    $minContribution = $cashoutF1 + $smallestNote; // same combined-threshold shape as validateEarmarkedWithdrawal()
-} else {
-    $minContribution = (float)($feesConfig['DEPOSIT']['fee_components']['F1']['amount'] ?? 0);
-}
-
-$contributions = $contributionCalculator->calculateContributions(
-    $swipeAmount,
-    array_map(fn($s) => [
-        'hook_source_id' => (int)$s['id'],
-        'institution' => $s['institution'],
-        'asset_type' => $s['asset_type'],
-        'identifier' => $s['source_identifier'],
-        'available_balance' => (float)$s['held_amount'],
-    ], $sources),
-    'SMART',
-    null,
-    null,
-    $minContribution   // NEW
-);
+            $minContribution = $this->minimumSwipeShare(
+                $merchantContext,
+                $swapService->getFeeService()->getFeesConfig(),
+                fn() => $swapService->getAtmDenominations($currency)
+            );
+            $contributions = $this->splitPooledSwipe($contributionCalculator, $swipeAmount, $sources, $minContribution);
 
             // A contribution is matched to its source by the source it
             // carries back, never by position: calculateContributions()
@@ -2959,6 +2969,62 @@ $settlementResult = [
             error_log("[CardService] finalizePooledSwipe failed: " . $e->getMessage());
             throw $e;
         }
+    }
+
+    /**
+     * The least one hooked source may pay towards a pooled swipe: the
+     * DEPOSIT F1, or for a cash-out the CASHOUT F1 plus the smallest ATM
+     * note (same combined-threshold shape as
+     * SwapService::validateEarmarkedWithdrawal()).
+     *
+     * A swipe is a cash-out when its delivery_method says so or, without
+     * one, when it came in on an ATM channel. Neither enqueuer sets
+     * delivery_method: authorize.php passes the channel it was given ('ATM'
+     * for a withdrawal, as authorizeTransaction() reads it) and
+     * Iso8583AuthorizationBridge 'ISO8583_ATM' or 'ISO8583_POS'. Reading
+     * delivery_method alone gave ATM withdrawals the deposit minimum.
+     *
+     * $atmNotes returns the currency's note denominations; it is only
+     * called for a cash-out.
+     */
+    private function minimumSwipeShare(array $merchantContext, array $feesConfig, callable $atmNotes): float
+    {
+        $deliveryMethod = strtoupper((string)($merchantContext['delivery_method'] ?? ''));
+        $isCashout = $deliveryMethod !== ''
+            ? in_array($deliveryMethod, ['ATM', 'AGENT', 'CASHOUT'], true)
+            : in_array(strtoupper((string)($merchantContext['channel'] ?? '')), ['ATM', 'ISO8583_ATM'], true);
+
+        if (!$isCashout) {
+            return (float)($feesConfig['DEPOSIT']['fee_components']['F1']['amount'] ?? 0);
+        }
+        $notes = $atmNotes();
+        return (float)($feesConfig['CASHOUT']['fee_components']['F1']['amount'] ?? 0) + ($notes ? min($notes) : 0);
+    }
+
+    /**
+     * Splits a pooled swipe across its hook's HELD sources (rows of
+     * card_pool_hook_sources): SMART, with every source that pays putting
+     * in at least $minShare, and the largest holds paying when an even
+     * split can't do that. Throws when no split can. authorizePooledSwipe()
+     * declines a swipe this can't split, so finalizePooledSwipe(), which
+     * debits what this returns, never gets one after the terminal has paid.
+     */
+    private function splitPooledSwipe(ContributionCalculator $calculator, float $amount, array $heldSources, float $minShare): array
+    {
+        return $calculator->calculateContributions(
+            $amount,
+            array_map(fn($s) => [
+                'hook_source_id' => (int)$s['id'],
+                'institution' => $s['institution'],
+                'asset_type' => $s['asset_type'],
+                'identifier' => $s['source_identifier'],
+                'available_balance' => (float)$s['held_amount'],
+            ], $heldSources),
+            'SMART',
+            null,
+            null,
+            $minShare
+        );
     }
 
     /**

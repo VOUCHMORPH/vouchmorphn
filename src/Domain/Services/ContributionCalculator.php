@@ -240,9 +240,15 @@ class ContributionCalculator
      * Drops any contribution below the floor (its amount would be worse
      * than useless — dust that can't cover the swipe's own fee) and
      * redistributes that amount across the remaining sources that still
-     * clear the floor themselves. If nobody's left standing, the swipe
-     * genuinely can't happen with this source set and it should fail
-     * loudly rather than silently ship a source under the fee.
+     * clear the floor themselves, until every share does.
+     *
+     * When that leaves nobody, or too little to reach the target — an
+     * even split of a small amount puts every share under the floor even
+     * when any one source could pay it all — the target goes on the fewest
+     * sources that can each pay the floor, largest held first
+     * (calculateLargestFirstFlexible()). Only when no split can give every
+     * source that pays the floor does this throw, rather than silently
+     * ship a source under the fee.
      */
     private function enforceMinimumContribution(
         float $targetAmount,
@@ -250,57 +256,110 @@ class ContributionCalculator
         array $flexibleSources,
         float $minContribution
     ): array {
-        $survivors = [];
-        $dropped = 0.0;
+        $sources = $flexibleSources;
 
-        foreach ($contributions as $c) {
-            if ($c['actual_amount'] < $minContribution - 0.005) {
-                $dropped += $c['actual_amount'];
-                error_log("[ContributionCalculator] Dropping source below minimum contribution floor ({$minContribution}): {$c['asset_type']} allocated {$c['actual_amount']}");
-                continue;
-            }
-            $survivors[] = $c;
-        }
+        while (true) {
+            $survivors = [];
+            $dropped = 0.0;
 
-        if ($dropped <= 0.005) {
-            return $contributions; // nothing to redistribute, floor already satisfied everywhere
-        }
-
-        if (empty($survivors)) {
-            throw new \RuntimeException(sprintf(
-                "No source can individually cover the minimum contribution (%.2f) required for this swap. Reduce the number of sources or increase the amount.",
-                $minContribution
-            ));
-        }
-
-        // Re-run the same source set through RATIO for just the survivors,
-        // now that the floor-failing ones are gone — simplest correct way
-        // to redistribute without re-implementing every strategy's math.
-        $survivorSources = array_filter($flexibleSources, function($fs) use ($survivors) {
-            foreach ($survivors as $s) {
-                if (($s['source']['institution'] ?? null) === ($fs['source']['institution'] ?? null)
-                    && ($s['source']['identifier'] ?? $s['source']['source_identifier'] ?? null) === ($fs['source']['identifier'] ?? $fs['source']['source_identifier'] ?? null)) {
-                    return true;
+            foreach ($contributions as $c) {
+                if ($c['actual_amount'] < $minContribution - 0.005) {
+                    $dropped += $c['actual_amount'];
+                    error_log("[ContributionCalculator] Dropping source below minimum contribution floor ({$minContribution}): {$c['asset_type']} allocated {$c['actual_amount']}");
+                    continue;
                 }
+                $survivors[] = $c['source'];
             }
-            return false;
-        });
 
-        $newTotal = array_sum(array_column($survivors, 'actual_amount')) + $dropped;
-        $totalSurvivorBalance = array_sum(array_column($survivorSources, 'available_balance'));
+            if ($dropped <= 0.005) {
+                return $contributions; // nothing to redistribute, floor already satisfied everywhere
+            }
 
-        if ($totalSurvivorBalance < $newTotal - 0.01) {
+            // Matched on the source itself, not institution + identifier:
+            // a card can hook the same account twice, under two holds, and
+            // only one of them may clear the floor.
+            $survivorSources = array_values(array_filter(
+                $sources,
+                fn($fs) => in_array($fs['source'], $survivors, true)
+            ));
+
+            if (empty($survivorSources)
+                || count($survivorSources) === count($sources)
+                || array_sum(array_column($survivorSources, 'available_balance')) < $targetAmount - 0.01) {
+                return $this->calculateLargestFirstFlexible($targetAmount, $flexibleSources, $minContribution);
+            }
+
+            // Re-run just the survivors through RATIO, now that the
+            // floor-failing ones are gone — simplest correct way to
+            // redistribute without re-implementing every strategy's math.
+            // A survivor can drop under the floor after taking on the
+            // redistributed share, so the next pass checks again.
+            $sources = $survivorSources;
+            $contributions = $this->calculateRatioBasedFlexible($targetAmount, $sources);
+        }
+    }
+
+    /**
+     * LARGEST_FIRST - the target on the fewest sources that can each pay
+     * at least the floor, largest held first. Sources holding the same
+     * amount keep the order they were given in (for a card, the order they
+     * were hooked). Each source pays as much as it can while leaving the
+     * floor for the sources after it.
+     *
+     * Throws when no split gives every source that pays the floor: the
+     * target is under the floor, or the sources that hold the floor can't
+     * cover the target that way.
+     */
+    private function calculateLargestFirstFlexible(
+        float $targetAmount,
+        array $flexibleSources,
+        float $minContribution
+    ): array {
+        $eligible = array_values(array_filter(
+            $flexibleSources,
+            fn($fs) => $fs['available_balance'] >= $minContribution - 0.005
+        ));
+        // usort is stable, so equal holds keep their order.
+        usort($eligible, fn($a, $b) => $b['available_balance'] <=> $a['available_balance']);
+
+        $payers = [];
+        $covered = 0.0;
+        foreach ($eligible as $source) {
+            if ($covered >= $targetAmount - 0.005) {
+                break;
+            }
+            $payers[] = $source;
+            $covered += $source['available_balance'];
+        }
+
+        // No fewer sources can cover the target, so if these can't each pay
+        // the floor, no set of sources can.
+        if ($covered < $targetAmount - 0.005 || count($payers) * $minContribution > $targetAmount + 0.005) {
             throw new \RuntimeException(sprintf(
-                "Removing sources below the minimum contribution (%.2f) leaves insufficient balance to reach the target (%.2f).",
-                $minContribution, $newTotal
+                "Cannot split %.2f so that every source paying puts in at least the minimum contribution (%.2f).",
+                $targetAmount, $minContribution
             ));
         }
 
-        // Recurse once with the reduced source set — if a survivor now
-        // drops below the floor after taking on the redistributed share,
-        // this correctly excludes it too on the next pass instead of
-        // silently allowing a second sub-floor result.
-        return $this->calculateRatioBasedFlexible($newTotal, array_values($survivorSources));
+        $contributions = [];
+        $remaining = $targetAmount;
+
+        foreach ($payers as $index => $source) {
+            $floorForTheRest = (count($payers) - $index - 1) * $minContribution;
+            $allocated = round(min($source['available_balance'], $remaining - $floorForTheRest), 2);
+
+            $contributions[] = [
+                'source' => $source['source'],
+                'asset_type' => $source['asset_type'],
+                'requested_amount' => $allocated,
+                'actual_amount' => $allocated,
+                'contribution_type' => 'LARGEST_FIRST',
+                'order' => $index + 1
+            ];
+            $remaining -= $allocated;
+        }
+
+        return $contributions;
     }
     
     /**
