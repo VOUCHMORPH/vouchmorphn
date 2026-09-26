@@ -107,7 +107,43 @@ class CommunicationFactory
     public static function createForPhone(string $provider, string $phoneNumber): ProviderInterface
     {
         $telco = self::detectTelcoByPhone($phoneNumber);
+
+        // A number no enabled telco claims (a Mascom or Orange number while
+        // their gateways are off, or a foreign number) used to reach create()
+        // with no telco, which looks for a top-level "sms" block that
+        // communication.json doesn't have. The send threw, and sign-up told
+        // the person to try again shortly, however often they tried.
+        if ($telco === null && strtolower($provider) === 'sms') {
+            $telco = self::defaultSmsTelco(self::loadCountryConfig());
+        }
+
         return self::create($provider, $telco);
+    }
+
+    /**
+     * The telco whose gateway sends SMS to numbers no enabled telco claims
+     * by prefix: communication.json's sms_gateway.default_telco, as long as
+     * that telco exists and has SMS switched on. Null otherwise.
+     *
+     * SmsNotificationService::defaultTelco() applies the same rule to
+     * transactional SMS; keep the two in step.
+     *
+     * @param array $config communication.json, decoded
+     * @return string|null telco key, e.g. 'cazacom'
+     */
+    public static function defaultSmsTelco(array $config): ?string
+    {
+        $name = $config['sms_gateway']['default_telco'] ?? null;
+        if (!is_string($name) || !isset($config['telcos'][$name])) {
+            return null;
+        }
+
+        $telco = $config['telcos'][$name];
+        if (empty($telco['enabled']) || empty($telco['sms_enabled'])) {
+            return null;
+        }
+
+        return $name;
     }
     
     /**

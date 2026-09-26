@@ -539,9 +539,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $result = $comm->send($otpDestination, "Your {$countryName} VouchMorph verification code: {$otpPlain}");
                 $otpSent = (bool)($result['success'] ?? false);
                 
-                // Log which network was used
+                // Log which network was used, and whether it took the message
                 $providerName = $comm->getProviderName();
-                error_log("REGISTER: OTP sent via {$providerName} to " . maskDestination($otpDestination, 'phone'));
+                if ($otpSent) {
+                    error_log("REGISTER: OTP sent via {$providerName} to " . maskDestination($otpDestination, 'phone'));
+                } else {
+                    error_log("REGISTER: OTP send via {$providerName} FAILED for " . maskDestination($otpDestination, 'phone') . ": " . ($result['error'] ?? 'no error given'));
+                }
                 
             } catch (Exception $e) {
                 error_log("REGISTER: SMS failed for {$otpDestination}: " . $e->getMessage());
