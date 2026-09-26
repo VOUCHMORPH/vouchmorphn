@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-ini_set('display_errors', '1');
+ini_set('display_errors', '0');
 error_reporting(E_ALL);
 
 header("Access-Control-Allow-Origin: *");
@@ -17,6 +17,19 @@ require_once __DIR__ . '/../../../src/bootstrap.php';
 require_once __DIR__ . '/../../../src/Application/Controllers/USSDController.php';
 
 use Application\Controllers\USSDController;
+
+// Only the USSD gateway may call this: it is what vouches for phoneNumber,
+// the caller's identity on this channel. Configure the gateway's callback
+// URL with ?key=<USSD_GATEWAY_SECRET>. Without the secret configured,
+// nothing is accepted (see USSDController::isFromGateway()).
+if (!USSDController::isFromGateway($_SERVER, $_GET, getenv('USSD_GATEWAY_SECRET') ?: null)) {
+    error_log('[USSD] Refused a request that did not carry the USSD gateway secret'
+        . (getenv('USSD_GATEWAY_SECRET') ? '' : ' (USSD_GATEWAY_SECRET is not configured)')
+        . ' from ' . ($_SERVER['REMOTE_ADDR'] ?? 'unknown'));
+    header('Content-Type: text/plain; charset=UTF-8');
+    echo "END Service unavailable.";
+    exit;
+}
 
 try {
     $config = require __DIR__ . '/../../../src/Core/Config/config_loader.php';

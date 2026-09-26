@@ -1151,6 +1151,9 @@ const CONFIG = {
     RECIPIENT_PREVIEW_ENDPOINT: '<?php echo $apiBase; ?>/api/v1/swap/recipient_preview.php',
     EXECUTE_ENDPOINT: '<?php echo $apiBase; ?>/api/v1/swap/execute.php',
     USER_ID: <?php echo json_encode($userId); ?>,
+    // The phone this customer verified by OTP at sign-up. A wallet on this
+    // number is theirs without adding it as a source (SourceOwnershipGuard).
+    USER_PHONE: <?php echo json_encode($userData['phone'] ?? null, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>,
 };
 const PARTICIPANTS = <?php echo json_encode($participants); ?>;
 const ASSETS = <?php echo json_encode($assetTypes); ?>;
@@ -2168,10 +2171,11 @@ function renderWizardSourcePicker(panel, type) {
                     </div>`).join('')}
                 </div>
             </div>
-            <div style="text-align:center;margin-top:12px;">— or enter a new source —</div>`;
+            <div style="text-align:center;margin-top:12px;">— or enter one of your verified sources —</div>
+            <div class="help" style="text-align:center;">Only an account you've verified, or a wallet on your own number, can be used.</div>`;
         } else {
             html += `<div class="empty-source-box" style="margin-bottom:12px;">
-                <p style="margin-bottom:8px;">You don't have a wallet or account linked yet.</p>
+                <p style="margin-bottom:8px;">You don't have a wallet or account linked yet. You can still use a wallet on your own number below.</p>
                 <span class="quick-link" onclick="goView('toolbox')">+ Add one from Toolbox</span>
             </div>`;
         }
@@ -2263,9 +2267,9 @@ function renderWizardSourcePicker(panel, type) {
                     </div>
                 </div>
             </div>
-            <div style="text-align:center;font-size:11px;color:var(--text-dim);margin:10px 0 16px;">— or enter a new card —</div>`;
+            <div style="text-align:center;font-size:11px;color:var(--text-dim);margin:10px 0 16px;">— or enter one of your verified cards —</div>`;
         } else {
-            html += `<div style="text-align:center;font-size:12px;color:var(--text-dim);margin-bottom:14px;">Enter your card details below.</div>`;
+            html += `<div style="text-align:center;font-size:12px;color:var(--text-dim);margin-bottom:14px;">Only a card you've added and verified in Toolbox can be used. <span class="quick-link" onclick="goView('toolbox')">Add a card</span></div>`;
         }
 
         const cardMatches = institutionsForTile('CARD');
@@ -3968,11 +3972,6 @@ function addAllSavedSourcesToHook() {
     showMessage(`Added all ${eligible.length} of your saved sources — just fill in an amount for each.`, 'success');
 }
 
-function pickHookRowFromSaved(rowId) {
-    const el = document.getElementById('hookSavedPicker' + rowId);
-    if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
-}
-
 function applyHookRowSavedSource(rowId, sourceId) {
     const source = userSources.find(s => s.id === sourceId);
     const row = hookRows.find(r => r.id === rowId);
@@ -3991,6 +3990,10 @@ function setHookRowAssetType(id, type) {
     const row = hookRows.find(r => r.id === id);
     if (!row) return;
     row.assetType = type;
+    // A number chosen for one kind of source is not a number of another kind.
+    row.institution = null;
+    row.identifier = '';
+    row.pin = '';
     renderHookRows();
 }
 
@@ -4019,40 +4022,55 @@ function renderHookRows() {
                 </div>
             </div>`;
         }
-        const savedPickerHtml = userSources.filter(u => u.status === 'active').length ? `
-    <div style="margin-bottom:10px;">
-        <span class="quick-link muted" onclick="pickHookRowFromSaved(${row.id})">Use a saved source &rsaquo;</span>
-        <div id="hookSavedPicker${row.id}" style="display:none;margin-top:6px;border:1px solid var(--border-strong);">
-            ${userSources.filter(u => u.status === 'active').map(u => `<div class="saved-source-row" onclick="applyHookRowSavedSource(${row.id}, '${u.id}')"><div class="row-main"><div class="row-inst">${escapeHtml(PARTICIPANTS[u.institution]?.name || u.institution)}</div><div class="row-ident">${escapeHtml(u.identifier || u.source_identifier || '')}</div></div></div>`).join('')}
-        </div>
-    </div>` : '';
         const typeOptions = HOOK_ASSET_TYPES.map(t => `<div class="source-type-opt ${row.assetType === t.key ? 'active' : ''}" onclick="setHookRowAssetType(${row.id}, '${t.key}')"><span class="icon">${t.icon}</span>${t.label}</div>`).join('');
-        let extraFields = '';
-        let institutionField = '';
+        // Only a source the customer has proved is theirs can be hooked (the
+        // server refuses anything else): one of their verified sources, a
+        // wallet on their own verified number, or a voucher with its PIN.
+        // Accounts and cards are therefore picked, never typed.
+        let sourceFields = '';
         if (row.assetType) {
             const eligibleCodes = Object.keys(PARTICIPANTS).filter(code => (PARTICIPANTS[code].asset_types || []).map(t => String(t).toUpperCase()).includes(row.assetType === 'VOUCHER' ? 'VOUCHER' : row.assetType));
             const options = eligibleCodes.map(code => `<option value="${code}" ${row.institution === code ? 'selected' : ''}>${PARTICIPANTS[code]?.name || code}</option>`).join('');
-            institutionField = `<div class="field-group"><label>Institution</label><select onchange="hookRows.find(r=>r.id===${row.id}).institution=this.value; renderHookRows();"><option value="">Select institution</option>${options}</select></div>`;
-            const cfg = getAssetConfig(row.assetType);
-            const pinField = (cfg?.fields || []).find(f => f.vault_field === 'pin');
-            if (pinField) extraFields = `<div class="field-group"><label>${pinField.label}</label><input type="password" placeholder="${pinField.placeholder || ''}" value="${row.pin}" oninput="hookRows.find(r=>r.id===${row.id}).pin=this.value"></div>`;
+            const institutionField = `<div class="field-group"><label>Institution</label><select onchange="hookRows.find(r=>r.id===${row.id}).institution=this.value; renderHookRows();"><option value="">Select institution</option>${options}</select></div>`;
+            if (row.assetType === 'VOUCHER') {
+                const cfg = getAssetConfig(row.assetType);
+                const pinField = (cfg?.fields || []).find(f => f.vault_field === 'pin');
+                sourceFields = `${institutionField}
+                    <div class="field-group"><label>Voucher number</label><input placeholder="As printed on the voucher" inputmode="text" autocomplete="off" value="${escapeHtml(row.identifier)}" oninput="hookRows.find(r=>r.id===${row.id}).identifier=this.value"></div>
+                    <div class="field-group"><label>${escapeHtml(pinField?.label || 'Voucher PIN')}</label><input type="password" placeholder="${escapeHtml(pinField?.placeholder || '')}" value="${escapeHtml(row.pin)}" oninput="hookRows.find(r=>r.id===${row.id}).pin=this.value"></div>`;
+            } else {
+                const verified = userSources.filter(u => u.status === 'active' && normalizeAssetType(u.asset_type) === row.assetType);
+                const typeLabel = (HOOK_ASSET_TYPES.find(t => t.key === row.assetType)?.label || 'source').toLowerCase();
+                sourceFields = `<div class="field-group"><label>Choose one of your verified sources</label>
+                    ${verified.length ? `<div style="border:1px solid var(--border-strong);">${verified.map(u => `<div class="saved-source-row" onclick="applyHookRowSavedSource(${row.id}, '${u.id}')"><div class="row-main"><div class="row-inst">${escapeHtml(PARTICIPANTS[u.institution]?.name || u.institution)}</div><div class="row-ident">${escapeHtml(u.identifier || u.source_identifier || '')}</div></div></div>`).join('')}</div>`
+                        : `<div class="empty-source-box"><p style="margin-bottom:8px;">You don't have a verified ${escapeHtml(typeLabel)} yet.</p></div>`}
+                    <div class="help">Only accounts you've proved are yours can be hooked. <span class="quick-link" onclick="goView('toolbox')">Add and verify a source</span> — your institution sends you a code to confirm it.</div>
+                </div>`;
+                if (row.assetType === 'WALLET' && CONFIG.USER_PHONE) {
+                    sourceFields += `<div class="field-group"><label>Or a wallet on your own number (${escapeHtml(CONFIG.USER_PHONE)})</label>
+                        <select onchange="const r=hookRows.find(x=>x.id===${row.id}); r.institution=this.value; r.identifier=this.value ? CONFIG.USER_PHONE : ''; renderHookRows();"><option value="">Select the wallet's institution</option>${options}</select></div>`;
+                    if (row.institution && row.identifier === CONFIG.USER_PHONE) {
+                        const cfg = getAssetConfig(row.assetType);
+                        const pinField = (cfg?.fields || []).find(f => f.vault_field === 'pin');
+                        if (pinField) sourceFields += `<div class="field-group"><label>${escapeHtml(pinField.label)}</label><input type="password" placeholder="${escapeHtml(pinField.placeholder || '')}" value="${escapeHtml(row.pin)}" oninput="hookRows.find(r=>r.id===${row.id}).pin=this.value"></div>`;
+                    }
+                }
+            }
         }
+        const canAuthorize = row.assetType === 'VOUCHER' || (row.institution && row.identifier);
         return `<div class="hook-row-card">
             <div class="hook-row-head"><span class="hook-row-label">Source ${idx + 1}</span>${hookMode === 'multi' && hookRows.length > 1 ? `<button class="hook-row-remove" onclick="removeHookRow(${row.id})">Remove</button>` : ''}</div>
-            ${savedPickerHtml}
             <div class="source-type-picker">${typeOptions}</div>
             ${row.assetType ? `
-                ${institutionField}
-                <div class="field-group"><label>Identifier</label><input placeholder="Account, phone, or voucher number" inputmode="text" autocomplete="off" value="${escapeHtml(row.identifier)}" oninput="hookRows.find(r=>r.id===${row.id}).identifier=this.value"></div>
-                ${extraFields}
-                <div class="field-group">
+                ${sourceFields}
+                ${canAuthorize ? `<div class="field-group">
                     <label>Amount to authorize</label>
                     <div class="amount-input-group">
                         <span class="amount-currency">${escapeHtml(row.institution ? (PARTICIPANTS[row.institution]?.limits?.currency || 'BWP') : 'BWP')}</span>
                         <input type="number" inputmode="decimal" min="0.01" step="0.01" placeholder="0.00" value="${row.amount}" oninput="hookRows.find(r=>r.id===${row.id}).amount=this.value">
                     </div>
                     <div class="help">Held for 24 hours, or until spent — whichever comes first.</div>
-                </div>
+                </div>` : ''}
             ` : ''}
         </div>`;
     }).join('');

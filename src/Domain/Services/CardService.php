@@ -15,6 +15,7 @@ use Domain\Helpers\CardHelper;
 use Domain\Services\FeeService;
 use Domain\Services\ForexService;
 use Domain\Services\SwapService;
+use Domain\Services\SourceOwnershipGuard;
 use Domain\Services\Settlement\HybridSettlementStrategy;
 use Domain\Services\ContributionCalculator;
 use Infrastructure\Cards\CardNumberGenerator;
@@ -1658,6 +1659,17 @@ public function regenerateTotpSecret(string $cardSuffix, int $userId): array
                 throw new RuntimeException("Source institution is required to activate.");
             }
 
+            // The fee comes out of a source the card owner has proved is
+            // theirs (SourceOwnershipGuard), under the identifier they
+            // verified - not whatever account number the request named.
+            $owned = SourceOwnershipGuard::forCountry($this->db, $this->config)->assertOwned($userId, [
+                'institution' => $institution,
+                'identifier' => $sourcePayload['source_identifier'] ?? $sourcePayload['identifier'] ?? '',
+                'asset_type' => $sourcePayload['asset_type'] ?? null,
+            ] + array_intersect_key($sourcePayload, array_flip(['pin', 'wallet_pin', 'voucher_pin'])));
+            $sourcePayload = SourceOwnershipGuard::withoutInternalKeys($sourcePayload);
+            $sourcePayload['source_identifier'] = $owned['identifier'];
+
             $reference = 'CARD_ACTIVATE_' . $cardSuffix . '_' . time();
             $swapService->setCurrentSwapReference($reference);
             $verifyPayload = array_merge($sourcePayload, [
@@ -2091,14 +2103,14 @@ public function releaseHookSource(
      * hook itself fails - "hook successful" always means every source
      * is genuinely held, never a partial state.
      * 
-     * CONSENT GATE: Any source owned by someone OTHER than the card owner
-     * must already exist as an active linked/consented source in either
-     * source_accounts (OAuth-linked) or user_source_accounts
-     * (manually-added/verified) - the same two tables /user/sources.php
-     * merges into "My Sources". This endpoint never trusts
-     * owner_user_id + credentials from the request body alone as proof
-     * of consent. The consent check runs as its own pass BEFORE any
-     * holds are placed, so a consent failure costs nothing (no rollback needed).
+     * OWNERSHIP GATE: every source must be one the person hooking has
+     * proved is theirs - an active, ownership-verified source in
+     * user_source_accounts or source_accounts, a wallet on their own
+     * verified phone, or a voucher with its PIN (SourceOwnershipGuard).
+     * The owner of each hooked source is always $requestingUserId, the
+     * signed-in user, never an owner_user_id from the request body. The
+     * gate runs as its own pass BEFORE any holds are placed, so a refusal
+     * costs nothing (no rollback needed).
      *
      * SCHEMA FIX: Uses lifecycle_status (not status)
      */
@@ -2106,7 +2118,7 @@ public function releaseHookSource(
     string $cardSuffix,
     array $sources,
     SwapService $swapService,
-    int $cardOwnerUserId
+    int $requestingUserId
 ): array {
     // ============================================================
     // FIX: GUARD - Check card status BEFORE any holds are placed
@@ -2172,47 +2184,37 @@ public function releaseHookSource(
         }
 
         // ============================================================
-        // CONSENT GATE - runs BEFORE any holds are placed
+        // OWNERSHIP GATE - runs BEFORE any holds are placed
+        //
+        // This used to check only that the source's CLAIMED owner (an
+        // owner_user_id from the request body, defaulting to the card's
+        // owner) had SOME active source at the institution - never the
+        // account number itself - and skipped even that whenever the
+        // claimed owner was the card's owner. So any account number, made
+        // up or someone else's, could be held on your own card, and
+        // anyone could claim a stranger's account was the card owner's.
+        //
+        // Now each source must be one the signed-in user has proved is
+        // theirs, and it is hooked under the identifier they verified.
         // ============================================================
-        foreach ($sources as $source) {
-            $sourceOwnerId = (int)($source['owner_user_id'] ?? $cardOwnerUserId);
-
-            if ($sourceOwnerId !== $cardOwnerUserId) {
-                // A user's "My Sources" list (see /user/sources.php) merges two
-                // tables - manually-added/verified sources in user_source_accounts,
-                // and OAuth-linked sources in source_accounts - and the hook form
-                // lets either kind be picked without telling us which one it was.
-                // So consent has to be checked against both; requiring only one
-                // would reject a real, already-verified source that just happens
-                // to live in the other table.
-                $consentStmt = $this->db->prepare("
-                    SELECT 1 FROM source_accounts
-                    WHERE user_id = :owner_id_a
-                      AND institution = :institution_a
-                      AND status = 'active'
-                    UNION ALL
-                    SELECT 1 FROM user_source_accounts
-                    WHERE user_id = :owner_id_b
-                      AND institution = :institution_b
-                      AND status = 'active'
-                      AND deleted_at IS NULL
-                    LIMIT 1
-                ");
-                $consentStmt->execute([
-                    ':owner_id_a' => $sourceOwnerId,
-                    ':institution_a' => $source['institution'],
-                    ':owner_id_b' => $sourceOwnerId,
-                    ':institution_b' => $source['institution'],
-                ]);
-
-                if (!$consentStmt->fetchColumn()) {
-                    throw new RuntimeException(
-                        "Source owned by user {$sourceOwnerId} at {$source['institution']} " .
-                        "has not consented to be linked - reject rather than hold blind. " .
-                        "The source owner must complete source-linking consent before this card can hook their funds."
-                    );
-                }
+        $ownershipGuard = SourceOwnershipGuard::forCountry($this->db, $this->config);
+        foreach ($sources as $i => $source) {
+            $source = SourceOwnershipGuard::withoutInternalKeys($source);
+            if (isset($source['owner_user_id']) && (int)$source['owner_user_id'] !== $requestingUserId) {
+                throw new RuntimeException(
+                    "You can only hook your own sources. The owner of that account has to hook it to this card themselves."
+                );
             }
+            $owned = $ownershipGuard->assertOwned($requestingUserId, [
+                'institution' => $source['institution'] ?? '',
+                'identifier' => $source['identifier'] ?? $source['source_identifier'] ?? '',
+                'asset_type' => $source['asset_type'] ?? null,
+            ] + array_intersect_key($source, array_flip(['pin', 'wallet_pin', 'voucher_pin'])));
+
+            $source['identifier'] = $owned['identifier'];
+            $source['source_identifier'] = $owned['identifier'];
+            $source['owner_user_id'] = $requestingUserId;
+            $sources[$i] = $source;
         }
 
         $hookReference = 'HOOK_' . bin2hex(random_bytes(8));

@@ -5,6 +5,8 @@ namespace Application\Controllers;
 
 use PDO;
 use Domain\Services\SwapService;
+use Domain\Services\SourceOwnershipGuard;
+use Domain\Services\SourceOwnershipException;
 use Infrastructure\ChannelAdapterFactory;
 use Infrastructure\USSD\Contracts\UssdSessionRequest;
 use Infrastructure\USSD\Contracts\UssdSessionResponse;
@@ -38,6 +40,24 @@ class USSDController
     }
 
     /**
+     * Whether a request to the USSD webhook came from our USSD gateway.
+     *
+     * On this channel the caller's phone number IS their identity, and only
+     * the gateway can vouch for it: anyone else can post any phoneNumber
+     * they like. The gateway's callback URL carries a shared secret
+     * (?key=..., or an X-USSD-Gateway-Secret header), compared in constant
+     * time. With no USSD_GATEWAY_SECRET configured nothing is accepted -
+     * an unauthenticated USSD webhook would let anyone act as any phone.
+     */
+    public static function isFromGateway(array $server, array $query, ?string $configuredSecret): bool
+    {
+        $secret = (string)($configuredSecret ?? '');
+        $provided = $server['HTTP_X_USSD_GATEWAY_SECRET'] ?? $query['key'] ?? '';
+
+        return $secret !== '' && is_string($provided) && $provided !== '' && hash_equals($secret, $provided);
+    }
+
+    /**
      * Entrypoint goes through the gateway adapter instead of hand-parsing
      * sessionId/phoneNumber/text directly - swap the gatewayKey and any
      * USSD aggregator works without touching this class again.
@@ -59,6 +79,11 @@ class USSDController
         $this->participants = $this->config['participants'] ?? [];
     }
 
+    private function ownershipGuard(): SourceOwnershipGuard
+    {
+        return SourceOwnershipGuard::forCountry($this->db, $this->config);
+    }
+
     /**
      * Menu state machine. USSD gateways replay the full input string on
      * every request (e.g. "1*2*500"), but we track progress via an
@@ -73,10 +98,26 @@ class USSDController
 
         if ($levels === []) {
             $this->clearSession($sessionId);
+            // The caller has to be a VouchMorph customer whose verified phone
+            // this is: every source they pay from is checked against that
+            // customer's own verified sources. user_id used to be the raw
+            // phone string, and was never checked against anything.
+            $userId = $this->ownershipGuard()->userIdForPhone($req->phoneNumber);
+            if ($userId === null) {
+                return UssdSessionResponse::end('This number is not registered with VouchMorph. Register in the VouchMorph app first.');
+            }
             $this->setSession($sessionId, 'stage', 'main_menu');
+            $this->setSession($sessionId, 'msisdn', $req->phoneNumber);
             $this->setSession($sessionId, 'source_phone', $req->phoneNumber);
-            $this->setSession($sessionId, 'user_id', $req->phoneNumber);
+            $this->setSession($sessionId, 'user_id', (string)$userId);
             return UssdSessionResponse::continue($this->showMainMenu());
+        }
+
+        // A session belongs to the phone that opened it. A later request
+        // naming the same session id from another phone is not that caller.
+        if ($this->getSession($sessionId, 'msisdn') !== $req->phoneNumber) {
+            $this->clearSession($sessionId);
+            return UssdSessionResponse::end('Session expired. Please try again.');
         }
 
         $stage = $this->getSession($sessionId, 'stage') ?? 'main_menu';
@@ -282,7 +323,7 @@ class USSDController
         $destinationInstitution = (string)$this->getSession($sessionId, 'destination_institution');
         $deliveryMode           = (string)$this->getSession($sessionId, 'delivery_mode'); // 'cashout'|'deposit'
         $sourcePhone            = (string)$this->getSession($sessionId, 'source_phone');
-        $userId                 = (string)$this->getSession($sessionId, 'user_id');
+        $userId                 = (int)$this->getSession($sessionId, 'user_id');
 
         // Real SwapService reads: from_institution/source_institution, to_institution/destination_institution,
         // asset_type, source_identifier, amount, currency, swap_type, delivery_method,
@@ -293,7 +334,14 @@ class USSDController
             'source_institution' => $sourceInstitution,
             'to_institution' => $destinationInstitution,
             'destination_institution' => $destinationInstitution,
-            'asset_type' => strtoupper($sourceType === 'account' ? 'ACCOUNT' : 'WALLET'),
+            // Vouchers used to go out as WALLET, so the issuer was asked for
+            // a wallet by a voucher number.
+            'asset_type' => match ($sourceType) {
+                'account' => 'ACCOUNT',
+                'voucher' => 'VOUCHER',
+                default => 'WALLET',
+            },
+            'user_id' => $userId,
             'amount' => $amount,
             'currency' => 'BWP',
             'delivery_method' => strtoupper($deliveryMode === 'cashout' ? 'ATM' : 'DEPOSIT'),
@@ -315,6 +363,9 @@ class USSDController
             if ($pin !== null && $pin !== '') {
                 $payload['pin'] = $pin;
                 $payload['wallet_pin'] = $pin;
+                if ($pinField === 'voucher_pin') {
+                    $payload['voucher_pin'] = $pin;
+                }
                 break;
             }
         }
@@ -325,6 +376,17 @@ class USSDController
         } else {
             $payload['destination_identifier'] = (string)$this->getSession($sessionId, 'beneficiary_account');
             $payload['destination_identifier_type'] = 'account';
+        }
+
+        // The account or wallet typed in has to be one of the caller's own
+        // verified sources (a wallet on their own verified number counts),
+        // or a voucher with its PIN. It used to be sent to the institution
+        // as typed, whoever it belonged to.
+        try {
+            $payload = $this->ownershipGuard()->securePayload($userId, $payload);
+        } catch (SourceOwnershipException $e) {
+            $this->clearSession($sessionId);
+            return UssdSessionResponse::end($this->truncateForUssd($e->getMessage(), 160));
         }
 
         try {

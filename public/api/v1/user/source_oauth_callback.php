@@ -41,7 +41,7 @@ try {
     // ============================================================
     SessionManager::start();
     
-    if (!SessionManager::isLoggedIn()) {
+    if (!SessionManager::isLoggedIn() || !SessionManager::isUser()) {
         throw new RuntimeException("You must be logged in to complete source registration.");
     }
     
@@ -74,8 +74,8 @@ try {
     
     $swapService = new SwapService($db, $config, $country);
     
-    // Complete registration
-    $result = $swapService->completeUserSourceRegistrationByState($state, $code);
+    // Complete registration - only the attempt this signed-in user started.
+    $result = $swapService->completeUserSourceRegistrationByState((string)$state, (string)$code, (int)$userId);
     
     // Return success page
     ?>

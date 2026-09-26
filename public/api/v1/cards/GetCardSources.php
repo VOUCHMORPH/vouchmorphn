@@ -41,12 +41,13 @@ require_once ROOT_PATH . '/src/Application/Utils/SessionManager.php';
 use Application\Utils\SessionManager;
 
 SessionManager::start();
-error_log("[GetCardSources] cookie=" . json_encode($_COOKIE) . " session_id=" . session_id());
-if (!SessionManager::isLoggedIn()) {
+// (This used to write the request's cookies - the session id - to the log.)
+if (!SessionManager::isLoggedIn() || !SessionManager::isUser()) {
     http_response_code(401);
     echo json_encode(['success' => false, 'error' => 'Not logged in']);
     exit();
 }
+$viewerUserId = (int)(SessionManager::getUser()['user_id'] ?? 0);
 
 
 $input = json_decode(file_get_contents('php://input'), true);
@@ -70,7 +71,7 @@ try {
     // inactive row must not be allowed to block resolution of a card
     // that really is active.
     $cardStmt = $db->prepare("
-        SELECT card_suffix, card_scheme, cardholder_name, lifecycle_status, currency
+        SELECT card_suffix, card_scheme, cardholder_name, lifecycle_status, currency, user_id
         FROM message_cards WHERE card_suffix = :suffix AND lifecycle_status = 'ACTIVE'
     ");
     $cardStmt->execute([':suffix' => $cardSuffix]);
@@ -117,6 +118,19 @@ try {
     $sourceStmt->execute([':suffix' => $cardSuffix, ':suffix2' => $cardSuffix]);
     $hookedRows = $sourceStmt->fetchAll(PDO::FETCH_ASSOC);
 
+    // Only the card's owner, or someone with a source of their own on it,
+    // sees what is hooked - and a contributor sees the other contributors'
+    // sources masked, without their live balances. This used to answer any
+    // signed-in user for any card suffix with every contributor's full
+    // account number, user id and live balance.
+    $viewerIsOwner = $viewerUserId > 0 && (int)$card['user_id'] === $viewerUserId;
+    $viewerIsContributor = in_array($viewerUserId, array_map('intval', array_column($hookedRows, 'owner_user_id')), true);
+    if (!$viewerIsOwner && !$viewerIsContributor) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'error' => "You can only see the sources on your own card, or on a card you've hooked a source to."]);
+        exit();
+    }
+
     if (empty($hookedRows)) {
         http_response_code(400);
         echo json_encode([
@@ -138,6 +152,19 @@ try {
         if (strtoupper($row['institution']) === 'VOUCHMORPH' || $row['asset_type'] === 'VOUCHMORPH_CARD') {
             $skippedCardSources++;
             error_log("[GetCardSources] Skipped a card-as-source hook on {$cardSuffix} — should not exist, hookSourcesToCard() should have blocked it at creation.");
+            continue;
+        }
+
+        $isViewersOwn = (int)$row['owner_user_id'] === $viewerUserId;
+        if (!$viewerIsOwner && !$isViewersOwn) {
+            $sources[] = [
+                'institution' => $row['institution'],
+                'asset_type' => $row['asset_type'],
+                'identifier' => \Domain\Services\SourceOwnershipGuard::mask((string)$row['identifier']),
+                'owner_user_id' => null,
+                'authorized_amount' => (float)$row['authorized_amount'],
+                'available_balance' => round((float)$row['authorized_amount'], 2),
+            ];
             continue;
         }
 

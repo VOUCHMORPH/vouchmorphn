@@ -32,7 +32,7 @@ require_once ROOT_PATH . '/src/Application/Utils/SessionManager.php';
 use Application\Utils\SessionManager;
 
 SessionManager::start();
-if (!SessionManager::isLoggedIn()) {
+if (!SessionManager::isLoggedIn() || !SessionManager::isUser()) {
     http_response_code(401);
     echo json_encode(['success' => false, 'error' => 'Not logged in']);
     exit();
@@ -40,11 +40,27 @@ if (!SessionManager::isLoggedIn()) {
 
 $input = json_decode(file_get_contents('php://input'), true);
 foreach (['institution', 'asset_type', 'identifier'] as $field) {
-    if (empty($input[$field])) {
+    if (!is_array($input) || empty($input[$field]) || !is_scalar($input[$field])) {
         http_response_code(400);
         echo json_encode(['success' => false, 'error' => "{$field} is required"]);
         exit();
     }
+}
+
+// A live balance is only ever shown for the signed-in user's own verified
+// source. This used to look up whatever account number it was given, which
+// let anyone read a stranger's balance one account number at a time.
+try {
+    $owned = \Domain\Services\SourceOwnershipGuard::forCountry($container->get(PDO::class), $container->get('countryConfig'))
+        ->assertOwned((int)(SessionManager::getUser()['user_id'] ?? 0), [
+            'institution' => (string)$input['institution'],
+            'asset_type' => (string)$input['asset_type'],
+            'identifier' => (string)$input['identifier'],
+        ] + array_intersect_key($input, array_flip(['pin', 'wallet_pin', 'voucher_pin'])));
+} catch (\Domain\Services\SourceOwnershipException $e) {
+    http_response_code(403);
+    echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    exit();
 }
 
 try {
@@ -52,9 +68,9 @@ try {
     $feeService = $container->get('Domain\Services\FeeService');
 
     $balance = $swapService->getSourceAvailableBalance([
-        'institution' => $input['institution'],
-        'asset_type' => $input['asset_type'],
-        'identifier' => $input['identifier'],
+        'institution' => $owned['institution'],
+        'asset_type' => (string)$input['asset_type'],
+        'identifier' => $owned['identifier'],
     ]);
 
     $cap = $feeService->getMaxTransactionLimit();
