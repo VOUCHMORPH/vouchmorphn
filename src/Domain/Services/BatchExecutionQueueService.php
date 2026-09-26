@@ -387,6 +387,113 @@ class BatchExecutionQueueService
     }
 
     /**
+     * Recovers jobs a worker claimed and never finished — it crashed, was
+     * redeployed mid-job, or lost its database connection — the way
+     * markFailed() would have had the worker lived to call it: back to
+     * 'pending' for another attempt, or 'permanently_failed' once the job
+     * has used its attempts, which may finish its batch. A job whose
+     * destination already settled (the worker died between paying and
+     * recording it) is completed instead of retried, the same call
+     * processJob() makes for such a destination. stuck_job_recovery.php
+     * and worker.php both call this.
+     *
+     * Only jobs claimed longer ago than the threshold are touched and
+     * locked rows are skipped, so it is safe beside busy workers and from
+     * several processes at once. worker.php restarts claimed_at when it
+     * starts a job and drops a job a recovery took back, so a job waiting
+     * in a worker's claimed set is never run twice.
+     *
+     * @return array<int, array{job_id:int, batch_id:int, claimed_by:?string, age_seconds:int, outcome:string}>
+     */
+    public function recoverStuckJobs(int $thresholdSeconds = 600): array
+    {
+        $recovered = [];
+        $settledJobIds = [];
+
+        $this->db->beginTransaction();
+        try {
+            $stmt = $this->db->prepare("
+                SELECT j.id, j.batch_id, j.destination_id, j.claimed_by, j.attempt_count, j.max_attempts,
+                       EXTRACT(EPOCH FROM (NOW() - j.claimed_at))::int AS age_seconds,
+                       UPPER(COALESCE(d.status, '')) AS destination_status
+                FROM batch_execution_jobs j
+                LEFT JOIN disbursement_destinations d ON d.id = j.destination_id
+                WHERE j.status IN ('claimed', 'processing')
+                  AND j.claimed_at < NOW() - make_interval(secs => :threshold)
+                ORDER BY j.claimed_at
+                FOR UPDATE OF j SKIP LOCKED
+            ");
+            $stmt->bindValue(':threshold', max(1, $thresholdSeconds), PDO::PARAM_INT);
+            $stmt->execute();
+            $stuck = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $settle = $this->db->prepare("
+                UPDATE batch_execution_jobs
+                SET status = 'completed', completed_at = NOW(), claimed_by = NULL, claimed_at = NULL, updated_at = NOW()
+                WHERE id = :id
+            ");
+            $requeue = $this->db->prepare("
+                UPDATE batch_execution_jobs
+                SET status = :status, attempt_count = :attempts, last_error = :error,
+                    claimed_by = NULL, claimed_at = NULL, updated_at = NOW()
+                WHERE id = :id
+            ");
+            $failDestination = $this->db->prepare("
+                UPDATE disbursement_destinations SET status = 'FAILED', error_message = :error
+                WHERE id = :id AND UPPER(COALESCE(status, '')) NOT IN ('SUCCESS', 'COMPLETED', 'PENDING_IDENTITY_CONFIRMATION')
+            ");
+
+            foreach ($stuck as $job) {
+                $who = $job['claimed_by'] ?? 'unknown worker';
+                if (in_array($job['destination_status'], ['SUCCESS', 'COMPLETED', 'PENDING_IDENTITY_CONFIRMATION'], true)) {
+                    $settle->execute([':id' => $job['id']]);
+                    $outcome = 'completed';
+                    $settledJobIds[] = (int)$job['id'];
+                } else {
+                    $attempts = (int)$job['attempt_count'] + 1;
+                    $isFinal = $attempts >= (int)$job['max_attempts'];
+                    $error = "Worker {$who} stopped without finishing this job ({$job['age_seconds']}s since it was claimed).";
+                    $requeue->execute([
+                        ':status' => $isFinal ? 'permanently_failed' : 'pending',
+                        ':attempts' => $attempts,
+                        ':error' => $error,
+                        ':id' => $job['id'],
+                    ]);
+                    $outcome = $isFinal ? 'permanently_failed' : 'pending';
+                    if ($isFinal) {
+                        // Whether the payment reached the institution before
+                        // the worker stopped is unknown: say so, not "rejected".
+                        $failDestination->execute([
+                            ':error' => $error . ' Out of attempts - confirm with the institution whether it was paid before retrying.',
+                            ':id' => $job['destination_id'],
+                        ]);
+                        $settledJobIds[] = (int)$job['id'];
+                    }
+                }
+                $recovered[] = [
+                    'job_id' => (int)$job['id'],
+                    'batch_id' => (int)$job['batch_id'],
+                    'claimed_by' => $job['claimed_by'],
+                    'age_seconds' => (int)$job['age_seconds'],
+                    'outcome' => $outcome,
+                ];
+            }
+
+            $this->db->commit();
+        } catch (\Throwable $e) {
+            $this->db->rollBack();
+            throw $e;
+        }
+
+        // A job that just settled may have been its batch's last open one.
+        foreach ($settledJobIds as $jobId) {
+            $this->maybeFinalizeBatch($jobId);
+        }
+
+        return $recovered;
+    }
+
+    /**
      * Requeues every permanently_failed job in a batch back to pending
      * with attempt_count reset to 0 — for after a human has looked at
      * the reconciliation report and fixed whatever was wrong (e.g.
