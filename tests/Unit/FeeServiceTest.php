@@ -60,7 +60,10 @@ class FeeServiceTest extends TestCase
         $this->assertSame(1.00, $result['swap_levy']);
         $this->assertSame(9.00, $result['distribution']['net_distributable_pool']);
         $this->assertSame(3.15, $result['distribution']['platform']['amount']);
-        $this->assertSame(1.35, $result['distribution']['source_institution']['amount']);
+        // Section 23 Rev. 2 (fees.json, 2026-09-21): the source's former 15%
+        // is now 13% to the source plus a 2% settlement fee.
+        $this->assertSame(1.17, $result['distribution']['source_institution']['amount']);
+        $this->assertSame(0.18, $result['distribution']['settlement']['amount']);
         $this->assertSame(4.50, $result['distribution']['destination_institution']['amount']);
     }
 
@@ -73,24 +76,29 @@ class FeeServiceTest extends TestCase
         $this->assertSame(1.00, $result['swap_levy']);
         $this->assertSame(5.00, $result['distribution']['net_distributable_pool']);
         $this->assertSame(1.75, $result['distribution']['platform']['amount']);
-        $this->assertSame(0.75, $result['distribution']['source_institution']['amount']);
+        $this->assertSame(0.65, $result['distribution']['source_institution']['amount']);
+        $this->assertSame(0.10, $result['distribution']['settlement']['amount']);
         $this->assertSame(2.50, $result['distribution']['destination_institution']['amount']);
     }
 
-    public function testCashoutDestinationRevenueEarnedEntirelyAtRedemption(): void
+    public function testCashoutDestinationShareSplitsBetweenCodeIssueAndCashDispensed(): void
     {
         $feeService = $this->makeFeeService();
         $result = $feeService->calculateFees('CASHOUT', 500.00, ['currency' => 'BWP']);
 
+        // Section 23 Rev. 2 (fees.json, 2026-09-21) replaced the 2026-09-15
+        // 0/100 setting: 10% of the destination's share is earned when the
+        // redemption code is issued, 90% when the cash is dispensed.
         $destSplit = $result['destination_split'];
         $this->assertNotNull($destSplit, 'CASHOUT must still carry a destination_split block');
-        $this->assertSame(0, $destSplit['generate_code_fee_percent'], 'No Fd is earned at code generation per spec §6');
-        $this->assertSame(0.0, $destSplit['generate_code_fee']);
-        $this->assertSame(100, $destSplit['cashout_fee_percent']);
+        $this->assertSame(10, $destSplit['generate_code_fee_percent']);
+        $this->assertSame(0.45, $destSplit['generate_code_fee']);
+        $this->assertSame(90, $destSplit['cashout_fee_percent']);
+        $this->assertSame(4.05, $destSplit['cashout_completion_fee']);
         $this->assertSame(
             $destSplit['base_share'],
-            $destSplit['cashout_completion_fee'],
-            'All of the destination institution share is earned at redemption'
+            round($destSplit['generate_code_fee'] + $destSplit['cashout_completion_fee'], 2),
+            'The two portions together are the whole destination institution share'
         );
     }
 
