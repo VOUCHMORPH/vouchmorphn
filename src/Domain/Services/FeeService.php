@@ -185,6 +185,17 @@ class FeeService
         ];
     }
     /**
+     * The fees.json array this service was built from (SwapService passes
+     * its country config's 'fees'), for callers that need a configured
+     * amount itself rather than a calculated fee - e.g. the per-source
+     * minimum in CardService::finalizePooledSwipe(), read from the
+     * CASHOUT/DEPOSIT F1 amounts.
+     */
+    public function getFeesConfig(): array
+    {
+        return $this->feeRegistry;
+    }
+    /**
      * Get participant country from participants.yaml
      * Country codes: BW = Botswana, ZA = South Africa, etc.
      */
