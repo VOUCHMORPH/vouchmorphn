@@ -3,7 +3,7 @@
         'name' => 'vouchmorphn/core',
         'pretty_version' => 'dev-main',
         'version' => 'dev-main',
-        'reference' => '5dfff80e164ca193b499984e9b5b1393b100f591',
+        'reference' => '1438e4d63077bb2d8ef5b5f3ab064e77cdd37f41',
         'type' => 'project',
         'install_path' => __DIR__ . '/../../',
         'aliases' => array(),
@@ -153,6 +153,15 @@
             'install_path' => __DIR__ . '/../phar-io/version',
             'aliases' => array(),
             'dev_requirement' => true,
+        ),
+        'phpmailer/phpmailer' => array(
+            'pretty_version' => 'v6.12.0',
+            'version' => '6.12.0.0',
+            'reference' => 'd1ac35d784bf9f5e61b424901d5a014967f15b12',
+            'type' => 'library',
+            'install_path' => __DIR__ . '/../phpmailer/phpmailer',
+            'aliases' => array(),
+            'dev_requirement' => false,
         ),
         'phpoffice/phpspreadsheet' => array(
             'pretty_version' => '1.30.6',
@@ -445,7 +454,7 @@
         'vouchmorphn/core' => array(
             'pretty_version' => 'dev-main',
             'version' => 'dev-main',
-            'reference' => '5dfff80e164ca193b499984e9b5b1393b100f591',
+            'reference' => '1438e4d63077bb2d8ef5b5f3ab064e77cdd37f41',
             'type' => 'project',
             'install_path' => __DIR__ . '/../../',
             'aliases' => array(),
