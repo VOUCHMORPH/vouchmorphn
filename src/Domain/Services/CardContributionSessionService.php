@@ -352,6 +352,12 @@ class CardContributionSessionService
             // the card's own side, not the transaction itself, so a
             // failure here is logged rather than turned into a false
             // "swap failed" for the caller.
+            //
+            // FIX: only what the swap used is spent. Every contributing
+            // source used to be marked DEBITED outright, so hooking P500
+            // and swapping P40 left nothing hooked - the other P460
+            // vanished from the card as if all P500 had been swapped. See
+            // spendFromHookSource().
             // ============================================================
             try {
                 $spentContributors = array_filter($preview['contributors'] ?? [], fn($c) => ($c['amount'] ?? 0) > 0);
@@ -362,20 +368,17 @@ class CardContributionSessionService
 
                     if ($hookId) {
                         foreach ($spentContributors as $c) {
-                            $this->db->prepare("
-                                UPDATE card_pool_hook_sources
-                                SET status = 'DEBITED', debited_amount = :amount, debit_reference = :ref
-                                WHERE id = :id AND status = 'HELD'
-                            ")->execute([
-                                ':amount' => $c['amount'],
-                                ':ref' => $result['reference'] ?? $session['session_reference'],
-                                ':id' => $c['hook_source_id'],
-                            ]);
+                            $this->spendFromHookSource(
+                                (int)$c['hook_source_id'],
+                                (float)$c['amount'],
+                                (string)($result['reference'] ?? $session['session_reference'])
+                            );
                         }
 
                         // Recompute straight from whatever HELD sources
                         // remain (a partial swap leaves some hooked
-                        // sources untouched) — self-correcting, same
+                        // sources untouched, and the rest of any source
+                        // it only partly used) — self-correcting, same
                         // pattern releaseHookSource() already uses.
                         $remainingStmt = $this->db->prepare("
                             SELECT COALESCE(SUM(held_amount), 0) AS total, COUNT(*) AS cnt
@@ -428,6 +431,42 @@ class CardContributionSessionService
 
             throw $e;
         }
+    }
+
+    /**
+     * Takes one swap's contribution off a hooked source. A source that
+     * held more than the swap used stays HELD with the rest (P500 hooked,
+     * P40 swapped: P460 still hooked), under the same hold at its
+     * institution - PoolCoordinator debits only the contribution from
+     * that hold, and the rest is spent by a later swap or released with
+     * the hook, like any other hooked money. A source the swap used up is
+     * DEBITED, as before.
+     *
+     * A swap whose debit is deferred (a cash-out code, a swap to an
+     * identity) still has to debit its share from the same hold later;
+     * CardService::isHoldReservedForPendingSwap() keeps the rest from
+     * being released until it has.
+     */
+    private function spendFromHookSource(int $hookSourceId, float $amount, string $reference): void
+    {
+        $spent = number_format($amount, 2, '.', '');
+
+        $keepRest = $this->db->prepare("
+            UPDATE card_pool_hook_sources
+            SET held_amount = ROUND((held_amount - :spent)::numeric, 2)
+            WHERE id = :id AND status = 'HELD'
+              AND ROUND((held_amount - :spent_check)::numeric, 2) > 0
+        ");
+        $keepRest->execute([':spent' => $spent, ':id' => $hookSourceId, ':spent_check' => $spent]);
+        if ($keepRest->rowCount() > 0) {
+            return;
+        }
+
+        $this->db->prepare("
+            UPDATE card_pool_hook_sources
+            SET status = 'DEBITED', debited_amount = :amount, debit_reference = :ref
+            WHERE id = :id AND status = 'HELD'
+        ")->execute([':amount' => $spent, ':ref' => $reference, ':id' => $hookSourceId]);
     }
 
     // ============================================================

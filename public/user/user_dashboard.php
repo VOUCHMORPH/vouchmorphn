@@ -3387,6 +3387,12 @@ console.log('[DEBUG] toInst:', wizardState.toInst);
     const journeyData = Journey.recordSwap({ swap_type: wizardState.destType, amount: wizardState.amount, currency: wizardState.currency, to_institution: wizardState.toInst }, { preview: { amount_requested: wizardState.amount, source_currency: wizardState.currency } });
     renderRepeatCard(); renderProgressCard();
     showWizardResultModal({ data: { reference: execResult.body.data.swap_reference, amount: wizardState.amount } }, journeyData);
+
+    // Only the swapped amount left the card; whatever else was hooked stays
+    // hooked. Reload it so the next swap starts from what's really left
+    // instead of the list cached before this one.
+    vmCardSources = null;
+    loadVmCardSources();
 }
     
 function dedupeVmCardSources(sources) {
@@ -4261,7 +4267,7 @@ async function executeUnhook() {
     const result = await callApi(CONFIG.API_BASE + '/api/v1/cards/unhook.php', { hook_reference: hookReference, card_suffix: cardSuffix });
     if (!result.ok) { showMessage('Couldn\'t unhook: ' + friendlyApiError(result.error), 'error'); return; }
     const data = result.body || {};
-    if (data.status === 'UNHOOK_PARTIAL') showMessage('Some sources released — others could not be released automatically and remain held. See Help for what to do next.', 'warning');
+    if (data.status === 'UNHOOK_PARTIAL') showMessage(data.message || 'Some sources released — others could not be released automatically and remain held. See Help for what to do next.', 'warning');
     else showMessage('All hooked sources released. 🎉', 'success');
     goBack();
     loadCardView();

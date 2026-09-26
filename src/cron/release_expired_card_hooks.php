@@ -14,7 +14,10 @@ declare(strict_types=1);
  * UNHOOKED. If an institution refuses or reports it already released the
  * hold itself, that source stays HELD and the pool becomes UNHOOK_PARTIAL;
  * the incident monitor raises an alarm so someone confirms it with the
- * institution.
+ * institution. A source whose hold still carries the share of a card swap
+ * that hasn't finished (a cash-out code not collected yet) also stays HELD
+ * on an UNHOOK_PARTIAL pool, without an alarm, and is released by the second
+ * pass once that swap is done.
  *
  * Runs every 5 minutes from scripts/run_scheduled_jobs.php.
  */
@@ -70,7 +73,14 @@ $partial = $db->query("
     ORDER BY h.id
     LIMIT 300
 ")->fetchAll(PDO::FETCH_ASSOC);
+$stats['partial_waiting_on_swap'] = 0;
 foreach ($partial as $src) {
+    // Still carries the share of a card swap that hasn't finished (see
+    // CardService::isHoldReservedForPendingSwap()); asked again next run.
+    if ($cardService->isHoldReservedForPendingSwap($src['hold_reference'])) {
+        $stats['partial_waiting_on_swap']++;
+        continue;
+    }
     $stats['partial_retried']++;
     try {
         $r = $swapService->releaseHold(['institution' => $src['institution'], 'asset_type' => $src['asset_type']], $src['institution'], null, $src['hold_reference']);
