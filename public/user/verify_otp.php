@@ -12,6 +12,7 @@ define('PROJECT_ROOT', dirname(__DIR__, 2));
 // ============================================================
 // Load required files
 // ============================================================
+require_once PROJECT_ROOT . '/vendor/autoload.php';
 require_once PROJECT_ROOT . '/src/Core/Config/LoadCountry.php';
 require_once PROJECT_ROOT . '/src/Application/Utils/SessionManager.php';
 require_once PROJECT_ROOT . '/src/Core/Database/DBConnection.php';
@@ -21,7 +22,10 @@ require_once PROJECT_ROOT . '/src/Domain/Identity/IdentifierNormalizer.php';
 
 use Application\Utils\SessionManager;
 use Core\Database\DBConnection;
+use Domain\Identity\AccountEmail;
 use Domain\Identity\IdentifierNormalizer;
+use Domain\Identity\SignInSchema;
+use Domain\Identity\UsernameGenerator;
 
 // Start session
 SessionManager::start();
@@ -190,26 +194,38 @@ try {
     $stmt = $db->prepare("UPDATE otp_logs SET used_at = NOW() WHERE otp_id = :otp_id");
     $stmt->execute([':otp_id' => $otpRecord['otp_id']]);
 
+    // Asked before the transaction: a schema lookup that failed inside it
+    // would abort the whole Postgres transaction.
+    $hasEmailVerifiedAt = SignInSchema::hasEmailVerifiedAt($db);
+    // The code just checked went to this address, so it is verified.
+    $emailWasVerified = ($tempData['otp_channel'] ?? null) === 'email' && !empty($tempData['email']);
+
     // Begin transaction for user creation
     $db->beginTransaction();
 
     try {
         error_log("VERIFY OTP: Creating user...");
 
-        // Check if user already exists based on phone only
-        $stmt = $db->prepare("
-            SELECT user_id FROM users 
-            WHERE phone = :phone
-            LIMIT 1
-        ");
-        $stmt->execute([
-            ':phone' => $tempData['phone_number'] ?? null
-        ]);
-        
-        if ($stmt->fetch()) {
+        // register.php checked for an existing account before sending the
+        // code; check again here, by phone and by email, in case one was
+        // created in the minutes since.
+        $existing = false;
+        if (!empty($tempData['phone_number'])) {
+            $stmt = $db->prepare("SELECT user_id FROM users WHERE phone = :phone LIMIT 1");
+            $stmt->execute([':phone' => $tempData['phone_number']]);
+            $existing = (bool)$stmt->fetch();
+        }
+        if (!$existing && !empty($tempData['email'])) {
+            $stmt = $db->prepare("SELECT user_id FROM users WHERE lower(email) = :email LIMIT 1");
+            $stmt->execute([':email' => IdentifierNormalizer::canonicalEmail($tempData['email'])]);
+            $existing = (bool)$stmt->fetch();
+        }
+
+        if ($existing) {
             $db->rollBack();
-            error_log("VERIFY OTP: User already exists with phone: " . ($tempData['phone_number'] ?? 'null'));
-            echo json_encode(['success' => false, 'message' => 'User already exists. Please login.']);
+            error_log("VERIFY OTP: Account already exists for phone " . ($tempData['phone_number'] ?? 'null') . " / email " . ($tempData['email'] ?? 'null'));
+            $what = ($tempData['identifier_type'] ?? '') === 'email' ? 'email' : 'phone number';
+            echo json_encode(['success' => false, 'message' => "This {$what} is already registered. Please sign in instead."]);
             exit;
         }
 
@@ -252,6 +268,12 @@ try {
                 if ($stmt->fetchColumn() > 0) {
                     $username .= rand(100, 999);
                 }
+            } elseif (!empty($tempData['email']) && !AccountEmail::isPlaceholder($tempData['email'])) {
+                // Email sign-ups have no phone: this used to fall through
+                // to the digits of the email address ("jane@example.com"
+                // -> "user_"). The part before the @ instead: "jane",
+                // then "jane2", "jane3"... when taken.
+                $username = UsernameGenerator::forEmail($db, $tempData['email']);
             } else {
                 // Use phone as fallback
                 $username = 'user_' . preg_replace('/[^0-9]/', '', $phoneNumber);
@@ -285,6 +307,10 @@ try {
         // ============================================================
         // Create the user with correct column names matching your table
         // ============================================================
+        // email_verified_at only when the code went to the email (it is
+        // what lets that address sign in), and only once the column exists
+        // (database/migrations/2026_09_27_email_sign_in.sql).
+        $markEmailVerified = $emailWasVerified && $hasEmailVerifiedAt;
         $stmt = $db->prepare("
             INSERT INTO users (
                 username,
@@ -299,7 +325,8 @@ try {
                 full_name,
                 phone2,
                 phone3,
-                registration_channel
+                registration_channel" . ($markEmailVerified ? ",
+                email_verified_at" : "") . "
             ) VALUES (
                 :username,
                 :email,
@@ -313,7 +340,8 @@ try {
                 :full_name,
                 :phone2,
                 :phone3,
-                'self'
+                'self'" . ($markEmailVerified ? ",
+                NOW()" : "") . "
             )
         ");
 
@@ -375,14 +403,30 @@ try {
         ]);
 
     } catch (Throwable $e) {
-        $db->rollBack();
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
         error_log("VERIFY OTP USER CREATION ERROR: " . $e->getMessage());
         error_log("VERIFY OTP USER CREATION ERROR Trace: " . $e->getTraceAsString());
-        echo json_encode(['success' => false, 'message' => 'Failed to create account: ' . $e->getMessage()]);
+
+        // The database's own error text used to go straight back to the
+        // person signing up. Log it; tell them what they can do.
+        $sqlState = $e instanceof PDOException ? (string)$e->getCode() : '';
+        if ($sqlState === '23505') {
+            $message = 'This account is already registered. Please sign in instead.';
+        } elseif ($sqlState === '23502' && empty($tempData['phone_number'])) {
+            // users.phone still NOT NULL: 2026_09_27_email_sign_in.sql
+            // (/admin/run_sign_in_migrations.php) has not been applied.
+            error_log("VERIFY OTP: email sign-up refused by users.phone NOT NULL — apply database/migrations/2026_09_27_email_sign_in.sql");
+            $message = "Signing up with email isn't available just yet. Please sign up with your phone number, or try again later.";
+        } else {
+            $message = "We couldn't create your account right now. Please try again.";
+        }
+        echo json_encode(['success' => false, 'message' => $message]);
     }
 
 } catch (Throwable $e) {
     error_log("VERIFY OTP ERROR: " . $e->getMessage());
     error_log("VERIFY OTP ERROR Trace: " . $e->getTraceAsString());
-    echo json_encode(['success' => false, 'message' => 'System error: ' . $e->getMessage()]);
+    echo json_encode(['success' => false, 'message' => 'Something went wrong. Please try again.']);
 }

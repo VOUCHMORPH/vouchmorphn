@@ -7,6 +7,9 @@ require_once __DIR__ . '/../../src/Infrastructure/Credentials/CredentialsReposit
 
 use Application\Utils\SessionManager;
 use Core\Database\DBConnection;
+use Domain\Identity\AccountEmail;
+use Domain\Identity\ContactVerificationService;
+use Domain\Identity\SignInSchema;
 use Infrastructure\Credentials\CredentialsRepository;
 
 header('Content-Type: application/json');
@@ -42,6 +45,18 @@ try {
     $roleName = $row['role_name'] ?? 'user';
     $permissions = $row['permissions'] ? json_decode($row['permissions'], true) : [];
 
+    // What the dashboard's "add your email" / "add your phone" banners go
+    // by. A phone sign-up's made-up address never counts as verified
+    // (Domain\Identity\AccountEmail).
+    $hasEmailVerifiedAt = SignInSchema::hasEmailVerifiedAt($db);
+    $stmt = $db->prepare(
+        "SELECT email, phone" . ($hasEmailVerifiedAt ? ", email_verified_at" : "") . " FROM users WHERE user_id = :id"
+    );
+    $stmt->execute([':id' => $userId]);
+    $contact = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+    $emailVerified = AccountEmail::isVerified($contact, $hasEmailVerifiedAt);
+    $hasPhone = trim((string)($contact['phone'] ?? '')) !== '';
+
     // The transaction PIN lives in the separate credentials database. If
     // that's unreachable, report "unknown" (null) instead of failing the
     // whole response: role and permissions still drive the dashboard.
@@ -60,6 +75,10 @@ try {
         'is_admin' => in_array($roleName, ['admin', 'super_admin'], true),
         'has_pin' => $hasPin,
         'permissions' => $permissions,
+        'email_verified' => $emailVerified,
+        'email_masked' => $emailVerified ? AccountEmail::mask((string)$contact['email']) : null,
+        'has_phone' => $hasPhone,
+        'phone_masked' => $hasPhone ? ContactVerificationService::maskPhone((string)$contact['phone']) : null,
     ]);
 
 } catch (Exception $e) {

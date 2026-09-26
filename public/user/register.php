@@ -303,8 +303,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $inputValue        = trim($_POST['identifier'] ?? '');
         $fullName          = trim($_POST['full_name'] ?? '');
         $dateOfBirth       = trim($_POST['date_of_birth'] ?? '');
-        $phone2            = trim($_POST['phone2'] ?? '');
-        $phone3            = trim($_POST['phone3'] ?? '');
+        // Extra numbers are a Phone-tab option only (they are never sent a
+        // code); an email sign-up ignores them even if a client sends them.
+        $phone2            = $inputType === 'phone' ? trim($_POST['phone2'] ?? '') : '';
+        $phone3            = $inputType === 'phone' ? trim($_POST['phone3'] ?? '') : '';
         $pin               = trim($_POST['pin'] ?? '');
         $pinConfirm        = trim($_POST['pin_confirm'] ?? '');
         $contactChannel    = $_POST['contact_channel'] ?? null;
@@ -860,7 +862,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <input type="password" id="pin_confirm" class="form-control pin-input" maxlength="6" inputmode="numeric" placeholder="••••••" autocomplete="new-password">
             </div>
 
-            <div class="form-group">
+            <!-- Phone tab only: these numbers are never sent a code, so an
+                 email sign-up (which should end with only verified ways
+                 in) doesn't offer them. -->
+            <div class="form-group" id="additional-phones-group">
                 <label style="cursor:pointer;" onclick="toggleAdditionalPhones()">
                     📞 <span id="additionalPhonesToggle">Add Additional Phone Numbers (Optional)</span>
                 </label>
@@ -942,6 +947,8 @@ function updateFormForIdentifierType(type) {
     const fullnameGroup = document.getElementById('fullname-group');
     const dobGroup = document.getElementById('dob-group');
     const contactGroup = document.getElementById('contactChannelGroup');
+
+    document.getElementById('additional-phones-group').style.display = type === 'email' ? 'none' : '';
 
     if (type === 'phone') {
         labelEl.textContent = 'PRIMARY PHONE NUMBER';
@@ -1066,8 +1073,10 @@ function sendOTP() {
     formData.append('date_of_birth', dateOfBirth);
     formData.append('pin', pin);
     formData.append('pin_confirm', pinConfirm);
-    if (phone2) formData.append('phone2', phone2);
-    if (phone3) formData.append('phone3', phone3);
+    if (currentIdentifierType === 'phone') {
+        if (phone2) formData.append('phone2', phone2);
+        if (phone3) formData.append('phone3', phone3);
+    }
 
     // Only for ID types (now blocked, but keep for completeness)
     if (!['phone', 'email'].includes(currentIdentifierType)) {

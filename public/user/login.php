@@ -34,8 +34,11 @@ use Core\Config\LoadCountry;
 use Core\Factories\CommunicationFactory;
 use Infrastructure\Email\EmailGatewayClient;
 use Infrastructure\Credentials\CredentialsRepository;
+use Domain\Identity\AccountEmail;
 use Domain\Identity\IdentifierNormalizer;
+use Domain\Identity\SignInSchema;
 use Domain\Identity\UserIdentifierLookup;
+use Security\Auth\LoginPinVerifier;
 // ============================================================
 // SUPER TEST MODE: NO PIN REQUIRED
 // ============================================================
@@ -155,6 +158,9 @@ function maskEmail(string $email): string
 $error = '';
 $identifierType = $_POST['identifier_type'] ?? 'phone';
 $inputValueRaw = trim($_POST['identifier'] ?? '');
+// One answer for "no such account" and "wrong PIN", so the form can't be
+// used to find out which phone numbers and emails have accounts.
+$detailsDontMatch = "Those details don't match our records. Please check and try again.";
 // ================================================================
 // LOGIN: SUPER TEST MODE - NO PIN REQUIRED
 // ================================================================
@@ -198,6 +204,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // numbers ignoring case and punctuation. Nothing in the
             // table is rewritten — the read is what widened.
             // ========================================================
+            $hasEmailVerifiedAt = SignInSchema::hasEmailVerifiedAt($db);
             $user = UserIdentifierLookup::find(
                 $db,
                 $inputValueRaw,
@@ -207,22 +214,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                  national_id, drivers_license, passport,
                  username, full_name, verified,
                  created_at, has_transaction_pin,
-                 role_id'
+                 role_id' . ($hasEmailVerifiedAt ? ', email_verified_at' : '')
             );
-            // Login secrets (password_hash) live in the separate
-            // credentials database, not on this `users` row — fetched
-            // only once we know which user_id we're checking.
-            $userCredential = null;
-            if ($user) {
-                try {
-                    $userCredential = CredentialsRepository::fromEnvironment()->findUserCredentialByUserId((int)$user['user_id']);
-                } catch (\Throwable $e) {
-                    error_log("[USER LOGIN] Credentials DB error: " . $e->getMessage());
-                }
+            // An email signs in only once it has been verified with a
+            // code — never the made-up address a phone-only sign-up is
+            // given. Otherwise it is treated exactly like no account.
+            if ($user && AccountEmail::blocksSignIn($user, $inputValueRaw, $hasEmailVerifiedAt)) {
+                error_log("[USER LOGIN] Unverified email typed for user_id={$user['user_id']} — treated as no match");
+                $user = null;
             }
             error_log("[USER LOGIN SUPER TEST] User found: " . ($user ? 'YES' : 'NO'));
             if (!$user) {
-                $error = "User not found. Please check your identifier.";
+                $error = $detailsDontMatch;
                 error_log("[USER LOGIN SUPER TEST] User not found: {$formattedValue} (raw: {$inputValueRaw})");
             } elseif ((int)$user['verified'] !== 1) {
                 $error = "Account not verified. Please contact support.";
@@ -242,22 +245,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     // any PIN, or none, is accepted.
                     $pinValid = true;
                     error_log("[USER LOGIN SUPER TEST] PIN SKIPPED - any PIN accepted (or no PIN)");
-                } elseif (!empty($userCredential['password_hash']) && password_verify($pin, $userCredential['password_hash'])) {
-                    $pinValid = true;
-                    error_log("[USER LOGIN SUPER TEST] PIN verified successfully");
+                } elseif ($pin === '') {
+                    // Not counted as a wrong PIN: pressing Enter in the
+                    // identifier box submits the form before a PIN is typed.
+                    $error = "Please enter your 6-digit PIN.";
                 } else {
-                    $pinValid = false;
-                    if (TEST_MODE) {
-                        // Unreachable in practice: TEST_MODE and
-                        // SKIP_PIN_VERIFICATION are set from the same
-                        // $isTestEnvironment flag, so if TEST_MODE is
-                        // true the SKIP_PIN_VERIFICATION branch above
-                        // already fired. Left in place defensively —
-                        // does NOT default to allowing login.
-                        error_log("[USER LOGIN SUPER TEST] PIN verification failed but TEST_MODE allows login");
+                    // Login secrets live in the separate credentials
+                    // database. LoginPinVerifier checks the PIN there and
+                    // keeps the lockout: 5 wrong PINs pause sign-in for
+                    // 30 minutes; a correct one resets the count.
+                    try {
+                        $pinCheck = (new LoginPinVerifier(CredentialsRepository::fromEnvironment()))
+                            ->check((int)$user['user_id'], $pin);
+                    } catch (\Throwable $e) {
+                        error_log("[USER LOGIN] Credentials DB error: " . $e->getMessage());
+                        $pinCheck = null;
+                    }
+
+                    if ($pinCheck === null) {
+                        $error = "Sign-in isn't available right now. Please try again shortly.";
+                    } elseif ($pinCheck['result'] === LoginPinVerifier::OK) {
                         $pinValid = true;
+                        error_log("[USER LOGIN SUPER TEST] PIN verified successfully");
+                    } elseif ($pinCheck['result'] === LoginPinVerifier::LOCKED) {
+                        $error = "Too many wrong PINs. For your safety, sign-in is paused for "
+                            . LoginPinVerifier::LOCK_MINUTES . " minutes. Please try again later.";
+                        error_log("[USER LOGIN] Sign-in locked for user_id={$user['user_id']} until {$pinCheck['locked_until']}");
                     } else {
-                        $error = "Invalid PIN. Please try again.";
+                        $error = $detailsDontMatch;
                     }
                 }
 

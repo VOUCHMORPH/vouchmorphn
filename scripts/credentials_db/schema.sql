@@ -24,11 +24,16 @@
 -- that already has these tables.
 -- ============================================================================
 
+-- failed_login_attempts / locked_until: the sign-in lockout, same policy
+-- as admin_credentials below. A database created before they were added
+-- gets them from 2026_09_27_user_login_lockout.sql.
 CREATE TABLE IF NOT EXISTS user_credentials (
-    user_id         BIGINT PRIMARY KEY,           -- = main DB users.user_id
-    password_hash   VARCHAR(255) NOT NULL,
-    created_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    user_id                 BIGINT PRIMARY KEY,   -- = main DB users.user_id
+    password_hash           VARCHAR(255) NOT NULL,
+    failed_login_attempts   INT NOT NULL DEFAULT 0,
+    locked_until            TIMESTAMP WITH TIME ZONE,
+    created_at              TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at              TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS admin_credentials (

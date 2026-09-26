@@ -260,6 +260,13 @@ input[type=number] { -moz-appearance: textfield; }
 
 .message { max-width: var(--max-w); margin: 16px auto 0; padding: 12px 16px; font-size: 13px; display: none; font-weight: 500; }
 .message.show { display: block; }
+/* "Add your email" / "Add your phone" — no close button: they go away
+   only once the email or phone is verified (renderContactBanners). */
+.contact-banner { max-width: var(--max-w); margin: 16px auto 0; padding: 14px 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; background: rgba(184,134,11,0.08); border-left: 3px solid var(--warning); font-size: 13px; color: var(--text); }
+.contact-banner-text strong { display: block; font-size: 14px; margin-bottom: 2px; }
+.contact-banner .btn { flex: 0 0 auto; }
+.contact-verify-error { display: none; margin-bottom: 12px; padding: 10px 12px; font-size: 13px; color: var(--danger); background: rgba(198,40,40,0.06); border-left: 3px solid var(--danger); }
+.contact-verify-error.show { display: block; }
 .message.info { background: var(--accent-soft); border-left: 3px solid var(--accent); color: var(--primary); }
 .message.success { background: rgba(31,138,84,0.08); border-left: 3px solid var(--success); color: var(--success); }
 .message.error { background: rgba(198,40,40,0.08); border-left: 3px solid var(--danger); color: var(--danger); }
@@ -726,6 +733,7 @@ input[type=number] { -moz-appearance: textfield; }
 </header>
 
 <div id="mainMessage" class="message"></div>
+<div id="contactBannerHolder"></div>
 
 <div class="view active" id="hubView">
     <div class="hub-eyebrow">VouchMorph</div>
@@ -6011,6 +6019,7 @@ async function getCurrentUserRole() {
     const result = await callApi(CONFIG.API_BASE + '/user/whoami.php', {});
     SessionUser = (result.ok && result.body) ? result.body : { success: false, role: 'user', is_agent: false, is_admin: false, permissions: [] };
     renderProgressCard();
+    renderContactBanners();
     return SessionUser;
 }
 
@@ -6071,13 +6080,116 @@ async function loadAgentStatus() {
 
 async function openProfileModal() {
     openModal('My profile', '<div style="text-align:center;padding:20px;"><div class="spinner" style="border-color:rgba(16,30,27,0.15);border-top-color:var(--primary);"></div> Loading...</div>');
-    await loadUserIdentities();
+    await Promise.all([loadUserIdentities(), getCurrentUserRole()]);
     document.getElementById('modalBody').innerHTML = renderProfileModal();
+}
+
+// ============================================================
+// SIGN-IN DETAILS — the email and phone number the account signs in with.
+// Phone sign-ups are asked to add a verified email, email sign-ups a
+// phone, by a banner that stays until they do. Adding either takes the
+// login PIN, then a 6-digit code sent to the new email or number
+// (/user/contact_verify_start.php, then /user/contact_verify_confirm.php).
+// ============================================================
+function renderContactBanners() {
+    const holder = document.getElementById('contactBannerHolder');
+    if (!holder) return;
+    // Only when whoami.php actually answered: never nag on a failed call.
+    if (!SessionUser || SessionUser.success === false || typeof SessionUser.email_verified === 'undefined') { holder.innerHTML = ''; return; }
+    const banners = [];
+    if (SessionUser.email_verified === false) {
+        banners.push({ title: 'Add and verify your email', text: 'Keep your account safe, and sign in with your email as well as your phone number.', button: 'Verify email', type: 'email' });
+    }
+    if (SessionUser.has_phone === false) {
+        banners.push({ title: 'Add and verify your phone number', text: 'Sign in with your phone as well as your email, and get texts about your money.', button: 'Add phone', type: 'phone' });
+    }
+    holder.innerHTML = banners.map(b => `<div class="contact-banner" role="status"><div class="contact-banner-text"><strong>${escapeHtml(b.title)}</strong>${escapeHtml(b.text)}</div><button class="btn btn-primary btn-sm" onclick="openContactVerifyModal('${b.type}')">${escapeHtml(b.button)}</button></div>`).join('');
+}
+
+function renderSignInDetails() {
+    if (!SessionUser || typeof SessionUser.email_verified === 'undefined') return '';
+    const row = (label, value, status, linkText, type) => `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);"><div><div style="font-size:11px;color:var(--text-muted);">${label}</div><div style="font-size:14px;font-weight:700;">${value}</div><div style="font-size:11px;color:${status.ok ? 'var(--success)' : 'var(--warning)'};">${status.text}</div></div><div class="quick-actions" style="margin:0;"><span class="quick-link" onclick="openContactVerifyModal('${type}')">${linkText}</span></div></div>`;
+    const email = SessionUser.email_verified
+        ? row('Email', escapeHtml(SessionUser.email_masked || ''), { ok: true, text: '✓ Verified' }, 'Change', 'email')
+        : row('Email', 'No verified email', { ok: false, text: 'Not verified yet' }, 'Verify', 'email');
+    const phone = SessionUser.has_phone
+        ? row('Phone', escapeHtml(SessionUser.phone_masked || ''), { ok: true, text: '✓ Added' }, 'Change', 'phone')
+        : row('Phone', 'No phone number', { ok: false, text: 'Not added yet' }, 'Add', 'phone');
+    return `<div style="margin-bottom:16px;"><div style="font-weight:700;margin-bottom:4px;">Sign-in details</div>${email}${phone}</div>`;
+}
+
+// The email or number typed last, so "Send a new code" can put it back.
+let contactVerifyLastValue = '';
+
+function openContactVerifyModal(type, prefill = '') {
+    const isEmail = type === 'email';
+    const current = isEmail ? SessionUser?.email_verified : SessionUser?.has_phone;
+    const title = isEmail ? (current ? 'Change your email' : 'Verify your email') : (current ? 'Change your phone number' : 'Add your phone number');
+    const field = isEmail
+        ? `<div class="field-group"><label>Email address</label><input type="email" id="contactVerifyValue" placeholder="you@example.com" autocomplete="email" autocapitalize="none" autocorrect="off" spellcheck="false"></div>`
+        : `<div class="field-group"><label>Mobile number</label><input type="tel" id="contactVerifyValue" placeholder="71 234 567" inputmode="tel" autocomplete="tel"></div>`;
+    openModal(title, `
+        <div style="font-size:13px;color:var(--text-muted);margin-bottom:14px;">${isEmail ? 'We\'ll email you a 6-digit code to confirm it\'s yours.' : 'We\'ll text you a 6-digit code to confirm it\'s yours.'}</div>
+        <div class="contact-verify-error" id="contactVerifyError"></div>
+        ${field}
+        <div class="field-group"><label>Your PIN</label><input type="password" id="contactVerifyPin" inputmode="numeric" maxlength="6" placeholder="••••••" autocomplete="current-password"></div>
+        <div class="modal-actions">
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" id="contactVerifySendBtn" onclick="startContactVerify('${type}')">Send code</button>
+        </div>`);
+    const input = document.getElementById('contactVerifyValue');
+    if (input) { input.value = prefill; input.focus(); }
+}
+
+function showContactVerifyError(text) {
+    const el = document.getElementById('contactVerifyError');
+    if (!el) { showMessage(text, 'error'); return; }
+    el.textContent = text;
+    el.classList.toggle('show', !!text);
+}
+
+async function startContactVerify(type) {
+    const value = document.getElementById('contactVerifyValue')?.value.trim() || '';
+    const pin = document.getElementById('contactVerifyPin')?.value.trim() || '';
+    if (!value) { showContactVerifyError(type === 'email' ? 'Please enter your email address.' : 'Please enter your mobile number.'); return; }
+    if (!/^\d{4,6}$/.test(pin)) { showContactVerifyError('Please enter your PIN.'); return; }
+    const btn = document.getElementById('contactVerifySendBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+    const result = await callApi(CONFIG.API_BASE + '/user/contact_verify_start.php', { type, value, pin });
+    if (btn) { btn.disabled = false; btn.textContent = 'Send code'; }
+    if (!result.ok) { showContactVerifyError(result.error || 'Could not send the code. Please try again.'); return; }
+
+    contactVerifyLastValue = value;
+    document.getElementById('modalBody').innerHTML = `
+        <div style="font-size:13px;color:var(--text-muted);margin-bottom:14px;">${escapeHtml(result.body.data?.message || 'We sent you a 6-digit code.')}</div>
+        <div class="contact-verify-error" id="contactVerifyError"></div>
+        <div class="field-group"><label>6-digit code</label><input type="text" id="contactVerifyCode" inputmode="numeric" maxlength="6" placeholder="••••••" autocomplete="one-time-code"></div>
+        <div class="modal-actions">
+            <button class="btn btn-secondary" onclick="openContactVerifyModal('${type}', contactVerifyLastValue)">Send a new code</button>
+            <button class="btn btn-primary" id="contactVerifyConfirmBtn" onclick="confirmContactVerify('${type}')">Verify</button>
+        </div>`;
+    document.getElementById('contactVerifyCode')?.focus();
+}
+
+async function confirmContactVerify(type) {
+    const code = document.getElementById('contactVerifyCode')?.value.trim() || '';
+    if (!/^\d{6}$/.test(code)) { showContactVerifyError('Please enter the 6-digit code.'); return; }
+    const btn = document.getElementById('contactVerifyConfirmBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Checking…'; }
+    const result = await callApi(CONFIG.API_BASE + '/user/contact_verify_confirm.php', { code });
+    if (btn) { btn.disabled = false; btn.textContent = 'Verify'; }
+    if (!result.ok) { showContactVerifyError(result.error || 'Could not check the code. Please try again.'); return; }
+
+    // Re-read the account so the banners and profile show the new details.
+    SessionUser = null;
+    await getCurrentUserRole();
+    closeModal();
+    showMessage(result.body.data?.message || 'Saved.', 'success');
 }
 
 function renderProfileModal() {
     const rows = savedIdentities.length ? savedIdentities.map((id, i) => `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);"><div><div style="font-size:11px;color:var(--text-muted);">${escapeHtml(IDENTITY_TYPE_LABELS[id.type] || id.type)}</div><div style="font-size:14px;font-weight:700;">${escapeHtml(id.value)}</div></div><div class="quick-actions" style="margin:0;"><span class="quick-link" onclick="useSavedIdentity(${i})">Use</span><span class="quick-link danger" onclick="removeSavedIdentity(${i})">Remove</span></div></div>`).join('') : `<div style="font-size:12px;color:var(--text-dim);">No saved identities yet.</div>`;
-    return `<div style="margin-bottom:12px;"><div style="font-weight:700;margin-bottom:4px;">Your registered identities</div>${rows}</div><div style="border-top:1px solid var(--border);padding-top:16px;"><div class="field-label" style="margin-bottom:8px;">Transaction PIN</div><div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Required to claim money sent to your verified identity. Never share it.</div><div class="field-group"><label>New PIN (4-6 digits)</label><input type="password" id="newPin" inputmode="numeric" maxlength="6" placeholder="••••"></div><div class="field-group"><label>Confirm PIN</label><input type="password" id="confirmPin" inputmode="numeric" maxlength="6" placeholder="••••"></div><div class="cta-row"><button class="btn btn-primary" onclick="setTransactionPin()">Set PIN</button></div></div><div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px;"><span class="quick-link" onclick="closeModal();openAddIdentityModal();">Add a new identity</span><span class="quick-link muted" onclick="closeModal();openFinalizeIdentityModal();">Finalize an identity swap</span></div>`;
+    return `${renderSignInDetails()}<div style="margin-bottom:12px;"><div style="font-weight:700;margin-bottom:4px;">Your registered identities</div>${rows}</div><div style="border-top:1px solid var(--border);padding-top:16px;"><div class="field-label" style="margin-bottom:8px;">Transaction PIN</div><div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Required to claim money sent to your verified identity. Never share it.</div><div class="field-group"><label>New PIN (4-6 digits)</label><input type="password" id="newPin" inputmode="numeric" maxlength="6" placeholder="••••"></div><div class="field-group"><label>Confirm PIN</label><input type="password" id="confirmPin" inputmode="numeric" maxlength="6" placeholder="••••"></div><div class="cta-row"><button class="btn btn-primary" onclick="setTransactionPin()">Set PIN</button></div></div><div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px;"><span class="quick-link" onclick="closeModal();openAddIdentityModal();">Add a new identity</span><span class="quick-link muted" onclick="closeModal();openFinalizeIdentityModal();">Finalize an identity swap</span></div>`;
 }
 
 async function setTransactionPin() {

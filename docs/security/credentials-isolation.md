@@ -191,6 +191,25 @@ before and after the deploy.
    password columns, everything before this step can be rolled back by
    reverting the code deploy.
 
+## Sign-in lockout
+
+Wrong login PINs are counted in `user_credentials.failed_login_attempts`
+/ `locked_until` — the same policy as the transaction PIN and the admin
+login: 5 wrong PINs lock sign-in for 30 minutes, every further miss
+after that re-locks it, and a correct PIN resets the count. The sign-in
+page and the dashboard's "add or change your email / phone" step
+(which asks for the PIN) share the one counter, through
+`Security\Auth\LoginPinVerifier` and `CredentialsRepository::
+recordFailedUserLoginAttempt()` / `resetUserLoginAttempts()`.
+
+`schema.sql` creates the columns; an existing credentials database gets
+them from `scripts/credentials_db/2026_09_27_user_login_lockout.sql`,
+which `/admin/run_sign_in_migrations.php` applies (together with the
+main-database half of the same change,
+`database/migrations/2026_09_27_email_sign_in.sql`). Until it has run,
+PINs are still checked — only the counting is skipped, and a line in
+the log says so.
+
 ## Operational notes
 
 - **No cross-database transactions.** The main database and the

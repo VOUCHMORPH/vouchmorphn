@@ -98,6 +98,66 @@ class CredentialsRepository
     }
 
     // ============================================================================
+    // USER SIGN-IN LOCKOUT
+    // ============================================================================
+    //
+    // Same policy as the admin pair below and the transaction PIN: 5 wrong
+    // login PINs lock sign-in for 30 minutes, every further miss after that
+    // re-locks it, and only a correct PIN resets the counter. The columns
+    // come from scripts/credentials_db/2026_09_27_user_login_lockout.sql;
+    // until that has run, supportsUserLoginLockout() is false and callers
+    // (Security\Auth\LoginPinVerifier) skip the lockout rather than fail.
+
+    public function supportsUserLoginLockout(): bool
+    {
+        return \Domain\Identity\SignInSchema::hasUserLoginLockout($this->db);
+    }
+
+    /** @return array{failed_login_attempts: int|string, locked_until: ?string}|null */
+    public function findUserLoginLock(int $userId): ?array
+    {
+        $stmt = $this->db->prepare(
+            "SELECT failed_login_attempts, locked_until FROM user_credentials WHERE user_id = :id"
+        );
+        $stmt->execute([':id' => $userId]);
+        return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+    }
+
+    /**
+     * Records one wrong login PIN and, once $maxAttempts is reached, locks
+     * sign-in for $lockMinutes. Incremented in SQL, like
+     * recordFailedUserPinAttempt(), so racing wrong guesses can't lose a
+     * count. locked_until in the result is non-null only when this miss is
+     * the one that locked it.
+     */
+    public function recordFailedUserLoginAttempt(int $userId, int $maxAttempts = 5, int $lockMinutes = 30): array
+    {
+        $stmt = $this->db->prepare("
+            UPDATE user_credentials
+            SET failed_login_attempts = failed_login_attempts + 1,
+                locked_until = CASE WHEN failed_login_attempts + 1 >= :max
+                                    THEN :lock_until
+                                    ELSE CAST(NULL AS TIMESTAMP WITH TIME ZONE) END,
+                updated_at = NOW()
+            WHERE user_id = :id
+            RETURNING failed_login_attempts, locked_until
+        ");
+        $stmt->bindValue(':max', $maxAttempts, PDO::PARAM_INT);
+        $stmt->bindValue(':lock_until', date(DATE_ATOM, time() + $lockMinutes * 60));
+        $stmt->bindValue(':id', $userId, PDO::PARAM_INT);
+        $stmt->execute();
+        return $stmt->fetch(PDO::FETCH_ASSOC) ?: ['failed_login_attempts' => 0, 'locked_until' => null];
+    }
+
+    public function resetUserLoginAttempts(int $userId): void
+    {
+        $stmt = $this->db->prepare(
+            "UPDATE user_credentials SET failed_login_attempts = 0, locked_until = NULL, updated_at = NOW() WHERE user_id = :id"
+        );
+        $stmt->execute([':id' => $userId]);
+    }
+
+    // ============================================================================
     // ADMINS
     // ============================================================================
 
