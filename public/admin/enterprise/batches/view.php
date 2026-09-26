@@ -23,6 +23,7 @@ $user = requireEnterpriseAuth();
 require_once __DIR__ . '/../../../../src/Core/Database/DBConnection.php';
 require_once __DIR__ . '/../../../../src/Domain/Services/DepartmentService.php';
 require_once __DIR__ . '/../../../../src/Domain/Services/UserManagementService.php';
+require_once __DIR__ . '/../partials/batch_display.php';
 use Core\Database\DBConnection;
 use Domain\Services\DepartmentService;
 use Domain\Services\UserManagementService;
@@ -341,7 +342,7 @@ $statusClass = match(strtolower($batch['status'] ?? 'draft')) {
     'approved' => 'approved',
     'executing' => 'pending_approval',
     'completed', 'executed' => 'completed',
-    'partial_success' => 'pending_approval',
+    'partial_success', 'partially_completed' => 'pending_approval',
     'failed' => 'rejected',
     'rejected' => 'rejected',
     default => 'draft'
@@ -523,19 +524,19 @@ $topbarSearchPlaceholder = 'Search batch reference, phone, national ID…';
                     <div class="detail-item"><span class="label">Source Asset Type</span><span class="value"><?php echo safeHtmlView($batch['source_asset_type'] ?? 'ACCOUNT'); ?></span></div>
                     <div class="detail-item"><span class="label">Source Currency</span><span class="value"><?php echo $batchCurrency ? safeHtmlView($batchCurrency) : '<span style="color:var(--danger);">⚠ not set</span>'; ?></span></div>
                     <div class="detail-item"><span class="label">Created By</span><span class="value"><?php echo safeHtmlView($batch['created_by_name'] ?? 'N/A'); ?></span></div>
-                    <div class="detail-item"><span class="label">Created At</span><span class="value"><?php echo date('Y-m-d H:i', strtotime($batch['created_at'])); ?></span></div>
+                    <div class="detail-item"><span class="label">Created At</span><span class="value"><?php echo safeHtmlView(vm_local_time($batch['created_at'])); ?></span></div>
                     <div class="detail-item"><span class="label">Department</span><span class="value"><?php echo $departmentInfo ? safeHtmlView($departmentInfo['name']) : '<span style="color:var(--danger);">Not assigned</span>'; ?></span></div>
                     <?php if ($batch['submitted_by_name']): ?>
                     <div class="detail-item"><span class="label">Submitted By</span><span class="value"><?php echo safeHtmlView($batch['submitted_by_name']); ?></span></div>
-                    <div class="detail-item"><span class="label">Submitted At</span><span class="value"><?php echo date('Y-m-d H:i', strtotime($batch['submitted_at'])); ?></span></div>
+                    <div class="detail-item"><span class="label">Submitted At</span><span class="value"><?php echo safeHtmlView(vm_local_time($batch['submitted_at'])); ?></span></div>
                     <?php endif; ?>
                     <?php if ($batch['approved_by_name']): ?>
                     <div class="detail-item"><span class="label">Approved By</span><span class="value"><?php echo safeHtmlView($batch['approved_by_name']); ?></span></div>
-                    <div class="detail-item"><span class="label">Approved At</span><span class="value"><?php echo date('Y-m-d H:i', strtotime($batch['approved_at'])); ?></span></div>
+                    <div class="detail-item"><span class="label">Approved At</span><span class="value"><?php echo safeHtmlView(vm_local_time($batch['approved_at'])); ?></span></div>
                     <?php endif; ?>
                     <?php if ($batch['executed_by_name']): ?>
                     <div class="detail-item"><span class="label">Executed By</span><span class="value"><?php echo safeHtmlView($batch['executed_by_name']); ?></span></div>
-                    <div class="detail-item"><span class="label">Executed At</span><span class="value"><?php echo date('Y-m-d H:i', strtotime($batch['executed_at'])); ?></span></div>
+                    <div class="detail-item"><span class="label">Executed At</span><span class="value"><?php echo safeHtmlView(vm_local_time($batch['executed_at'])); ?></span></div>
                     <?php endif; ?>
                     <?php if ($batch['rejection_reason']): ?>
                     <div class="detail-item" style="grid-column:1/-1; background:var(--danger-bg); padding:12px; border:1px solid var(--danger);">
@@ -584,6 +585,7 @@ $topbarSearchPlaceholder = 'Search batch reference, phone, national ID…';
                             <tr>
                                 <th>#</th>
                                 <th>Beneficiary</th>
+                                <th>Destination</th>
                                 <th>Identifier</th>
                                 <th>Amount</th>
                                 <th>Reference</th>
@@ -598,6 +600,7 @@ $topbarSearchPlaceholder = 'Search batch reference, phone, national ID…';
                             <tr>
                                 <td><?php echo $dest['destination_index']; ?></td>
                                 <td><?php echo safeHtmlView($dest['beneficiary_name'] ?? 'N/A'); ?></td>
+                                <td><?php echo safeHtmlView(vm_destination_label($dest['institution'] ?? null)); ?></td>
                                 <td>
                                     <?php
                                     if ($dest['is_identity_recipient'] ?? false) {
@@ -629,7 +632,7 @@ $topbarSearchPlaceholder = 'Search batch reference, phone, national ID…';
                             <?php endforeach; ?>
                             <?php if (empty($destinations)): ?>
                             <tr>
-                                <td colspan="6">
+                                <td colspan="7">
                                     <div class="empty-state">
                                         <div class="icon">§</div>
                                         <p>No destinations added yet</p>
@@ -692,7 +695,7 @@ $topbarSearchPlaceholder = 'Search batch reference, phone, national ID…';
                         🚀 Go Execute Disbursement
                     </a>
                     <span style="font-size:12px; color:var(--ink-500);">Executed from the Review page, with duplicate-prevention and resume safety.</span>
-                    <?php elseif (in_array($batch['status'], ['executing', 'partial_success', 'failed'])): ?>
+                    <?php elseif (in_array(strtolower($batch['status'] ?? ''), ['executing', 'partial_success', 'partially_completed', 'failed'], true)): ?>
                     <a href="../imports/review_batch.php?batch_id=<?php echo $batchId; ?>" class="btn btn-outline">🔍 View Execution Status / Resume</a>
                     <?php endif; ?>
 

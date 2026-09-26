@@ -21,17 +21,19 @@ declare(strict_types=1);
  * same field mapping), not re-derived from scratch — same reasoning,
  * same field names, same status/error handling per destination.
  *
+ * Deployed on Railway as its own service from railway.batch-worker.json.
+ * Until one runs, "Execute" only queues jobs: the batch sits in
+ * 'executing' and no destination is ever paid.
+ *
+ * Stuck jobs: every worker runs BatchExecutionQueueService::
+ * recoverStuckJobs() once a minute (STUCK_JOB_THRESHOLD_SECONDS, default
+ * 600), handing back jobs a crashed or redeployed worker left 'claimed'
+ * or 'processing'. stuck_job_recovery.php runs the same recovery as a
+ * one-shot, for a cron.
+ *
  * Still needed before this touches production:
  *
- * 1. Stuck-job recovery cron: if a worker crashes mid-job, that job is
- *    left in 'claimed'/'processing' indefinitely. A simple periodic
- *    check ("if claimed_at < NOW() - 10 minutes AND status IN (claimed,
- *    processing), reset to pending") needs to run alongside this —
- *    same stuck-batch pattern already used for whole-batch execution,
- *    just applied per-job now. Not included here since it's a separate,
- *    small script (a cron entry, not a long-running worker).
- *
- * 2. Real per-institution rate limits in institution_rate_limits —
+ * 1. Real per-institution rate limits in institution_rate_limits —
  *    the schema defaults to 60/minute per institution, which is a
  *    placeholder, not a number any bank/MNO has confirmed.
  */
@@ -80,9 +82,26 @@ $departmentService = new DepartmentService($pdo, $logger);
 
 error_log("[worker:{$workerId}] Started. Claim size: {$batchClaimSize}, poll interval: {$pollIntervalSeconds}s, country: {$countryName}");
 
+// Jobs a crashed or redeployed worker left claimed are handed back here,
+// once a minute, so a single worker service needs no separate cron.
+$stuckJobThresholdSeconds = (int)(getenv('STUCK_JOB_THRESHOLD_SECONDS') ?: 600);
+$lastRecoveryAt = 0;
+
 while (!$shouldStop) {
     if (function_exists('pcntl_signal_dispatch')) {
         pcntl_signal_dispatch();
+    }
+
+    if (time() - $lastRecoveryAt >= 60) {
+        $lastRecoveryAt = time();
+        try {
+            $recovered = $queue->recoverStuckJobs($stuckJobThresholdSeconds);
+            if ($recovered) {
+                error_log("[worker:{$workerId}] Recovered " . count($recovered) . " stuck job(s): " . json_encode($recovered));
+            }
+        } catch (\Throwable $e) {
+            error_log("[worker:{$workerId}] recoverStuckJobs failed: " . $e->getMessage());
+        }
     }
 
     try {
@@ -131,10 +150,21 @@ function processJob(PDO $pdo, BatchExecutionQueueService $queue, SwapService $sw
     $jobId = (int)$job['id'];
 
     try {
+        // Start the job only if it is still ours: a job that sat in this
+        // worker's claimed set past the stuck-job threshold may have been
+        // handed back to the queue by recoverStuckJobs() and claimed by
+        // another worker. claimed_at restarts so the threshold measures
+        // time spent on this job, not time queued behind the ones before it.
         $stmt = $pdo->prepare("
-            UPDATE batch_execution_jobs SET status = 'processing', updated_at = NOW() WHERE id = :id
+            UPDATE batch_execution_jobs
+            SET status = 'processing', claimed_at = NOW(), updated_at = NOW()
+            WHERE id = :id AND status = 'claimed' AND claimed_by = :worker
         ");
-        $stmt->execute([':id' => $jobId]);
+        $stmt->execute([':id' => $jobId, ':worker' => $workerId]);
+        if ($stmt->rowCount() === 0) {
+            error_log("[worker:{$workerId}] Job {$jobId} is no longer claimed by this worker - skipping it.");
+            return;
+        }
 
         $stmt = $pdo->prepare("
             SELECT d.*, b.batch_reference, b.source_institution, b.source_identifier,

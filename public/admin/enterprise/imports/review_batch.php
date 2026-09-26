@@ -408,9 +408,10 @@ function getStatusClass($status) {
         'pending', 'pending_approval' => 'pending',
         'approved' => 'approved',
         'executing' => 'pending',
+        'partially_completed', 'partial_success' => 'pending',
         'completed', 'executed' => 'completed',
         'rejected' => 'rejected',
-        'cancelled' => 'rejected',
+        'cancelled', 'failed' => 'rejected',
         default => 'draft'
     };
 }
@@ -421,10 +422,12 @@ function getStatusLabel($status) {
         'pending', 'pending_approval' => '⏳ Pending',
         'approved' => '✅ Approved',
         'executing' => '⚙️ Executing',
+        'partially_completed', 'partial_success' => '⚠️ Partially completed',
         'completed' => '✔️ Completed',
         'executed' => '🚀 Executed',
         'rejected' => '❌ Rejected',
         'cancelled' => '🚫 Cancelled',
+        'failed' => '❌ Failed',
         default => ucfirst($status)
     };
 }
@@ -627,7 +630,7 @@ $thisBatchFits = true;
                 <div class="grid-3">
                     <div><strong>Batch Reference:</strong> <?php echo safeHtml($batch['batch_reference']); ?></div>
                     <div><strong>Batch Name:</strong> <?php echo safeHtml($batch['batch_name']); ?></div>
-                    <div><strong>Created:</strong> <?php echo date('Y-m-d H:i', strtotime($batch['created_at'])); ?></div>
+                    <div><strong>Created:</strong> <?php echo safeHtml(vm_local_time($batch['created_at'])); ?></div>
                     <div><strong>Source Institution:</strong> <?php echo safeHtml($batch['source_institution']); ?></div>
                     <div><strong>Source Account:</strong> <?php echo safeHtml($batch['source_identifier']); ?></div>
                     <div><strong>Currency:</strong> <?php echo safeHtml($batch['currency'] ?? 'BWP'); ?></div>
@@ -639,14 +642,14 @@ $thisBatchFits = true;
 
                 <?php if ($batch['submitted_at']): ?>
                 <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--line);">
-                    <strong>Submitted:</strong> <?php echo date('Y-m-d H:i', strtotime($batch['submitted_at'])); ?>
+                    <strong>Submitted:</strong> <?php echo safeHtml(vm_local_time($batch['submitted_at'])); ?>
                     by <?php echo safeHtml($batch['submitted_by_name'] ?? 'N/A'); ?>
                 </div>
                 <?php endif; ?>
 
                 <?php if ($batch['approved_at']): ?>
                 <div>
-                    <strong>Approved:</strong> <?php echo date('Y-m-d H:i', strtotime($batch['approved_at'])); ?>
+                    <strong>Approved:</strong> <?php echo safeHtml(vm_local_time($batch['approved_at'])); ?>
                     by <?php echo safeHtml($batch['approved_by_name'] ?? 'N/A'); ?>
                 </div>
                 <?php endif; ?>
@@ -660,7 +663,7 @@ $thisBatchFits = true;
 
                 <?php if ($batch['executed_at']): ?>
                 <div>
-                    <strong>Last Execution Attempt:</strong> <?php echo date('Y-m-d H:i', strtotime($batch['executed_at'])); ?>
+                    <strong>Last Execution Attempt:</strong> <?php echo safeHtml(vm_local_time($batch['executed_at'])); ?>
                     by <?php echo safeHtml($batch['executed_by_name'] ?? 'N/A'); ?>
                 </div>
                 <?php endif; ?>

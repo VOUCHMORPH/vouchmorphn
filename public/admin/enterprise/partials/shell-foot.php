@@ -11,6 +11,7 @@
  *   bar (e.g. "3 of 6 setup steps complete"). Left unset, only the
  *   standard org / role / time line renders.
  */
+require_once __DIR__ . '/local_time.php';
 ?>
     </div><!-- /.stage -->
 </div><!-- /.stage-outer -->
@@ -20,7 +21,7 @@
 <footer class="ftr">
     <div class="ftr-inner">
         <div class="ftr-status"><span class="chip"></span><?php echo safeHtml($footerNote ?? 'VouchMorph Enterprise'); ?></div>
-        <div class="ftr-right"><?php echo safeHtml($orgName); ?> &middot; <?php echo safeHtml(getRoleLabel($userRole)); ?> &middot; <?php echo safeHtml($fullName); ?> &middot; <span title="<?php echo safeHtml(date('Y-m-d H:i:s') . ' ' . date('T')); ?>"><?php echo date('H:i'); ?> <?php echo date('T'); ?></span></div>
+        <div class="ftr-right"><?php echo safeHtml($orgName); ?> &middot; <?php echo safeHtml(getRoleLabel($userRole)); ?> &middot; <?php echo safeHtml($fullName); ?> &middot; <span title="<?php echo safeHtml(vm_local_now('Y-m-d H:i:s T')); ?>"><?php echo safeHtml(vm_local_now('H:i T')); ?></span></div>
     </div>
 </footer>
 <script>

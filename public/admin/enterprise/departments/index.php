@@ -1202,7 +1202,7 @@ if ($searchQuery !== '') {
                             <div class="body">
                                 <div class="top-line">
                                     <span class="tag"><?php echo $req['tag']; ?></span>
-                                    <span class="when"><?php echo date('M j, H:i', strtotime($req['created_at'])); ?></span>
+                                    <span class="when"><?php echo safeHtml(vm_local_time($req['created_at'], 'M j, H:i')); ?></span>
                                 </div>
                                 <span class="label"><?php echo safeHtml($req['title']); ?></span>
                                 <div class="meta"><?php echo safeHtml($req['meta']); ?></div>

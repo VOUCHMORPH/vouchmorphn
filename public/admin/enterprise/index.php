@@ -15,6 +15,7 @@ if (session_status() === PHP_SESSION_NONE) {
 }
 
 require_once __DIR__ . '/auth.php';
+require_once __DIR__ . '/partials/batch_display.php';
 require_once __DIR__ . '/../../../src/Domain/Services/DepartmentService.php';
 require_once __DIR__ . '/../../../src/Domain/Services/SetupChecklistService.php';
 use Domain\Services\DepartmentService;
@@ -47,7 +48,8 @@ function getStatusClass($status) {
     $status = strtolower($status);
     return match($status) {
         'draft' => 'draft', 'pending', 'pending_approval' => 'pending', 'approved' => 'approved',
-        'executing' => 'pending', 'completed', 'executed' => 'completed', 'rejected', 'cancelled' => 'rejected',
+        'executing', 'partially_completed', 'partial_success' => 'pending', 'completed', 'executed' => 'completed',
+        'rejected', 'cancelled', 'failed' => 'rejected',
         default => 'draft'
     };
 }
@@ -55,8 +57,9 @@ function getStatusLabel($status) {
     $status = strtolower($status);
     return match($status) {
         'draft' => 'Draft', 'pending', 'pending_approval' => 'Pending', 'approved' => 'Approved',
-        'executing' => 'Executing', 'completed' => 'Completed', 'executed' => 'Executed',
-        'rejected' => 'Rejected', 'cancelled' => 'Cancelled', default => ucfirst($status)
+        'executing' => 'Executing', 'partially_completed', 'partial_success' => 'Partially completed',
+        'completed' => 'Completed', 'executed' => 'Executed',
+        'rejected' => 'Rejected', 'cancelled' => 'Cancelled', 'failed' => 'Failed', default => ucfirst($status)
     };
 }
 
@@ -218,7 +221,15 @@ try {
     // completely unscoped — an org-wide read of batch data for two
     // roles auth.php says should be confined to one department each.
     // That's fixed here, not just noted.
+    //
+    // STATUS: a role that can see a batch at one stage keeps seeing it at
+    // every later one. These lists used to stop at 'approved'/'completed',
+    // so the moment an Owner executed a batch ('executing', then
+    // 'completed' or 'partially_completed') it vanished for every role
+    // below. The groups live in partials/batch_display.php and match
+    // case-insensitively ('DRAFT' and 'draft' are the same batch state).
     // ============================================================
+    $approvedOnward = vm_batch_statuses('approved_onward');
     $statusFilter = ""; $statusParams = [':org_id' => $orgId];
     if ($isTopRole) {
         // Naturally resolves correctly without special-casing
@@ -228,20 +239,31 @@ try {
         // comes back null from that function too.
         $statusFilter = "AND 1=1" . departmentScopeSqlSingle($userDeptScope, $statusParams, ':dept_own');
     } elseif ($isReadOnly) {
-        $statusFilter = "AND status IN ('completed', 'executed', 'COMPLETED', 'EXECUTED')" . departmentScopeSqlSingle($userDeptScope, $statusParams, ':dept_ro');
+        $statusFilter = "AND " . vm_batch_status_in(vm_batch_statuses('released')) . departmentScopeSqlSingle($userDeptScope, $statusParams, ':dept_ro');
     } elseif ($isApprover) {
-        $statusFilter = "AND status IN ('pending', 'pending_approval', 'approved', 'draft', 'PENDING', 'PENDING_APPROVAL', 'APPROVED')" . departmentScopeSqlSingle($userDeptScope, $statusParams, ':dept_apr');
+        $statusFilter = "AND " . vm_batch_status_in(array_merge(vm_batch_statuses('before_approval'), $approvedOnward)) . departmentScopeSqlSingle($userDeptScope, $statusParams, ':dept_apr');
     } elseif ($userRole === 'finance_officer') {
-        $statusFilter = "AND status IN ('pending', 'pending_approval', 'approved', 'completed', 'executed', 'PENDING', 'PENDING_APPROVAL', 'APPROVED', 'COMPLETED', 'EXECUTED')" . departmentScopeSqlSingle($userDeptScope, $statusParams, ':dept_fin');
+        $statusFilter = "AND " . vm_batch_status_in(array_merge(['pending', 'pending_approval'], $approvedOnward)) . departmentScopeSqlSingle($userDeptScope, $statusParams, ':dept_fin');
     } elseif ($isLoader) {
-        $statusFilter = "AND (created_by = :user_id OR (department_id = :department_id AND status IN ('pending', 'pending_approval', 'approved', 'draft')))";
+        $statusFilter = "AND (created_by = :user_id OR (department_id = :department_id AND " . vm_batch_status_in(array_merge(vm_batch_statuses('before_approval'), $approvedOnward)) . "))";
         $statusParams[':user_id'] = $userId; $statusParams[':department_id'] = $departmentId;
     } else { $statusFilter = "AND 1=0"; }
 
+    // Waiting on a decision first, then money in flight, then everything
+    // else by most recent activity — a batch that just finished paying
+    // out must not sink below 30 untouched drafts and fall off the list.
+    // Destinations are counted live: total_destinations can lag an edit.
     $stmt = $pdo->prepare("
-        SELECT id, batch_reference, batch_name, source_institution, total_amount, total_destinations, status, created_at
-        FROM disbursement_batches WHERE organization_id = :org_id $statusFilter
-        ORDER BY CASE WHEN status IN ('pending', 'pending_approval') THEN 1 WHEN status = 'approved' THEN 2 WHEN status = 'draft' THEN 3 ELSE 4 END, created_at DESC
+        SELECT id, batch_reference, batch_name, source_institution, total_amount, total_destinations, status, created_at,
+               dest.recipients, dest.institutions
+        FROM disbursement_batches
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*) AS recipients, string_agg(DISTINCT d.institution, ',') AS institutions
+            FROM disbursement_destinations d WHERE d.batch_id = disbursement_batches.id
+        ) dest ON true
+        WHERE organization_id = :org_id $statusFilter
+        ORDER BY CASE LOWER(status) WHEN 'pending' THEN 1 WHEN 'pending_approval' THEN 1 WHEN 'approved' THEN 2 WHEN 'executing' THEN 3 ELSE 4 END,
+                 COALESCE(updated_at, created_at) DESC
         LIMIT 30
     ");
     $stmt->execute($statusParams);
@@ -315,18 +337,41 @@ function getActivityLabel(string $action): string {
 
 $traceQuery = trim($_GET['trace'] ?? '');
 $traceBatches = [];
+$traceDestinations = [];
 $traceBeneficiaries = [];
 if ($canTrace && $traceQuery !== '') {
     $likeQ = '%' . $traceQuery . '%';
+    // A recipient's phone, account, national ID or name lives on its
+    // disbursement_destinations row, not on the batch — searching batch
+    // rows alone could never find a payment by the person it went to.
     try {
         $stmt = $pdo->prepare("
             SELECT id, batch_reference, batch_name, source_institution, total_amount, status, created_at
-            FROM disbursement_batches WHERE organization_id = :org_id AND (batch_reference ILIKE :q OR to_jsonb(disbursement_batches.*)::text ILIKE :q)
+            FROM disbursement_batches
+            WHERE organization_id = :org_id
+              AND (batch_reference ILIKE :q
+                   OR to_jsonb(disbursement_batches.*)::text ILIKE :q
+                   OR EXISTS (SELECT 1 FROM disbursement_destinations d
+                              WHERE d.batch_id = disbursement_batches.id AND to_jsonb(d.*)::text ILIKE :q))
             ORDER BY created_at DESC LIMIT 20
         ");
         $stmt->execute([':org_id' => $orgId, ':q' => $likeQ]);
         $traceBatches = $stmt->fetchAll(PDO::FETCH_ASSOC);
     } catch (PDOException $e) { error_log("[ENTERPRISE DASHBOARD] Trace batch error: " . $e->getMessage()); }
+    try {
+        $stmt = $pdo->prepare("
+            SELECT b.id AS batch_id, b.batch_reference, d.destination_index, d.beneficiary_name,
+                   d.institution, d.identifier, d.is_identity_recipient, d.identity_type, d.identity_value,
+                   d.amount, d.currency, d.status, d.transaction_reference, d.hold_reference
+            FROM disbursement_destinations d
+            JOIN disbursement_batches b ON b.id = d.batch_id
+            WHERE b.organization_id = :org_id AND to_jsonb(d.*)::text ILIKE :q
+            ORDER BY b.created_at DESC, d.destination_index
+            LIMIT 20
+        ");
+        $stmt->execute([':org_id' => $orgId, ':q' => $likeQ]);
+        $traceDestinations = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) { error_log("[ENTERPRISE DASHBOARD] Trace destination error: " . $e->getMessage()); }
     // Restored — the original searched beneficiaries too, not just
     // batches. Dropped by mistake in the first center-stage pass.
     try {
@@ -364,22 +409,33 @@ if ($canTrace && $traceQuery !== '') {
 // integration task, not something to fake with a UI label.
 // ============================================================
 $reportType = $_GET['report'] ?? 'register';
-$reportFrom = $_GET['report_from'] ?? date('Y-m-01');
-$reportTo = $_GET['report_to'] ?? date('Y-m-d');
+$reportFrom = is_string($_GET['report_from'] ?? null) ? $_GET['report_from'] : vm_local_now('Y-m-01');
+$reportTo = is_string($_GET['report_to'] ?? null) ? $_GET['report_to'] : vm_local_now('Y-m-d');
+// The range is whole local days; the database keeps UTC. Compare against
+// [start of From, start of the day after To) in UTC, so a batch made at
+// 00:30 Botswana time lands on its own day, not the previous one.
+$reportFromUtc = vm_local_day_start_utc($reportFrom);
+$reportToUtc = vm_local_day_start_utc($reportTo, 1);
+if ($reportFromUtc === null || $reportToUtc === null) {
+    $reportFrom = vm_local_now('Y-m-01');
+    $reportTo = vm_local_now('Y-m-d');
+    $reportFromUtc = vm_local_day_start_utc($reportFrom);
+    $reportToUtc = vm_local_day_start_utc($reportTo, 1);
+}
 $reportRegister = [];
 $reportAuditTrail = [];
 $reportExceptions = [];
 $reportDeptSummary = [];
 if ($canViewReports) {
     try {
-        $rParams = [':org_id' => $orgId, ':from' => $reportFrom, ':to' => $reportTo . ' 23:59:59'];
+        $rParams = [':org_id' => $orgId, ':from' => $reportFromUtc, ':to' => $reportToUtc];
         $rScope = departmentScopeSqlSingle($userDeptScope, $rParams, ':dept_rep');
 
         if ($reportType === 'register') {
             $stmt = $pdo->prepare("
                 SELECT batch_reference, batch_name, source_institution, total_amount, total_destinations, status, created_at, created_by
                 FROM disbursement_batches
-                WHERE organization_id = :org_id AND created_at BETWEEN :from AND :to $rScope
+                WHERE organization_id = :org_id AND created_at >= :from AND created_at < :to $rScope
                 ORDER BY created_at DESC
             ");
             $stmt->execute($rParams);
@@ -388,17 +444,17 @@ if ($canViewReports) {
             $stmt = $pdo->prepare("
                 SELECT al.action, al.entity_type, al.entity_id, al.created_at, u.full_name AS actor_name
                 FROM organization_audit_logs al LEFT JOIN users u ON al.user_id = u.user_id
-                WHERE al.organization_id = :org_id AND al.created_at BETWEEN :from AND :to
+                WHERE al.organization_id = :org_id AND al.created_at >= :from AND al.created_at < :to
                 ORDER BY al.created_at DESC LIMIT 2000
             ");
-            $stmt->execute([':org_id' => $orgId, ':from' => $reportFrom, ':to' => $reportTo . ' 23:59:59']);
+            $stmt->execute([':org_id' => $orgId, ':from' => $reportFromUtc, ':to' => $reportToUtc]);
             $reportAuditTrail = $stmt->fetchAll(PDO::FETCH_ASSOC);
         } elseif ($reportType === 'exceptions') {
             $stmt = $pdo->prepare("
                 SELECT batch_reference, batch_name, source_institution, total_amount, status, created_at
                 FROM disbursement_batches
                 WHERE organization_id = :org_id AND LOWER(status) IN ('rejected','cancelled','failed')
-                  AND created_at BETWEEN :from AND :to $rScope
+                  AND created_at >= :from AND created_at < :to $rScope
                 ORDER BY created_at DESC
             ");
             $stmt->execute($rParams);
@@ -407,7 +463,7 @@ if ($canViewReports) {
             $stmt = $pdo->prepare("
                 SELECT COALESCE(d.name, 'Unassigned') AS department_name, COUNT(*) AS batch_count, COALESCE(SUM(b.total_amount), 0) AS total_amount
                 FROM disbursement_batches b LEFT JOIN departments d ON d.id = b.department_id
-                WHERE b.organization_id = :org_id AND b.created_at BETWEEN :from AND :to $rScope
+                WHERE b.organization_id = :org_id AND b.created_at >= :from AND b.created_at < :to $rScope
                 GROUP BY d.name ORDER BY total_amount DESC
             ");
             $stmt->execute($rParams);
@@ -492,7 +548,7 @@ require __DIR__ . '/partials/shell-head.php';
             <div>
                 <div class="stage-eyebrow">Operational dashboard</div>
                 <div class="stage-title">Welcome, <?php echo safeHtml(explode(' ', $fullName)[0]); ?></div>
-                <div class="stage-meta"><?php echo date('l, j F Y'); ?> &middot; <?php echo date('H:i'); ?> <?php echo date('T'); ?></div>
+                <div class="stage-meta"><?php echo safeHtml(vm_local_now('l, j F Y')); ?> &middot; <?php echo safeHtml(vm_local_now('H:i T')); ?></div>
             </div>
             <?php if ($canCreate && $setupReady): ?>
             <div class="stage-actions"><a href="imports/source_input.php" class="btn btn-primary">+ New batch</a></div>
@@ -644,23 +700,24 @@ require __DIR__ . '/partials/shell-head.php';
                 <button type="button" class="btn btn-secondary" onclick="goStage('hub')">&larr; Hub</button>
             </div>
         </div>
-        <div class="field" style="max-width:360px;"><input type="search" id="batchFilterInput" placeholder="Filter by reference, name, source&hellip;" oninput="filterRows('batchRows', this.value)"></div>
+        <div class="field" style="max-width:360px;"><input type="search" id="batchFilterInput" placeholder="Filter by reference, name, source, destination&hellip;" oninput="filterRows('batchRows', this.value)"></div>
         <?php if (empty($recentBatches)): ?>
             <div class="empty">No batches found<?php echo ($canCreate && !$setupReady) ? ' — finish setup (team, department, source account) to create one.' : '.'; ?></div>
         <?php else: ?>
         <div class="table-wrap">
             <table>
-                <thead><tr><th>Reference</th><th>Name</th><th>Source</th><th>Amount</th><th>Dest.</th><th>Status</th><th>Created</th><th></th></tr></thead>
+                <thead><tr><th>Reference</th><th>Name</th><th>Source</th><th>Amount</th><th>Destination</th><th>Status</th><th>Created</th><th></th></tr></thead>
                 <tbody id="batchRows">
                 <?php foreach ($recentBatches as $batch): ?>
-                <tr data-search="<?php echo safeHtml(strtolower(($batch['batch_reference'] ?? '') . ' ' . ($batch['batch_name'] ?? '') . ' ' . ($batch['source_institution'] ?? ''))); ?>">
+                <?php $destinationSummary = vm_destination_summary($batch['institutions'] ?? null, $batch['recipients'] ?? 0); ?>
+                <tr data-search="<?php echo safeHtml(strtolower(($batch['batch_reference'] ?? '') . ' ' . ($batch['batch_name'] ?? '') . ' ' . ($batch['source_institution'] ?? '') . ' ' . $destinationSummary)); ?>">
                     <td><strong><?php echo safeHtml($batch['batch_reference']); ?></strong></td>
                     <td><?php echo safeHtml($batch['batch_name'] ?? '&mdash;'); ?></td>
                     <td><?php echo safeHtml($batch['source_institution'] ?? '&mdash;'); ?></td>
                     <td><?php echo formatCurrency($batch['total_amount'] ?? 0, $orgCurrency); ?></td>
-                    <td><?php echo number_format($batch['total_destinations'] ?? 0); ?></td>
+                    <td><?php echo safeHtml($destinationSummary); ?></td>
                     <td><span class="status status-<?php echo getStatusClass($batch['status']); ?>"><?php echo getStatusLabel($batch['status']); ?></span></td>
-                    <td><?php echo date('Y-m-d H:i', strtotime($batch['created_at'] ?? 'now')); ?></td>
+                    <td><?php echo safeHtml(vm_local_time($batch['created_at'])); ?></td>
                     <td><a href="imports/review_batch.php?batch_id=<?php echo (int)$batch['id']; ?>" class="btn btn-secondary btn-sm">Open</a></td>
                 </tr>
                 <?php endforeach; ?>
@@ -692,7 +749,7 @@ require __DIR__ . '/partials/shell-head.php';
                 <tr>
                     <td><?php echo safeHtml(getActivityLabel($ev['action'])); ?></td>
                     <td><?php echo $ev['actor_name'] ? safeHtml($ev['actor_name']) : 'System'; ?></td>
-                    <td><?php echo date('Y-m-d H:i', strtotime($ev['created_at'])); ?></td>
+                    <td><?php echo safeHtml(vm_local_time($ev['created_at'])); ?></td>
                 </tr>
                 <?php endforeach; ?>
                 </tbody>
@@ -735,7 +792,7 @@ require __DIR__ . '/partials/shell-head.php';
                         <td><?php echo safeHtml($b['source_institution'] ?? 'N/A'); ?></td>
                         <td><?php echo formatCurrency($b['total_amount'] ?? 0, $orgCurrency); ?></td>
                         <td><span class="status status-<?php echo getStatusClass($b['status']); ?>"><?php echo getStatusLabel($b['status']); ?></span></td>
-                        <td><?php echo date('Y-m-d H:i', strtotime($b['created_at'] ?? 'now')); ?></td>
+                        <td><?php echo safeHtml(vm_local_time($b['created_at'])); ?></td>
                         <td><a href="imports/review_batch.php?batch_id=<?php echo (int)$b['id']; ?>" class="btn btn-secondary btn-sm">Open</a></td>
                     </tr>
                     <?php endforeach; ?>
@@ -744,6 +801,31 @@ require __DIR__ . '/partials/shell-head.php';
             </div>
             <?php endif; ?>
         </div>
+        <?php if (!empty($traceDestinations)): ?>
+        <div style="margin-top:var(--u4);">
+            <div class="card-title" style="border:none;padding:0;margin-bottom:var(--u2);">Matching recipients &mdash; where the money went</div>
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>Batch</th><th>#</th><th>Recipient</th><th>Destination</th><th>Identifier</th><th>Amount</th><th>Status</th><th>Reference</th><th></th></tr></thead>
+                    <tbody>
+                    <?php foreach ($traceDestinations as $d): ?>
+                    <tr>
+                        <td><strong><?php echo safeHtml($d['batch_reference']); ?></strong></td>
+                        <td><?php echo (int)$d['destination_index']; ?></td>
+                        <td><?php echo safeHtml($d['beneficiary_name'] ?? '—'); ?></td>
+                        <td><?php echo safeHtml(vm_destination_label($d['institution'] ?? null)); ?></td>
+                        <td><?php echo safeHtml(!empty($d['is_identity_recipient']) ? (($d['identity_type'] ?? 'identity') . ': ' . ($d['identity_value'] ?? $d['identifier'] ?? '')) : ($d['identifier'] ?? '')); ?></td>
+                        <td><?php echo safeHtml(formatCurrency($d['amount'] ?? 0, $d['currency'] ?? $orgCurrency)); ?></td>
+                        <td><?php echo safeHtml($d['status'] ?? 'PENDING'); ?></td>
+                        <td><?php echo safeHtml($d['transaction_reference'] ?? $d['hold_reference'] ?? '—'); ?></td>
+                        <td><a href="imports/review_batch.php?batch_id=<?php echo (int)$d['batch_id']; ?>" class="btn btn-secondary btn-sm">Open</a></td>
+                    </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <?php endif; ?>
         <?php if (!empty($traceBeneficiaries)): ?>
         <div style="margin-top:var(--u4);">
             <div class="card-title" style="border:none;padding:0;margin-bottom:var(--u2);">Matching beneficiaries</div>
@@ -804,7 +886,7 @@ require __DIR__ . '/partials/shell-head.php';
             <?php if (empty($reportRegister)): ?><div class="empty">No batches in this range<?php echo $userDeptScope !== null ? ' for your department scope' : ''; ?>.</div><?php else: ?>
             <div class="table-wrap"><table id="reportTable"><thead><tr><th>Reference</th><th>Name</th><th>Source</th><th>Amount</th><th>Destinations</th><th>Status</th><th>Created</th><th>Created by</th></tr></thead><tbody>
                 <?php foreach ($reportRegister as $r): ?>
-                <tr><td><?php echo safeHtml($r['batch_reference']); ?></td><td><?php echo safeHtml($r['batch_name'] ?? ''); ?></td><td><?php echo safeHtml($r['source_institution'] ?? ''); ?></td><td><?php echo formatCurrency($r['total_amount'] ?? 0, $orgCurrency); ?></td><td><?php echo (int)($r['total_destinations'] ?? 0); ?></td><td><?php echo safeHtml(getStatusLabel($r['status'])); ?></td><td><?php echo date('Y-m-d H:i', strtotime($r['created_at'])); ?></td><td><?php echo safeHtml($r['created_by'] ?? ''); ?></td></tr>
+                <tr><td><?php echo safeHtml($r['batch_reference']); ?></td><td><?php echo safeHtml($r['batch_name'] ?? ''); ?></td><td><?php echo safeHtml($r['source_institution'] ?? ''); ?></td><td><?php echo formatCurrency($r['total_amount'] ?? 0, $orgCurrency); ?></td><td><?php echo (int)($r['total_destinations'] ?? 0); ?></td><td><?php echo safeHtml(getStatusLabel($r['status'])); ?></td><td><?php echo safeHtml(vm_local_time($r['created_at'])); ?></td><td><?php echo safeHtml($r['created_by'] ?? ''); ?></td></tr>
                 <?php endforeach; ?>
             </tbody></table></div>
             <?php endif; ?>
@@ -813,7 +895,7 @@ require __DIR__ . '/partials/shell-head.php';
             <?php if (empty($reportAuditTrail)): ?><div class="empty">No audit entries in this range.</div><?php else: ?>
             <div class="table-wrap"><table id="reportTable"><thead><tr><th>Action</th><th>Entity</th><th>Actor</th><th>When</th></tr></thead><tbody>
                 <?php foreach ($reportAuditTrail as $e): ?>
-                <tr><td><?php echo safeHtml(getActivityLabel($e['action'])); ?></td><td><?php echo safeHtml(($e['entity_type'] ?? '') . ' #' . ($e['entity_id'] ?? '')); ?></td><td><?php echo $e['actor_name'] ? safeHtml($e['actor_name']) : 'System'; ?></td><td><?php echo date('Y-m-d H:i:s', strtotime($e['created_at'])); ?></td></tr>
+                <tr><td><?php echo safeHtml(getActivityLabel($e['action'])); ?></td><td><?php echo safeHtml(($e['entity_type'] ?? '') . ' #' . ($e['entity_id'] ?? '')); ?></td><td><?php echo $e['actor_name'] ? safeHtml($e['actor_name']) : 'System'; ?></td><td><?php echo safeHtml(vm_local_time($e['created_at'], 'Y-m-d H:i:s')); ?></td></tr>
                 <?php endforeach; ?>
             </tbody></table></div>
             <?php endif; ?>
@@ -822,7 +904,7 @@ require __DIR__ . '/partials/shell-head.php';
             <?php if (empty($reportExceptions)): ?><div class="empty">No rejected or failed batches in this range<?php echo $userDeptScope !== null ? ' for your department scope' : ''; ?>.</div><?php else: ?>
             <div class="table-wrap"><table id="reportTable"><thead><tr><th>Reference</th><th>Name</th><th>Source</th><th>Amount</th><th>Status</th><th>Created</th></tr></thead><tbody>
                 <?php foreach ($reportExceptions as $r): ?>
-                <tr><td><?php echo safeHtml($r['batch_reference']); ?></td><td><?php echo safeHtml($r['batch_name'] ?? ''); ?></td><td><?php echo safeHtml($r['source_institution'] ?? ''); ?></td><td><?php echo formatCurrency($r['total_amount'] ?? 0, $orgCurrency); ?></td><td><?php echo safeHtml(getStatusLabel($r['status'])); ?></td><td><?php echo date('Y-m-d H:i', strtotime($r['created_at'])); ?></td></tr>
+                <tr><td><?php echo safeHtml($r['batch_reference']); ?></td><td><?php echo safeHtml($r['batch_name'] ?? ''); ?></td><td><?php echo safeHtml($r['source_institution'] ?? ''); ?></td><td><?php echo formatCurrency($r['total_amount'] ?? 0, $orgCurrency); ?></td><td><?php echo safeHtml(getStatusLabel($r['status'])); ?></td><td><?php echo safeHtml(vm_local_time($r['created_at'])); ?></td></tr>
                 <?php endforeach; ?>
             </tbody></table></div>
             <?php endif; ?>

@@ -61,6 +61,11 @@ COPY scripts/ scripts/
 # regardless of whether the file existed in the git repo. Tiny directory
 # (a handful of .sql files, tens of KB) -- no build-size concern.
 COPY database/ database/
+# The batch execution worker and its stuck-job recovery live at the repo
+# root and were never copied either, so no service built from this image
+# could run them: "Execute" on an enterprise batch queued jobs that nothing
+# ever processed. railway.batch-worker.json starts worker.php.
+COPY worker.php stuck_job_recovery.php ./
 COPY docker/nginx.conf /etc/nginx/sites-enabled/default
 RUN composer dump-autoload --optimize --no-interaction
 EXPOSE 9000

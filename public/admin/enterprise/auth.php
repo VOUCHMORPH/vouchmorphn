@@ -13,6 +13,9 @@ if (session_status() === PHP_SESSION_NONE) {
 require_once dirname(__DIR__, 3) . '/src/Core/Database/DBConnection.php';
 use Core\Database\DBConnection;
 
+// vm_local_time() and friends: every page shows times through these.
+require_once __DIR__ . '/partials/local_time.php';
+
 // ============================================================================
 // DATABASE CONNECTION
 // ============================================================================
